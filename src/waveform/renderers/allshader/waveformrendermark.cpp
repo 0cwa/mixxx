@@ -459,7 +459,7 @@ void allshader::WaveformRenderMark::updateDigitsNodeForUntilMark(float x) {
             x,
             y,
             multiLine,
-            m_untilMarkShowBeats ? QString("%1.%2").arg(m_BeatsUntilMark / 4).arg(m_BeatsUntilMark % 4) : QString{},
+            m_untilMarkShowBeats ? QString("%1.%2").arg(m_beatsUntilMark / 4).arg(m_beatsUntilMark % 4) : QString{},
             m_untilMarkShowTime ? timeSecToString(m_timeUntilMark) : QString{});
 }
 
