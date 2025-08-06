@@ -216,38 +216,103 @@ void allshader::DigitsRenderNode::updateTexture(rendergraph::Context* pContext,
             .setTexture(std::make_unique<Texture>(pContext, image));
 }
 
+float allshader::DigitsRenderNode::stringWidth(const QString& s) const {
+    const float space = static_cast<float>(m_penWidth) / 2.f;
+    bool first = true;
+    float w = 0.f;
+    for (QChar c : s) {
+        int idx = charToIndex(c);
+        if (first) {
+            w += m_width[idx];
+            first = false;
+        } else {
+            // add this character’s width, minus the overlap (space)
+            w += m_width[idx] - space;
+        }
+    }
+    return w;
+}
+
 void allshader::DigitsRenderNode::update(
         float x,
         float y,
         bool multiLine,
         const QString& s1,
-        const QString& s2) {
+        const QString& s2)
+{
     const int numVerticesPerRectangle = 6;
     const int reserved = (s1.length() + s2.length()) * numVerticesPerRectangle;
     geometry().allocate(reserved);
-    TexturedVertexUpdater vertexUpdater{geometry().vertexDataAs<Geometry::TexturedPoint2D>()};
+    TexturedVertexUpdater vtx{ geometry().vertexDataAs<Geometry::TexturedPoint2D>() };
 
     const float ch = height();
-    if (!s1.isEmpty()) {
-        const auto w = addVertices(vertexUpdater,
-                x,
-                y,
-                s1);
-        if (multiLine) {
+
+    if (multiLine) {
+        // each line right-aligned independently
+        if (!s1.isEmpty()) {
+            float w1 = stringWidth(s1);
+            addVertices(vtx, x - w1, y, s1);
             y += ch;
-        } else {
-            x += w + ch * 0.75f;
+        }
+        if (!s2.isEmpty()) {
+            float w2 = stringWidth(s2);
+            addVertices(vtx, x - w2, y, s2);
+        }
+    } else {
+        // single‐line: compute total width (s1 + gap + s2), then start at x - total
+        float totalW = 0.f;
+        if (!s1.isEmpty())  totalW += stringWidth(s1);
+        if (!s2.isEmpty()) {
+            if (!s1.isEmpty()) totalW += ch * 0.75f;
+            totalW += stringWidth(s2);
+        }
+
+        float x0 = x - totalW;
+        if (!s1.isEmpty()) {
+            float w1 = addVertices(vtx, x0, y, s1);
+            x0 += w1 + ch * 0.75f;   // leave the same gap you used before
+        }
+        if (!s2.isEmpty()) {
+            addVertices(vtx, x0, y, s2);
         }
     }
-    if (!s2.isEmpty()) {
-        addVertices(vertexUpdater,
-                x,
-                y,
-                s2);
-    }
 
-    DEBUG_ASSERT(reserved == vertexUpdater.index());
+    DEBUG_ASSERT(reserved == vtx.index());
 }
+
+
+// void allshader::DigitsRenderNode::update(
+//         float x,
+//         float y,
+//         bool multiLine,
+//         const QString& s1,
+//         const QString& s2) {
+//     const int numVerticesPerRectangle = 6;
+//     const int reserved = (s1.length() + s2.length()) * numVerticesPerRectangle;
+//     geometry().allocate(reserved);
+//     TexturedVertexUpdater vertexUpdater{geometry().vertexDataAs<Geometry::TexturedPoint2D>()};
+// 
+//     const float ch = height();
+//     if (!s1.isEmpty()) {
+//         const auto w = addVertices(vertexUpdater,
+//                 x,
+//                 y,
+//                 s1);
+//         if (multiLine) {
+//             y += ch;
+//         } else {
+//             x += w + ch * 0.75f;
+//         }
+//     }
+//     if (!s2.isEmpty()) {
+//         addVertices(vertexUpdater,
+//                 x,
+//                 y,
+//                 s2);
+//     }
+// 
+//     DEBUG_ASSERT(reserved == vertexUpdater.index());
+// }
 
 void allshader::DigitsRenderNode::clear() {
     geometry().allocate(0);
