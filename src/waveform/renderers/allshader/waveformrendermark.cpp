@@ -416,7 +416,7 @@ void allshader::WaveformRenderMark::update() {
 
     if (m_untilMarkShowBeats || m_untilMarkShowTime) {
         updateUntilMark(playPosition, nextMarkPosition);
-        updateDigitsNodeForUntilMark(roundToPixel(playMarkerPos + 20.f));
+        updateDigitsNodeForUntilMark(roundToPixel(playMarkerPos - 20.f));
     } else {
         m_pDigitsRenderNode->clear();
     }
