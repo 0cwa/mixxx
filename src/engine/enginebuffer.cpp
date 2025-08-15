@@ -13,6 +13,7 @@
 #include "engine/controls/bpmcontrol.h"
 #include "engine/controls/clockcontrol.h"
 #include "engine/controls/cuecontrol.h"
+#include "engine/controls/seek30control.h"
 #include "engine/controls/enginecontrol.h"
 #include "engine/controls/keycontrol.h"
 #include "engine/controls/loopingcontrol.h"
@@ -228,6 +229,10 @@ EngineBuffer::EngineBuffer(const QString& group,
     // Create the cue controller
     m_pCueControl = new CueControl(group, pConfig);
     addControl(m_pCueControl);
+
+    // Create the 30s seek control
+    m_pSeek30Control = new Seek30Control(group, pConfig);
+    addControl(m_pSeek30Control);
 
     connect(m_pLoopingControl,
             &LoopingControl::loopReset,

@@ -1890,6 +1890,9 @@ WPushButton#Blank[value="4"] {
   background-color: transparent;
 }
 
+WPushButton#Seek30 {
+  background-color: #ff0;
+}
 
 
 /************** Button icons **************************************************/

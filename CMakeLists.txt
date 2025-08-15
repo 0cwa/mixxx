@@ -1154,6 +1154,7 @@ add_library(
   src/engine/controls/bpmcontrol.cpp
   src/engine/controls/clockcontrol.cpp
   src/engine/controls/cuecontrol.cpp
+  src/engine/controls/seek30control.cpp
   src/engine/controls/enginecontrol.cpp
   src/engine/controls/keycontrol.cpp
   src/engine/controls/loopingcontrol.cpp

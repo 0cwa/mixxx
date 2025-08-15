@@ -185,7 +185,7 @@
           <WidgetGroup><!-- Intro + Outro -->
             <Layout>vertical</Layout>
             <SizePolicy>me,min</SizePolicy>
-            <MaximumSize>52,52</MaximumSize>
+            <MaximumSize>120,52</MaximumSize>
             <Children>
               <WidgetGroup><!-- Intro -->
                 <ObjectName>AlignLeftTop</ObjectName>
@@ -199,6 +199,14 @@
                   <Template src="skins:LateNight/controls/button_special_cue.xml">
                     <SetVariable name="CueType">intro_end</SetVariable>
                   </Template>
+                  <PushButton>
+                    <ObjectName>Seek30</ObjectName>
+                    <Size>68f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,seek_30s</ConfigKey>
+                    </Connection>
+                  </PushButton>
                 </Children>
               </WidgetGroup>
               <WidgetGroup><!-- Outro -->
