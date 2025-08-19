@@ -1890,8 +1890,16 @@ WPushButton#Blank[value="4"] {
   background-color: transparent;
 }
 
-WPushButton#Seek30 {
-  background-color: #ff0;
+WPushButton#Seek30[displayValue="0"] {
+  background-color: #0000ff;
+}
+
+WPushButton#MemoryCreateAtCurrent[displayValue="0"] {
+  background-color: #00ff00;
+}
+
+WPushButton#MemoryClearAll[displayValue="0"] {
+  background-color: #ff0000;
 }
 
 
