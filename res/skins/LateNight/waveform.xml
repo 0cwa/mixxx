@@ -142,6 +142,7 @@
             <BeatColor><Variable name="BeatColor"/></BeatColor>
             <DownbeatColor><Variable name="DownbeatColor"/></DownbeatColor>
             <DownbeatColor2><Variable name="DownbeatColor2"/></DownbeatColor2>
+            <MemoryCueColor><Variable name="MemoryCueColor"/></MemoryCueColor>
             <AxesColor><Variable name="AxesColor"/></AxesColor>
             <BeatHighlightColor></BeatHighlightColor>
             <PlayPosColor><Variable name="PlayPosColor"/></PlayPosColor>

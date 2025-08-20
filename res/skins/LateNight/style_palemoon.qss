@@ -1893,6 +1893,9 @@ WPushButton#Blank[value="4"] {
 WPushButton#Seek30[displayValue="0"] {
   background-color: #0000ff;
 }
+WPushButton#Seek30[displayValue="0"]:hover {
+  background-color: #3333ff;
+}
 
 WPushButton#MemoryCreateAtCurrent[displayValue="0"] {
   background-color: #00ff00;

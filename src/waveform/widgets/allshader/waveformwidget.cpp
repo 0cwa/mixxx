@@ -8,6 +8,7 @@
 #include "waveform/renderers/allshader/waveformrenderbeat.h"
 #include "waveform/renderers/allshader/waveformrenderdownbeat.h"
 #include "waveform/renderers/allshader/waveformrenderdownbeat16.h"
+#include "waveform/renderers/allshader/waveformrendermemorycues.h"
 #include "waveform/renderers/allshader/waveformrendererendoftrack.h"
 #include "waveform/renderers/allshader/waveformrendererfiltered.h"
 #include "waveform/renderers/allshader/waveformrendererhsv.h"
@@ -63,6 +64,8 @@ WaveformWidget::WaveformWidget(QWidget* parent,
     pDownBeatOpacityNode->appendChildNode(addRendererNode<WaveformRenderDownBeat>());
     // Draw 16-beat markers after 4-beat markers so m_color2 wins where they overlap.
     pDownBeatOpacityNode->appendChildNode(addRendererNode<WaveformRenderDownBeat16>());
+    // TODO move this to a different node!
+    pDownBeatOpacityNode->appendChildNode(addRendererNode<WaveformRenderMemoryCues>());
     m_pDownBeatOpacityNode = pOpacityNode->appendChildNode(std::move(pDownBeatOpacityNode));
     m_pDownBeatOpacityNode->setOpacity(m_downBeatOpacity);
 
