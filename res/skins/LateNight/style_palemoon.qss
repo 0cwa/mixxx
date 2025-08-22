@@ -1890,42 +1890,46 @@ WPushButton#Blank[value="4"] {
   background-color: transparent;
 }
 
+#MemoryCues WPushButton[displayValue="0"]{
+  border: 1px solid #111;
+}
+
 WPushButton#Seek30[displayValue="0"] {
-  background-color: #0000aa;
+  background-color: #000033;
   image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;
 }
 WPushButton#Seek30[displayValue="0"]:hover {
-  background-color: #3333aa;
+  background-color: #111133;
 }
 WPushButton#Seek30Prev[displayValue="0"] {
-  background-color: #0000ff;
+  background-color: #000033;
   image: url(skins:LateNight/palemoon/buttons/btn__reverse.svg) no-repeat center center;
 }
 WPushButton#Seek30Prev[displayValue="0"]:hover {
-  background-color: #3333ff;
+  background-color: #111133;
 }
 
 WPushButton#MemoryCreateAtCurrent[displayValue="0"] {
-  background-color: #00ff00;
+  background-color: #003300;
   image: url(skins:LateNight/palemoon/buttons/btn__plus.svg) no-repeat center center;
 }
 WPushButton#MemoryCreateAtCurrent[displayValue="0"]:hover {
-  background-color: #33ff33;
+  background-color: #113311;
 }
 
 WPushButton#MemoryClearPrev[displayValue="0"] {
-  background-color: #ff0000;
+  background-color: #330000;
   image: url(skins:LateNight/palemoon/buttons/btn__reverse.svg) no-repeat center center;
 }
 WPushButton#MemoryClearNext[displayValue="0"] {
-  background-color: #aa0000;
+  background-color: #330000;
   image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;
 }
 WPushButton#MemoryClearPrev[displayValue="0"]:hover {
-  background-color: #ff3333;
+  background-color: #331111;
 }
 WPushButton#MemoryClearNext[displayValue="0"]:hover {
-  background-color: #aa3333;
+  background-color: #331111;
 }
 
 

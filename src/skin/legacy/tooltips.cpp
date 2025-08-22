@@ -1033,6 +1033,22 @@ void Tooltips::addStandardTooltips() {
             << quantizeSnap
             << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the marker."));
 
+    // Memory Cues
+    add("memory_cue_create")
+            << tr("Create a new Memory Cue");
+
+    add("memory_cue_prev")
+            << tr("Jump to Previous Memory Cue");
+
+    add("memory_cue_next")
+            << tr("Jump to Next Memory Cue");
+
+    add("memory_cue_clear_prev")
+            << tr("Delete Previous Memory Cue");
+
+    add("memory_cue_clear_next")
+            << tr("Delete Next Memory Cue");
+
     // Effect Unit Controls
     add("EffectUnit_clear")
             << tr("Clear Unit")
