@@ -1038,16 +1038,16 @@ void Tooltips::addStandardTooltips() {
             << tr("Create a new Memory Cue");
 
     add("memory_cue_prev")
-            << tr("Jump to Previous Memory Cue");
+            << tr("Previous Memory Cue")
+            << QString("%1: %2").arg(leftClick, tr("If marker is set, jumps to the marker."))
+            << tr("If marker is not set, nothing happens.")
+            << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the marker."));
 
     add("memory_cue_next")
-            << tr("Jump to Next Memory Cue");
-
-    add("memory_cue_clear_prev")
-            << tr("Delete Previous Memory Cue");
-
-    add("memory_cue_clear_next")
-            << tr("Delete Next Memory Cue");
+            << tr("Next Memory Cue")
+            << QString("%1: %2").arg(leftClick, tr("If marker is set, jumps to the marker."))
+            << tr("If marker is not set, nothing happens.")
+            << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the marker."));
 
     // Effect Unit Controls
     add("EffectUnit_clear")
