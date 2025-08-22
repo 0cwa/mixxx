@@ -1,5 +1,7 @@
 #include <QtDebug>
 #include "engine/controls/seek30control.h"
+#include "track/track.h"
+#include "track/cue.h"
 
 #include "moc_seek30control.cpp"
 
