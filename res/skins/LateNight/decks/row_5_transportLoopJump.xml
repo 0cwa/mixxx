@@ -187,7 +187,7 @@
           <WidgetGroup><!-- Intro + Outro -->
             <Layout>vertical</Layout>
             <SizePolicy>me,min</SizePolicy>
-            <MaximumSize>172,52</MaximumSize>
+            <MaximumSize>52,52</MaximumSize>
             <Children>
               <WidgetGroup><!-- Intro -->
                 <ObjectName>AlignLeftTop</ObjectName>
@@ -201,30 +201,6 @@
                   <Template src="skins:LateNight/controls/button_special_cue.xml">
                     <SetVariable name="CueType">intro_end</SetVariable>
                   </Template>
-                  <PushButton>
-                    <ObjectName>Seek30Prev</ObjectName>
-                    <Size>34f,26f</Size>
-                    <NumberStates>1</NumberStates>
-                    <Connection>
-                      <ConfigKey><Variable name="Group"/>,seek_30Prev</ConfigKey>
-                    </Connection>
-                  </PushButton>
-                  <PushButton>
-                    <ObjectName>Seek30</ObjectName>
-                    <Size>34f,26f</Size>
-                    <NumberStates>1</NumberStates>
-                    <Connection>
-                      <ConfigKey><Variable name="Group"/>,seek_30s</ConfigKey>
-                    </Connection>
-                  </PushButton>
-                  <PushButton>
-                    <ObjectName>MemoryCreateAtCurrent</ObjectName>
-                    <Size>26f,26f</Size>
-                    <NumberStates>1</NumberStates>
-                    <Connection>
-                      <ConfigKey><Variable name="Group"/>,memory_create_at_current</ConfigKey>
-                    </Connection>
-                  </PushButton>
                 </Children>
               </WidgetGroup>
               <WidgetGroup><!-- Outro -->
@@ -239,8 +215,66 @@
                   <Template src="skins:LateNight/controls/button_special_cue.xml">
                     <SetVariable name="CueType">outro_end</SetVariable>
                   </Template>
+                </Children>
+              </WidgetGroup>
+            </Children>
+            <Connection>
+              <ConfigKey>[Skin],show_intro_outro_cues</ConfigKey>
+              <BindProperty>visible</BindProperty>
+            </Connection>
+          </WidgetGroup><!-- / Intro + Outro -->
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup><!--  = 2-8px wide -->
+          <WidgetGroup><SizePolicy>i,min</SizePolicy><MaximumSize>8,</MaximumSize></WidgetGroup>
+
+          <WidgetGroup><!-- Memory Cues -->
+            <ObjectName>MemoryCues</ObjectName>
+            <Layout>vertical</Layout>
+            <SizePolicy>me,min</SizePolicy>
+            <MaximumSize>78,52</MaximumSize>
+            <Children>
+              <WidgetGroup>
+                <ObjectName>AlignLeftTop</ObjectName>
+                <SizePolicy>me,min</SizePolicy>
+                <Layout>horizontal</Layout>
+                <Children>
+                  <PushButton>
+                    <ObjectName>Seek30Prev</ObjectName>
+                    <TooltipId>memory_cue_prev</TooltipId>
+                    <Size>26f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,seek_30Prev</ConfigKey>
+                    </Connection>
+                  </PushButton>
+                  <PushButton>
+                    <ObjectName>Seek30</ObjectName>
+                    <TooltipId>memory_cue_next</TooltipId>
+                    <Size>26f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,seek_30s</ConfigKey>
+                    </Connection>
+                  </PushButton>
+                  <PushButton>
+                    <ObjectName>MemoryCreateAtCurrent</ObjectName>
+                    <TooltipId>memory_cue_create</TooltipId>
+                    <Size>26f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,memory_create_at_current</ConfigKey>
+                    </Connection>
+                  </PushButton>
+                </Children>
+              </WidgetGroup>
+              <WidgetGroup>
+                <ObjectName>AlignLeftTop</ObjectName>
+                <SizePolicy>me,min</SizePolicy>
+                <Layout>horizontal</Layout>
+                <Children>
                   <PushButton>
                     <ObjectName>MemoryClearPrev</ObjectName>
+                    <TooltipId>memory_cue_clear_prev</TooltipId>
                     <Size>26f,26f</Size>
                     <NumberStates>1</NumberStates>
                     <Connection>
@@ -249,6 +283,7 @@
                   </PushButton>
                   <PushButton>
                     <ObjectName>MemoryClearNext</ObjectName>
+                    <TooltipId>memory_cue_clear_next</TooltipId>
                     <Size>26f,26f</Size>
                     <NumberStates>1</NumberStates>
                     <Connection>
@@ -259,10 +294,10 @@
               </WidgetGroup>
             </Children>
             <Connection>
-              <ConfigKey>[Skin],show_intro_outro_cues</ConfigKey>
+              <ConfigKey>[Skin],show_hotcues</ConfigKey>
               <BindProperty>visible</BindProperty>
             </Connection>
-          </WidgetGroup><!-- / Intro + Outro -->
+          </WidgetGroup><!-- / Memory Cues -->
 
           <WidgetGroup><Size>2f,0min</Size></WidgetGroup><!--  = 2-8px wide -->
           <WidgetGroup><SizePolicy>i,min</SizePolicy><MaximumSize>80,</MaximumSize></WidgetGroup>
