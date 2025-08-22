@@ -317,7 +317,7 @@ void BpmControl::slotForwardDownBeatsMarker(double v) {
     if (!pTrack)
         return;
     int downbeatOffset = pTrack->getDownbeatOffset();
-    downbeatOffset == 7 ? downbeatOffset = 0 : ++downbeatOffset;
+    downbeatOffset == 15 ? downbeatOffset = 0 : ++downbeatOffset;
     pTrack->setDownbeatOffset(downbeatOffset);
 }
 
@@ -330,7 +330,7 @@ void BpmControl::slotBackwardDownBeatsMarker(double v) {
         return;
     int downbeatOffset = pTrack->getDownbeatOffset();
     if (downbeatOffset == 0)
-        downbeatOffset = 8;
+        downbeatOffset = 16;
     pTrack->setDownbeatOffset(--downbeatOffset);
 }
 
