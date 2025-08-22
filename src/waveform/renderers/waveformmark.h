@@ -64,6 +64,7 @@ class WaveformMark {
 
     // The m_pPositionCO related function
     bool isValid() const {
+        if(m_pPosition > 0.f) return true;
         return m_pPositionCO && m_pPositionCO->valid();
     }
 
@@ -77,7 +78,11 @@ class WaveformMark {
             m_pEndPositionCO->connectValueChanged(receiver, slot, Qt::AutoConnection);
         }
     };
+    void setSamplePosition(double newPos) {
+        m_pPosition = newPos;
+    }
     double getSamplePosition() const {
+        if(m_pPosition > 0.f) return m_pPosition;
         return m_pPositionCO->get();
     }
     double getSampleEndPosition() const {
@@ -188,6 +193,7 @@ class WaveformMark {
 
   private:
     std::unique_ptr<ControlProxy> m_pPositionCO;
+    double m_pPosition;
     std::unique_ptr<ControlProxy> m_pEndPositionCO;
     std::unique_ptr<ControlProxy> m_pTypeCO;
     std::unique_ptr<ControlProxy> m_pVisibleCO;

@@ -1,4 +1,3 @@
-#include <QtDebug>
 #include "engine/controls/seek30control.h"
 #include "track/track.h"
 #include "track/cue.h"
@@ -74,7 +73,7 @@ int Seek30Control::createMemoryCueAt(const mixxx::audio::FramePos& pos) {
 
     CuePointer pCue = m_pLoadedTrack->createAndAddCue(
             mixxx::CueType::Memory,
-            index,
+            Cue::kNoHotCue,
             pos,
             pos);
 
