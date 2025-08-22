@@ -46,7 +46,10 @@ class Seek30Control final : public EngineControl {
   private slots:
     void createAtCurrent(double v);
     void clearAll(double v);
+    void clearPrev(double v);
+    void clearNext(double v);
     void slotSeek30(double v);
+    void slotSeek30Prev(double v);
 
   private:
 
@@ -74,6 +77,14 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::slotSeek30,
                 Qt::DirectConnection);
 
+        m_pSeek30Prev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30Prev"));
+        m_pSeek30Prev->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pSeek30Prev.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::slotSeek30Prev,
+                Qt::DirectConnection);
+
         m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_create_at_current"));
         m_pMemoryCreateAtCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryCreateAtCurrent.get(),
@@ -90,11 +101,30 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearAll,
                 Qt::DirectConnection);
 
+        m_pMemoryClearPrev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_prev"));
+        m_pMemoryClearPrev->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pMemoryClearPrev.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::clearPrev,
+                Qt::DirectConnection);
+
+        m_pMemoryClearNext = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_next"));
+        m_pMemoryClearNext->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pMemoryClearNext.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::clearNext,
+                Qt::DirectConnection);
+
     }
 
     std::unique_ptr<ControlPushButton> m_pSeek30;
+    std::unique_ptr<ControlPushButton> m_pSeek30Prev;
     std::unique_ptr<ControlPushButton> m_pMemoryCreateAtCurrent;
     std::unique_ptr<ControlPushButton> m_pMemoryClearAll;
+    std::unique_ptr<ControlPushButton> m_pMemoryClearPrev;
+    std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     mixxx::audio::SampleRate m_sampleRate;
 
     TrackPointer m_pLoadedTrack; // is written from an engine worker thread

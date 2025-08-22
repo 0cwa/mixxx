@@ -1891,18 +1891,41 @@ WPushButton#Blank[value="4"] {
 }
 
 WPushButton#Seek30[displayValue="0"] {
-  background-color: #0000ff;
+  background-color: #0000aa;
+  image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;
 }
 WPushButton#Seek30[displayValue="0"]:hover {
+  background-color: #3333aa;
+}
+WPushButton#Seek30Prev[displayValue="0"] {
+  background-color: #0000ff;
+  image: url(skins:LateNight/palemoon/buttons/btn__reverse.svg) no-repeat center center;
+}
+WPushButton#Seek30Prev[displayValue="0"]:hover {
   background-color: #3333ff;
 }
 
 WPushButton#MemoryCreateAtCurrent[displayValue="0"] {
   background-color: #00ff00;
+  image: url(skins:LateNight/palemoon/buttons/btn__plus.svg) no-repeat center center;
+}
+WPushButton#MemoryCreateAtCurrent[displayValue="0"]:hover {
+  background-color: #33ff33;
 }
 
-WPushButton#MemoryClearAll[displayValue="0"] {
+WPushButton#MemoryClearPrev[displayValue="0"] {
   background-color: #ff0000;
+  image: url(skins:LateNight/palemoon/buttons/btn__reverse.svg) no-repeat center center;
+}
+WPushButton#MemoryClearNext[displayValue="0"] {
+  background-color: #aa0000;
+  image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;
+}
+WPushButton#MemoryClearPrev[displayValue="0"]:hover {
+  background-color: #ff3333;
+}
+WPushButton#MemoryClearNext[displayValue="0"]:hover {
+  background-color: #aa3333;
 }
 
 

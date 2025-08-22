@@ -15,13 +15,10 @@ void Seek30Control::rebuildMemoryCueCache() {
     if (!m_pLoadedTrack) {
         return;
     }
-    DEBUG_ASSERT(!"Seek 30 Track loaded!");
     const QList<CuePointer> cues = m_pLoadedTrack->getCuePoints();
     for (const auto& pCue : cues) {
         if (!pCue) continue;
         if (pCue->getType() == mixxx::CueType::Memory) {
-            DEBUG_ASSERT(!"Found a memory cue");
-            qCritical("Found memory cue %s", std::to_string(pCue->getHotCue()).c_str());
             m_memoryCues.append(pCue);
         }
     }
@@ -51,10 +48,6 @@ int Seek30Control::nextFreeMemoryCueIndex() const {
         if (pCue->getHotCue() >= 0) {
             idx = pCue->getHotCue();
         }
-        // If your Cue has getIndex() (uncomment if applicable):
-        // else if (pCue->getIndex() >= 0) {
-        //     idx = pCue->getIndex();
-        // }
 
         if (idx >= 0) used.insert(idx);
     }
@@ -98,6 +91,67 @@ void Seek30Control::clearAll(double v) {
     m_memoryCues.clear();
 }
 
+void Seek30Control::clearPrev(double v) {
+    if (v <= 0 || !m_pLoadedTrack) return;
+
+    // Read normalized play position [0..1] and track duration [s] from COs.
+    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
+    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
+    if (!(durationSec > 0.0)) {
+        return; // nothing loaded or unknown duration
+    }
+
+    // Convert to current absolute frame position.
+    // frames = seconds * sampleRate; (frames are per-frame, independent of channels)
+    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
+    mixxx::audio::FramePos currentPos(currentFrames);
+    double curPos = currentPos.toEngineSamplePos();
+
+    // Avoid floating point errors
+    constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
+
+    for (int i = m_memoryCues.size() - 1; i >= 0; --i) {
+        auto pCue = m_memoryCues.at(i);
+        if (!pCue) continue;
+        double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
+        if ((curPos - testPos) > kEps) {
+            m_pLoadedTrack->removeCue(pCue);
+            m_memoryCues.removeOne(pCue);
+            break;
+        }
+    }
+}
+
+void Seek30Control::clearNext(double v) {
+    if (v <= 0 || !m_pLoadedTrack) return;
+
+    // Read normalized play position [0..1] and track duration [s] from COs.
+    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
+    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
+    if (!(durationSec > 0.0)) {
+        return; // nothing loaded or unknown duration
+    }
+
+    // Convert to current absolute frame position.
+    // frames = seconds * sampleRate; (frames are per-frame, independent of channels)
+    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
+    mixxx::audio::FramePos currentPos(currentFrames);
+    double curPos = currentPos.toEngineSamplePos();
+
+    // Avoid floating point errors
+    constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
+
+    for (const auto& pCue : m_memoryCues) {
+        if (!pCue) continue;
+        double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
+        if ((testPos - curPos) > kEps) {
+            m_pLoadedTrack->removeCue(pCue);
+            m_memoryCues.removeOne(pCue);
+            break;
+        }
+    }
+}
+
 void Seek30Control::createAtCurrent(double v) {
     if (v <= 0) return;
 
@@ -132,17 +186,44 @@ void Seek30Control::slotSeek30(double v) {
     const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
     mixxx::audio::FramePos currentPos(currentFrames);
     double curPos = currentPos.toEngineSamplePos();
-    qCritical("Current pos %s", std::to_string(curPos).c_str());
 
     // Avoid floating point errors
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
-    qCritical("Mem size %s", std::to_string(m_memoryCues.size()).c_str());
     for (const auto& pCue : m_memoryCues) {
         if (!pCue) continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
-        qCritical("Test pos %s", std::to_string(testPos).c_str());
         if ((testPos - curPos) > kEps) {
+            getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
+            break;
+        }
+    }
+}
+
+void Seek30Control::slotSeek30Prev(double v) {
+    if (v <= 0 || !m_pLoadedTrack) return;
+
+    // Read normalized play position [0..1] and track duration [s] from COs.
+    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
+    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
+    if (!(durationSec > 0.0)) {
+        return; // nothing loaded or unknown duration
+    }
+
+    // Convert to current absolute frame position.
+    // frames = seconds * sampleRate; (frames are per-frame, independent of channels)
+    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
+    mixxx::audio::FramePos currentPos(currentFrames);
+    double curPos = currentPos.toEngineSamplePos();
+
+    // Avoid floating point errors
+    constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
+
+    for (int i = m_memoryCues.size() - 1; i >= 0; --i) {
+        auto pCue = m_memoryCues.at(i);
+        if (!pCue) continue;
+        double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
+        if ((curPos - testPos) > kEps) {
             getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
             break;
         }
