@@ -265,6 +265,9 @@ void Seek30Control::slotSeek30Prev(double v) {
         if (!pCue) continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((curPos - testPos) > kEps) {
+            // Allow skipping the current memory cue if it's within 1.5 seconds
+            if(std::abs(curPos - testPos) < (m_sampleRate.toDouble() * 1.5)) continue;
+
             getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
             break;
         }
