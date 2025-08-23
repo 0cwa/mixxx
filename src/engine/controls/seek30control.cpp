@@ -208,6 +208,15 @@ void Seek30Control::createAtCurrent(double v) {
     const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
     mixxx::audio::FramePos currentPos(currentFrames);
 
+    const auto m_pQuantizeEnabled = ControlObject::getControl(ConfigKey(m_group, "quantize"));
+    if (m_pQuantizeEnabled->toBool()) {
+        const auto m_pClosestBeat = ControlObject::getControl(ConfigKey(m_group, "beat_closest"));
+        const auto closestBeat =
+                mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(
+                        m_pClosestBeat->get());
+        currentPos = closestBeat;
+    }
+
     createMemoryCueAt(currentPos);
 
 }
