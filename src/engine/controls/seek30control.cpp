@@ -275,7 +275,10 @@ void Seek30Control::slotSeek30Prev(double v) {
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((curPos - testPos) > kEps) {
             // Allow skipping the current memory cue if it's within 1.5 seconds
-            if(std::abs(curPos - testPos) < (m_sampleRate.toDouble() * 1.5)) continue;
+            auto playControl = ControlObject::getControl(ConfigKey(m_group, "play"));
+            double playValue = playControl->get(); // or appropriate getter
+            bool isPlaying = (playValue > 0.0);
+            if(isPlaying && std::abs(curPos - testPos) < (m_sampleRate.toDouble() * 1.5)) continue;
 
             getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
             break;
