@@ -48,6 +48,7 @@ class Seek30Control final : public EngineControl {
     void clearAll(double v);
     void clearPrev(double v);
     void clearNext(double v);
+    void clearCurrent(double v);
     void slotSeek30(double v);
     void slotSeek30Prev(double v);
 
@@ -101,6 +102,14 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearAll,
                 Qt::DirectConnection);
 
+        m_pMemoryClearCurrent = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_current"));
+        m_pMemoryClearCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pMemoryClearCurrent.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::clearCurrent,
+                Qt::DirectConnection);
+
         m_pMemoryClearPrev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_prev"));
         m_pMemoryClearPrev->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryClearPrev.get(),
@@ -123,6 +132,7 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pSeek30Prev;
     std::unique_ptr<ControlPushButton> m_pMemoryCreateAtCurrent;
     std::unique_ptr<ControlPushButton> m_pMemoryClearAll;
+    std::unique_ptr<ControlPushButton> m_pMemoryClearCurrent;
     std::unique_ptr<ControlPushButton> m_pMemoryClearPrev;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     mixxx::audio::SampleRate m_sampleRate;

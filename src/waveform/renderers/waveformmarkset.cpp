@@ -1,6 +1,5 @@
 #include "waveformmarkset.h"
 
-#include <QtDebug>
 #include <set>
 
 #include "util/defs.h"
@@ -122,10 +121,6 @@ void WaveformMarkSet::syncMemoryCueMarks(const QString& group,
 
         m_marks.push_front(pMark);
         m_memoryCueMarks.push_back(pMark);
-        qCritical("Found memory cue %s @ %s",
-            std::to_string(pCue->getHotCue()).c_str(),
-            std::to_string(pos).c_str()
-        );
     }
 }
 
