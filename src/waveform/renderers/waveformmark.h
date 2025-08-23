@@ -82,8 +82,10 @@ class WaveformMark {
         m_pPosition = newPos;
     }
     double getSamplePosition() const {
-        if(m_pPosition > 0.f) return m_pPosition;
-        return m_pPositionCO->get();
+        double coPos = m_pPositionCO->get();
+        if(coPos < 0.f) return coPos;
+        if(coPos == 0.f) return m_pPosition;
+        return coPos;
     }
     double getSampleEndPosition() const {
         if (!m_pEndPositionCO ||

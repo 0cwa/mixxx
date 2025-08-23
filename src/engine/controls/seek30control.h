@@ -9,6 +9,7 @@
 
 #include "audio/frame.h"
 #include "audio/types.h"
+#include "control/controlobject.h"
 #include "engine/engine.h"
 #include "engine/controls/enginecontrol.h"
 #include "control/controlpushbutton.h"
@@ -70,6 +71,9 @@ class Seek30Control final : public EngineControl {
     int createMemoryCueAt(const mixxx::audio::FramePos& pos);
 
     void createControls() {
+        m_pMemoryCue = std::make_unique<ControlObject>(ConfigKey(m_group, "memory_cue"));
+        m_pMemoryCue->set(0.f);
+
         m_pSeek30 = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30s"));
         m_pSeek30->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pSeek30.get(),
@@ -128,6 +132,7 @@ class Seek30Control final : public EngineControl {
 
     }
 
+    std::unique_ptr<ControlObject> m_pMemoryCue;
     std::unique_ptr<ControlPushButton> m_pSeek30;
     std::unique_ptr<ControlPushButton> m_pSeek30Prev;
     std::unique_ptr<ControlPushButton> m_pMemoryCreateAtCurrent;

@@ -76,11 +76,7 @@ bool isShowUntilNextPositionControl(const QString& positionControl) {
     using namespace Qt::Literals::StringLiterals;
     constexpr std::array list = {"memory_cue"_L1};
 #else
-    const std::array list = {QLatin1String{"cue_point"},
-            QLatin1String{"intro_start_position"},
-            QLatin1String{"intro_end_position"},
-            QLatin1String{"outro_start_position"},
-            QLatin1String{"outro_end_position"}};
+    const std::array list = {QLatin1String{"memory_cue"}};
 #endif
     return std::any_of(list.cbegin(), list.cend(), [positionControl](auto& view) {
         return view == positionControl;
@@ -117,7 +113,7 @@ WaveformMark::WaveformMark(const QString& group,
         positionControl = QStringLiteral("hotcue_%1_position").arg(hotcueNumber);
         endPositionControl = QStringLiteral("hotcue_%1_endposition").arg(hotcueNumber);
         typeControl = QStringLiteral("hotcue_%1_type").arg(hotcueNumber);
-        m_showUntilNext = true;
+        m_showUntilNext = false;
     } else {
         m_showUntilNext = isShowUntilNextPositionControl(positionControl);
     }
