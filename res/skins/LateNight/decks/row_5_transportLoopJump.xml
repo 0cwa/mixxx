@@ -245,11 +245,6 @@
                     <NumberStates>1</NumberStates>
                     <Connection>
                       <ConfigKey><Variable name="Group"/>,seek_30Prev</ConfigKey>
-                      <ButtonState>LeftButton</ButtonState>
-                    </Connection>
-                    <Connection>
-                      <ConfigKey><Variable name="Group"/>,memory_clear_prev</ConfigKey>
-                      <ButtonState>RightButton</ButtonState>
                     </Connection>
                   </PushButton>
                   <PushButton>
@@ -259,6 +254,11 @@
                     <NumberStates>1</NumberStates>
                     <Connection>
                       <ConfigKey><Variable name="Group"/>,memory_create_at_current</ConfigKey>
+                      <ButtonState>LeftButton</ButtonState>
+                    </Connection>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,memory_clear_current</ConfigKey>
+                      <ButtonState>RightButton</ButtonState>
                     </Connection>
                   </PushButton>
                 </Children>
@@ -275,11 +275,6 @@
                     <NumberStates>1</NumberStates>
                     <Connection>
                       <ConfigKey><Variable name="Group"/>,seek_30s</ConfigKey>
-                      <ButtonState>LeftButton</ButtonState>
-                    </Connection>
-                    <Connection>
-                      <ConfigKey><Variable name="Group"/>,memory_clear_next</ConfigKey>
-                      <ButtonState>RightButton</ButtonState>
                     </Connection>
                   </PushButton>
                 </Children>

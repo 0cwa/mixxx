@@ -1,3 +1,4 @@
+#include <cmath>
 #include "engine/controls/seek30control.h"
 #include "track/track.h"
 #include "track/cue.h"
@@ -69,6 +70,17 @@ int Seek30Control::createMemoryCueAt(const mixxx::audio::FramePos& pos) {
         return -1;
     }
 
+    // Don't allow creating a second memory cue in the same position as another
+    constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
+    double curPos = pos.toEngineSamplePos();
+    for (const auto& pCue : m_memoryCues) {
+        if (!pCue) continue;
+        double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
+        if (std::abs(curPos - testPos) < kEps) {
+            return -1;
+        }
+    }
+
     const int index = nextFreeMemoryCueIndex();
 
     CuePointer pCue = m_pLoadedTrack->createAndAddCue(
@@ -88,6 +100,36 @@ void Seek30Control::clearAll(double v) {
     if (v <= 0 || !m_pLoadedTrack) return;
     m_pLoadedTrack->removeCuesOfType(mixxx::CueType::Memory);
     m_memoryCues.clear();
+}
+
+void Seek30Control::clearCurrent(double v) {
+    if (v <= 0 || !m_pLoadedTrack) return;
+
+    // Read normalized play position [0..1] and track duration [s] from COs.
+    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
+    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
+    if (!(durationSec > 0.0)) {
+        return; // nothing loaded or unknown duration
+    }
+
+    // Convert to current absolute frame position.
+    // frames = seconds * sampleRate; (frames are per-frame, independent of channels)
+    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
+    mixxx::audio::FramePos currentPos(currentFrames);
+    double curPos = currentPos.toEngineSamplePos();
+
+    // Avoid floating point errors
+    constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
+
+    for (const auto& pCue : m_memoryCues) {
+        if (!pCue) continue;
+        double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
+        if (std::abs(curPos - testPos) < kEps) {
+            m_pLoadedTrack->removeCue(pCue);
+            m_memoryCues.removeOne(pCue);
+            break;
+        }
+    }
 }
 
 void Seek30Control::clearPrev(double v) {
