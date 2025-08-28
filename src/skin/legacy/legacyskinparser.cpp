@@ -52,6 +52,7 @@
 #include "widget/weffectpushbutton.h"
 #include "widget/weffectselector.h"
 #include "widget/whotcuebutton.h"
+#include "widget/wmemorycuebutton.h"
 #include "widget/wkey.h"
 #include "widget/wknob.h"
 #include "widget/wknobcomposed.h"
@@ -546,6 +547,8 @@ QList<QWidget*> LegacySkinParser::parseNode(const QDomElement& node) {
         result = wrapWidget(parseEffectPushButton(node));
     } else if (nodeName == "HotcueButton") {
         result = wrapWidget(parseHotcueButton(node));
+    } else if (nodeName == "MemoryCueButton") {
+        result = wrapWidget(parseMemoryCueButton(node));
     } else if (nodeName == "ComboBox") {
         result = wrapWidget(parseStandardWidget<WComboBox>(node));
     } else if (nodeName == "Overview") {
@@ -1963,6 +1966,17 @@ QWidget* LegacySkinParser::parseHotcueButton(const QDomElement& element) {
             Qt::RightButton,
             controlFromConfigKey(pWidget->getClearConfigKey(), false),
             ControlParameterWidgetConnection::EmitOption::EMIT_ON_PRESS_AND_RELEASE);
+
+    pWidget->Init();
+    return pWidget;
+}
+
+QWidget* LegacySkinParser::parseMemoryCueButton(const QDomElement& element) {
+    QString group = lookupNodeGroup(element);
+    WMemoryCueButton* pWidget = new WMemoryCueButton(m_pParent, group);
+    commonWidgetSetup(element, pWidget);
+    pWidget->setup(element, *m_pContext);
+    pWidget->installEventFilter(m_pKeyboard);
 
     pWidget->Init();
     return pWidget;

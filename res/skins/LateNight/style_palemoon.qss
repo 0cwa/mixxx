@@ -1894,6 +1894,11 @@ WPushButton#Blank[value="4"] {
   border: 1px solid #111;
 }
 
+WMemoryCueButton#MemoryCueEdit[displayValue="0"] {
+  background-color: #3e4014;
+  image: url(skins:LateNight/palemoon/buttons/btn__pencil.svg) no-repeat center center;
+}
+
 WPushButton#Seek30[displayValue="0"] {
   background-color: #000033;
   image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;

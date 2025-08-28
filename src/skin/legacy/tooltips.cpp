@@ -1046,6 +1046,9 @@ void Tooltips::addStandardTooltips() {
     add("memory_cue_next")
             << tr("Seek to next Memory Cue");
 
+    add("memory_cue_edit")
+            << tr("Edit the current Memory Cue");
+
     // Effect Unit Controls
     add("EffectUnit_clear")
             << tr("Clear Unit")
