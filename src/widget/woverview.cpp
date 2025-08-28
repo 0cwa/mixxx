@@ -463,6 +463,8 @@ void WOverview::slotNormalizeOrVisualGainChanged() {
 }
 
 void WOverview::updateCues(const QList<CuePointer> &loadedCues) {
+    m_marks.syncMemoryCueMarks(m_group, loadedCues, m_dimBrightThreshold, m_signalColors);
+
     for (const CuePointer& currentCue : loadedCues) {
         const WaveformMarkPointer pMark = m_marks.getHotCueMark(currentCue->getHotCue());
 
