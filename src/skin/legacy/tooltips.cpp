@@ -1047,7 +1047,8 @@ void Tooltips::addStandardTooltips() {
             << tr("Seek to next Memory Cue");
 
     add("memory_cue_edit")
-            << tr("Edit the current Memory Cue");
+            << tr("Edit the current Memory Cue")
+            << tr("Track position must be exactly at a Memory Cue");
 
     // Effect Unit Controls
     add("EffectUnit_clear")

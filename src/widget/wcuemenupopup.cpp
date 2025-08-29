@@ -99,6 +99,18 @@ WCueMenuPopup::WCueMenuPopup(UserSettingsPointer pConfig, QWidget* parent)
     layout()->activate();
 }
 
+void WCueMenuPopup::setDeleteCueVisible(bool visible) {
+    if (m_pDeleteCue) {
+        m_pDeleteCue->setVisible(visible);
+    }
+}
+
+void WCueMenuPopup::setSavedLoopCueVisible(bool visible) {
+    if (m_pSavedLoopCue) {
+        m_pSavedLoopCue->setVisible(visible);
+    }
+}
+
 void WCueMenuPopup::setTrackCueGroup(
         TrackPointer pTrack, const CuePointer& pCue, const QString& group) {
     if (!pTrack || !pCue) {
