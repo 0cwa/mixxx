@@ -25,6 +25,9 @@ void WMemoryCueButton::setup(const QDomNode& node, const SkinContext& context) {
     ColorPaletteSettings colorPaletteSettings(context.getConfig());
     auto colorPalette = colorPaletteSettings.getHotcueColorPalette();
     m_pCueMenuPopup->setColorPalette(colorPalette);
+    // For memory-cue context, hide Delete & Saved-Loop actions.
+    m_pCueMenuPopup->setDeleteCueVisible(false);
+    m_pCueMenuPopup->setSavedLoopCueVisible(false);
 
     // No extra connections: left-click simply opens the popup (handled in mousePressEvent)
 }
