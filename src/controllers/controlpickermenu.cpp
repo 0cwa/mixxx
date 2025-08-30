@@ -996,6 +996,94 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
                 tr("Quick Effect"));
     }
 
+    // Stem Controls
+    QMenu* pStemsMenu = addSubmenu(tr("Stems"));
+    for (int i = 1; i <= iNumDecks; ++i) {
+        QMenu* pThisStemMenu = addSubmenu(tr("Channel %1").arg(i), pStemsMenu);
+        addControl(QString("[Channel%1_Stem1]").arg(i),
+                "mute",
+                tr("Deck %1 Drum Mute Toggle").arg(i),
+                tr("Toggle Drum on and off"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+        addControl(QString("[Channel%1_Stem1]").arg(i),
+                "volume",
+                tr("Deck %1 Drum Volume Knob").arg(i),
+                tr("Change Drum volume"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+
+        addControl(QString("[Channel%1_Stem2]").arg(i),
+                "mute",
+                tr("Deck %1 Bass Mute Toggle").arg(i),
+                tr("Toggle Bass on and off"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+        addControl(QString("[Channel%1_Stem2]").arg(i),
+                "volume",
+                tr("Deck %1 Bass Volume Knob").arg(i),
+                tr("Change Bass volume"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+
+        addControl(QString("[Channel%1_Stem3]").arg(i),
+                "mute",
+                tr("Deck %1 Other Mute Toggle").arg(i),
+                tr("Toggle Other on and off"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+        addControl(QString("[Channel%1_Stem3]").arg(i),
+                "volume",
+                tr("Deck %1 Other Volume Knob").arg(i),
+                tr("Change Other volume"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+
+        addControl(QString("[Channel%1_Stem4]").arg(i),
+                "mute",
+                tr("Deck %1 Vox Mute Toggle").arg(i),
+                tr("Toggle Vox on and off"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+        addControl(QString("[Channel%1_Stem4]").arg(i),
+                "volume",
+                tr("Deck %1 Vox Volume Knob").arg(i),
+                tr("Change Vox volume"),
+                pThisStemMenu,
+                false,
+                tr("Stems"));
+
+    }
+    pStemsMenu->addSeparator();
+
+    // Memory Cue Controls
+    QMenu* pMemoryCueMenu = addSubmenu(tr("Memory Cues"));
+    for (int i = 1; i <= iNumDecks; ++i) {
+        QMenu* pThisMemMenu = addSubmenu(tr("Channel %1").arg(i), pMemoryCueMenu);
+        addControl(QString("[Channel%1]").arg(i),
+                "seek_30s",
+                tr("Deck %1 Next Memory Cue").arg(i),
+                tr("Jump to Next Memory Cue"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+        addControl(QString("[Channel%1]").arg(i),
+                "seek_30Prev",
+                tr("Deck %1 Previous Memory Cue").arg(i),
+                tr("Jump to Previous Memory Cue"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+    }
+    pMemoryCueMenu->addSeparator();
+
     pEffectsMenu->addSeparator();
 
     for (int iEffectUnitNumber = 1; iEffectUnitNumber <= kNumStandardEffectUnits;
