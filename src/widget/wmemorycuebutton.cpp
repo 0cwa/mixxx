@@ -57,8 +57,7 @@ void WMemoryCueButton::mousePressEvent(QMouseEvent* pEvent) {
     const double curPos = playpos * trackSamples;
 
     // Find the memory cue whose start position matches the current position
-    // (using the same epsilon as Seek30Control::clearCurrent).
-    constexpr double kEps = 0.5; // half an engine sample
+    constexpr double kEps = 50000.0; // within about a second with 44khz
     CuePointer pMemoryCue;
     const QList<CuePointer> cues = pTrack->getCuePoints();
     for (const auto& pCue : cues) {
