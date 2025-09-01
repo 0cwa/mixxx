@@ -257,7 +257,7 @@
                       <ButtonState>LeftButton</ButtonState>
                     </Connection>
                     <Connection>
-                      <ConfigKey><Variable name="Group"/>,memory_clear_current</ConfigKey>
+                      <ConfigKey><Variable name="Group"/>,memory_clear_nearest</ConfigKey>
                       <ButtonState>RightButton</ButtonState>
                     </Connection>
                   </PushButton>
