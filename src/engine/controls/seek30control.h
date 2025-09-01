@@ -50,6 +50,7 @@ class Seek30Control final : public EngineControl {
     void clearPrev(double v);
     void clearNext(double v);
     void clearCurrent(double v);
+    void clearNearest(double v);
     void slotSeek30(double v);
     void slotSeek30Prev(double v);
 
@@ -130,6 +131,14 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearNext,
                 Qt::DirectConnection);
 
+        m_pMemoryClearNearest = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_nearest"));
+        m_pMemoryClearNearest->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pMemoryClearNearest.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::clearNearest,
+                Qt::DirectConnection);
+
     }
 
     std::unique_ptr<ControlObject> m_pMemoryCue;
@@ -140,6 +149,7 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearCurrent;
     std::unique_ptr<ControlPushButton> m_pMemoryClearPrev;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
+    std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
     mixxx::audio::SampleRate m_sampleRate;
 
     TrackPointer m_pLoadedTrack; // is written from an engine worker thread

@@ -1081,6 +1081,20 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
                 pThisMemMenu,
                 false,
                 tr("Memory Cues"));
+        addControl(QString("[Channel%1]").arg(i),
+                "memory_create_at_current",
+                tr("Deck %1 Create New Memory Cue").arg(i),
+                tr("Create a new Memory Cue at the current position"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+        addControl(QString("[Channel%1]").arg(i),
+                "memory_clear_nearest",
+                tr("Deck %1 Remove Memory Cue").arg(i),
+                tr("Remove the Memory Cue nearest to the current position"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
     }
     pMemoryCueMenu->addSeparator();
 

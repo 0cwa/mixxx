@@ -1,4 +1,5 @@
 #include <cmath>
+#include <limits>
 #include "engine/controls/seek30control.h"
 #include "track/track.h"
 #include "track/cue.h"
@@ -190,6 +191,51 @@ void Seek30Control::clearNext(double v) {
             m_memoryCues.removeOne(pCue);
             break;
         }
+    }
+}
+
+void Seek30Control::clearNearest(double v) {
+    if (v <= 0 || !m_pLoadedTrack) {
+        return;
+    }
+    if (m_memoryCues.isEmpty()) {
+        return;
+    }
+
+    // Read normalized play position [0..1] and track duration [s].
+    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
+    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
+    if (!std::isfinite(playpos) || !std::isfinite(durationSec) || durationSec <= 0.0) {
+        return; // nothing to do if play position or duration is invalid
+    }
+
+    // Convert to current absolute frame position.
+    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
+    const mixxx::audio::FramePos currentPos(currentFrames);
+    const double curPos = currentPos.toEngineSamplePos();
+
+    // Find the memory cue with the smallest distance to the playhead.
+    CuePointer bestCue;
+    double bestDiff = std::numeric_limits<double>::infinity();
+
+    for (const auto& pCue : m_memoryCues) {
+        if (!pCue) {
+            continue;
+        }
+        const double cuePos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
+        const double diff = std::abs(cuePos - curPos);
+
+        // Prefer smaller diff; on ties, prefer the cue at or behind the playhead.
+        if (diff < bestDiff - 1e-9 ||
+            (std::abs(diff - bestDiff) <= 1e-9 && cuePos <= curPos)) {
+            bestDiff = diff;
+            bestCue = pCue;
+        }
+    }
+
+    if (bestCue) {
+        m_pLoadedTrack->removeCue(bestCue);
+        m_memoryCues.removeOne(bestCue);  // keep cache in sync
     }
 }
 

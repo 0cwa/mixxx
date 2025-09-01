@@ -1038,7 +1038,7 @@ void Tooltips::addStandardTooltips() {
             << tr("Create/delete a new Memory Cue")
             << QString("%1: %2").arg(leftClick, tr("If marker is set, nothing happens."))
             << tr("If marker is not set, a memory cue is created.")
-            << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the marker."));
+            << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the nearest marker."));
 
     add("memory_cue_prev")
             << tr("Seek to previous Memory Cue");
