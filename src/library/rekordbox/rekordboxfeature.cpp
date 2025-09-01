@@ -849,7 +849,7 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
     transaction.commit();
 }
 
-void setHotCue(TrackPointer track,
+void setMemoryCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
         int id,
@@ -878,6 +878,49 @@ void setHotCue(TrackPointer track,
                 Cue::kNoHotCue,
                 startPosition,
                 startPosition);
+    }
+    pCue->setLabel(label);
+    if (color) {
+        pCue->setColor(*color);
+    }
+}
+
+void setHotCue(TrackPointer track,
+        mixxx::audio::FramePos startPosition,
+        mixxx::audio::FramePos endPosition,
+        int id,
+        const QString& label,
+        mixxx::RgbColor::optional_t color) {
+    CuePointer pCue;
+    const QList<CuePointer> cuePoints = track->getCuePoints();
+    for (const CuePointer& trackCue : cuePoints) {
+        if (trackCue->getHotCue() == id) {
+            pCue = trackCue;
+            break;
+        }
+    }
+
+    mixxx::CueType type = mixxx::CueType::HotCue;
+    if (endPosition.isValid()) {
+        type = mixxx::CueType::Loop;
+        // Only looping cues go to hot cues
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        for (const CuePointer& trackCue : cuePoints) {
+            if (trackCue->getHotCue() == id) {
+                pCue = trackCue;
+                break;
+            }
+        }
+    }
+
+    if (pCue) {
+        pCue->setStartAndEndPosition(startPosition, endPosition);
+    } else {
+        pCue = track->createAndAddCue(
+                type,
+                id,
+                startPosition,
+                endPosition);
     }
     pCue->setLabel(label);
     if (color) {
@@ -1122,7 +1165,7 @@ void readAnalyze(TrackPointer track,
                     // and the first one will be loaded as the single loop Mixxx
                     // supports
                     lastHotCueIndex++;
-                    setHotCue(
+                    setMemoryCue(
                             track,
                             memoryCueOrLoop.startPosition,
                             memoryCueOrLoop.endPosition,
