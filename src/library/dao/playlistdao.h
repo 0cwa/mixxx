@@ -76,6 +76,7 @@ class PlaylistDAO : public QObject, public virtual DAO {
     int getPlaylistId(const int index) const;
     QList<TrackId> getTrackIds(const int playlistId) const;
     QList<TrackId> getTrackIdsInPlaylistOrder(const int playlistId) const;
+    QList<TrackId> getAutoDJTrackIds() const;
     // Returns true if the playlist with playlistId is hidden
     bool isHidden(const int playlistId) const;
     // Returns the HiddenType of playlistId
@@ -110,6 +111,10 @@ class PlaylistDAO : public QObject, public virtual DAO {
     bool copyPlaylistTracks(const int sourcePlaylistID, const int targetPlaylistID);
     // Returns the number of tracks in the given playlist.
     int tracksInPlaylist(const int playlistId) const;
+    // This receives a track list that represents the current order (sorted by BPM for example)
+    // and adopts this order for `position` in the playlist.
+    // Returns true on success.
+    void orderTracksByCurrPos(const int playlistId, QList<std::pair<TrackId, int>>& newOrder);
     // moved Track to a new position
     void moveTrack(const int playlistId,
             const int oldPosition, const int newPosition);

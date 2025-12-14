@@ -61,13 +61,6 @@ BaseTrackPlayerImpl::BaseTrackPlayerImpl(
             primaryDeck);
     m_pChannel = channel.get();
 
-    m_pInputConfigured = make_parented<ControlProxy>(getGroup(), "input_configured", this);
-#ifdef __VINYLCONTROL__
-    m_pVinylControlEnabled = make_parented<ControlProxy>(getGroup(), "vinylcontrol_enabled", this);
-    m_pVinylControlEnabled->connectValueChanged(this, &BaseTrackPlayerImpl::slotVinylControlEnabled);
-    m_pVinylControlStatus = make_parented<ControlProxy>(getGroup(), "vinylcontrol_status", this);
-#endif
-
     EngineBuffer* pEngineBuffer = m_pChannel->getEngineBuffer();
     pMixingEngine->addChannel(std::move(channel));
 
@@ -83,6 +76,11 @@ BaseTrackPlayerImpl::BaseTrackPlayerImpl(
             &EngineBuffer::trackLoadFailed,
             this,
             &BaseTrackPlayerImpl::slotLoadFailed);
+    connect(pEngineBuffer,
+            &EngineBuffer::noVinylControlInputConfigured,
+            this,
+            // signal-to-signal
+            &BaseTrackPlayerImpl::noVinylControlInputConfigured);
 
     m_pEject = std::make_unique<ControlPushButton>(ConfigKey(getGroup(), "eject"));
     connect(m_pEject.get(),
@@ -492,6 +490,14 @@ TrackPointer BaseTrackPlayerImpl::unloadTrack() {
 
     m_pPlay->set(0.0);
 
+#ifdef __STEM__
+    if (m_pStemColors.size()) {
+        for (const auto& stemColorCo : m_pStemColors) {
+            stemColorCo->forceSet(kNoTrackColor);
+        }
+    }
+#endif
+
     TrackPointer pUnloadedTrack(std::move(m_pLoadedTrack));
     DEBUG_ASSERT(!m_pLoadedTrack);
     emit trackUnloaded(pUnloadedTrack);
@@ -723,19 +729,17 @@ void BaseTrackPlayerImpl::slotTrackLoaded(TrackPointer pNewTrack,
         }
 
 #ifdef __STEM__
-        if (m_pStemColors.size()) {
-            const auto& stemInfo = m_pLoadedTrack->getStemInfo();
-            DEBUG_ASSERT(stemInfo.size() <= mixxx::kMaxSupportedStems);
-            int stemIdx = 0;
-            for (const auto& stemColorCo : m_pStemColors) {
-                auto color = kNoTrackColor;
-                if (stemIdx < stemInfo.size()) {
-                    color = trackColorToDouble(mixxx::RgbColor::fromQColor(
-                            stemInfo.at(stemIdx).getColor()));
-                }
-                stemColorCo->forceSet(color);
-                stemIdx++;
+        const auto& stemInfo = pNewTrack->getStemInfo();
+        DEBUG_ASSERT(!m_pChannel->isPrimaryDeck() || stemInfo.empty() ||
+                static_cast<size_t>(stemInfo.size()) == m_pStemColors.size());
+
+        for (size_t stemIdx = 0; stemIdx < m_pStemColors.size(); stemIdx++) {
+            auto color = kNoTrackColor;
+            if (stemIdx < static_cast<size_t>(stemInfo.size())) {
+                color = trackColorToDouble(mixxx::RgbColor::fromQColor(
+                        stemInfo.at(stemIdx).getColor()));
             }
+            m_pStemColors[stemIdx]->forceSet(color);
         }
 #endif
 
@@ -806,7 +810,7 @@ void BaseTrackPlayerImpl::slotCloneChannel(EngineChannel* pChannel) {
     bool play = ControlObject::toBool(ConfigKey(m_pChannelToCloneFrom->getGroup(), "play"));
     slotLoadTrack(pTrack,
 #ifdef __STEM__
-            mixxx::StemChannelSelection(),
+            pChannel->getEngineBuffer()->getStemMask(),
 #endif
             play);
 }
@@ -988,23 +992,6 @@ void BaseTrackPlayerImpl::setupEqControls() {
             group, QStringLiteral("button_parameter2"), this);
     m_pHighFilterKill = make_parented<ControlProxy>(
             group, QStringLiteral("button_parameter3"), this);
-}
-
-void BaseTrackPlayerImpl::slotVinylControlEnabled(double v) {
-#ifdef __VINYLCONTROL__
-    bool configured = m_pInputConfigured->toBool();
-    bool vinylcontrol_enabled = v > 0.0;
-
-    // Warn the user if they try to enable vinyl control on a player with no
-    // configured input.
-    if (!configured && vinylcontrol_enabled) {
-        m_pVinylControlEnabled->set(0.0);
-        m_pVinylControlStatus->set(VINYL_STATUS_DISABLED);
-        emit noVinylControlInputConfigured();
-    }
-#else
-    Q_UNUSED(v);
-#endif
 }
 
 void BaseTrackPlayerImpl::slotWaveformZoomValueChangeRequest(double v) {

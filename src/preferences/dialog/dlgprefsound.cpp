@@ -83,7 +83,8 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
           m_settingsModified(false),
           m_bLatencyChanged(false),
           m_bSkipConfigClear(true),
-          m_loading(false) {
+          m_loading(false),
+          m_configValid(true) {
     setupUi(this);
     // Create text color for the wiki links
     createLinkColor();
@@ -326,6 +327,13 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
                             m_pLinkColor,
                             tr("Mixxx DJ Hardware Guide"),
                             MIXXX_WIKI_HARDWARE_COMPATIBILITY_URL)));
+
+    QString deckBusHintStr = deckBusHint->text();
+    deckBusHintStr += " " +
+            coloredLinkString(m_pLinkColor,
+                    tr("Find details in the Mixxx user manual"),
+                    MIXXX_MANUAL_OUTPUT_AND_INPUT_DEVICES);
+    deckBusHint->setText(deckBusHintStr);
 }
 
 /// Slot called when the preferences dialog is opened.
@@ -379,6 +387,7 @@ void DlgPrefSound::slotApply() {
         }
 #endif
         status = m_pSoundManager->setConfig(m_config);
+        m_configValid = (status == SoundDeviceStatus::Ok);
     }
     if (status != SoundDeviceStatus::Ok) {
         QString error = m_pSoundManager->getLastErrorMessage(status);
@@ -1071,4 +1080,8 @@ void DlgPrefSound::checkLatencyCompensation() {
         latencyCompensationSpinBox->setEnabled(false);
         latencyCompensationWarningLabel->hide();
     }
+}
+
+bool DlgPrefSound::okayToClose() const {
+    return m_configValid;
 }

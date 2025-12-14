@@ -170,6 +170,11 @@ QList<TrackId> PlaylistDAO::getTrackIdsInPlaylistOrder(const int playlistId) con
     return trackIds;
 }
 
+QList<TrackId> PlaylistDAO::getAutoDJTrackIds() const {
+    const int iAutoDJPlaylistId = getPlaylistIdFromName(AUTODJ_TABLE);
+    return getTrackIds(iAutoDJPlaylistId);
+}
+
 int PlaylistDAO::getPlaylistIdFromName(const QString& name) const {
     //qDebug() << "PlaylistDAO::getPlaylistIdFromName" << QThread::currentThread() << m_database.connectionName();
 
@@ -674,9 +679,16 @@ void PlaylistDAO::removeHiddenTracks(const int playlistId) {
         return;
     }
 
+    bool anyTracksRemoved = false;
     while (query.next()) {
         int position = query.value(query.record().indexOf("position")).toInt();
         removeTracksFromPlaylistInner(playlistId, position);
+        anyTracksRemoved = true;
+    }
+
+    // Avoid no-op select() if we didn't remove any tracks
+    if (!anyTracksRemoved) {
+        return;
     }
 
     transaction.commit();
@@ -1114,6 +1126,45 @@ int PlaylistDAO::tracksInPlaylist(const int playlistId) const {
         count = query.value(countColumn).toInt();
     }
     return count;
+}
+
+void PlaylistDAO::orderTracksByCurrPos(const int playlistId,
+        QList<std::pair<TrackId, int>>& newOrder) {
+    if (newOrder.isEmpty() ||
+            playlistId == kInvalidPlaylistId ||
+            isPlaylistLocked(playlistId) ||
+            newOrder.size() != tracksInPlaylist(playlistId)) {
+        return;
+    }
+
+    ScopedTransaction transaction(m_database);
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+            "UPDATE PlaylistTracks "
+            "SET position=:new_pos "
+            "WHERE position=:old_pos AND "
+            "track_id=:track_id AND "
+            "playlist_id=:pl_id"));
+    int newPos = 1;
+    for (auto [trackId, oldPos] : newOrder) {
+        VERIFY_OR_DEBUG_ASSERT(trackId.isValid()) {
+            return;
+        }
+        query.bindValue(":new_pos", newPos++);
+        query.bindValue(":old_pos", oldPos);
+        query.bindValue(":track_id", trackId.toVariant());
+        query.bindValue(":pl_id", playlistId);
+        if (!query.exec()) {
+            // We temporarily have duplicate positions, so abort the entire operation
+            // to not leave the playlist with an invalid state.
+            LOG_FAILED_QUERY(query);
+            return;
+        }
+    }
+
+    transaction.commit();
+
+    emit tracksMoved(QSet<int>{playlistId});
 }
 
 void PlaylistDAO::moveTrack(const int playlistId, const int oldPosition, const int newPosition) {

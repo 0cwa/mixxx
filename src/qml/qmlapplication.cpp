@@ -1,14 +1,18 @@
 #include "qmlapplication.h"
 
+#include <qtextdocument.h>
+
 #include <QQmlEngineExtensionPlugin>
 #include <QQuickStyle>
 
 #include "controllers/controllermanager.h"
 #include "mixer/playermanager.h"
 #include "moc_qmlapplication.cpp"
+#include "preferences/configobject.h"
 #include "qml/asyncimageprovider.h"
 #include "qml/qmldlgpreferencesproxy.h"
 #include "soundio/soundmanager.h"
+#include "util/versionstore.h"
 #include "waveform/visualsmanager.h"
 #include "waveform/waveformwidgetfactory.h"
 Q_IMPORT_QML_PLUGIN(MixxxPlugin)
@@ -42,6 +46,36 @@ QmlApplication::QmlApplication(
     QQuickStyle::setStyle("Basic");
 
     m_pCoreServices->initialize(app);
+
+    QString configVersion = m_pCoreServices->getSettings()->getValue(
+            ConfigKey("[Config]", "Version"), "");
+    if (configVersion == VersionStore::FUTURE_UNSTABLE) {
+        qDebug() << "Generating a new user profile for safe testing with unstable code";
+    } else if (CmdlineArgs::Instance().isAwareOfRisk()) {
+        qCritical() << "Existing user profile detected from" << configVersion
+                    << "but you said you wanted to play with fire!";
+        m_pCoreServices->getSettings()->setValue(
+                ConfigKey("[Config]", "did_run_with_unstable"), true);
+    } else {
+        QMessageBox msgBox;
+        msgBox.setIcon(QMessageBox::Critical);
+        msgBox.setWindowTitle(tr("Existing user profile detected"));
+        msgBox.setText(
+                tr("Trying to run Mixxx 3.0 with an existing %0 user profile! "
+                   "<br><br>There is <b>serious risks</b> of data loss and "
+                   "corruption.<br>We recommend using a test profile folder "
+                   "with the '--settings-path' argument. <br><br>If you want "
+                   "to continue at your own risk, run Mixxx with the argument "
+                   "'--allow-dangerous-data-corruption-risk'.")
+                        .arg(configVersion));
+
+        QPushButton* continueButton =
+                msgBox.addButton(tr("Ok"), QMessageBox::ActionRole);
+        msgBox.exec();
+        m_pCoreServices.reset();
+        exit(-1);
+    }
+
     SoundDeviceStatus result = m_pCoreServices->getSoundManager()->setupDevices();
     if (result != SoundDeviceStatus::Ok) {
         const int reInt = static_cast<int>(result);
@@ -61,16 +95,6 @@ QmlApplication::QmlApplication(
     // follows a strict singleton pattern design
     QmlDlgPreferencesProxy::s_pInstance =
             std::make_unique<QmlDlgPreferencesProxy>(pDlgPreferences, this);
-    loadQml(m_mainFilePath);
-
-    m_pCoreServices->getControllerManager()->setUpDevices();
-
-    connect(&m_autoReload,
-            &QmlAutoReload::triggered,
-            this,
-            [this]() {
-                loadQml(m_mainFilePath);
-            });
 
     const QStringList visualGroups =
             m_pCoreServices->getPlayerManager()->getVisualPlayerGroups();
@@ -87,6 +111,16 @@ QmlApplication::QmlApplication(
                     QString group = PlayerManager::groupForDeck(i);
                     m_visualsManager->addDeckIfNotExist(group);
                 }
+            });
+    loadQml(m_mainFilePath);
+
+    m_pCoreServices->getControllerManager()->setUpDevices();
+
+    connect(&m_autoReload,
+            &QmlAutoReload::triggered,
+            this,
+            [this]() {
+                loadQml(m_mainFilePath);
             });
 }
 

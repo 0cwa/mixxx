@@ -176,6 +176,7 @@ void DlgPrefLibrary::slotShow() {
 }
 
 void DlgPrefLibrary::slotHide() {
+    resetLibraryFont();
     if (!m_bAddedDirectory) {
         return;
     }
@@ -355,6 +356,7 @@ void DlgPrefLibrary::slotUpdate() {
             kEnableSearchHistoryShortcutsConfigKey,
             WSearchLineEdit::kHistoryShortcutsEnabledDefault));
 
+    // Library reads font from config during construction
     m_originalTrackTableFont = m_pLibrary->getTrackTableFont();
     m_iOriginalTrackTableRowHeight = m_pLibrary->getTrackTableRowHeight();
     spinBox_row_height->setValue(m_iOriginalTrackTableRowHeight);
@@ -391,6 +393,10 @@ void DlgPrefLibrary::slotUpdate() {
 }
 
 void DlgPrefLibrary::slotCancel() {
+    resetLibraryFont();
+}
+
+void DlgPrefLibrary::resetLibraryFont() {
     // Undo any changes in the library font or row height.
     m_pLibrary->setFont(m_originalTrackTableFont);
     m_pLibrary->setRowHeight(m_iOriginalTrackTableRowHeight);
@@ -582,12 +588,14 @@ void DlgPrefLibrary::slotApply() {
     if (m_originalTrackTableFont != font) {
         m_pConfig->set(ConfigKey("[Library]", "Font"),
                        ConfigValue(font.toString()));
+        m_originalTrackTableFont = font;
     }
 
     int rowHeight = spinBox_row_height->value();
     if (m_iOriginalTrackTableRowHeight != rowHeight) {
         m_pConfig->set(ConfigKey("[Library]","RowHeight"),
                        ConfigValue(rowHeight));
+        m_iOriginalTrackTableRowHeight = rowHeight;
     }
 
     BaseTrackTableModel::setApplyPlayedTrackColor(
@@ -605,11 +613,39 @@ void DlgPrefLibrary::slotRowHeightValueChanged(int height) {
 }
 
 void DlgPrefLibrary::setLibraryFont(const QFont& font) {
-    lineEdit_library_font->setText(
-            QString("%1 %2 %3pt")
-                    .arg(font.family(),
-                            font.styleName(),
-                            QString::number(font.pointSizeF())));
+    // Update the font name/style/size display
+    QString fontDescription = font.family();
+    const QString style = font.styleName();
+    if (!style.isEmpty()) {
+        // Use the style name if available, likely it's translated
+        fontDescription += ' ' + style;
+    } else {
+        // Else we compose the "style" string from weight and italic.
+        // It's not possible to access the translations used in QFontDialog,
+        // but let's can add them to the user translations
+        const auto weight = font.weight();
+        if (weight >= QFont::Bold) {
+            if (weight >= QFont::Black) {
+                fontDescription += ' ' + tr("Black");
+            } else if (weight >= QFont::ExtraBold) {
+                fontDescription += ' ' + tr("ExtraBold");
+            } else if (weight >= QFont::Bold) {
+                fontDescription += ' ' + tr("Bold");
+            }
+        } else if (weight >= QFont::DemiBold) {
+            fontDescription += ' ' + tr("SemiBold");
+        } else if (weight >= QFont::Medium) {
+            fontDescription += ' ' + tr("Medium");
+        } else if (weight >= QFont::Normal) {
+            // Skip "Normal" as it's implied
+        } else {
+            fontDescription += ' ' + tr("Light");
+        }
+    }
+    fontDescription += ' ' + QString::number(font.pointSizeF()) + QStringLiteral("pt");
+    lineEdit_library_font->setText(fontDescription);
+
+    // Apply the font
     m_pLibrary->setFont(font);
 
     // Don't let the font height exceed the row height.

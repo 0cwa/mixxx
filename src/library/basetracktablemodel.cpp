@@ -240,6 +240,14 @@ QVariant BaseTrackTableModel::headerData(
             }
             break;
         }
+        case Qt::TextAlignmentRole: {
+            // Get the headers default alignment and replace any potential v-align
+            // flags with AlignVCenter (it just looks better with latin fonts)
+            QVariant alignVar = QAbstractTableModel::headerData(section, orientation, role);
+            Qt::Alignment alignment = alignVar.value<Qt::Alignment>();
+            alignment = (alignment & ~Qt::AlignVertical_Mask) | Qt::AlignVCenter;
+            return QVariant::fromValue(alignment);
+        }
         default:
             break;
         }
@@ -862,7 +870,8 @@ QVariant BaseTrackTableModel::roleValue(
         case ColumnCache::COLUMN_LIBRARYTABLE_BPM:
         case ColumnCache::COLUMN_LIBRARYTABLE_DURATION:
         case ColumnCache::COLUMN_LIBRARYTABLE_BITRATE:
-        case ColumnCache::COLUMN_LIBRARYTABLE_TRACKNUMBER: {
+        case ColumnCache::COLUMN_LIBRARYTABLE_TRACKNUMBER:
+        case ColumnCache::COLUMN_LIBRARYTABLE_REPLAYGAIN: {
             // We need to cast to int due to a bug similar to
             // https://bugreports.qt.io/browse/QTBUG-67582
             return static_cast<int>(Qt::AlignVCenter | Qt::AlignRight);
