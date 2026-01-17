@@ -85,6 +85,7 @@ class WaveformMark {
 
     // The m_pPositionCO related function
     bool isValid() const {
+        if(m_pPosition > 0.f) return true;
         return m_pPositionCO && m_pPositionCO->valid();
     }
 
@@ -98,6 +99,9 @@ class WaveformMark {
             m_pEndPositionCO->connectValueChanged(receiver, slot, Qt::AutoConnection);
         }
     };
+    void setSamplePosition(double newPos) {
+        m_pPosition = newPos;
+    }
     template<typename Receiver, typename Slot>
     void connectTypeChanged(Receiver receiver, Slot slot) const {
         if (m_typeCO) {
@@ -112,7 +116,10 @@ class WaveformMark {
     };
 
     double getSamplePosition() const {
-        return m_pPositionCO->get();
+        double coPos = m_pPositionCO->get();
+        if(coPos < 0.f) return coPos;
+        if(coPos == 0.f) return m_pPosition;
+        return coPos;
     }
     bool isJump() const {
         return m_typeCO &&
@@ -265,6 +272,7 @@ class WaveformMark {
             const QString& iconPath);
 
     std::unique_ptr<ControlProxy> m_pPositionCO;
+    double m_pPosition;
     std::unique_ptr<ControlProxy> m_pEndPositionCO;
     std::unique_ptr<ControlProxy> m_pVisibleCO;
     std::unique_ptr<ControlProxy> m_typeCO;

@@ -109,6 +109,13 @@ class WaveformMarkSet {
         m_marks.push_back(pMark);
     }
 
+    // Build non-hotcue marks (e.g. CueType::Memory) from cues.
+    // Replaces previously created memory marks.
+    void syncMemoryCueMarks(const QString& group,
+            const QList<CuePointer>& cues,
+            int dimBrightThreshold,
+            const WaveformSignalColors& signalColors);
+
     void setDefault(const QString& group,
             const DefaultMarkerStyle& model,
             const WaveformSignalColors& signalColors = {});
@@ -120,6 +127,9 @@ class WaveformMarkSet {
     QList<WaveformMarkPointer> m_marksToRender;
 
     QMap<int, WaveformMarkPointer> m_hotCueMarks;
+
+    // Ephemeral, CO-unbacked marks for memory cues.
+    QList<WaveformMarkPointer> m_memoryCueMarks;
 
     DISALLOW_COPY_AND_ASSIGN(WaveformMarkSet);
 };

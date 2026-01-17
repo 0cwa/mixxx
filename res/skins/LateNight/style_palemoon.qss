@@ -1965,6 +1965,52 @@ WPushButton#Blank[value="4"] {
   background-color: transparent;
 }
 
+#MemoryCues WPushButton[displayValue="0"]{
+  border: 1px solid #111;
+}
+
+WMemoryCueButton#MemoryCueEdit[displayValue="0"] {
+  background-color: #3e4014;
+  image: url(skins:LateNight/palemoon/buttons/btn__pencil.svg) no-repeat center center;
+}
+
+WPushButton#Seek30[displayValue="0"] {
+  background-color: #000033;
+  image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;
+}
+WPushButton#Seek30[displayValue="0"]:hover {
+  background-color: #111133;
+}
+WPushButton#Seek30Prev[displayValue="0"] {
+  background-color: #000033;
+  image: url(skins:LateNight/palemoon/buttons/btn__reverse.svg) no-repeat center center;
+}
+WPushButton#Seek30Prev[displayValue="0"]:hover {
+  background-color: #111133;
+}
+
+WPushButton#MemoryCreateAtCurrent[displayValue="0"] {
+  background-color: #003300;
+  image: url(skins:LateNight/palemoon/buttons/btn__plus.svg) no-repeat center center;
+}
+WPushButton#MemoryCreateAtCurrent[displayValue="0"]:hover {
+  background-color: #113311;
+}
+
+WPushButton#MemoryClearPrev[displayValue="0"] {
+  background-color: #330000;
+  image: url(skins:LateNight/palemoon/buttons/btn__reverse.svg) no-repeat center center;
+}
+WPushButton#MemoryClearNext[displayValue="0"] {
+  background-color: #330000;
+  image: url(skins:LateNight/palemoon/buttons/btn__play_sampler.svg) no-repeat center center;
+}
+WPushButton#MemoryClearPrev[displayValue="0"]:hover {
+  background-color: #331111;
+}
+WPushButton#MemoryClearNext[displayValue="0"]:hover {
+  background-color: #331111;
+}
 
 
 /************** Button icons **************************************************/
@@ -2592,6 +2638,24 @@ WPushButton#PlayDeck[value="0"] {
   }
   #FxFocusButton[value="1"] {
     image: url(skins:LateNight/palemoon/buttons/btn__fx_focus_active.svg) no-repeat center center;
+  }
+#ToggleDownbeatsMarker[value="1"] {
+  image: url(skin:/palemoon/buttons/btn__show_down_beats_marker.svg) no-repeat center center;
+  }
+#ToggleDownbeatsMarker[value="0"] {
+    image: url(skin:/palemoon/buttons/btn__hide_down_beats_marker.svg) no-repeat center center;
+  }
+#BeatsForwardDownBeatsMarker[displayValue="0"] {
+  image: url(skin:/palemoon/buttons/btn__forward_down_beats_marker.svg) no-repeat center center;
+  }
+#BeatsForwardDownBeatsMarker[pressed="true"] {
+    image: url(skin:/palemoon/buttons/btn__forward_down_beats_marker_active.svg) no-repeat center center;
+  }
+#BeatsBackwardDownBeatsMarker[displayValue="0"] {
+  image: url(skin:/palemoon/buttons/btn__backward_down_beats_marker.svg) no-repeat center center;
+  }
+#BeatsBackwardDownBeatsMarker[pressed="true"] {
+    image: url(skin:/palemoon/buttons/btn__backward_down_beats_marker_active.svg) no-repeat center center;
   }
 
 /* deck controls for decks 1-4 and samplers */

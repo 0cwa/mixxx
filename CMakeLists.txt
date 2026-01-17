@@ -1323,6 +1323,7 @@ add_library(
   src/engine/controls/bpmcontrol.cpp
   src/engine/controls/clockcontrol.cpp
   src/engine/controls/cuecontrol.cpp
+  src/engine/controls/seek30control.cpp
   src/engine/controls/enginecontrol.cpp
   src/engine/controls/keycontrol.cpp
   src/engine/controls/loopingcontrol.cpp
@@ -1760,6 +1761,7 @@ add_library(
   src/widget/weffectselector.cpp
   src/widget/wfindonwebmenu.cpp
   src/widget/whotcuebutton.cpp
+  src/widget/wmemorycuebutton.cpp
   src/widget/wimagestore.cpp
   src/widget/wkey.cpp
   src/widget/wknob.cpp
@@ -2007,6 +2009,9 @@ if(QOPENGL)
       src/waveform/renderers/allshader/matrixforwidgetgeometry.cpp
       src/waveform/renderers/allshader/waveformrenderbackground.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererslipmode.cpp
@@ -3867,6 +3872,9 @@ if(QML)
       src/qml/qmlpreferencesproxy.cpp
       src/waveform/renderers/allshader/digitsrenderer.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp

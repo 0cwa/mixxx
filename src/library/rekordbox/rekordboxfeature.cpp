@@ -835,6 +835,42 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
     transaction.commit();
 }
 
+void setMemoryCue(TrackPointer track,
+        mixxx::audio::FramePos startPosition,
+        mixxx::audio::FramePos endPosition,
+        int id,
+        const QString& label,
+        mixxx::RgbColor::optional_t color) {
+    CuePointer pCue;
+
+    mixxx::CueType type = mixxx::CueType::Memory;
+    if (endPosition.isValid()) {
+        type = mixxx::CueType::Loop;
+        // Only looping cues go to hot cues
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        for (const CuePointer& trackCue : cuePoints) {
+            if (trackCue->getHotCue() == id) {
+                pCue = trackCue;
+                break;
+            }
+        }
+    }
+
+    if (pCue) {
+        pCue->setStartAndEndPosition(startPosition, endPosition);
+    } else {
+        pCue = track->createAndAddCue(
+                type,
+                Cue::kNoHotCue,
+                startPosition,
+                startPosition);
+    }
+    pCue->setLabel(label);
+    if (color) {
+        pCue->setColor(*color);
+    }
+}
+
 void setHotCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
@@ -853,6 +889,14 @@ void setHotCue(TrackPointer track,
     mixxx::CueType type = mixxx::CueType::HotCue;
     if (endPosition.isValid()) {
         type = mixxx::CueType::Loop;
+        // Only looping cues go to hot cues
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        for (const CuePointer& trackCue : cuePoints) {
+            if (trackCue->getHotCue() == id) {
+                pCue = trackCue;
+                break;
+            }
+        }
     }
 
     if (pCue) {
@@ -1061,33 +1105,22 @@ void readAnalyze(TrackPointer track,
                 [](const memory_cue_loop_t& a, const memory_cue_loop_t& b)
                         -> bool { return a.startPosition < b.startPosition; });
 
-        bool mainCueFound = false;
-
         // Add memory cues and loops
         for (int memoryCueOrLoopIndex = 0;
                 memoryCueOrLoopIndex < memoryCuesAndLoops.size();
                 memoryCueOrLoopIndex++) {
             memory_cue_loop_t memoryCueOrLoop = memoryCuesAndLoops[memoryCueOrLoopIndex];
 
-            if (!mainCueFound && !memoryCueOrLoop.endPosition.isValid()) {
-                // Set first chronological memory cue as Mixxx MainCue
-                track->setMainCuePosition(memoryCueOrLoop.startPosition);
-                CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
-                pMainCue->setLabel(memoryCueOrLoop.comment);
-                pMainCue->setColor(*memoryCueOrLoop.color);
-                mainCueFound = true;
-            } else {
-                // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
-                // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
-                lastHotCueIndex++;
-                setHotCue(
-                        track,
-                        memoryCueOrLoop.startPosition,
-                        memoryCueOrLoop.endPosition,
-                        lastHotCueIndex,
-                        memoryCueOrLoop.comment,
-                        memoryCueOrLoop.color);
-            }
+            // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
+            // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
+            lastHotCueIndex++;
+            setMemoryCue(
+                    track,
+                    memoryCueOrLoop.startPosition,
+                    memoryCueOrLoop.endPosition,
+                    lastHotCueIndex,
+                    memoryCueOrLoop.comment,
+                    memoryCueOrLoop.color);
         }
     }
 }
