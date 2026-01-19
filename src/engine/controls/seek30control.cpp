@@ -216,7 +216,7 @@ void Seek30Control::clearNearest(double v) {
 
     // Find the memory cue with the smallest distance to the playhead.
     CuePointer bestCue;
-    double bestDiff = std::numeric_limits<double>::infinity();
+    double bestDiff = std::numeric_limits<double>::max() / 2.0;
 
     for (const auto& pCue : m_memoryCues) {
         if (!pCue) {
