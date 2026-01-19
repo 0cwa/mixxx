@@ -1,5 +1,5 @@
 ---
-# Common configuration for all languages
+# Common configuration for all languagess
 BasedOnStyle: Google
 IndentWidth: 4
 TabWidth: 8
