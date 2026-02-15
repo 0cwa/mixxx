@@ -4648,11 +4648,18 @@ if(BUNGEE)
   )
 
   # BUNGEE_VISIBILITY needs special handling due to parentheses
-  target_compile_options(bungee
-    PRIVATE
-      $<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>
-      "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
-  )
+  if(NOT MSVC)
+    target_compile_options(bungee
+      PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>
+        "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
+    )
+  else()
+    target_compile_definitions(bungee
+      PRIVATE
+        BUNGEE_VISIBILITY=__declspec(dllexport)
+    )
+  endif()
 
   set_source_files_properties(lib/bungee/src/version.cpp PROPERTIES
     COMPILE_DEFINITIONS BUNGEE_VERSION=\"0.0.0\"
