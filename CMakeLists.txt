@@ -4598,12 +4598,17 @@ if(BUNGEE)
     lib/bungee/submodules/pffft/pffft.c
     lib/bungee/submodules/pffft/fftpack.c
   )
-  target_compile_options(bungee-pffft
-    PRIVATE
-      -ffast-math
-      -fno-finite-math-only
-      -fno-exceptions
-  )
+  if(NOT MSVC)
+    target_compile_options(bungee-pffft
+      PRIVATE
+        -ffast-math
+        -fno-finite-math-only
+        -fno-exceptions
+    )
+  endif()
+  if(MSVC)
+    target_compile_definitions(bungee-pffft PRIVATE _USE_MATH_DEFINES)
+  endif()
 
   # Bungee library - built from source files in lib/bungee
   # This allows easy updates: just cd lib/bungee && git pull
