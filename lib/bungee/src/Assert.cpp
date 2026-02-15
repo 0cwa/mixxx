@@ -6,7 +6,9 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#ifdef BUNGEE_PETRIFY
 #include <unistd.h>
+#endif
 
 namespace Bungee::Assert {
 
