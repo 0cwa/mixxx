@@ -4600,10 +4600,14 @@ if(BUNGEE)
   )
   target_compile_options(bungee-pffft
     PRIVATE
-      -ffast-math
-      -fno-finite-math-only
-      -fno-exceptions
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-ffast-math>
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-finite-math-only>
+      $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-exceptions>
   )
+
+  if(MSVC)
+    target_compile_definitions(bungee-pffft PRIVATE _USE_MATH_DEFINES)
+  endif()
 
   # Bungee library - built from source files in lib/bungee
   # This allows easy updates: just cd lib/bungee && git pull
