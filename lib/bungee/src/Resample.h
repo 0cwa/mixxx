@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Assert.h"
+#include "Platform.h"
 
 #include "bungee/Bungee.h"
 #include "bungee/Modes.h"
@@ -158,7 +159,7 @@ template <class Interpolation, class Mode>
 struct Loop
 {
 	template <bool ratioIsConstant>
-	static __attribute__((noinline)) void run(RatioState<ratioIsConstant> &ratioState, Internal &internal, External external) // const & ext
+	static BUNGEE_NOINLINE void run(RatioState<ratioIsConstant> &ratioState, Internal &internal, External external) // const & ext
 	{
 		const Assert::FloatingPointExceptions floatingPointExceptions(FE_INEXACT | FE_UNDERFLOW);
 
