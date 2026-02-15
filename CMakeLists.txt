@@ -4651,8 +4651,13 @@ if(BUNGEE)
   target_compile_options(bungee
     PRIVATE
       $<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>
-      "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
   )
+  if(NOT MSVC)
+    target_compile_options(bungee
+      PRIVATE
+        "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
+    )
+  endif()
 
   set_source_files_properties(lib/bungee/src/version.cpp PROPERTIES
     COMPILE_DEFINITIONS BUNGEE_VERSION=\"0.0.0\"

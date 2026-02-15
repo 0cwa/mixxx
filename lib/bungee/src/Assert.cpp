@@ -6,7 +6,12 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace Bungee::Assert {
 
@@ -59,9 +64,15 @@ struct Petrification
 	static void petrify(int signalNumber)
 	{
 		psignal(signalNumber, "Bungee petrified");
+#ifdef _WIN32
+		fprintf(stderr, "Bungee PID=%d\n", _getpid());
+		while (true)
+			Sleep(1000);
+#else
 		fprintf(stderr, "Bungee PID=%d\n", getpid());
 		while (true)
 			sleep(1);
+#endif
 	}
 
 	Petrification()
