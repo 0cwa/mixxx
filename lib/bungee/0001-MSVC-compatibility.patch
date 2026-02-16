@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mixxx Developers <mixxx-devel@lists.sourceforge.net>
+Date: Mon, 16 Feb 2025 00:00:00 +0000
+Subject: [PATCH] MSVC compatibility
+
+Add MSVC compatibility for the Bungee library:
+- Create Platform.h with BUNGEE_NOINLINE macro for MSVC/GCC/Clang
+- Use BUNGEE_NOINLINE in Resample.h instead of __attribute__((noinline))
+- Use Windows headers in Assert.cpp instead of unistd.h
+
+---
+ src/Assert.cpp | 4 +++-
+ src/Platform.h | 18 ++++++++++++++++++
+ src/Resample.h | 2 +-
+ 3 files changed, 22 insertions(+), 2 deletions(-)
+ create mode 100644 src/Platform.h
+
+diff --git a/src/Assert.cpp b/src/Assert.cpp
+index 1111111..2222222 100644
+--- a/src/Assert.cpp
++++ b/src/Assert.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "Assert.h"
+ 
++#ifdef _WIN32
++#include <process.h>
++#else
+ #include <unistd.h>
++#endif
+ 
+ #include <csignal>
+diff --git a/src/Platform.h b/src/Platform.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/Platform.h
+@@ -0,0 +1,18 @@
++// Copyright (C) 2020-2026 Parabola Research Limited
++// SPDX-License-Identifier: MPL-2.0
++
++#pragma once
++
++// Platform-specific compiler attributes
++
++#ifdef _MSC_VER
++    #define BUNGEE_NOINLINE __declspec(noinline)
++#elif defined(__GNUC__) || defined(__clang__)
++    #define BUNGEE_NOINLINE __attribute__((noinline))
++#else
++    #define BUNGEE_NOINLINE
++#endif
+diff --git a/src/Resample.h b/src/Resample.h
+index 3333333..4444444 100644
+--- a/src/Resample.h
++++ b/src/Resample.h
+@@ -4,6 +4,8 @@
+ 
+ #pragma once
+ 
++#include "Platform.h"
++
+ #include "Assert.h"
+ 
+ #include "bungee/Bungee.h"
+@@ -157,7 +159,7 @@ template <class Interpolation, class Mode>
+ struct Loop
+ {
+ 	template <bool ratioIsConstant>
+-	static __attribute__((noinline)) void run(RatioState<ratioIsConstant> &ratioState, Internal &internal, External external) // const & ext
++	static BUNGEE_NOINLINE void run(RatioState<ratioIsConstant> &ratioState, Internal &internal, External external) // const & ext
+ 	{
+ 		const Assert::FloatingPointExceptions floatingPointExceptions(FE_INEXACT | FE_UNDERFLOW);
+ 
+-- 
+2.39.5
