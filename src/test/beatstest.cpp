@@ -579,7 +579,7 @@ TEST(BeatsTest, IteratorFromCeilOvershoot) {
     const auto bpm = Bpm(60.1);
     constexpr int kBeatOffset = 49;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = beatPos;
 
@@ -594,7 +594,7 @@ TEST(BeatsTest, IteratorFromCeilUndershoot) {
     const auto bpm = Bpm(127.0);
     constexpr int kBeatOffset = 11;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = audio::FramePos(
             std::nextafter(beatPos.value(),
@@ -611,7 +611,7 @@ TEST(BeatsTest, IteratorFromFloorOvershoot) {
     const auto bpm = Bpm(60.1);
     constexpr int kBeatOffset = -7;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = beatPos;
 
@@ -626,7 +626,7 @@ TEST(BeatsTest, IteratorFromFloorUndershoot) {
     const auto bpm = Bpm(60.0);
     constexpr int kBeatOffset = -1;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = audio::FramePos(
             std::nextafter(beatPos.value(),
