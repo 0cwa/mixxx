@@ -459,7 +459,7 @@ void allshader::WaveformRenderMark::update() {
 
     if (m_untilMarkShowBeats || m_untilMarkShowTime) {
         updateUntilMark(playPosition, nextMarkPosition);
-        updateDigitsNodeForUntilMark(roundToPixel(playMarkerPos + 20.f));
+        updateDigitsNodeForUntilMark(roundToPixel(playMarkerPos - 20.f));
     } else {
         m_pDigitsRenderNode->clear();
     }
@@ -502,7 +502,7 @@ void allshader::WaveformRenderMark::updateDigitsNodeForUntilMark(float x) {
             x,
             y,
             multiLine,
-            m_untilMarkShowBeats ? QString::number(m_beatsUntilMark) : QString{},
+            m_untilMarkShowBeats ? QString("%1.%2").arg(m_beatsUntilMark / 4).arg(m_beatsUntilMark % 4) : QString{},
             m_untilMarkShowTime ? timeSecToString(m_timeUntilMark) : QString{});
 }
 

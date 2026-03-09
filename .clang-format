@@ -1,4 +1,4 @@
----
+----
 # Common configuration for all languages
 BasedOnStyle: Google
 IndentWidth: 4

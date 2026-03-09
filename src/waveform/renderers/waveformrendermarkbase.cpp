@@ -62,6 +62,14 @@ void WaveformRenderMarkBase::updateMarksFromCues() {
         return;
     }
 
+    // First build fixed-position marks for Memory cues
+    // (these are not hotcues and have no CO to bind to).
+    m_marks.syncMemoryCueMarks(
+            m_waveformRenderer->getGroup(),
+            pTrackInfo->getCuePoints(),
+            m_waveformRenderer->getDimBrightThreshold(),
+            *m_waveformRenderer->getWaveformSignalColors());
+
     const int dimBrightThreshold = m_waveformRenderer->getDimBrightThreshold();
     const QList<CuePointer> loadedCues = pTrackInfo->getCuePoints();
     for (const CuePointer& pCue : loadedCues) {
