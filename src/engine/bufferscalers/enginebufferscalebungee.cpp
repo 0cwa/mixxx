@@ -148,7 +148,6 @@ void EngineBufferScaleBungee::setScaleParameters(double base_rate,
     // Bungee's speed parameter is the input/output frame ratio.
     // Use only the tempo ratio (playback speed) without base_rate.
     // Bungee handles sample rate conversion internally via resampleMode.
-    // Note: Bungee can also determine speed from position deltas between grains.
     m_request.speed = m_dTempoRatio;
 
     // If the direction changed, we need to reset
@@ -233,12 +232,17 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     // For subsequent grains, advance position based on actual frames consumed
     // from the previous grain. This ensures position tracking stays synchronized
     // with the audio.
+    // IMPORTANT: Bungee can determine speed from position deltas between grains.
+    // It calculates speed as: speed = position_delta / frames_consumed
+    // To get the correct tempo ratio, position must advance by: frames_consumed * tempo_ratio
     if (!std::isnan(m_request.position)) {
         // Calculate actual frames consumed from the previous grain's input chunk
         const SINT framesConsumed = m_currentInputChunk.end - m_currentInputChunk.begin;
         if (framesConsumed > 0) {
-            m_grainPosition += (m_bBackwards ? -static_cast<double>(framesConsumed)
-                                             : static_cast<double>(framesConsumed));
+            // Position must advance by frames_consumed * tempo_ratio for Bungee
+            // to calculate the correct speed from position deltas.
+            const double positionDelta = static_cast<double>(framesConsumed) * m_dTempoRatio;
+            m_grainPosition += (m_bBackwards ? -positionDelta : positionDelta);
         }
     } else {
         // First grain - start at position 0
