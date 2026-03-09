@@ -148,6 +148,7 @@ void EngineBufferScaleBungee::setScaleParameters(double base_rate,
     // Bungee's speed parameter is the input/output frame ratio.
     // Use only the tempo ratio (playback speed) without base_rate.
     // Bungee handles sample rate conversion internally via resampleMode.
+    // Note: Bungee can also determine speed from position deltas between grains.
     m_request.speed = m_dTempoRatio;
 
     // If the direction changed, we need to reset
@@ -390,9 +391,8 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
 
             // Try to get more input
             const SINT samplesToRead = getOutputSignal().frames2samples(kMaxGrainFrames);
-            const double effectiveRate = (m_bBackwards ? -1.0 : 1.0) * m_dBaseRate * m_dTempoRatio;
             const SINT availableSamples = m_pReadAheadManager->getNextSamples(
-                    effectiveRate,
+                    (m_bBackwards ? -1.0 : 1.0) * m_dBaseRate * m_dTempoRatio,
                     m_interleavedReadBuffer.data(),
                     samplesToRead,
                     getOutputSignal().getChannelCount());
