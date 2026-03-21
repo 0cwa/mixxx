@@ -227,7 +227,7 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     }
 
     // Calculate effective rate for ReadAheadManager (includes base_rate for sample rate conversion)
-    const double effectiveRate = m_dBaseRate * m_dTempoRatio;
+    const double effectiveRate = m_dBaseRate / m_dTempoRatio;
 
     // For subsequent grains, advance position based on actual frames consumed
     // from the previous grain. This ensures position tracking stays synchronized
@@ -341,7 +341,7 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
         if (framesProduced > 0) {
             remainingFrames -= framesProduced;
             pOutput += getOutputSignal().frames2samples(framesProduced);
-            readFramesProcessed += m_dBaseRate * m_dTempoRatio * framesProduced;
+            readFramesProcessed += framesProduced / m_dTempoRatio;
             lastReadFailed = false;
         } else {
             // No frames produced - we may be at EOF or need more input
@@ -390,7 +390,7 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
 
             // Try to get more input
             const SINT samplesToRead = getOutputSignal().frames2samples(kMaxGrainFrames);
-            const double effectiveRate = (m_bBackwards ? -1.0 : 1.0) * m_dBaseRate * m_dTempoRatio;
+            const double effectiveRate = (m_bBackwards ? -1.0 : 1.0) * m_dBaseRate / m_dTempoRatio;
             const SINT availableSamples = m_pReadAheadManager->getNextSamples(
                     effectiveRate,
                     m_interleavedReadBuffer.data(),
