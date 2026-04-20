@@ -23,6 +23,7 @@
 #include "track/beats.h"
 #include "track/cue.h"
 #include "track/keyfactory.h"
+#include "track/keyutils.h"
 #include "track/track.h"
 #include "util/color/color.h"
 #include "util/db/dbconnectionpooled.h"
@@ -93,6 +94,7 @@ bool createLibraryTable(QSqlDatabase& database, const QString& tableName) {
             "    bitrate TEXT,"
             "    bpm FLOAT,"
             "    key TEXT,"
+            "    key_id INTEGER,"
             "    rating INTEGER,"
             "    analyze_path TEXT UNIQUE,"
             "    device TEXT,"
@@ -389,6 +391,7 @@ void insertTrack(
     query.bindValue(":comment", comment);
     query.bindValue(":tracknumber", tracknumber);
     query.bindValue(":key", key);
+    query.bindValue(":key_id", static_cast<int>(KeyUtils::guessKeyFromText(key)));
     query.bindValue(":bpm", bpm);
     query.bindValue(":bitrate", bitrate);
     query.bindValue(":analyze_path", anlzPath);
@@ -473,10 +476,10 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
     query.prepare("INSERT INTO " + kRekordboxLibraryTable +
             " (rb_id, artist, title, album, year,"
             "genre,comment,tracknumber,bpm, bitrate,duration, location,"
-            "rating,key,analyze_path,device,color) VALUES (:rb_id, :artist, "
+            "rating,key,key_id,analyze_path,device,color) VALUES (:rb_id, :artist, "
             ":title, :album, :year,:genre,"
             ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
-            ":rating,:key,:analyze_path,:device,:color)");
+            ":rating,:key,:key_id,:analyze_path,:device,:color)");
 
     int audioFilesCount = 0;
 
@@ -1105,22 +1108,41 @@ void readAnalyze(TrackPointer track,
                 [](const memory_cue_loop_t& a, const memory_cue_loop_t& b)
                         -> bool { return a.startPosition < b.startPosition; });
 
+        bool mainCueFound = false;
+
         // Add memory cues and loops
         for (int memoryCueOrLoopIndex = 0;
                 memoryCueOrLoopIndex < memoryCuesAndLoops.size();
                 memoryCueOrLoopIndex++) {
             memory_cue_loop_t memoryCueOrLoop = memoryCuesAndLoops[memoryCueOrLoopIndex];
 
-            // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
-            // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
-            lastHotCueIndex++;
-            setMemoryCue(
-                    track,
-                    memoryCueOrLoop.startPosition,
-                    memoryCueOrLoop.endPosition,
-                    lastHotCueIndex,
-                    memoryCueOrLoop.comment,
-                    memoryCueOrLoop.color);
+            if (!mainCueFound && !memoryCueOrLoop.endPosition.isValid()) {
+                // Set first chronological memory cue as Mixxx MainCue
+                track->setMainCuePosition(memoryCueOrLoop.startPosition);
+                CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
+                if (pMainCue) {
+                    pMainCue->setLabel(memoryCueOrLoop.comment);
+                    if (memoryCueOrLoop.color) {
+                        pMainCue->setColor(*memoryCueOrLoop.color);
+                    }
+                } else {
+                    qWarning() << "RekordboxPlaylistModel: MainCue not found after"
+                                  " setMainCuePosition — skipping label/color assignment";
+                }
+                mainCueFound = true;
+            } else {
+                // Mixxx v2.4 will feature multiple loops, so these saved here
+                // will be usable For 2.3, Mixxx treats them as hotcues and the
+                // first one will be loaded as the single loop Mixxx supports
+                lastHotCueIndex++;
+                setMemoryCue(
+                        track,
+                        memoryCueOrLoop.startPosition,
+                        memoryCueOrLoop.endPosition,
+                        lastHotCueIndex,
+                        memoryCueOrLoop.comment,
+                        memoryCueOrLoop.color);
+            }
         }
     }
 }
