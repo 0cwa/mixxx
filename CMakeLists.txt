@@ -1326,6 +1326,7 @@ add_library(
   src/engine/controls/bpmcontrol.cpp
   src/engine/controls/clockcontrol.cpp
   src/engine/controls/cuecontrol.cpp
+  src/engine/controls/seek30control.cpp
   src/engine/controls/enginecontrol.cpp
   src/engine/controls/keycontrol.cpp
   src/engine/controls/loopingcontrol.cpp
@@ -1763,6 +1764,7 @@ add_library(
   src/widget/weffectselector.cpp
   src/widget/wfindonwebmenu.cpp
   src/widget/whotcuebutton.cpp
+  src/widget/wmemorycuebutton.cpp
   src/widget/wimagestore.cpp
   src/widget/wkey.cpp
   src/widget/wknob.cpp
@@ -2010,6 +2012,9 @@ if(QOPENGL)
       src/waveform/renderers/allshader/matrixforwidgetgeometry.cpp
       src/waveform/renderers/allshader/waveformrenderbackground.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererslipmode.cpp
@@ -2857,6 +2862,7 @@ if(BUILD_TESTING)
     src/test/colormapperjsproxy_test.cpp
     src/test/colorpalette_test.cpp
     src/test/configobject_test.cpp
+    $<$<BOOL:${BUNGEE}>:src/test/settingsmanager_test.cpp>
     src/test/controller_mapping_validation_test.cpp
     src/test/controller_mapping_settings_test.cpp
     src/test/controllers/controller_columnid_regression_test.cpp
@@ -2879,6 +2885,8 @@ if(BUILD_TESTING)
     #TODO: write useful tests for refactored effects system
     #src/test/effectchainslottest.cpp
     src/test/enginebufferscalelineartest.cpp
+    $<$<BOOL:${BUNGEE}>:src/test/enginebufferscalebungeetest.cpp>
+    $<$<BOOL:${BUNGEE}>:src/test/enginebufferbungeetest.cpp>
     src/test/enginebuffertest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp
@@ -3917,6 +3925,9 @@ if(QML)
       src/qml/qmlpreferencesproxy.cpp
       src/waveform/renderers/allshader/digitsrenderer.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp
@@ -4636,6 +4647,138 @@ if(RUBBERBAND)
       src/engine/bufferscalers/rubberbandwrapper.cpp
       src/engine/bufferscalers/rubberbandtask.cpp
       src/engine/bufferscalers/rubberbandworkerpool.cpp
+  )
+endif()
+
+# Bungee
+option(BUNGEE "Enable the Bungee engine for pitch-bending" ON)
+option(
+  BUNGEE_PETRIFY_DEBUG
+  "Freeze Bungee on fatal signals in Debug builds so a debugger can attach (non-Windows only)"
+  OFF
+)
+if(BUNGEE)
+  # pffft library (dependency of bungee)
+  add_library(
+    bungee-pffft
+    STATIC
+    EXCLUDE_FROM_ALL
+    lib/bungee/submodules/pffft/pffft.c
+    lib/bungee/submodules/pffft/fftpack.c
+  )
+  if(NOT MSVC)
+    target_compile_options(
+      bungee-pffft
+      PRIVATE -ffast-math -fno-finite-math-only -fno-exceptions
+    )
+  endif()
+  if(MSVC)
+    target_compile_definitions(bungee-pffft PRIVATE _USE_MATH_DEFINES)
+  endif()
+
+  # Apply Mixxx-specific patches to bungee.
+  # The MSVC-compatibility patch is Windows-only (removes <unistd.h>, adds
+  # Platform.h).  Do NOT apply it on other platforms: the patch path uses
+  # Mixxx-root-relative paths (lib/bungee/src/…) so it must be run from the
+  # Mixxx source root, not from inside lib/bungee.
+  if(MSVC)
+    find_package(Git)
+    if(Git_FOUND)
+      execute_process(
+        COMMAND
+          ${GIT_EXECUTABLE} apply --ignore-whitespace
+          ${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/0001-MSVC-compatibility.patch
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ERROR_QUIET
+        OUTPUT_QUIET
+      )
+    endif()
+  endif()
+
+  # Bungee library - built from source files in lib/bungee
+  # This allows easy updates: just cd lib/bungee && git pull
+  add_library(
+    bungee
+    STATIC
+    EXCLUDE_FROM_ALL
+    lib/bungee/src/Assert.cpp
+    lib/bungee/src/Fourier.cpp
+    lib/bungee/src/Grain.cpp
+    lib/bungee/src/Grains.cpp
+    lib/bungee/src/Input.cpp
+    lib/bungee/src/Instrumentation.cpp
+    lib/bungee/src/Output.cpp
+    lib/bungee/src/Partials.cpp
+    lib/bungee/src/Stretch.cpp
+    lib/bungee/src/Stretcher.cpp
+    lib/bungee/src/Synthesis.cpp
+    lib/bungee/src/Timing.cpp
+    lib/bungee/src/version.cpp
+    lib/bungee/src/Window.cpp
+  )
+
+  target_compile_features(bungee PUBLIC cxx_std_20)
+
+  target_include_directories(
+    bungee
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/bungee>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/submodules/eigen
+  )
+
+  target_compile_definitions(
+    bungee
+    PRIVATE
+      BUNGEE_SELF_TEST=0
+      eigen_assert=BUNGEE_ASSERT1
+      EIGEN_DONT_PARALLELIZE=1
+      $<$<CONFIG:Debug>:EIGEN_RUNTIME_NO_MALLOC=1>
+  )
+
+  if(BUNGEE_PETRIFY_DEBUG)
+    if(WIN32)
+      message(
+        WARNING
+        "BUNGEE_PETRIFY_DEBUG was requested, but BUNGEE_PETRIFY uses POSIX "
+        "signal APIs and is disabled on Windows."
+      )
+    else()
+      target_compile_definitions(
+        bungee
+        PRIVATE $<$<CONFIG:Debug>:BUNGEE_PETRIFY>
+      )
+    endif()
+  endif()
+
+  # BUNGEE_VISIBILITY needs special handling due to parentheses
+  if(NOT MSVC)
+    target_compile_options(
+      bungee
+      PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>
+        "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
+    )
+  endif()
+
+  set_source_files_properties(
+    lib/bungee/src/version.cpp
+    PROPERTIES COMPILE_DEFINITIONS BUNGEE_VERSION=\"0.0.0\"
+  )
+
+  target_link_libraries(bungee PRIVATE bungee-pffft)
+
+  target_link_libraries(mixxx-lib PUBLIC bungee)
+  target_compile_definitions(mixxx-lib PUBLIC __BUNGEE__)
+
+  if(QML)
+    target_link_libraries(mixxx-qml-lib PRIVATE bungee)
+    target_compile_definitions(mixxx-qml-lib PUBLIC __BUNGEE__)
+  endif()
+
+  target_sources(
+    mixxx-lib
+    PRIVATE src/engine/bufferscalers/enginebufferscalebungee.cpp
   )
 endif()
 

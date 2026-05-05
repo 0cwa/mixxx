@@ -1,5 +1,6 @@
 #pragma once
 
+#include "control/controlobject.h"
 #include "rendergraph/engine.h"
 #include "rendergraph/opacitynode.h"
 #include "waveform/renderers/allshader/waveformrenderersignalbase.h"
@@ -42,12 +43,12 @@ class allshader::WaveformWidget final : public ::WGLWidget,
     static WaveformWidgetVars vars();
     static ::WaveformRendererSignalBase::Options supportedOptions(
             WaveformWidgetType::Type type, bool useGles);
-
   private:
     void castToQWidget() override;
     void paintEvent(QPaintEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void toggleDownBeatVisibility();
 
     template<class T_Renderer, typename... Args>
     inline std::unique_ptr<T_Renderer> addRendererNode(Args&&... args) {
@@ -74,5 +75,7 @@ class allshader::WaveformWidget final : public ::WGLWidget,
 
     WaveformRendererSignalBase* m_pWaveformRendererSignal;
 
+    rendergraph::OpacityNode* m_pDownBeatOpacityNode;
+    float m_downBeatOpacity = 0.0f;
     DISALLOW_COPY_AND_ASSIGN(WaveformWidget);
 };

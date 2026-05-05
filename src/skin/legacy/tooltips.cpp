@@ -489,6 +489,18 @@ void Tooltips::addStandardTooltips() {
             << tr("Revert last BPM/Beatgrid Change")
             << tr("Revert last BPM/Beatgrid Change of the loaded track.");
 
+    add("toggle_downbeats_marker")
+            << tr("Toggle Downbeats Marker")
+            << tr("Show or hide the downbeat markers on the waveform.");
+
+    add("beats_backward_down_beats_marker")
+            << tr("Shift Downbeat Marker Earlier")
+            << tr("Move the downbeat marker one beat earlier.");
+
+    add("beats_forward_down_beats_marker")
+            << tr("Shift Downbeat Marker Later")
+            << tr("Move the downbeat marker one beat later.");
+
     add("bpmlock")
             << tr("Toggle the BPM/beatgrid lock")
             << tr("Toggle the BPM/beatgrid lock");
@@ -1055,6 +1067,23 @@ void Tooltips::addStandardTooltips() {
             << tr("If marker is not set, sets the marker to the current play position.")
             << quantizeSnap
             << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the marker."));
+
+    // Memory Cues
+    add("memory_cue_create")
+            << tr("Create/delete a new Memory Cue")
+            << QString("%1: %2").arg(leftClick, tr("If marker is set, nothing happens."))
+            << tr("If marker is not set, a memory cue is created.")
+            << QString("%1: %2").arg(rightClick, tr("If marker is set, clears the nearest marker."));
+
+    add("memory_cue_prev")
+            << tr("Seek to previous Memory Cue");
+
+    add("memory_cue_next")
+            << tr("Seek to next Memory Cue");
+
+    add("memory_cue_edit")
+            << tr("Edit the current Memory Cue")
+            << tr("Track position must be exactly at a Memory Cue");
 
     // Effect Unit Controls
     add("EffectUnit_clear")

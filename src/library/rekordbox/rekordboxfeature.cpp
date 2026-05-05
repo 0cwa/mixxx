@@ -23,6 +23,7 @@
 #include "track/beats.h"
 #include "track/cue.h"
 #include "track/keyfactory.h"
+#include "track/keyutils.h"
 #include "track/track.h"
 #include "util/color/color.h"
 #include "util/db/dbconnectionpooled.h"
@@ -93,6 +94,7 @@ bool createLibraryTable(QSqlDatabase& database, const QString& tableName) {
             "    bitrate TEXT,"
             "    bpm FLOAT,"
             "    key TEXT,"
+            "    key_id INTEGER,"
             "    rating INTEGER,"
             "    analyze_path TEXT UNIQUE,"
             "    device TEXT,"
@@ -389,6 +391,7 @@ void insertTrack(
     query.bindValue(":comment", comment);
     query.bindValue(":tracknumber", tracknumber);
     query.bindValue(":key", key);
+    query.bindValue(":key_id", static_cast<int>(KeyUtils::guessKeyFromText(key)));
     query.bindValue(":bpm", bpm);
     query.bindValue(":bitrate", bitrate);
     query.bindValue(":analyze_path", anlzPath);
@@ -473,10 +476,10 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
     query.prepare("INSERT INTO " + kRekordboxLibraryTable +
             " (rb_id, artist, title, album, year,"
             "genre,comment,tracknumber,bpm, bitrate,duration, location,"
-            "rating,key,analyze_path,device,color) VALUES (:rb_id, :artist, "
+            "rating,key,key_id,analyze_path,device,color) VALUES (:rb_id, :artist, "
             ":title, :album, :year,:genre,"
             ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
-            ":rating,:key,:analyze_path,:device,:color)");
+            ":rating,:key,:key_id,:analyze_path,:device,:color)");
 
     int audioFilesCount = 0;
 
@@ -835,6 +838,42 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
     transaction.commit();
 }
 
+void setMemoryCue(TrackPointer track,
+        mixxx::audio::FramePos startPosition,
+        mixxx::audio::FramePos endPosition,
+        int id,
+        const QString& label,
+        mixxx::RgbColor::optional_t color) {
+    CuePointer pCue;
+
+    mixxx::CueType type = mixxx::CueType::Memory;
+    if (endPosition.isValid()) {
+        type = mixxx::CueType::Loop;
+        // Only looping cues go to hot cues
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        for (const CuePointer& trackCue : cuePoints) {
+            if (trackCue->getHotCue() == id) {
+                pCue = trackCue;
+                break;
+            }
+        }
+    }
+
+    if (pCue) {
+        pCue->setStartAndEndPosition(startPosition, endPosition);
+    } else {
+        pCue = track->createAndAddCue(
+                type,
+                Cue::kNoHotCue,
+                startPosition,
+                startPosition);
+    }
+    pCue->setLabel(label);
+    if (color) {
+        pCue->setColor(*color);
+    }
+}
+
 void setHotCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
@@ -853,6 +892,14 @@ void setHotCue(TrackPointer track,
     mixxx::CueType type = mixxx::CueType::HotCue;
     if (endPosition.isValid()) {
         type = mixxx::CueType::Loop;
+        // Only looping cues go to hot cues
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        for (const CuePointer& trackCue : cuePoints) {
+            if (trackCue->getHotCue() == id) {
+                pCue = trackCue;
+                break;
+            }
+        }
     }
 
     if (pCue) {
@@ -1073,14 +1120,22 @@ void readAnalyze(TrackPointer track,
                 // Set first chronological memory cue as Mixxx MainCue
                 track->setMainCuePosition(memoryCueOrLoop.startPosition);
                 CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
-                pMainCue->setLabel(memoryCueOrLoop.comment);
-                pMainCue->setColor(*memoryCueOrLoop.color);
+                if (pMainCue) {
+                    pMainCue->setLabel(memoryCueOrLoop.comment);
+                    if (memoryCueOrLoop.color) {
+                        pMainCue->setColor(*memoryCueOrLoop.color);
+                    }
+                } else {
+                    qWarning() << "RekordboxPlaylistModel: MainCue not found after"
+                                  " setMainCuePosition — skipping label/color assignment";
+                }
                 mainCueFound = true;
             } else {
-                // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
-                // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
+                // Mixxx v2.4 will feature multiple loops, so these saved here
+                // will be usable For 2.3, Mixxx treats them as hotcues and the
+                // first one will be loaded as the single loop Mixxx supports
                 lastHotCueIndex++;
-                setHotCue(
+                setMemoryCue(
                         track,
                         memoryCueOrLoop.startPosition,
                         memoryCueOrLoop.endPosition,
