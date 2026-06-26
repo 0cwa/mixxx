@@ -93,6 +93,7 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_bSlipEnabledProcessing(false),
           m_slipModeState(SlipModeState::Disabled),
           m_quantize(ControlFlag::AllowMissingOrInvalid),
+          m_pKeylockEngine(nullptr),
           m_pRepeat(nullptr),
           m_startButton(nullptr),
           m_endButton(nullptr),
@@ -278,10 +279,12 @@ EngineBuffer::EngineBuffer(const QString& group,
             m_pCueControl);
     m_pReadAheadManager->addRateControl(m_pRateControl);
 
-    m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
-    m_pKeylockEngine->connectValueChanged(this,
-            &EngineBuffer::slotKeylockEngineChanged,
-            Qt::DirectConnection);
+    if (PlayerManager::isDeckGroup(group)) {
+        m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
+        m_pKeylockEngine->connectValueChanged(this,
+                &EngineBuffer::slotKeylockEngineChanged,
+                Qt::DirectConnection);
+    }
     // Construct scaling objects
     m_pScaleLinear = new EngineBufferScaleLinear(m_pReadAheadManager);
     m_pScaleST = new EngineBufferScaleST(m_pReadAheadManager);
@@ -294,7 +297,9 @@ EngineBuffer::EngineBuffer(const QString& group,
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
 #endif
-    slotKeylockEngineChanged(m_pKeylockEngine->get());
+    slotKeylockEngineChanged(m_pKeylockEngine
+                    ? m_pKeylockEngine->get()
+                    : static_cast<double>(defaultKeylockEngine()));
     m_pScaleVinyl = m_pScaleLinear;
     m_pScale = m_pScaleVinyl;
     m_pScale->clear();
