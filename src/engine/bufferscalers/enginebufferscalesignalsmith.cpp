@@ -1,5 +1,8 @@
 #include "engine/bufferscalers/enginebufferscalesignalsmith.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "engine/engine.h"
 #include "engine/readaheadmanager.h"
 #include "moc_enginebufferscalesignalsmith.cpp"
@@ -27,11 +30,28 @@ void EngineBufferScaleSignalSmith::setScaleParameters(
         double base_rate, double* pTempoRatio, double* pPitchRatio) {
     m_dBaseRate = base_rate;
     m_bBackwards = *pTempoRatio < 0;
-    m_dTempoRatio = std::fabs(*pTempoRatio);
+    double speedAbs = std::fabs(*pTempoRatio);
+    if (!std::isfinite(m_dBaseRate) || !std::isfinite(speedAbs)) {
+        speedAbs = 0.0;
+    } else if (speedAbs > MAX_SEEK_SPEED) {
+        speedAbs = MAX_SEEK_SPEED;
+    } else if (speedAbs < MIN_SEEK_SPEED) {
+        speedAbs = 0.0;
+    }
+
+    *pTempoRatio = m_bBackwards ? -speedAbs : speedAbs;
+
+    m_dTempoRatio = speedAbs;
     m_dPitchRatio = *pPitchRatio;
     m_effectiveRate = m_dBaseRate * m_dTempoRatio;
 
-    m_stretch.setTransposeFactor(static_cast<float>(m_dBaseRate * m_dPitchRatio));
+    const double pitchScale = std::fabs(m_dBaseRate * m_dPitchRatio);
+    if (std::isfinite(pitchScale) && pitchScale > 0.0) {
+        m_stretch.setTransposeFactor(static_cast<float>(pitchScale));
+    } else {
+        m_dPitchRatio = 1.0;
+        m_stretch.setTransposeFactor(1.0f);
+    }
     m_stretch.setFormantFactor(1.0);
 
     // The following value is calculated from the block and interval samples
@@ -69,12 +89,15 @@ void EngineBufferScaleSignalSmith::onSignalChanged() {
     for (int chIdx = 0; chIdx < channelCount; chIdx++) {
         if (m_buffers[chIdx].size() != MAX_BUFFER_LEN) {
             m_buffers[chIdx] = mixxx::SampleBuffer(MAX_BUFFER_LEN);
-            m_bufferPtrs[chIdx] = m_buffers[chIdx].data();
         }
         if (m_outputBuffers[chIdx].size() != MAX_BUFFER_LEN) {
             m_outputBuffers[chIdx] = mixxx::SampleBuffer(MAX_BUFFER_LEN);
-            m_outputBufferPtrs[chIdx] = m_outputBuffers[chIdx].data();
         }
+        // Keep the planar buffer pointer arrays in sync after vector resizes
+        // and SampleBuffer reallocations. Signalsmith only sees these raw
+        // pointers, so stale entries can make it read/write unrelated memory.
+        m_bufferPtrs[chIdx] = m_buffers[chIdx].data();
+        m_outputBufferPtrs[chIdx] = m_outputBuffers[chIdx].data();
     }
 
     // Configure stretcher with preset settings
@@ -184,45 +207,60 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
             (m_dBaseRate * m_dTempoRatio * static_cast<double>(outputFrames)) +
             m_frameFractionalLeftover;
 
+    if (!std::isfinite(dFrameRequired) || dFrameRequired <= 0.0) {
+        SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
+        return 0.0;
+    }
+
     if (m_currentFrameOffset != m_expectedFrameLatency && dFrameRequired > 0) {
         // This happens when the rate changes because the rate scales the input
         // latency. We need more or less latency frames to keep the output steady.
-        // The rate changed is immediately applied to the audio without any glitch.
-        // Pitch changes do not affect latency.
-        double frameOffset = std::max(-dFrameRequired,
-                static_cast<double>(m_expectedFrameLatency - m_currentFrameOffset));
+        // Avoid applying the whole latency delta in one callback. That creates
+        // a one-buffer input spike for Signalsmith and can sound like a
+        // high-pitched chirp.
+        const double latencyDelta =
+                static_cast<double>(m_expectedFrameLatency - m_currentFrameOffset);
+        const double maxCorrection =
+                static_cast<double>(std::min<SINT>(outputFrames, MAX_BUFFER_LEN));
+        double frameOffset = 0.0;
+        if (latencyDelta > 0.0) {
+            const double inputRoom = static_cast<double>(MAX_BUFFER_LEN) - dFrameRequired;
+            frameOffset = std::min({latencyDelta, maxCorrection, inputRoom});
+            frameOffset = std::max(0.0, frameOffset);
+        } else {
+            frameOffset = -std::min({-latencyDelta, maxCorrection, dFrameRequired});
+        }
         dFrameRequired += frameOffset;
         m_currentFrameOffset += static_cast<SINT>(frameOffset);
     }
 
     const SINT frameRequired = static_cast<SINT>(dFrameRequired);
-    VERIFY_OR_DEBUG_ASSERT(frameRequired <= MAX_BUFFER_LEN) {
+    VERIFY_OR_DEBUG_ASSERT(frameRequired <= MAX_BUFFER_LEN && outputFrames <= MAX_BUFFER_LEN) {
+        SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
         return 0.0;
     }
 
     m_frameFractionalLeftover = dFrameRequired - static_cast<double>(frameRequired);
     DEBUG_ASSERT(0 <= m_frameFractionalLeftover && m_frameFractionalLeftover < 1);
 
-    bool last_read_failed = false;
     SINT frameRead = 0;
     while (frameRead < frameRequired) {
-        auto currentFrameRead = fetchAndDeinterleave(getOutputSignal().frames2samples(
-                                                             frameRequired - frameRead),
+        const SINT currentFrameRead = fetchAndDeinterleave(getOutputSignal().frames2samples(
+                                                                   frameRequired - frameRead),
                 frameRead);
-        frameRead += currentFrameRead;
 
-        if (last_read_failed && currentFrameRead <= 0) {
-            // flush and break out after
-            // the next retrieval. If we are at EOF this serves to get
-            // the last samples out of the scaler.
+        if (currentFrameRead <= 0) {
+            // Do not leave stale planar samples in the unread tail. EOF or
+            // starvation can occur after a partial read, and retrying forever
+            // would spin if the read-ahead manager keeps returning nothing.
             for (int ch = 0; ch < getOutputSignal().getChannelCount(); ch++) {
                 SampleUtil::clear(m_buffers[ch].data(frameRead), frameRequired - frameRead);
             }
             frameRead = frameRequired;
             break;
-        } else if (frameRead <= 0) {
-            last_read_failed = true;
         }
+
+        frameRead += currentFrameRead;
     }
 
     DEBUG_ASSERT(frameRead == frameRequired);
