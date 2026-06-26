@@ -860,18 +860,19 @@ void DlgPrefSound::settingChanged() {
 
 #ifdef __RUBBERBAND__
 void DlgPrefSound::updateKeylockDualThreadingCheckbox() {
-    bool supportedScaler = keylockComboBox1->currentData()
-                                   .value<EngineBuffer::KeylockEngine>() !=
-                    EngineBuffer::KeylockEngine::SoundTouch &&
-            keylockComboBox2->currentData()
-                            .value<EngineBuffer::KeylockEngine>() !=
-                    EngineBuffer::KeylockEngine::SoundTouch &&
-            keylockComboBox3->currentData()
-                            .value<EngineBuffer::KeylockEngine>() !=
-                    EngineBuffer::KeylockEngine::SoundTouch &&
-            keylockComboBox4->currentData()
-                            .value<EngineBuffer::KeylockEngine>() !=
-                    EngineBuffer::KeylockEngine::SoundTouch;
+    const auto isRubberBandEngine = [](EngineBuffer::KeylockEngine engine) {
+        return engine == EngineBuffer::KeylockEngine::RubberBandFaster ||
+                engine == EngineBuffer::KeylockEngine::RubberBandFiner;
+    };
+    bool supportedScaler =
+            isRubberBandEngine(keylockComboBox1->currentData()
+                            .value<EngineBuffer::KeylockEngine>()) &&
+            isRubberBandEngine(keylockComboBox2->currentData()
+                            .value<EngineBuffer::KeylockEngine>()) &&
+            isRubberBandEngine(keylockComboBox3->currentData()
+                            .value<EngineBuffer::KeylockEngine>()) &&
+            isRubberBandEngine(keylockComboBox4->currentData()
+                            .value<EngineBuffer::KeylockEngine>());
     bool monoMix = mainOutputModeComboBox->currentIndex() == 1;
     keylockDualthreadedCheckBox->setEnabled(!monoMix && supportedScaler);
     keylockDualthreadedCheckBox->setToolTip(monoMix
