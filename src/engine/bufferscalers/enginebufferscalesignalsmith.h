@@ -29,7 +29,7 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
 
   private:
     void onSignalChanged() override;
-    SINT fetchAndDeinterleave(SINT frames, SINT offset = 0);
+    SINT fetchAndDeinterleave(SINT sampleToRead, SINT frameOffset = 0);
 
     ReadAheadManager* m_pReadAheadManager;
     signalsmith::stretch::SignalsmithStretch<float> m_stretch;
