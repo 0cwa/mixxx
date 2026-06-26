@@ -27,6 +27,10 @@
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
 
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
+
 //for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
@@ -96,6 +100,9 @@ class EngineBuffer : public EngineObject {
 #ifdef __BUNGEE__
         Bungee = 3,
 #endif
+#ifdef __SIGNALSMITH__
+        SignalSmith = 4,
+#endif
     };
     Q_ENUM(KeylockEngine);
 
@@ -108,6 +115,9 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
             KeylockEngine::Bungee,
+#endif
+#ifdef __SIGNALSMITH__
+            KeylockEngine::SignalSmith,
 #endif
     };
 
@@ -199,6 +209,10 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::Bungee:
             return tr("Bungee (high quality)");
 #endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return tr("Signalsmith Stretch (experimental)");
+#endif
         default:
 #ifdef __RUBBERBAND__
             return tr("Unknown, using Rubberband (better)");
@@ -220,6 +234,10 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
         case KeylockEngine::Bungee:
+            return true;
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
             return true;
 #endif
         default:
@@ -493,6 +511,9 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
     EngineBufferScaleBungee* m_pScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 
     // Indicates whether the scaler has changed since the last process()

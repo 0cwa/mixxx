@@ -328,6 +328,14 @@ Category {
                                                 options.push(qsTr("Rubberband R3"));
                                                 tooltips.push(qsTr("Near-hi-fi quality"));
                                                 break;
+                                            case 3:
+                                                options.push(qsTr("Bungee"));
+                                                tooltips.push(qsTr("High quality"));
+                                                break;
+                                            case 4:
+                                                options.push(qsTr("Signalsmith Stretch"));
+                                                tooltips.push(qsTr("Experimental"));
+                                                break;
                                             }
                                         }
                                         keylock.options = options;
