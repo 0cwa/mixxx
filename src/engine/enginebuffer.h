@@ -466,6 +466,12 @@ class EngineBuffer : public EngineObject {
     ControlPotmeter* m_playposSlider;
     ControlProxy* m_pSampleRate;
     ControlProxy* m_pKeylockEngine;
+    // Selected keylock engine identity. This is tracked separately from
+    // m_pScaleKeylock because multiple engine modes may share one scaler
+    // instance, e.g. RubberBand Faster and RubberBand R3.
+    QAtomicInt m_iKeylockEngine;
+    QAtomicInt m_iKeylockEngineChangeVersion;
+    int m_keylockEngineChangeVersion;
     ControlPushButton* m_pKeylock;
     ControlProxy* m_pReplayGain;
 
