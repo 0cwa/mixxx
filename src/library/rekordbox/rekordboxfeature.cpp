@@ -263,7 +263,16 @@ QString fromUtf16LeString(const std::string& toConvert) {
 
 QString fromUtf16BeString(const std::string& toConvert) {
     // Kaitai uses std::string as single container for all string encodings.
-    int length = static_cast<int>(toConvert.length()) - 2; // strip off trailing nullbyte
+    int length = static_cast<int>(toConvert.length());
+    if (length < 2) {
+        return QString();
+    }
+    if (toConvert[length - 1] == '\0' && toConvert[length - 2] == '\0') {
+        length -= 2; // strip off trailing nullbyte
+    }
+    if (length <= 0) {
+        return QString();
+    }
     return QTextCodec::codecForName("UTF-16BE")->toUnicode(toConvert.data(), length);
 }
 
@@ -273,6 +282,9 @@ QString fromUtf16BeString(const std::string& toConvert) {
 
 QString getText(rekordbox_pdb_t::device_sql_string_t* deviceString) {
     QString text;
+    if (!deviceString || !deviceString->body()) {
+        return text;
+    }
 
     if (instanceof <rekordbox_pdb_t::device_sql_short_ascii_t>(deviceString->body())) {
         rekordbox_pdb_t::device_sql_short_ascii_t* shortAsciiString =
@@ -875,6 +887,9 @@ void readAnalyze(TrackPointer track,
         int timingOffset,
         bool ignoreCues,
         const QString& anlzPath) {
+    if (!track || !sampleRate.isValid()) {
+        return;
+    }
     if (!QFile(anlzPath).exists()) {
         return;
     }
@@ -884,15 +899,22 @@ void readAnalyze(TrackPointer track,
     std::ifstream ifs(anlzPath.toStdString(), std::ifstream::binary);
     kaitai::kstream ks(&ifs);
 
-    rekordbox_anlz_t anlz = rekordbox_anlz_t(&ks);
+    try {
+        rekordbox_anlz_t anlz = rekordbox_anlz_t(&ks);
+        if (!anlz.sections()) {
+            return;
+        }
 
-    const double sampleRateKhz = sampleRate / 1000.0;
+        const double sampleRateKhz = sampleRate / 1000.0;
 
-    QList<memory_cue_loop_t> memoryCuesAndLoops;
-    int lastHotCueIndex = 0;
+        QList<memory_cue_loop_t> memoryCuesAndLoops;
+        int lastHotCueIndex = 0;
 
-    for (const auto& section : *anlz.sections()) {
-        switch (section->fourcc()) {
+        for (const auto& section : *anlz.sections()) {
+            if (!section || !section->body()) {
+                continue;
+            }
+            switch (section->fourcc()) {
         case rekordbox_anlz_t::SECTION_TAGS_BEAT_GRID: {
             if (!ignoreCues) {
                 break;
@@ -901,6 +923,9 @@ void readAnalyze(TrackPointer track,
             auto* beatGridTag =
                     static_cast<rekordbox_anlz_t::beat_grid_tag_t*>(
                             section->body());
+            if (!beatGridTag || !beatGridTag->beats()) {
+                break;
+            }
 
             QVector<mixxx::audio::FramePos> beats;
 
@@ -927,6 +952,9 @@ void readAnalyze(TrackPointer track,
             auto* cuesTag =
                     static_cast<rekordbox_anlz_t::cue_tag_t*>(
                             section->body());
+            if (!cuesTag || !cuesTag->cues()) {
+                break;
+            }
 
             for (const auto& cueEntry : *cuesTag->cues()) {
                 int time = static_cast<int>(cueEntry->time()) - timingOffset;
@@ -987,6 +1015,9 @@ void readAnalyze(TrackPointer track,
             auto* cuesExtendedTag =
                     static_cast<rekordbox_anlz_t::cue_extended_tag_t*>(
                             section->body());
+            if (!cuesExtendedTag || !cuesExtendedTag->cues()) {
+                break;
+            }
 
             for (const auto& cueExtendedEntry : *cuesExtendedTag->cues()) {
                 int time = static_cast<int>(cueExtendedEntry->time()) - timingOffset;
@@ -1055,40 +1086,48 @@ void readAnalyze(TrackPointer track,
         }
     }
 
-    if (memoryCuesAndLoops.size() > 0) {
-        std::sort(memoryCuesAndLoops.begin(),
-                memoryCuesAndLoops.end(),
-                [](const memory_cue_loop_t& a, const memory_cue_loop_t& b)
-                        -> bool { return a.startPosition < b.startPosition; });
+        if (memoryCuesAndLoops.size() > 0) {
+            std::sort(memoryCuesAndLoops.begin(),
+                    memoryCuesAndLoops.end(),
+                    [](const memory_cue_loop_t& a, const memory_cue_loop_t& b)
+                            -> bool { return a.startPosition < b.startPosition; });
 
-        bool mainCueFound = false;
+            bool mainCueFound = false;
 
-        // Add memory cues and loops
-        for (int memoryCueOrLoopIndex = 0;
-                memoryCueOrLoopIndex < memoryCuesAndLoops.size();
-                memoryCueOrLoopIndex++) {
-            memory_cue_loop_t memoryCueOrLoop = memoryCuesAndLoops[memoryCueOrLoopIndex];
+            // Add memory cues and loops
+            for (int memoryCueOrLoopIndex = 0;
+                    memoryCueOrLoopIndex < memoryCuesAndLoops.size();
+                    memoryCueOrLoopIndex++) {
+                memory_cue_loop_t memoryCueOrLoop =
+                        memoryCuesAndLoops[memoryCueOrLoopIndex];
 
-            if (!mainCueFound && !memoryCueOrLoop.endPosition.isValid()) {
-                // Set first chronological memory cue as Mixxx MainCue
-                track->setMainCuePosition(memoryCueOrLoop.startPosition);
-                CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
-                pMainCue->setLabel(memoryCueOrLoop.comment);
-                pMainCue->setColor(*memoryCueOrLoop.color);
-                mainCueFound = true;
-            } else {
-                // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
-                // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
-                lastHotCueIndex++;
-                setHotCue(
-                        track,
-                        memoryCueOrLoop.startPosition,
-                        memoryCueOrLoop.endPosition,
-                        lastHotCueIndex,
-                        memoryCueOrLoop.comment,
-                        memoryCueOrLoop.color);
+                if (!mainCueFound && !memoryCueOrLoop.endPosition.isValid()) {
+                    // Set first chronological memory cue as Mixxx MainCue
+                    track->setMainCuePosition(memoryCueOrLoop.startPosition);
+                    CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
+                    if (pMainCue) {
+                        pMainCue->setLabel(memoryCueOrLoop.comment);
+                        if (memoryCueOrLoop.color) {
+                            pMainCue->setColor(*memoryCueOrLoop.color);
+                        }
+                    }
+                    mainCueFound = true;
+                } else {
+                    // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
+                    // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
+                    lastHotCueIndex++;
+                    setHotCue(
+                            track,
+                            memoryCueOrLoop.startPosition,
+                            memoryCueOrLoop.endPosition,
+                            lastHotCueIndex,
+                            memoryCueOrLoop.comment,
+                            memoryCueOrLoop.color);
+                }
             }
         }
+    } catch (...) {
+        qWarning() << "Skipping malformed Rekordbox ANLZ import for" << anlzPath;
     }
 }
 
@@ -1209,6 +1248,10 @@ TrackPointer RekordboxPlaylistModel::getTrack(const QModelIndex& index) const {
             index, ColumnCache::COLUMN_TRACKLOCATIONSTABLE_LOCATION)
                                .toString();
 
+    if (!track) {
+        return track;
+    }
+
     if (!QFile(location).exists()) {
         return track;
     }
@@ -1263,18 +1306,25 @@ TrackPointer RekordboxPlaylistModel::getTrack(const QModelIndex& index) const {
 #endif
 
     mixxx::audio::SampleRate sampleRate = track->getSampleRate();
+    const bool importAnalyze = sampleRate.isValid();
+    if (!importAnalyze) {
+        qWarning() << "Skipping Rekordbox ANLZ import with invalid sample rate for"
+                   << location;
+    }
 
     QString anlzPath =
             getFieldVariant(index, ColumnCache::COLUMN_REKORDBOX_ANALYZE_PATH)
                     .toString();
     QString anlzPathExt = anlzPath.left(anlzPath.length() - 3) + "EXT";
 
-    if (QFile(anlzPathExt).exists()) {
-        // Beatgrids appear to be only correct in legacy ANLZ file
-        readAnalyze(track, sampleRate, timingOffset, true, anlzPath);
-        readAnalyze(track, sampleRate, timingOffset, false, anlzPathExt);
-    } else {
-        readAnalyze(track, sampleRate, timingOffset, false, anlzPath);
+    if (importAnalyze) {
+        if (QFile(anlzPathExt).exists()) {
+            // Beatgrids appear to be only correct in legacy ANLZ file
+            readAnalyze(track, sampleRate, timingOffset, true, anlzPath);
+            readAnalyze(track, sampleRate, timingOffset, false, anlzPathExt);
+        } else {
+            readAnalyze(track, sampleRate, timingOffset, false, anlzPath);
+        }
     }
 
     // Assume that the key of the file the has been analyzed in Recordbox is correct
