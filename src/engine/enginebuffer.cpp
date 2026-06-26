@@ -42,6 +42,9 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
 #ifdef __VINYLCONTROL__
 #include "engine/controls/vinylcontrolcontrol.h"
 #endif
@@ -314,6 +317,9 @@ EngineBuffer::EngineBuffer(const QString& group,
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
 #endif
+#ifdef __SIGNALSMITH__
+    m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
+#endif
     slotKeylockEngineChanged(m_pKeylockEngine->get());
     m_pScaleVinyl = m_pScaleLinear;
     m_pScale = m_pScaleVinyl;
@@ -369,6 +375,9 @@ EngineBuffer::~EngineBuffer() {
     delete m_pScaleST;
 #ifdef __RUBBERBAND__
     delete m_pScaleRB;
+#endif
+#ifdef __SIGNALSMITH__
+    delete m_pScaleSignalSmith;
 #endif
 
     delete m_pKeylock;
@@ -932,6 +941,11 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
         m_pScaleKeylock = m_pScaleSignalSmith;
         break;
 #endif
+#ifdef __SIGNALSMITH__
+    case KeylockEngine::SignalSmith:
+        m_pScaleKeylock = m_pScaleSignalSmith;
+        break;
+#endif
     default:
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
         return;
@@ -1317,6 +1331,9 @@ void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
     m_pScaleST->setSignal(m_sampleRate, m_channelCount);
 #ifdef __RUBBERBAND__
     m_pScaleRB->setSignal(m_sampleRate, m_channelCount);
+#endif
+#ifdef __SIGNALSMITH__
+    m_pScaleSignalSmith->setSignal(m_sampleRate, m_channelCount);
 #endif
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith->setSignal(m_sampleRate, m_channelCount);
