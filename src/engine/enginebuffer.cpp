@@ -213,10 +213,6 @@ EngineBuffer::EngineBuffer(const QString& group,
     m_pLoopingControl = new LoopingControl(group, pConfig);
     addControl(m_pLoopingControl);
 
-    m_pEngineSync = pMixingEngine->getEngineSync();
-
-    m_pSyncControl = new SyncControl(group, pConfig, pChannel, m_pEngineSync);
-
 #ifdef __VINYLCONTROL__
     if (PlayerManager::isDeckGroup(group)) {
         m_pVinylControlControl = new VinylControlControl(group, pConfig);
@@ -228,6 +224,10 @@ EngineBuffer::EngineBuffer(const QString& group,
         addControl(m_pVinylControlControl);
     }
 #endif
+
+    m_pEngineSync = pMixingEngine->getEngineSync();
+
+    m_pSyncControl = new SyncControl(group, pConfig, pChannel, m_pEngineSync);
 
     // Create the Rate Controller
     m_pRateControl = new RateControl(group, pConfig);
