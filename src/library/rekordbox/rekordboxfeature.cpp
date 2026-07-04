@@ -267,8 +267,10 @@ QString fromUtf16BeString(const std::string& toConvert) {
     if (length < 2) {
         return QString();
     }
-    if (toConvert[length - 1] == '\0' && toConvert[length - 2] == '\0') {
-        length -= 2; // strip off trailing nullbyte
+    while (length >= 2 &&
+            toConvert[length - 1] == '\0' &&
+            toConvert[length - 2] == '\0') {
+        length -= 2; // strip off trailing nullbytes
     }
     if (length <= 0) {
         return QString();

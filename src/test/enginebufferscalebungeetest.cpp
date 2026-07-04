@@ -1,6 +1,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "engine/bufferscalers/enginebufferscalebungee.h"
@@ -521,6 +522,12 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
                 m_pScaler->m_currentInputChunk.begin);
     }
 
+    SINT currentDataOffset() const {
+        return std::max<SINT>(0,
+                static_cast<SINT>(m_pScaler->m_currentInputChunk.begin) -
+                        m_pScaler->m_bufferedInputBeginFrame);
+    }
+
     BufferWindowReadAheadManagerMock* m_pReadAhead = nullptr;
     EngineBufferScaleBungee* m_pScaler = nullptr;
 };
@@ -642,9 +649,13 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
             // the heap overflow.
             const SINT chunkSize = currentChunkSize();
             if (chunkSize > 0) {
-                EXPECT_LE(chunkSize, channelStride())
-                        << "grain size must fit in channel stride at tempo "
-                        << tempo << " iter " << iter;
+                const SINT dataOffset = currentDataOffset();
+                EXPECT_LE(dataOffset + chunkSize, channelStride())
+                        << "dataOffset + grain size must fit in channel stride "
+                           "at tempo "
+                        << tempo << " iter " << iter
+                        << " dataOffset " << dataOffset << " grainSize "
+                        << chunkSize;
             }
         }
     }

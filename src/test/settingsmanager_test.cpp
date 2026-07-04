@@ -1,5 +1,7 @@
 #include "preferences/settingsmanager.h"
 
+#include <array>
+
 #include <QDir>
 #include <QTemporaryDir>
 
@@ -14,11 +16,50 @@ const ConfigKey kKeylockEngineKey(
         QStringLiteral("[App]"),
         QStringLiteral("keylock_engine"));
 
+constexpr std::array<const char*, 4> kDeckGroups = {
+        "[Channel1]",
+        "[Channel2]",
+        "[Channel3]",
+        "[Channel4]",
+};
+
+ConfigKey deckKeylockEngineKey(const char* group) {
+    return ConfigKey(
+            QString::fromLatin1(group),
+            QStringLiteral("keylock_engine"));
+}
+
+EngineBuffer::KeylockEngine defaultStableKeylockEngine() {
+#ifdef __RUBBERBAND__
+    return EngineBuffer::KeylockEngine::RubberBandFaster;
+#else
+    return EngineBuffer::KeylockEngine::SoundTouch;
+#endif
+}
+
+std::array<EngineBuffer::KeylockEngine, 4> explicitPerDeckKeylockEngines() {
+#ifdef __RUBBERBAND__
+    return {
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::RubberBandFaster,
+            EngineBuffer::KeylockEngine::RubberBandFiner,
+            EngineBuffer::KeylockEngine::SoundTouch,
+    };
+#else
+    return {
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::SoundTouch,
+    };
+#endif
+}
+
 } // namespace
 
 class SettingsManagerTest : public MixxxTest {};
 
-TEST_F(SettingsManagerTest, SeedsBungeeKeylockEngineForFreshSettingsDirectory) {
+TEST_F(SettingsManagerTest, SeedsPerDeckKeylockEnginesForFreshSettingsDirectory) {
     QTemporaryDir profileParent;
     ASSERT_TRUE(profileParent.isValid());
 
@@ -28,12 +69,16 @@ TEST_F(SettingsManagerTest, SeedsBungeeKeylockEngineForFreshSettingsDirectory) {
     SettingsManager manager(settingsPath);
 
     EXPECT_TRUE(QDir(settingsPath).exists());
-    ASSERT_TRUE(manager.settings()->exists(kKeylockEngineKey));
-    EXPECT_EQ(static_cast<int>(EngineBuffer::KeylockEngine::Bungee),
-            manager.settings()->getValue(kKeylockEngineKey, -1));
+    for (const char* group : kDeckGroups) {
+        const ConfigKey key = deckKeylockEngineKey(group);
+        ASSERT_TRUE(manager.settings()->exists(key));
+        EXPECT_EQ(static_cast<int>(defaultStableKeylockEngine()),
+                manager.settings()->getValue(key, -1))
+                << group;
+    }
 }
 
-TEST_F(SettingsManagerTest, DoesNotSeedBungeeKeylockEngineForExistingSettingsDirectory) {
+TEST_F(SettingsManagerTest, SeedsPerDeckKeylockEnginesForExistingSettingsDirectory) {
     QTemporaryDir settingsDir;
     ASSERT_TRUE(settingsDir.isValid());
     ASSERT_TRUE(QDir(settingsDir.path()).exists());
@@ -41,21 +86,35 @@ TEST_F(SettingsManagerTest, DoesNotSeedBungeeKeylockEngineForExistingSettingsDir
     SettingsManager manager(settingsDir.path());
 
     EXPECT_FALSE(manager.settings()->exists(kKeylockEngineKey));
+    for (const char* group : kDeckGroups) {
+        const ConfigKey key = deckKeylockEngineKey(group);
+        ASSERT_TRUE(manager.settings()->exists(key));
+        EXPECT_EQ(static_cast<int>(defaultStableKeylockEngine()),
+                manager.settings()->getValue(key, -1))
+                << group;
+    }
 }
 
-TEST_F(SettingsManagerTest, PreservesExplicitKeylockEngineInExistingSettingsDirectory) {
+TEST_F(SettingsManagerTest, PreservesExplicitPerDeckKeylockEnginesInExistingSettingsDirectory) {
     QTemporaryDir settingsDir;
     ASSERT_TRUE(settingsDir.isValid());
 
     UserSettings existingSettings(QDir(settingsDir.path()).filePath(MIXXX_SETTINGS_FILE));
-    existingSettings.setValue(
-            kKeylockEngineKey,
-            EngineBuffer::KeylockEngine::SoundTouch);
+    const auto perDeckKeylockEngines = explicitPerDeckKeylockEngines();
+    for (size_t i = 0; i < kDeckGroups.size(); ++i) {
+        existingSettings.setValue(
+                deckKeylockEngineKey(kDeckGroups[i]),
+                perDeckKeylockEngines[i]);
+    }
     ASSERT_TRUE(existingSettings.save());
 
     SettingsManager manager(settingsDir.path());
 
-    ASSERT_TRUE(manager.settings()->exists(kKeylockEngineKey));
-    EXPECT_EQ(static_cast<int>(EngineBuffer::KeylockEngine::SoundTouch),
-            manager.settings()->getValue(kKeylockEngineKey, -1));
+    for (size_t i = 0; i < kDeckGroups.size(); ++i) {
+        const ConfigKey key = deckKeylockEngineKey(kDeckGroups[i]);
+        ASSERT_TRUE(manager.settings()->exists(key));
+        EXPECT_EQ(static_cast<int>(perDeckKeylockEngines[i]),
+                manager.settings()->getValue(key, -1))
+                << kDeckGroups[i];
+    }
 }

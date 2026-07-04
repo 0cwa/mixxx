@@ -18,10 +18,6 @@ sources:
   - type: file
     path: ../../../cmake/patches/bungee/unofficial-bungee-config.cmake
     dest-filename: unofficial-bungee-config.cmake
-cleanup:
-  - /include
-  - /lib/cmake
-  - /lib/pkgconfig
 post-install:
   - install -d ${FLATPAK_DEST}/lib/cmake/unofficial-bungee
   - sed -e '/^include(CMakeFindDependencyMacro)/d' -e '/^find_dependency(Eigen3 CONFIG)/d' -e '/^find_dependency(pffft CONFIG)/d' -e '/^check_required_components/d' unofficial-bungee-config.cmake > ${FLATPAK_DEST}/lib/cmake/unofficial-bungee/unofficial-bungee-config.cmake

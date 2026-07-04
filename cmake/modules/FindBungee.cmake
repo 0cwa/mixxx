@@ -93,6 +93,51 @@ if(Bungee_FOUND)
   set(Bungee_INCLUDE_DIRS "${Bungee_INCLUDE_DIR}")
 
   if(NOT TARGET Bungee::Bungee)
+    set(_Bungee_INTERFACE_LINK_LIBRARIES)
+    set(_Bungee_INTERFACE_LINK_DIRECTORIES)
+    set(_Bungee_INTERFACE_LINK_OPTIONS)
+    if(PC_Bungee_FOUND)
+      set(_Bungee_PC_LINK_LIBRARIES ${PC_Bungee_LINK_LIBRARIES})
+      set(_Bungee_PC_LIBRARY_DIRS ${PC_Bungee_LIBRARY_DIRS})
+      set(_Bungee_PC_LDFLAGS_OTHER ${PC_Bungee_LDFLAGS_OTHER})
+      if(Bungee_LIBRARY MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
+        if(PC_Bungee_STATIC_LINK_LIBRARIES)
+          set(_Bungee_PC_LINK_LIBRARIES ${PC_Bungee_STATIC_LINK_LIBRARIES})
+        endif()
+        if(PC_Bungee_STATIC_LIBRARY_DIRS)
+          set(_Bungee_PC_LIBRARY_DIRS ${PC_Bungee_STATIC_LIBRARY_DIRS})
+        endif()
+        if(PC_Bungee_STATIC_LDFLAGS_OTHER)
+          set(_Bungee_PC_LDFLAGS_OTHER ${PC_Bungee_STATIC_LDFLAGS_OTHER})
+        endif()
+      endif()
+
+      get_filename_component(_Bungee_LIBRARY_NAME "${Bungee_LIBRARY}" NAME_WE)
+      string(REGEX REPLACE "^lib" "" _Bungee_LIBRARY_NAME "${_Bungee_LIBRARY_NAME}")
+      foreach(_Bungee_PC_LINK_LIBRARY IN LISTS _Bungee_PC_LINK_LIBRARIES)
+        get_filename_component(
+          _Bungee_PC_LINK_LIBRARY_NAME
+          "${_Bungee_PC_LINK_LIBRARY}"
+          NAME_WE
+        )
+        string(
+          REGEX
+          REPLACE "^-l|^lib"
+          ""
+          _Bungee_PC_LINK_LIBRARY_NAME
+          "${_Bungee_PC_LINK_LIBRARY_NAME}"
+        )
+        if(
+          NOT _Bungee_PC_LINK_LIBRARY STREQUAL Bungee_LIBRARY
+          AND NOT _Bungee_PC_LINK_LIBRARY_NAME STREQUAL _Bungee_LIBRARY_NAME
+        )
+          list(APPEND _Bungee_INTERFACE_LINK_LIBRARIES "${_Bungee_PC_LINK_LIBRARY}")
+        endif()
+      endforeach()
+      set(_Bungee_INTERFACE_LINK_DIRECTORIES ${_Bungee_PC_LIBRARY_DIRS})
+      set(_Bungee_INTERFACE_LINK_OPTIONS ${_Bungee_PC_LDFLAGS_OTHER})
+    endif()
+
     add_library(Bungee::Bungee UNKNOWN IMPORTED)
     set_target_properties(
       Bungee::Bungee
@@ -100,5 +145,32 @@ if(Bungee_FOUND)
         IMPORTED_LOCATION "${Bungee_LIBRARY}"
         INTERFACE_INCLUDE_DIRECTORIES "${Bungee_INCLUDE_DIR}"
     )
+    if(_Bungee_INTERFACE_LINK_LIBRARIES)
+      set_property(
+        TARGET Bungee::Bungee
+        PROPERTY INTERFACE_LINK_LIBRARIES "${_Bungee_INTERFACE_LINK_LIBRARIES}"
+      )
+    endif()
+    if(_Bungee_INTERFACE_LINK_DIRECTORIES)
+      set_property(
+        TARGET Bungee::Bungee
+        PROPERTY INTERFACE_LINK_DIRECTORIES "${_Bungee_INTERFACE_LINK_DIRECTORIES}"
+      )
+    endif()
+    if(_Bungee_INTERFACE_LINK_OPTIONS)
+      set_property(
+        TARGET Bungee::Bungee
+        PROPERTY INTERFACE_LINK_OPTIONS "${_Bungee_INTERFACE_LINK_OPTIONS}"
+      )
+    endif()
+    unset(_Bungee_INTERFACE_LINK_LIBRARIES)
+    unset(_Bungee_INTERFACE_LINK_DIRECTORIES)
+    unset(_Bungee_INTERFACE_LINK_OPTIONS)
+    unset(_Bungee_LIBRARY_NAME)
+    unset(_Bungee_PC_LDFLAGS_OTHER)
+    unset(_Bungee_PC_LIBRARY_DIRS)
+    unset(_Bungee_PC_LINK_LIBRARIES)
+    unset(_Bungee_PC_LINK_LIBRARY)
+    unset(_Bungee_PC_LINK_LIBRARY_NAME)
   endif()
 endif()

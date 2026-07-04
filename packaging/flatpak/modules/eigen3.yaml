@@ -14,9 +14,5 @@ sources:
       project-id: 13751
       stable-only: true
       url-template: https://gitlab.com/libeigen/eigen/-/archive/$version/eigen-$version.tar.gz
-cleanup:
-  - /include
-  - /share/eigen3
-  - /share/pkgconfig
 post-install:
   - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/eigen3 COPYING*

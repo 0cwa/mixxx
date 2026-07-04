@@ -8,7 +8,8 @@
 #   - Linux only (clang sanitizers don't run on Windows MSVC and the Bungee
 #     bug is not platform-specific).
 #   - Builds only the mixxx-test target and runs the *Bungee* gtest filter,
-#     keeping the workflow lean compared with the matrix in build.yml.
+#     plus the SettingsManager keylock regression test, keeping the workflow
+#     lean compared with the matrix in build.yml.
 #   - Fires on any change that could affect the Bungee integration; ignores
 #     unrelated PRs.
 #
@@ -29,9 +30,12 @@ on:
       - "cmake/patches/bungee/**"
       - "cmake/patches/pffft/**"
       - "cmake/modules/FindBungee.cmake"
+      - "src/engine/enginebuffer.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
+      - "src/preferences/settingsmanager.cpp"
       - "src/test/enginebufferscalebungeetest.cpp"
       - "src/test/enginebufferbungeetest.cpp"
+      - "src/test/settingsmanager_test.cpp"
       - "CMakeLists.txt"
       - ".github/workflows/bungee-asan.yml"
   pull_request:
@@ -39,9 +43,12 @@ on:
       - "cmake/patches/bungee/**"
       - "cmake/patches/pffft/**"
       - "cmake/modules/FindBungee.cmake"
+      - "src/engine/enginebuffer.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
+      - "src/preferences/settingsmanager.cpp"
       - "src/test/enginebufferscalebungeetest.cpp"
       - "src/test/enginebufferbungeetest.cpp"
+      - "src/test/settingsmanager_test.cpp"
       - "CMakeLists.txt"
       - ".github/workflows/bungee-asan.yml"
   workflow_dispatch:
@@ -82,17 +89,18 @@ jobs:
 
     steps:
       - name: "Check out repository"
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           # `git describe` (used by version stamping) needs full history.
           fetch-depth: 0
+          persist-credentials: false
           submodules: recursive
 
       - name: "Ensure that all tags are fetched"
         run: git fetch origin --force --tags
 
       - name: "Set up gcc/clang problem matcher"
-        uses: ammaraskar/gcc-problem-matcher@0.3.0
+        uses: ammaraskar/gcc-problem-matcher@0f9c86f9e693db67dacf53986e1674de5f2e5f28 # 0.3.0
 
       - name: "Set up build environment (apt deps)"
         run: tools/debian_buildenv.sh setup
@@ -105,7 +113,7 @@ jobs:
           clang --version
 
       - name: "Set up ccache"
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: /home/runner/.cache/ccache
           key: ubuntu-24.04-asan-${{ github.ref }}-${{ github.run_number }}
@@ -168,12 +176,13 @@ jobs:
       - name: "Print ccache stats"
         run: ccache --show-stats
 
-      # Run only the Bungee unit + integration tests under ASan.  The full
-      # mixxx-test suite under ASan would run for >30 minutes; this targeted
-      # run completes in well under a minute and exercises the instrumented
-      # Bungee scaler and integration paths.
+      # Run the Bungee unit + integration tests under ASan, plus the
+      # SettingsManager regression that preserves explicit Bungee keylock
+      # settings. The full mixxx-test suite under ASan would run for >30
+      # minutes; this targeted run completes quickly and exercises the
+      # instrumented Bungee scaler and integration paths.
       - name: "Run Bungee tests under ASan"
         working-directory: build
         env:
           GTEST_COLOR: "1"
-        run: ./mixxx-test --gtest_filter='*Bungee*'
+        run: ./mixxx-test --gtest_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'

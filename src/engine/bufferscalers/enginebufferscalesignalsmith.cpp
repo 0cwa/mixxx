@@ -45,9 +45,8 @@ void EngineBufferScaleSignalSmith::setScaleParameters(
     m_dPitchRatio = *pPitchRatio;
     m_effectiveRate = m_dBaseRate * m_dTempoRatio;
 
-    const double pitchScale = std::fabs(m_dBaseRate * m_dPitchRatio);
-    if (std::isfinite(pitchScale) && pitchScale > 0.0) {
-        m_stretch.setTransposeFactor(static_cast<float>(pitchScale));
+    if (std::isfinite(m_dPitchRatio) && m_dPitchRatio > 0.0) {
+        m_stretch.setTransposeFactor(static_cast<float>(m_dPitchRatio));
     } else {
         m_dPitchRatio = 1.0;
         m_stretch.setTransposeFactor(1.0f);

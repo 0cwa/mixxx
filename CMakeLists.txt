@@ -3552,6 +3552,11 @@ if(SIGNALSMITH)
     SIGNALSMITH_INSTALL_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/lib/signalsmith-install"
   )
+  set(
+    SIGNALSMITH_INCLUDE_DIRS
+    "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
+    "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
+  )
   ExternalProject_Add(
     signalsmith-stretch
     GIT_REPOSITORY
@@ -3572,7 +3577,7 @@ if(SIGNALSMITH)
       -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
       -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
     BUILD_COMMAND ${CMAKE_COMMAND} --build .
-    INSTALL_COMMAND true
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E true
     EXCLUDE_FROM_ALL TRUE
   )
 
@@ -3581,8 +3586,7 @@ if(SIGNALSMITH)
     mixxx-lib
     SYSTEM
     PUBLIC
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
+      ${SIGNALSMITH_INCLUDE_DIRS}
   )
   target_sources(
     mixxx-lib
@@ -4008,6 +4012,13 @@ if(QML)
   )
 
   if(SIGNALSMITH)
+    add_dependencies(mixxx-qml-lib signalsmith-stretch)
+    target_include_directories(
+      mixxx-qml-lib
+      SYSTEM
+      PUBLIC
+        ${SIGNALSMITH_INCLUDE_DIRS}
+    )
     target_compile_definitions(mixxx-qml-lib PUBLIC __SIGNALSMITH__)
   endif()
 endif()
@@ -5667,13 +5678,6 @@ if(QML)
   target_compile_definitions(mixxx-qml-lib PRIVATE rendergraph=rendergraph_sg)
   target_compile_definitions(mixxx-qml-lib PRIVATE __SCENEGRAPH__)
   target_compile_definitions(mixxx-qml-lib PRIVATE allshader=allshader_sg)
-  target_include_directories(
-    mixxx-qml-lib
-    SYSTEM
-    PUBLIC
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
-  )
 endif()
 
 # WavPack audio file support

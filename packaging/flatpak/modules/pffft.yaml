@@ -12,8 +12,5 @@ sources:
     path: ../../../cmake/patches/pffft/CMakeLists.txt.in
     dest: pffft-src
     dest-filename: CMakeLists.txt
-cleanup:
-  - /include
-  - /lib/cmake
 post-install:
   - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/pffft README.txt

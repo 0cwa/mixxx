@@ -507,4 +507,10 @@ void EngineBufferScaleBungee::clear() {
     m_outputChunk.channelStride = 0;
     m_outputChunk.request[0] = nullptr;
     m_outputChunk.request[1] = nullptr;
+
+    if (m_contiguousChannelBuffer.size() > 0) {
+        SampleUtil::clear(
+                m_contiguousChannelBuffer.data(),
+                m_contiguousChannelBuffer.size());
+    }
 }

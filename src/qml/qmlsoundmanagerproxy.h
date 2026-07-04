@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QQmlEngine>
 #include <memory>
+#include <optional>
 
 #include "control/pollingcontrolproxy.h"
 #include "engine/enginebuffer.h"
@@ -167,9 +168,13 @@ class QmlSoundManagerProxy : public QObject {
   private:
     static inline std::shared_ptr<SoundManager> s_pSoundManager;
 
-    PollingControlProxy m_keylockEngine;
-
     std::shared_ptr<SoundManager> m_pSoundManager;
+    PollingControlProxy m_keylockEngine1;
+    PollingControlProxy m_keylockEngine2;
+    PollingControlProxy m_keylockEngine3;
+    PollingControlProxy m_keylockEngine4;
+
+    std::optional<EngineBuffer::KeylockEngine> m_pendingKeylockEngine;
     SoundManagerConfig m_config;
     QAtomicInt m_commitInProgress;
 };
