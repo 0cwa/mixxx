@@ -1,0 +1,224 @@
+tasks:
+  BNG-17:
+    labels:
+      - bungee
+      - planning
+      - maintainer-feedback
+    blocked_by: []
+    created: "2026-05-05"
+    effort: small
+    file: done/BNG-17.md
+    group: BNG
+    package: root
+    priority: high
+    status: done
+    title: Capture Bungee dependency integration assumptions and decision prompts
+    completed: "2026-05-05"
+  BNG-18:
+    title: Validate Bungee version and CMake compatibility matrix
+    status: done
+    priority: high
+    effort: small
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - cmake
+      - dependency-versioning
+    blocked_by:
+      - BNG-17
+    file: done/BNG-18.md
+    created: "2026-05-05"
+    completed: "2026-05-05"
+  BNG-19:
+    title: Normalize Mixxx CMake discovery to Bungee::Bungee
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - cmake
+      - find-package
+    blocked_by:
+      - BNG-18
+    file: done/BNG-19.md
+    created: "2026-05-05"
+    completed: "2026-05-05"
+  BNG-20:
+    title: Choose and implement Mixxx vcpkg buildenv path for Bungee
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - vcpkg
+      - buildenv
+    blocked_by:
+      - BNG-18
+      - BNG-19
+    file: done/BNG-20.md
+    created: "2026-05-05"
+    completed: "2026-05-05"
+  BNG-21:
+    title: Implement approved source fallback and CMake-version selection
+    status: done
+    priority: medium
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - cmake
+      - externalproject
+      - fallback
+    blocked_by:
+      - BNG-18
+      - BNG-19
+    file: done/BNG-21.md
+    created: "2026-05-05"
+    completed: "2026-05-05"
+  BNG-22:
+    title: Remove vendored Bungee source and direct-build wiring
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - vendor-removal
+      - cmake
+    blocked_by:
+      - BNG-21
+      - BNG-26
+    file: done/BNG-22.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-23:
+    title: Update packaging and CI paths for non-vendored Bungee (umbrella)
+    status: done
+    priority: high
+    effort: large
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - packaging
+      - ci
+      - umbrella
+    blocked_by:
+      - BNG-25
+      - BNG-26
+      - BNG-27
+      - BNG-28
+    file: done/BNG-23.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-24:
+    title: Prepare trunk-driven PR history and per-commit validation record
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - pr-readiness
+      - trunk-driven-development
+    blocked_by:
+      - BNG-22
+      - BNG-23
+      - BNG-25
+      - BNG-26
+      - BNG-27
+      - BNG-28
+    file: done/BNG-24.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-25:
+    title: Add Eigen3 + pffft as ExternalProject_Add targets
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - cmake
+      - externalproject
+      - eigen3
+      - pffft
+    blocked_by:
+      - BNG-21
+    file: done/BNG-25.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-26:
+    title: Wire Eigen3 + pffft ExternalProjects into bungee_external; remove vendored fallthrough
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - cmake
+      - externalproject
+      - vendor-removal
+    blocked_by:
+      - BNG-25
+    file: done/BNG-26.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-27:
+    title: Add Bungee, Eigen3, pffft as Flatpak modules
+    status: done
+    priority: high
+    effort: medium
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - flatpak
+      - packaging
+    blocked_by:
+      - BNG-26
+    file: done/BNG-27.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-28:
+    title: Update GitHub Actions workflows for non-vendored Bungee
+    status: done
+    priority: high
+    effort: small
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - ci
+      - github-actions
+    blocked_by:
+      - BNG-26
+    file: done/BNG-28.md
+    created: "2026-05-05"
+    completed: "2026-05-06"
+  BNG-29:
+    title: Reorganize Bungee patches to cmake/patches/ (deferred)
+    status: open
+    priority: low
+    effort: small
+    group: BNG
+    package: root
+    labels:
+      - bungee
+      - cmake
+      - deferred
+      - refactor
+    blocked_by: []
+    file: open/BNG-29.md
+    created: "2026-05-05"
+features: "[]"
