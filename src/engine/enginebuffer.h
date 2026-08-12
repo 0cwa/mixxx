@@ -22,6 +22,9 @@
 #ifdef __RUBBERBAND__
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
 
 #ifdef __BUNGEE__
 #include "engine/bufferscalers/enginebufferscalebungee.h"
@@ -99,6 +102,12 @@ class EngineBuffer : public EngineObject {
         // Bungee was added later and must use a new persisted value.
         Bungee = 4,
 #endif
+#ifdef __SIGNALSMITH__
+        // Preserve RubberBand R3 (3) and Bungee (4); SignalSmith was added
+        // after both engines and therefore uses new persisted values.
+        SignalSmithDefault = 5,
+        SignalSmithCheaper = 6,
+#endif
     };
     Q_ENUM(KeylockEngine);
 
@@ -112,6 +121,10 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
             KeylockEngine::Bungee,
+#endif
+#ifdef __SIGNALSMITH__
+            KeylockEngine::SignalSmithDefault,
+            KeylockEngine::SignalSmithCheaper,
 #endif
     };
 
@@ -208,6 +221,12 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::Bungee:
             return tr("Bungee (high quality)");
 #endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmithCheaper:
+            return tr("Signal Smith (better and faster)");
+        case KeylockEngine::SignalSmithDefault:
+            return tr("Signal Smith (harder, better, faster, stronger)");
+#endif
         default:
 #ifdef __RUBBERBAND__
             return tr("Unknown, using Rubberband (fast, medium quality)");
@@ -230,6 +249,10 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
         case KeylockEngine::Bungee:
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmithDefault:
+        case KeylockEngine::SignalSmithCheaper:
             return true;
 #endif
         default:
@@ -503,6 +526,9 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
     EngineBufferScaleBungee* m_pScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 
     // Indicates whether the scaler has changed since the last process()
