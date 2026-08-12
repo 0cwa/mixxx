@@ -37,6 +37,20 @@ EngineBuffer
 `EngineBuffer` uses this value to advance its playback-position cursor; it must
 account for the direction sign externally.
 
+## Transport and audible-output timelines
+
+`m_playPos` is the source/read-ahead cursor. It is intentionally not rewritten
+to hide Bungee's processing delay because seeking, looping, and reader
+accounting depend on that cursor.
+
+Bungee Basic's lapped output is two synthesis hops behind that source cursor.
+`EngineBufferScaleBungee` exposes the corresponding signed source-frame offset
+through `getVisualPlayPositionOffset()`. `EngineBuffer` applies that offset only
+when publishing `VisualPlayPosition`, then clamps the result to the track
+boundaries. This keeps the transport cursor, audible output, and waveform/VSync
+clock explicit and separately testable. SignalSmith uses `outputSeek()` during
+startup, so its default visual offset remains zero.
+
 ---
 
 ## The InputChunk sliding-window contract

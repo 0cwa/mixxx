@@ -1,5 +1,9 @@
 #include "engine/enginebuffer.h"
 
+#ifdef BUILD_TESTING
+#include <mutex>
+#endif
+
 #include <QtDebug>
 
 #include "control/controllinpotmeter.h"
@@ -60,6 +64,12 @@ constexpr double kLinearScalerElipsis =
 constexpr int kPlaypositionUpdateRate = 15; // updates per second
 
 const QString kAppGroup = QStringLiteral("[App]");
+
+#ifdef BUILD_TESTING
+std::mutex s_testReaderFactoryMutex;
+EngineBuffer::TestReaderFactory s_testReaderFactory = nullptr;
+void* s_testReaderFactoryContext = nullptr;
+#endif
 
 } // anonymous namespace
 
@@ -125,7 +135,27 @@ EngineBuffer::EngineBuffer(const QString& group,
     // zero out crossfade buffer
     SampleUtil::clear(m_pCrossfadeBuffer, kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount);
 
-    m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
+#ifdef BUILD_TESTING
+    // Tests may provide a reader whose read() method serves preloaded samples.
+    // This hook is intentionally resolved once, during construction. The
+    // audio callback continues to use the normal CachingReader, the normal
+    // ReadAheadManager, and the normal scaler graph without an injected
+    // branch or synchronization primitive. The mutex only protects this
+    // construction-time registration state; it is never taken by process().
+    {
+        const std::lock_guard<std::mutex> lock(s_testReaderFactoryMutex);
+        if (s_testReaderFactory) {
+            m_pReader = s_testReaderFactory(
+                    group,
+                    pConfig,
+                    maxSupportedChannel,
+                    s_testReaderFactoryContext);
+        }
+    }
+#endif
+    if (!m_pReader) {
+        m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
+    }
     connect(m_pReader, &CachingReader::trackLoading,
             this, &EngineBuffer::slotTrackLoading,
             Qt::DirectConnection);
@@ -778,13 +808,14 @@ void EngineBuffer::seekExact(mixxx::audio::FramePos position) {
     doSeekPlayPos(position, SEEK_EXACT);
 }
 
-double EngineBuffer::fractionalPlayposFromAbsolute(mixxx::audio::FramePos absolutePlaypos) {
+double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
     if (!m_trackEndPositionOld.isValid()) {
         return 0.0;
     }
 
-    const auto position = std::min<mixxx::audio::FramePos>(absolutePlaypos, m_trackEndPositionOld);
-    return position.value() / m_trackEndPositionOld.value();
+    const double position = std::clamp(
+            absolutePlaypos, 0.0, m_trackEndPositionOld.value());
+    return position / m_trackEndPositionOld.value();
 }
 
 void EngineBuffer::doSeekFractional(double fractionalPos, enum SeekRequest seekType) {
@@ -1555,18 +1586,29 @@ void EngineBuffer::updateIndicators(double speed, std::size_t bufferSize) {
     // Increase samplesCalculated by the buffer size
     m_samplesSinceLastIndicatorUpdate += bufferSize;
 
-    const double fFractionalPlaypos = fractionalPlayposFromAbsolute(m_playPos);
-    const double fFractionalSlipPos = fractionalPlayposFromAbsolute(m_slipPos);
+    const double trackEndPosition = m_trackEndPositionOld.isValid()
+            ? m_trackEndPositionOld.value()
+            : 0.0;
+    const double visualPlayPosition = std::clamp(
+            m_playPos.value() + m_pScale->getVisualPlayPositionOffset(),
+            0.0,
+            trackEndPosition);
+    const double fFractionalPlaypos =
+            fractionalPlayposFromAbsolute(visualPlayPosition);
+    const double fFractionalSlipPos =
+            fractionalPlayposFromAbsolute(m_slipPos.value());
 
     auto loopInfo = m_pLoopingControl->getLoopInfo();
 
     double fFractionalLoopStartPos = 0.0;
     if (loopInfo.startPosition.isValid()) {
-        fFractionalLoopStartPos = fractionalPlayposFromAbsolute(loopInfo.startPosition);
+        fFractionalLoopStartPos =
+                fractionalPlayposFromAbsolute(loopInfo.startPosition.value());
     }
     double fFractionalLoopEndPos = 0.0;
     if (loopInfo.endPosition.isValid()) {
-        fFractionalLoopEndPos = fractionalPlayposFromAbsolute(loopInfo.endPosition);
+        fFractionalLoopEndPos =
+                fractionalPlayposFromAbsolute(loopInfo.endPosition.value());
     }
 
     const double tempoTrackSeconds = m_trackEndPositionOld.value() /
@@ -1742,3 +1784,14 @@ void EngineBuffer::setScalerForTest(
     // This bool is permanently set and can't be undone.
     m_bScalerOverride = true;
 }
+
+#ifdef BUILD_TESTING
+void EngineBuffer::setTestReaderFactory(
+        TestReaderFactory factory,
+        void* pContext) {
+    DEBUG_ASSERT(factory != nullptr || pContext == nullptr);
+    const std::lock_guard<std::mutex> lock(s_testReaderFactoryMutex);
+    s_testReaderFactory = factory;
+    s_testReaderFactoryContext = factory ? pContext : nullptr;
+}
+#endif
