@@ -1,6 +1,9 @@
 #include "engine/enginebuffer.h"
 
 #include <algorithm>
+#ifdef BUILD_TESTING
+#include <mutex>
+#endif
 
 #include <QtDebug>
 
@@ -95,6 +98,12 @@ EngineBufferScaleSignalSmith::Preset keylockSignalSmithEngineToPreset(
 }
 #endif
 
+#ifdef BUILD_TESTING
+std::mutex s_testReaderFactoryMutex;
+EngineBuffer::TestReaderFactory s_testReaderFactory = nullptr;
+void* s_testReaderFactoryContext = nullptr;
+#endif
+
 } // anonymous namespace
 
 EngineBuffer::EngineBuffer(const QString& group,
@@ -159,7 +168,27 @@ EngineBuffer::EngineBuffer(const QString& group,
     // zero out crossfade buffer
     SampleUtil::clear(m_pCrossfadeBuffer, kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount);
 
-    m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
+#ifdef BUILD_TESTING
+    // Tests may provide a reader whose read() method serves preloaded samples.
+    // This hook is intentionally resolved once, during construction. The
+    // audio callback continues to use the normal CachingReader, the normal
+    // ReadAheadManager, and the normal scaler graph without an injected
+    // branch or synchronization primitive. The mutex only protects this
+    // construction-time registration state; it is never taken by process().
+    {
+        const std::lock_guard<std::mutex> lock(s_testReaderFactoryMutex);
+        if (s_testReaderFactory) {
+            m_pReader = s_testReaderFactory(
+                    group,
+                    pConfig,
+                    maxSupportedChannel,
+                    s_testReaderFactoryContext);
+        }
+    }
+#endif
+    if (!m_pReader) {
+        m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
+    }
     connect(m_pReader, &CachingReader::trackLoading,
             this, &EngineBuffer::slotTrackLoading,
             Qt::DirectConnection);
@@ -1820,3 +1849,14 @@ void EngineBuffer::setScalerForTest(
     // This bool is permanently set and can't be undone.
     m_bScalerOverride = true;
 }
+
+#ifdef BUILD_TESTING
+void EngineBuffer::setTestReaderFactory(
+        TestReaderFactory factory,
+        void* pContext) {
+    DEBUG_ASSERT(factory != nullptr || pContext == nullptr);
+    const std::lock_guard<std::mutex> lock(s_testReaderFactoryMutex);
+    s_testReaderFactory = factory;
+    s_testReaderFactoryContext = factory ? pContext : nullptr;
+}
+#endif

@@ -200,6 +200,25 @@ class EngineBuffer : public EngineObject {
             EngineBufferScale* pScaleVinyl,
             EngineBufferScale* pScaleKeylock);
 
+#ifdef BUILD_TESTING
+    // Installs a factory used only while constructing EngineBuffers in tests.
+    // The returned reader becomes owned by the EngineBuffer and is deleted by
+    // its destructor. The factory is consulted during construction only, so
+    // installing or clearing it must happen outside the audio callback and
+    // while no test is concurrently constructing an EngineBuffer. The
+    // registration itself is serialized, but callers must keep the context
+    // alive until all EngineBuffers created through the factory are destroyed.
+    // Passing nullptr restores the production CachingReader construction path.
+    using TestReaderFactory = CachingReader* (*)(
+            const QString& group,
+            UserSettingsPointer pConfig,
+            mixxx::audio::ChannelCount maxSupportedChannel,
+            void* pContext);
+    static void setTestReaderFactory(
+            TestReaderFactory factory,
+            void* pContext = nullptr);
+#endif
+
     // For injection of fake tracks.
     void loadFakeTrack(TrackPointer pTrack, bool bPlay);
 
