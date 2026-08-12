@@ -48,6 +48,10 @@
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
 
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
+
 #ifdef __VINYLCONTROL__
 #include "engine/controls/vinylcontrolcontrol.h"
 #endif
@@ -383,6 +387,9 @@ EngineBuffer::~EngineBuffer() {
 #endif
 #ifdef __BUNGEE__
     delete m_pScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+    delete m_pScaleSignalSmith;
 #endif
 
     delete m_pKeylock;

@@ -30,6 +30,10 @@
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
 
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
+
 //for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
@@ -253,6 +257,10 @@ class EngineBuffer : public EngineObject {
 #ifdef __SIGNALSMITH__
         case KeylockEngine::SignalSmithDefault:
         case KeylockEngine::SignalSmithCheaper:
+            return true;
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
             return true;
 #endif
         default:
