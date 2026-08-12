@@ -163,6 +163,7 @@ EngineBuffer::EngineBuffer(const QString& group,
     // This should be a static assertion, but isValid() is not constexpr.
     DEBUG_ASSERT(kInitialPlayPosition.isValid());
 
+    m_pScaleKeylock.storeRelease(nullptr);
     m_queuedSeek.setValue(kNoQueuedSeek);
 
     // zero out crossfade buffer
@@ -451,12 +452,13 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
     // so cache it.
     const int keylockEngineChangeVersion =
             m_iKeylockEngineChangeVersion.loadAcquire();
-    EngineBufferScale* keylock_scale = m_pScaleKeylock;
+    EngineBufferScale* keylock_scale = m_pScaleKeylock.loadAcquire();
     EngineBufferScale* vinyl_scale = m_pScaleVinyl;
     const bool keylockEngineChanged =
-            keylockEngineChangeVersion != m_keylockEngineChangeVersion;
+            keylockEngineChangeVersion != m_keylockEngineChangeVersion ||
+            m_pScale != keylock_scale;
 
-    if (bEnable && (m_pScale != keylock_scale || keylockEngineChanged)) {
+    if (bEnable && keylockEngineChanged) {
         if (m_speed_old != 0.0) {
             // Crossfade if we are not paused.
             // If we start from zero a ramping gain is
@@ -962,41 +964,42 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
         return;
     }
     const KeylockEngine engine = static_cast<KeylockEngine>(dIndex);
+    EngineBufferScale* pScaleKeylock = nullptr;
     switch (engine) {
     case KeylockEngine::SoundTouch:
         qWarning() << m_group << "---> ST";
-        m_pScaleKeylock = m_pScaleST;
+        pScaleKeylock = m_pScaleST;
         break;
 #ifdef __RUBBERBAND__
     case KeylockEngine::RubberBandFaster:
         qWarning() << m_group << "---> RB faster";
         m_pScaleRB->useEngineFiner(false);
         m_pScaleRB->useOptionWindowShort(false);
-        m_pScaleKeylock = m_pScaleRB;
+        pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandFiner:
         qWarning() << m_group << "---> RB finer";
         m_pScaleRB->useEngineFiner(
                 true); // in case of Rubberband V2 it falls back to RUBBERBAND_FASTER
         m_pScaleRB->useOptionWindowShort(false);
-        m_pScaleKeylock = m_pScaleRB;
+        pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandR3ShortWindow:
         m_pScaleRB->useEngineFiner(true);
         m_pScaleRB->useOptionWindowShort(true);
-        m_pScaleKeylock = m_pScaleRB;
+        pScaleKeylock = m_pScaleRB;
         break;
 #endif
 #ifdef __BUNGEE__
     case KeylockEngine::Bungee:
-        m_pScaleKeylock = m_pScaleBungee;
+        pScaleKeylock = m_pScaleBungee;
         break;
 #endif
 #ifdef __SIGNALSMITH__
     case KeylockEngine::SignalSmithDefault:
     case KeylockEngine::SignalSmithCheaper:
         m_pScaleSignalSmith->setPreset(keylockSignalSmithEngineToPreset(engine));
-        m_pScaleKeylock = m_pScaleSignalSmith;
+        pScaleKeylock = m_pScaleSignalSmith;
         break;
 #endif
     default:
@@ -1005,6 +1008,7 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
         return;
     }
 
+    m_pScaleKeylock.storeRelease(pScaleKeylock);
     const int iEngine = static_cast<int>(engine);
     if (m_iKeylockEngine.fetchAndStoreRelease(iEngine) != iEngine) {
         m_iKeylockEngineChangeVersion.fetchAndAddRelease(1);
@@ -1842,7 +1846,7 @@ void EngineBuffer::setScalerForTest(
         EngineBufferScale* pScaleVinyl,
         EngineBufferScale* pScaleKeylock) {
     m_pScaleVinyl = pScaleVinyl;
-    m_pScaleKeylock = pScaleKeylock;
+    m_pScaleKeylock.storeRelease(pScaleKeylock);
     m_pScale = m_pScaleVinyl;
     m_pScale->clear();
     m_bScalerChanged = true;

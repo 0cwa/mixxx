@@ -3,6 +3,7 @@
 #include <gtest/gtest_prod.h>
 
 #include <QAtomicInt>
+#include <QAtomicPointer>
 #include <QMutex>
 #include <initializer_list>
 
@@ -545,7 +546,7 @@ class EngineBuffer : public EngineObject {
     EngineBufferScale* m_pScaleVinyl;
     // The keylock engine is configurable, so it could flip flop between
     // ScaleST and ScaleRB during a single callback.
-    EngineBufferScale* volatile m_pScaleKeylock;
+    QAtomicPointer<EngineBufferScale> m_pScaleKeylock;
 
     // Object used for vinyl-style interpolation scaling of the audio
     EngineBufferScaleLinear* m_pScaleLinear;
