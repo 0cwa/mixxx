@@ -524,6 +524,9 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
+    FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
+    FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition);
+    FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
     EngineBufferScale* m_pScaleVinyl;
     // The keylock engine is configurable, so it could flip flop between
     // ScaleST and ScaleRB during a single callback.
