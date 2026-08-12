@@ -259,10 +259,6 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::SignalSmithCheaper:
             return true;
 #endif
-#ifdef __SIGNALSMITH__
-        case KeylockEngine::SignalSmith:
-            return true;
-#endif
         default:
             return false;
         }
