@@ -129,6 +129,9 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_slipModeState(SlipModeState::Disabled),
           m_quantize(ControlFlag::AllowMissingOrInvalid),
           m_pKeylockEngine(nullptr),
+          m_iKeylockEngine(static_cast<int>(defaultKeylockEngine())),
+          m_iKeylockEngineChangeVersion(0),
+          m_keylockEngineChangeVersion(0),
           m_pRepeat(nullptr),
           m_startButton(nullptr),
           m_endButton(nullptr),
@@ -417,10 +420,14 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
 
     // m_pScaleKeylock and m_pScaleVinyl could change out from under us,
     // so cache it.
+    const int keylockEngineChangeVersion =
+            m_iKeylockEngineChangeVersion.loadAcquire();
     EngineBufferScale* keylock_scale = m_pScaleKeylock;
     EngineBufferScale* vinyl_scale = m_pScaleVinyl;
+    const bool keylockEngineChanged =
+            keylockEngineChangeVersion != m_keylockEngineChangeVersion;
 
-    if (bEnable && m_pScale != keylock_scale) {
+    if (bEnable && (m_pScale != keylock_scale || keylockEngineChanged)) {
         if (m_speed_old != 0.0) {
             // Crossfade if we are not paused.
             // If we start from zero a ramping gain is
@@ -429,6 +436,7 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
         }
         m_pScale = keylock_scale;
         m_pScale->clear();
+        m_keylockEngineChangeVersion = keylockEngineChangeVersion;
         m_bScalerChanged = true;
     } else if (!bEnable && m_pScale != vinyl_scale) {
         if (m_speed_old != 0.0) {
@@ -965,7 +973,12 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
     default:
         qWarning() << m_group << "---> default";
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
-        break;
+        return;
+    }
+
+    const int iEngine = static_cast<int>(engine);
+    if (m_iKeylockEngine.fetchAndStoreRelease(iEngine) != iEngine) {
+        m_iKeylockEngineChangeVersion.fetchAndAddRelease(1);
     }
 }
 
