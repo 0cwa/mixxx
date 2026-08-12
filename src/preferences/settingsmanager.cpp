@@ -76,8 +76,7 @@ SettingsManager::SettingsManager(const QString& settingsPath)
         : m_bShouldRescanLibrary(false) {
     // First make sure the settings path exists. If we don't then other parts of
     // Mixxx (such as the library) will produce confusing errors.
-    const bool settingsDirectoryExistedBeforeStartup = QDir(settingsPath).exists();
-    if (!settingsDirectoryExistedBeforeStartup) {
+    if (!QDir(settingsPath).exists()) {
         QDir().mkpath(settingsPath);
     }
 
