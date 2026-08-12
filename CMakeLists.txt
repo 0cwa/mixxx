@@ -5838,13 +5838,15 @@ if(QML)
   target_compile_definitions(mixxx-qml-lib PRIVATE rendergraph=rendergraph_sg)
   target_compile_definitions(mixxx-qml-lib PRIVATE __SCENEGRAPH__)
   target_compile_definitions(mixxx-qml-lib PRIVATE allshader=allshader_sg)
-  target_include_directories(
-    mixxx-qml-lib
-    SYSTEM
-    PUBLIC
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
-  )
+  if(SIGNALSMITH)
+    target_include_directories(
+      mixxx-qml-lib
+      SYSTEM
+      PUBLIC
+        "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
+        "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
+    )
+  endif()
 endif()
 
 # WavPack audio file support
