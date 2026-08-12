@@ -186,11 +186,6 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     // Maximum number of frames to request from ReadAheadManager in one call.
     static constexpr SINT kMaxGrainFrames = 4096;
 
-    // Bungee Basic's lapped output exposes the output two synthesis hops
-    // behind the source position used by EngineBuffer. The synthesis hop is
-    // derived from Bungee's sample-rate timing rule in onSignalChanged().
-    SINT m_outputLatencyFrames;
-
     // Capacity of the buffered planar input window in frames.
     SINT m_inputBufferFrames;
 

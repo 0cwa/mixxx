@@ -34,8 +34,6 @@ static bool spanHasInvalidSamples(std::span<const CSAMPLE> buf) {
 // live in their natural EngineBuffer slots.
 class EngineBufferBungeeTest : public BaseSignalPathTest {
   protected:
-    static const QString kAppGroup;
-
     void SetUp() override {
         BaseSignalPathTest::SetUp();
         // Load a fake 128-BPM stereo track on deck 1 and let it play.
@@ -45,7 +43,7 @@ class EngineBufferBungeeTest : public BaseSignalPathTest {
     }
 
     void selectEngine(EngineBuffer::KeylockEngine eng) {
-        ControlObject::set(ConfigKey(kAppGroup, QStringLiteral("keylock_engine")),
+        ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock_engine")),
                 static_cast<double>(eng));
     }
 
@@ -66,9 +64,6 @@ class EngineBufferBungeeTest : public BaseSignalPathTest {
 
     TrackPointer m_pTrack1;
 };
-
-// static
-const QString EngineBufferBungeeTest::kAppGroup = QStringLiteral("[App]");
 
 // When Bungee is the selected keylock engine and keylock is
 // enabled, m_pScaleKeylock must point at m_pScaleBungee and m_pScale must

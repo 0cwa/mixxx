@@ -273,6 +273,7 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
         case KeylockEngine::Bungee:
+            return true;
 #endif
 #ifdef __SIGNALSMITH__
         case KeylockEngine::SignalSmithDefault:
