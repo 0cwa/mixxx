@@ -12,10 +12,13 @@ EngineBufferScaleSignalSmith::EngineBufferScaleSignalSmith(ReadAheadManager* pRe
         : m_pReadAheadManager(pReadAheadManager),
           m_buffers(),
           m_bufferPtrs(),
+          m_outputBuffers(),
+          m_outputBufferPtrs(),
           m_interleavedBuffer(mixxx::kMaxSupportedStems * MAX_BUFFER_LEN),
           m_frameFractionalLeftover(0),
           m_expectedFrameLatency(0),
           m_currentFrameOffset(0),
+          m_bBackwards(false),
           m_currentPreset(Preset::Default) {
     onSignalChanged();
 }
@@ -56,13 +59,22 @@ void EngineBufferScaleSignalSmith::onSignalChanged() {
     if (m_bufferPtrs.size() != channelCount) {
         m_bufferPtrs.resize(channelCount);
     }
+    if (m_outputBuffers.size() != channelCount) {
+        m_outputBuffers.resize(channelCount);
+    }
+    if (m_outputBufferPtrs.size() != channelCount) {
+        m_outputBufferPtrs.resize(channelCount);
+    }
 
     for (int chIdx = 0; chIdx < channelCount; chIdx++) {
-        if (m_buffers[chIdx].size() == MAX_BUFFER_LEN) {
-            continue;
+        if (m_buffers[chIdx].size() != MAX_BUFFER_LEN) {
+            m_buffers[chIdx] = mixxx::SampleBuffer(MAX_BUFFER_LEN);
+            m_bufferPtrs[chIdx] = m_buffers[chIdx].data();
         }
-        m_buffers[chIdx] = mixxx::SampleBuffer(MAX_BUFFER_LEN);
-        m_bufferPtrs[chIdx] = m_buffers[chIdx].data();
+        if (m_outputBuffers[chIdx].size() != MAX_BUFFER_LEN) {
+            m_outputBuffers[chIdx] = mixxx::SampleBuffer(MAX_BUFFER_LEN);
+            m_outputBufferPtrs[chIdx] = m_outputBuffers[chIdx].data();
+        }
     }
 
     // Configure stretcher with preset settings
@@ -217,37 +229,28 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
 
     {
         ScopedTimer t(QStringLiteral("Signalsmith::process"));
-        float* outputBufferPtr[8] = {
-                m_interleavedBuffer.data(),
-                m_interleavedBuffer.data(iOutputBufferSize),
-                m_interleavedBuffer.data(2 * iOutputBufferSize),
-                m_interleavedBuffer.data(3 * iOutputBufferSize),
-                m_interleavedBuffer.data(4 * iOutputBufferSize),
-                m_interleavedBuffer.data(5 * iOutputBufferSize),
-                m_interleavedBuffer.data(6 * iOutputBufferSize),
-                m_interleavedBuffer.data(7 * iOutputBufferSize),
-        };
-        m_stretch.process(m_bufferPtrs.data(), frameRead, outputBufferPtr, outputFrames);
+        m_stretch.process(
+                m_bufferPtrs.data(), frameRead, m_outputBufferPtrs.data(), outputFrames);
     }
 
     auto outputFrameSize = getOutputSignal().samples2frames(iOutputBufferSize);
     switch (getOutputSignal().getChannelCount()) {
     case mixxx::audio::ChannelCount::stereo():
         SampleUtil::interleaveBuffer(pOutputBuffer,
-                m_interleavedBuffer.data(),
-                m_interleavedBuffer.data(iOutputBufferSize),
+                m_outputBuffers[0].data(),
+                m_outputBuffers[1].data(),
                 outputFrameSize);
         break;
     case mixxx::audio::ChannelCount::stem():
         SampleUtil::interleaveBuffer(pOutputBuffer,
-                m_interleavedBuffer.data(),
-                m_interleavedBuffer.data(iOutputBufferSize),
-                m_interleavedBuffer.data(2 * iOutputBufferSize),
-                m_interleavedBuffer.data(3 * iOutputBufferSize),
-                m_interleavedBuffer.data(4 * iOutputBufferSize),
-                m_interleavedBuffer.data(5 * iOutputBufferSize),
-                m_interleavedBuffer.data(6 * iOutputBufferSize),
-                m_interleavedBuffer.data(7 * iOutputBufferSize),
+                m_outputBuffers[0].data(),
+                m_outputBuffers[1].data(),
+                m_outputBuffers[2].data(),
+                m_outputBuffers[3].data(),
+                m_outputBuffers[4].data(),
+                m_outputBuffers[5].data(),
+                m_outputBuffers[6].data(),
+                m_outputBuffers[7].data(),
                 outputFrameSize);
         break;
     default: {
@@ -268,7 +271,7 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
                 ++frameIdx) {
             for (int channel = 0; channel < chCount; channel++) {
                 pOutputBuffer[frameIdx * chCount + channel] =
-                        m_buffers[channel].data()[frameIdx];
+                        m_outputBuffers[channel].data()[frameIdx];
             }
         }
     } break;

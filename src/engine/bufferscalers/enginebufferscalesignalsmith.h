@@ -42,6 +42,9 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
     /// since this object cannot be moved or copied.
     std::vector<float*> m_bufferPtrs;
 
+    std::vector<mixxx::SampleBuffer> m_outputBuffers;
+    std::vector<float*> m_outputBufferPtrs;
+
     /// Contains interleaved samples read from `m_pReadAheadManager`. These need
     /// to be deinterleaved before they can be passed to Rubber Band.
     mixxx::SampleBuffer m_interleavedBuffer;
