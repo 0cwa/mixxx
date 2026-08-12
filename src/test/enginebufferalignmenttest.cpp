@@ -893,6 +893,7 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
 #ifdef __RUBBERBAND__
             case EngineBuffer::KeylockEngine::RubberBandFaster:
             case EngineBuffer::KeylockEngine::RubberBandFiner:
+            case EngineBuffer::KeylockEngine::RubberBandR3ShortWindow:
                 expectedKeylockScaler = pEngineBuffer->m_pScaleRB;
                 break;
 #endif
