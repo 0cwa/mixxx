@@ -309,7 +309,7 @@ EngineBuffer::EngineBuffer(const QString& group,
             m_pCueControl);
     m_pReadAheadManager->addRateControl(m_pRateControl);
 
-    m_pKeylockEngine = new ControlProxy(kAppGroup, QStringLiteral("keylock_engine"), this);
+    m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
     m_pKeylockEngine->connectValueChanged(this,
             &EngineBuffer::slotKeylockEngineChanged,
             Qt::DirectConnection);
@@ -915,15 +915,18 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
     const KeylockEngine engine = static_cast<KeylockEngine>(dIndex);
     switch (engine) {
     case KeylockEngine::SoundTouch:
+        qWarning() << m_group << "---> ST";
         m_pScaleKeylock = m_pScaleST;
         break;
 #ifdef __RUBBERBAND__
     case KeylockEngine::RubberBandFaster:
+        qWarning() << m_group << "---> RB faster";
         m_pScaleRB->useEngineFiner(false);
         m_pScaleRB->useOptionWindowShort(false);
         m_pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandFiner:
+        qWarning() << m_group << "---> RB finer";
         m_pScaleRB->useEngineFiner(
                 true); // in case of Rubberband V2 it falls back to RUBBERBAND_FASTER
         m_pScaleRB->useOptionWindowShort(false);
@@ -948,6 +951,7 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
         break;
 #endif
     default:
+        qWarning() << m_group << "---> default";
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
         break;
     }
