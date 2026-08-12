@@ -328,6 +328,22 @@ Category {
                                                 options.push(qsTr("Rubberband R3"));
                                                 tooltips.push(qsTr("Near-hi-fi quality"));
                                                 break;
+                                            case 3:
+                                                options.push(qsTr("Rubberband R3 SW"));
+                                                tooltips.push(qsTr("High quality, lower latency"));
+                                                break;
+                                            case 4:
+                                                options.push(qsTr("Bungee"));
+                                                tooltips.push(qsTr("High quality"));
+                                                break;
+                                            case 5:
+                                                options.push(qsTr("SignalSmith (Default)"));
+                                                tooltips.push(qsTr("High quality"));
+                                                break;
+                                            case 6:
+                                                options.push(qsTr("SignalSmith (Cheaper)"));
+                                                tooltips.push(qsTr("High quality, lower CPU use"));
+                                                break;
                                             }
                                         }
                                         keylock.options = options;
