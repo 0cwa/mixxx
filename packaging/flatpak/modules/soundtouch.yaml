@@ -6,7 +6,7 @@ config-opts:
 sources:
   - type: archive
     url: https://codeberg.org/soundtouch/soundtouch/archive/2.4.0.tar.gz
-    sha256: 3dda3c9ab1e287f15028c010a66ab7145fa855dfa62763538f341e70b4d10abd
+    sha256: b54ca9724afcf0b8c5326a0afb1b1676f2b892ee01c57d5312232ce4bc27a077
     x-checker-data:
       type: anitya
       project-id: 115722
