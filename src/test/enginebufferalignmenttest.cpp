@@ -7,6 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QSaveFile>
+#include <QTextStream>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -20,7 +24,9 @@
 #include <vector>
 
 #include "control/controlobject.h"
+#include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
+#include "engine/controls/enginecontrol.h"
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
 #include "test/signalpathtest.h"
@@ -234,6 +240,36 @@ ReadAheadSnapshot latestReadAheadSnapshot(const DeterministicSource& source) {
             : read.startSample + read.numSamples;
     snapshot.startFrames = static_cast<double>(sourceStart) / kChannels;
     snapshot.endFrames = static_cast<double>(sourceEnd) / kChannels;
+    return snapshot;
+}
+
+ReadAheadSnapshot readAheadSnapshotSince(
+        const DeterministicSource& source,
+        std::size_t firstObservation) {
+    ReadAheadSnapshot snapshot;
+    const std::size_t first = std::min(
+            firstObservation, source.readObservationCount);
+    for (std::size_t i = first; i < source.readObservationCount; ++i) {
+        const auto& read = source.readObservations[i];
+        const SINT sourceStart = read.reverse
+                ? read.startSample - read.numSamples
+                : read.startSample;
+        const SINT sourceEnd = read.reverse
+                ? read.startSample
+                : read.startSample + read.numSamples;
+        const double startFrames =
+                static_cast<double>(sourceStart) / kChannels;
+        const double endFrames =
+                static_cast<double>(sourceEnd) / kChannels;
+        if (snapshot.observationCount == 0) {
+            snapshot.startFrames = startFrames;
+            snapshot.endFrames = endFrames;
+        } else {
+            snapshot.startFrames = std::min(snapshot.startFrames, startFrames);
+            snapshot.endFrames = std::max(snapshot.endFrames, endFrames);
+        }
+        ++snapshot.observationCount;
+    }
     return snapshot;
 }
 
@@ -452,6 +488,137 @@ void configureAlignmentControls(const QString& group,
     ControlObject::set(ConfigKey(group, QStringLiteral("passthrough")), 0.0);
 }
 
+const char* keylockEngineTraceName(EngineBuffer::KeylockEngine engine) {
+    switch (engine) {
+    case EngineBuffer::KeylockEngine::SoundTouch:
+        return "SoundTouch";
+#ifdef __RUBBERBAND__
+    case EngineBuffer::KeylockEngine::RubberBandFaster:
+        return "RubberBandFaster";
+    case EngineBuffer::KeylockEngine::RubberBandFiner:
+        return "RubberBandR3";
+#endif
+#ifdef __BUNGEE__
+    case EngineBuffer::KeylockEngine::Bungee:
+        return "Bungee";
+#endif
+#ifdef __SIGNALSMITH__
+    case EngineBuffer::KeylockEngine::SignalSmith:
+        return "SignalSmith";
+#endif
+    default:
+        return "Unknown";
+    }
+}
+
+struct CommonScalerPositionTraceRecord {
+    const char* engine = "";
+    const char* activeEngine = "";
+    const char* scenario = "";
+    int trackSampleRateHz = 0;
+    int outputSampleRateHz = 0;
+    double tempoRatio = 0.0;
+    double pitchRatio = 0.0;
+    const char* direction = "forward";
+    int callback = 0;
+    int markerSourceFrame = kEngineMarkerSourceFrame;
+    int markerOutputFrameAbsolute = -1;
+    int markerFound = 0;
+    double markerCorrelation = 0.0;
+    double markerNormalizedError = 0.0;
+    double playPosBeforeFrames = 0.0;
+    double playPosAfterFrames = 0.0;
+    double returnedSourceFrames = 0.0;
+    double effectiveRate = 0.0;
+    double readAheadStartFrames = 0.0;
+    double readAheadEndFrames = 0.0;
+    std::size_t readAheadObservationCount = 0;
+    double scalerVisualOffsetSourceFrames = 0.0;
+    double visualEnginePlayBeforeFrames = 0.0;
+    double visualVSyncBeforeFrames = 0.0;
+    double outputMaxAbs = 0.0;
+    int outputAllFinite = 1;
+};
+
+double tracePlayPositionValue(mixxx::audio::FramePos position) {
+    // FramePos::isValid() intentionally accepts every finite value. The
+    // engine's finite kInitialPlayPosition is nevertheless a semantic
+    // sentinel used until the initial seek has been processed.
+    if (!position.isValid() || position == kInitialPlayPosition) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return position.value();
+}
+
+void writeCommonScalerPositionTrace(
+        const QString& traceDirectory,
+        const std::vector<CommonScalerPositionTraceRecord>& records) {
+    QDir outputDirectory(traceDirectory);
+    ASSERT_TRUE(outputDirectory.exists() || outputDirectory.mkpath(QStringLiteral(".")))
+            << "Could not create trace directory " << traceDirectory.toStdString();
+
+    const QString tracePath = outputDirectory.filePath(
+            QStringLiteral("engine-position-trace-%1.tsv")
+                    .arg(QCoreApplication::applicationPid()));
+    QSaveFile traceFile(tracePath);
+    ASSERT_TRUE(traceFile.open(QIODevice::WriteOnly | QIODevice::Text))
+            << "Could not open trace file " << tracePath.toStdString();
+
+    QTextStream trace(&traceFile);
+    trace.setRealNumberPrecision(17);
+    trace << "# Synthetic test trace: visual_engine_play_before_frames and "
+             "visual_vsync_before_frames are VisualPlayPosition predictions, "
+             "not physical DAC or VSync captures.\n";
+    trace << "# Follow-up gaps: reverse, seek, loop, and rate-transition scenarios "
+             "are not included because this marker matcher is forward-oriented "
+             "and this bounded trace does not claim physical device timing.\n";
+    trace << "engine\tactive_engine\tscenario\ttrack_sample_rate_hz\t"
+             "output_sample_rate_hz\ttempo_ratio\tpitch_ratio\tdirection\t"
+             "callback\tmarker_source_frame\tmarker_output_frame_absolute\t"
+             "marker_found\tmarker_correlation\tmarker_normalized_error\t"
+             "m_playPos_before_frames\tm_playPos_after_frames\t"
+             "returned_source_frames\teffective_rate\tread_ahead_start_frames\t"
+             "read_ahead_end_frames\tread_ahead_observation_count\t"
+             "scaler_visual_offset_source_frames\t"
+             "visual_engine_play_before_frames\tvisual_vsync_before_frames\t"
+             "output_max_abs\toutput_all_finite\n";
+
+    for (const auto& record : records) {
+        trace << record.engine << '\t'
+              << record.activeEngine << '\t'
+              << record.scenario << '\t'
+              << record.trackSampleRateHz << '\t'
+              << record.outputSampleRateHz << '\t'
+              << record.tempoRatio << '\t'
+              << record.pitchRatio << '\t'
+              << record.direction << '\t'
+              << record.callback << '\t'
+              << record.markerSourceFrame << '\t'
+              << record.markerOutputFrameAbsolute << '\t'
+              << record.markerFound << '\t'
+              << record.markerCorrelation << '\t'
+              << record.markerNormalizedError << '\t'
+              << record.playPosBeforeFrames << '\t'
+              << record.playPosAfterFrames << '\t'
+              << record.returnedSourceFrames << '\t'
+              << record.effectiveRate << '\t'
+              << record.readAheadStartFrames << '\t'
+              << record.readAheadEndFrames << '\t'
+              << record.readAheadObservationCount << '\t'
+              << record.scalerVisualOffsetSourceFrames << '\t'
+              << record.visualEnginePlayBeforeFrames << '\t'
+              << record.visualVSyncBeforeFrames << '\t'
+              << record.outputMaxAbs << '\t'
+              << record.outputAllFinite << '\n';
+    }
+    trace.flush();
+    ASSERT_TRUE(traceFile.commit())
+            << "Could not commit trace file " << tracePath.toStdString();
+    GTEST_LOG_(INFO) << "Common scaler position trace: "
+                     << tracePath.toStdString()
+                     << " (" << records.size() << " records)";
+}
+
 StretchedMarkerProbeResult runStretchedMarkerProbe(
         EngineBuffer* pEngineBuffer,
         const QString& group,
@@ -662,6 +829,176 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
         EngineBuffer::setTestReaderFactory(nullptr);
     }
 };
+
+TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
+    const QString traceDirectory = qEnvironmentVariable(
+            "MIXXX_ENGINE_POSITION_TRACE_DIR");
+    if (traceDirectory.trimmed().isEmpty()) {
+        GTEST_SKIP() << "Set MIXXX_ENGINE_POSITION_TRACE_DIR to opt in";
+    }
+
+    constexpr int kTraceCallbacks = 80;
+    struct TraceScenario {
+        const char* name;
+        double tempoRatio;
+    };
+    constexpr std::array<TraceScenario, 2> kTraceScenarios = {{
+            {"forward-unity", 1.0},
+            {"forward-stretched-1.25", 1.25},
+    }};
+
+    TrackPointer track = Track::newTemporary();
+    track->setAudioProperties(
+            mixxx::kEngineChannelOutputCount,
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(kTrackSeconds));
+
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    const auto visualPlayPosition =
+            VisualPlayPosition::getVisualPlayPosition(m_sGroup1);
+    FixedVSyncProvider vsync;
+    std::vector<CommonScalerPositionTraceRecord> records;
+    records.reserve(EngineBuffer::kKeylockEngines.size() *
+            kTraceScenarios.size() * kTraceCallbacks);
+
+    for (const auto engine : EngineBuffer::kKeylockEngines) {
+        if (!EngineBuffer::isKeylockEngineAvailable(engine)) {
+            GTEST_LOG_(INFO) << "Skipping unavailable keylock engine "
+                             << keylockEngineTraceName(engine);
+            continue;
+        }
+
+        for (const auto& scenario : kTraceScenarios) {
+            configureAlignmentControls(
+                    m_sGroup1, engine, scenario.tempoRatio);
+            pEngineBuffer->loadFakeTrack(track, false);
+            pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
+            ControlObject::set(
+                    ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+
+            ASSERT_EQ(pEngineBuffer->m_iKeylockEngine.loadAcquire(),
+                    static_cast<int>(engine))
+                    << "Requested engine " << keylockEngineTraceName(engine)
+                    << " was not active";
+            EngineBufferScale* expectedKeylockScaler = nullptr;
+            switch (engine) {
+            case EngineBuffer::KeylockEngine::SoundTouch:
+                expectedKeylockScaler = pEngineBuffer->m_pScaleST;
+                break;
+#ifdef __RUBBERBAND__
+            case EngineBuffer::KeylockEngine::RubberBandFaster:
+            case EngineBuffer::KeylockEngine::RubberBandFiner:
+                expectedKeylockScaler = pEngineBuffer->m_pScaleRB;
+                break;
+#endif
+#ifdef __BUNGEE__
+            case EngineBuffer::KeylockEngine::Bungee:
+                expectedKeylockScaler = pEngineBuffer->m_pScaleBungee;
+                break;
+#endif
+#ifdef __SIGNALSMITH__
+            case EngineBuffer::KeylockEngine::SignalSmith:
+                expectedKeylockScaler = pEngineBuffer->m_pScaleSignalSmith;
+                break;
+#endif
+            default:
+                break;
+            }
+            ASSERT_EQ(pEngineBuffer->m_pScaleKeylock.loadAcquire(),
+                    expectedKeylockScaler)
+                    << "The requested keylock scaler is not selected for "
+                    << keylockEngineTraceName(engine);
+
+            const char* const engineName = keylockEngineTraceName(engine);
+            const std::size_t firstRecord = records.size();
+            std::array<CSAMPLE, kBufferSamples> output{};
+            std::vector<CSAMPLE> emitted;
+            emitted.reserve(kBufferSamples * kTraceCallbacks);
+            const double engineTrackFrames =
+                    pEngineBuffer->getTrackEndPosition().value();
+            g_source.resetReadObservations();
+
+            for (int callback = 0; callback < kTraceCallbacks; ++callback) {
+                CommonScalerPositionTraceRecord record;
+                record.engine = engineName;
+                record.activeEngine = engineName;
+                record.scenario = scenario.name;
+                record.trackSampleRateHz = kSampleRate;
+                record.outputSampleRateHz = kSampleRate;
+                record.tempoRatio = scenario.tempoRatio;
+                record.pitchRatio = 1.0;
+                record.direction = "forward";
+                record.callback = callback;
+                const auto playPosBefore = pEngineBuffer->getPlayPos();
+                record.playPosBeforeFrames =
+                        tracePlayPositionValue(playPosBefore);
+                record.visualEnginePlayBeforeFrames =
+                        visualPlayPosition->getEnginePlayPos() *
+                        engineTrackFrames;
+                record.visualVSyncBeforeFrames =
+                        visualPlayPosition->getAtNextVSync(&vsync) *
+                        engineTrackFrames;
+                const std::size_t firstObservation =
+                        g_source.readObservationCount;
+
+                pEngineBuffer->process(output.data(), kBufferSamples);
+                pEngineBuffer->postProcess(kBufferSamples);
+
+                const auto playPosAfter = pEngineBuffer->getPlayPos();
+                record.playPosAfterFrames = tracePlayPositionValue(playPosAfter);
+                record.returnedSourceFrames =
+                        std::isfinite(record.playPosBeforeFrames) &&
+                                std::isfinite(record.playPosAfterFrames)
+                        ? record.playPosAfterFrames - record.playPosBeforeFrames
+                        : std::numeric_limits<double>::quiet_NaN();
+                record.effectiveRate = pEngineBuffer->getSpeed();
+                const ReadAheadSnapshot readAhead =
+                        readAheadSnapshotSince(g_source, firstObservation);
+                record.readAheadObservationCount = readAhead.observationCount;
+                record.readAheadStartFrames = readAhead.startFrames;
+                record.readAheadEndFrames = readAhead.endFrames;
+                record.scalerVisualOffsetSourceFrames =
+                        pEngineBuffer->m_pScale->getVisualPlayPositionOffset();
+                for (const CSAMPLE sample : output) {
+                    record.outputMaxAbs = std::max(
+                            record.outputMaxAbs,
+                            std::abs(static_cast<double>(sample)));
+                    record.outputAllFinite = record.outputAllFinite &&
+                            std::isfinite(static_cast<double>(sample));
+                }
+                EXPECT_EQ(record.outputAllFinite, 1)
+                        << "Non-finite output from " << engineName
+                        << " in scenario " << scenario.name
+                        << " callback " << callback;
+                emitted.insert(emitted.end(), output.begin(), output.end());
+                records.push_back(record);
+            }
+
+            const MarkerSimilarity marker =
+                    findBestEngineMarkerSimilarity(emitted);
+            const bool markerFound = marker.outputFrame >= 0 &&
+                    marker.correlation >= 0.3;
+            EXPECT_TRUE(markerFound)
+                    << "Marker was not reliably observed for " << engineName
+                    << " in scenario " << scenario.name
+                    << "; best correlation=" << marker.correlation;
+            if (markerFound) {
+                const int callback = marker.outputFrame / kBufferFrames;
+                if (callback >= 0 && callback < kTraceCallbacks) {
+                    auto& record = records[firstRecord + callback];
+                    record.markerFound = 1;
+                    record.markerOutputFrameAbsolute = marker.outputFrame;
+                    record.markerCorrelation = marker.correlation;
+                    record.markerNormalizedError = marker.normalizedError;
+                }
+            }
+        }
+    }
+
+    ASSERT_FALSE(records.empty()) << "No keylock engines were available";
+    writeCommonScalerPositionTrace(traceDirectory, records);
+}
 
 TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
     constexpr double kExpectedMarkerPixel = kRendererWidth * 0.5;
