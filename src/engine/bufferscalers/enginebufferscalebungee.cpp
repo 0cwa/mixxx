@@ -350,21 +350,27 @@ bool EngineBufferScaleBungee::hasValidOutputChunk() const {
 
 double EngineBufferScaleBungee::copyFlushOutputFrames(
         CSAMPLE*& pOutput,
-        SINT& remainingFrames) const {
+        SINT& remainingFrames) {
     if (!hasValidOutputChunk()) {
         return 0.0;
     }
 
     const SINT framesToCopy = std::min(
-            static_cast<SINT>(m_outputChunk.frameCount),
+            static_cast<SINT>(m_outputChunk.frameCount) - m_outputChunkConsumed,
             remainingFrames);
     if (framesToCopy <= 0) {
         return 0.0;
     }
-    copyOutputFrames(pOutput, 0, framesToCopy);
+    copyOutputFrames(pOutput, m_outputChunkConsumed, framesToCopy);
 
     remainingFrames -= framesToCopy;
     pOutput += getOutputSignal().frames2samples(framesToCopy);
+    m_outputChunkConsumed += framesToCopy;
+    m_remainingOutputFrames =
+            static_cast<SINT>(m_outputChunk.frameCount) - m_outputChunkConsumed;
+    if (m_remainingOutputFrames <= 0) {
+        m_outputChunkConsumed = 0;
+    }
     return m_effectiveRate * static_cast<double>(framesToCopy);
 }
 
@@ -508,6 +514,8 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
 
                 m_pStretcher->specifyGrain(flushRequest);
                 m_pStretcher->synthesiseGrain(m_outputChunk);
+                m_outputChunkConsumed = 0;
+                m_remainingOutputFrames = 0;
 
                 readFramesProcessed +=
                         copyFlushOutputFrames(pOutput, remainingFrames);

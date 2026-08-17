@@ -135,7 +135,7 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     // Uses SampleUtil::interleaveBuffer for the stereo fast path.
     void copyOutputFrames(CSAMPLE* pDest, SINT offsetInChunk, SINT nFrames) const;
     bool hasValidOutputChunk() const;
-    double copyFlushOutputFrames(CSAMPLE*& pOutput, SINT& remainingFrames) const;
+    double copyFlushOutputFrames(CSAMPLE*& pOutput, SINT& remainingFrames);
 
     // The read-ahead manager that we use to fetch samples
     ReadAheadManager* m_pReadAheadManager;

@@ -465,6 +465,7 @@ TEST(EngineBufferScaleBungeeFlushAccountingTest,
     constexpr SINT kChannelCount = 2;
     constexpr SINT kChunkFrames = 5;
     constexpr SINT kRequestedFrames = 3;
+    constexpr SINT kRemainingFrames = kChunkFrames - kRequestedFrames;
     constexpr SINT kOutputSamples = kRequestedFrames * kChannelCount;
 
     EngineBufferScaleBungee scaler(nullptr);
@@ -500,6 +501,25 @@ TEST(EngineBufferScaleBungeeFlushAccountingTest,
                 output[frame * kChannelCount]);
         EXPECT_FLOAT_EQ(static_cast<CSAMPLE>(20 + frame),
                 output[frame * kChannelCount + 1]);
+    }
+
+    CSAMPLE remainingOutput[kRemainingFrames * kChannelCount] = {};
+    CSAMPLE* pRemainingOutput = remainingOutput;
+    SINT remainingFramesToCopy = kRemainingFrames;
+
+    const double remainingFramesRead =
+            scaler.copyFlushOutputFrames(pRemainingOutput, remainingFramesToCopy);
+
+    EXPECT_DOUBLE_EQ(kTempoRatio * kRemainingFrames, remainingFramesRead);
+    EXPECT_EQ(0, remainingFramesToCopy);
+    EXPECT_EQ(remainingOutput + kRemainingFrames * kChannelCount,
+            pRemainingOutput);
+
+    for (SINT frame = 0; frame < kRemainingFrames; ++frame) {
+        EXPECT_FLOAT_EQ(static_cast<CSAMPLE>(10 + kRequestedFrames + frame),
+                remainingOutput[frame * kChannelCount]);
+        EXPECT_FLOAT_EQ(static_cast<CSAMPLE>(20 + kRequestedFrames + frame),
+                remainingOutput[frame * kChannelCount + 1]);
     }
 }
 

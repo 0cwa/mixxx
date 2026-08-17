@@ -173,10 +173,7 @@ class QmlSoundManagerProxy : public QObject {
     static inline std::shared_ptr<SoundManager> s_pSoundManager;
 
     std::shared_ptr<SoundManager> m_pSoundManager;
-    PollingControlProxy m_keylockEngine1;
-    PollingControlProxy m_keylockEngine2;
-    PollingControlProxy m_keylockEngine3;
-    PollingControlProxy m_keylockEngine4;
+    PollingControlProxy m_keylockEngine;
 
     std::optional<EngineBuffer::KeylockEngine> m_pendingKeylockEngine;
     SoundManagerConfig m_config;

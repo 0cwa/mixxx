@@ -1,5 +1,6 @@
 name: eigen3
 buildsystem: cmake-ninja
+builddir: true
 config-opts:
   - -DCMAKE_BUILD_TYPE=Release
   - -DEIGEN_BUILD_DOC=OFF
