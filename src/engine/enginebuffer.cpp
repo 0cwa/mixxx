@@ -813,8 +813,8 @@ double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
         return 0.0;
     }
 
-    const double position = std::clamp(
-            absolutePlaypos, 0.0, m_trackEndPositionOld.value());
+    const double position = std::min(
+            absolutePlaypos, m_trackEndPositionOld.value());
     return position / m_trackEndPositionOld.value();
 }
 
@@ -1586,13 +1586,8 @@ void EngineBuffer::updateIndicators(double speed, std::size_t bufferSize) {
     // Increase samplesCalculated by the buffer size
     m_samplesSinceLastIndicatorUpdate += bufferSize;
 
-    const double trackEndPosition = m_trackEndPositionOld.isValid()
-            ? m_trackEndPositionOld.value()
-            : 0.0;
-    const double visualPlayPosition = std::clamp(
-            m_playPos.value() + m_pScale->getVisualPlayPositionOffset(),
-            0.0,
-            trackEndPosition);
+    const double visualPlayPosition =
+            m_playPos.value() + m_pScale->getVisualPlayPositionOffset();
     const double fFractionalPlaypos =
             fractionalPlayposFromAbsolute(visualPlayPosition);
     const double fFractionalSlipPos =
