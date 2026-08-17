@@ -22,6 +22,11 @@ namespace qml {
 
 class QmlSoundManagerProxy;
 class QmlSoundDeviceConnection;
+class QmlSoundDeviceProxy;
+
+using QmlSoundDeviceConnectionList = QList<QmlSoundDeviceConnection*>;
+using QmlSoundDeviceProxyList = QList<QmlSoundDeviceProxy*>;
+
 class QmlSoundDeviceProxy : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString displayName READ getDisplayName CONSTANT)
@@ -40,7 +45,7 @@ class QmlSoundDeviceProxy : public QObject {
     virtual uint getChannelCount() const = 0;
     SoundDeviceId getDeviceId() const;
 
-    Q_INVOKABLE virtual QList<mixxx::qml::QmlSoundDeviceConnection*> connections(
+    Q_INVOKABLE virtual mixxx::qml::QmlSoundDeviceConnectionList connections(
             mixxx::qml::QmlSoundManagerProxy* manager) = 0;
 
   protected:
@@ -56,7 +61,7 @@ class QmlSoundInputDeviceProxy : public QmlSoundDeviceProxy {
             : QmlSoundDeviceProxy(std::move(pInternal), parent) {
     }
     uint getChannelCount() const override;
-    Q_INVOKABLE QList<mixxx::qml::QmlSoundDeviceConnection*> connections(
+    Q_INVOKABLE mixxx::qml::QmlSoundDeviceConnectionList connections(
             mixxx::qml::QmlSoundManagerProxy* manager) override;
 };
 
@@ -69,7 +74,7 @@ class QmlSoundOutputDeviceProxy : public QmlSoundDeviceProxy {
             : QmlSoundDeviceProxy(std::move(pInternal), parent) {
     }
     uint getChannelCount() const override;
-    Q_INVOKABLE QList<mixxx::qml::QmlSoundDeviceConnection*> connections(
+    Q_INVOKABLE mixxx::qml::QmlSoundDeviceConnectionList connections(
             mixxx::qml::QmlSoundManagerProxy* manager) override;
 };
 
@@ -123,9 +128,8 @@ class QmlSoundManagerProxy : public QObject {
             QObject* parent = nullptr);
 
     Q_INVOKABLE QList<QString> getHostAPIList() const;
-    Q_INVOKABLE QList<mixxx::qml::QmlSoundDeviceProxy*> availableInputDevices(
-            const QString& filterAPI);
-    Q_INVOKABLE QList<mixxx::qml::QmlSoundDeviceProxy*> availableOutputDevices(
+    Q_INVOKABLE mixxx::qml::QmlSoundDeviceProxyList availableInputDevices(const QString& filterAPI);
+    Q_INVOKABLE mixxx::qml::QmlSoundDeviceProxyList availableOutputDevices(
             const QString& filterAPI);
 
     Q_INVOKABLE QList<EngineBuffer::KeylockEngine> getKeylockEngines() const;

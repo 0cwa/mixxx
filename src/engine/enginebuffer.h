@@ -97,12 +97,13 @@ class EngineBuffer : public EngineObject {
 #ifdef __RUBBERBAND__
         RubberBandFaster = 1,
         RubberBandFiner = 2,
+        RubberBandR3ShortWindow = 3,
 #endif
 #ifdef __BUNGEE__
-        Bungee = 3,
+        Bungee = 4,
 #endif
 #ifdef __SIGNALSMITH__
-        SignalSmith = 4,
+        SignalSmith = 5,
 #endif
     };
     Q_ENUM(KeylockEngine);
@@ -113,6 +114,7 @@ class EngineBuffer : public EngineObject {
 #ifdef __RUBBERBAND__
             KeylockEngine::RubberBandFaster,
             KeylockEngine::RubberBandFiner,
+            KeylockEngine::RubberBandR3ShortWindow,
 #endif
 #ifdef __BUNGEE__
             KeylockEngine::Bungee,
@@ -215,15 +217,20 @@ class EngineBuffer : public EngineObject {
     static QString getKeylockEngineName(KeylockEngine engine) {
         switch (engine) {
         case KeylockEngine::SoundTouch:
-            return tr("Soundtouch (faster)");
+            return tr("Soundtouch (fastest, low quality)");
 #ifdef __RUBBERBAND__
         case KeylockEngine::RubberBandFaster:
-            return tr("Rubberband (better)");
+            return tr("Rubberband (fast, medium quality)");
         case KeylockEngine::RubberBandFiner:
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
-                return tr("Rubberband R3 (near-hi-fi quality)");
+                return tr("Rubberband R3 MW (slow, highest quality)");
             }
-            return tr("Rubberband (better)");
+            return tr("Rubberband (fast, medium quality)");
+        case KeylockEngine::RubberBandR3ShortWindow:
+            if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
+                return tr("Rubberband R3 SW (fast, high quality)");
+            }
+            return tr("Rubberband (fast, medium quality)");
 #endif
 #ifdef __BUNGEE__
         case KeylockEngine::Bungee:
@@ -235,9 +242,9 @@ class EngineBuffer : public EngineObject {
 #endif
         default:
 #ifdef __RUBBERBAND__
-            return tr("Unknown, using Rubberband (better)");
+            return tr("Unknown, using Rubberband (fast, medium quality)");
 #else
-            return tr("Unknown, using Soundtouch");
+            return tr("Unknown, using Soundtouch (fastest, low quality)");
 #endif
         }
     }
@@ -250,6 +257,7 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::RubberBandFaster:
             return true;
         case KeylockEngine::RubberBandFiner:
+        case KeylockEngine::RubberBandR3ShortWindow:
             return EngineBufferScaleRubberBand::isEngineFinerAvailable();
 #endif
 #ifdef __BUNGEE__

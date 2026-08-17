@@ -391,7 +391,11 @@ void MixxxMainWindow::initialize() {
     // that says "mixxx will barely work with no outs".
     // In case of persisting errors, the user has already received a message
     // above. So we can just check the output count here.
-    while (m_pCoreServices->getSoundManager()->getConfig().getOutputs().count() == 0) {
+    while (m_pCoreServices->getSoundManager()
+                    ->getConfig()
+                    .getOutputs()
+                    .isEmpty() &&
+            !m_pCoreServices->getSoundManager()->pipewireSkipConfig()) {
         // Exit when we press the Exit button in the noSoundDlg dialog
         // only call it if result != OK
         bool continueClicked = false;
@@ -1263,6 +1267,7 @@ void MixxxMainWindow::slotLibraryScanSummaryDlg(const LibraryScanResultSummary& 
     }
 
     QMessageBox* pMsg = new QMessageBox();
+    pMsg->setAttribute(Qt::WA_DeleteOnClose);
     pMsg->setTextFormat(Qt::RichText); // required to get bold text with <b> tags
     pMsg->setWindowTitle(tr("Library scan finished"));
 
@@ -1296,7 +1301,8 @@ void MixxxMainWindow::slotLibraryScanSummaryDlg(const LibraryScanResultSummary& 
         if (result.numNewMissingTracks != 0) {
             summary += tr("%n track(s) missing (%1 total)",
                     nullptr,
-                    result.numNewMissingTracks);
+                    result.numNewMissingTracks)
+                               .arg(result.numMissingTracks);
         }
         if (result.numRediscoveredTracks != 0) {
             summary += QStringLiteral("<br>") +
