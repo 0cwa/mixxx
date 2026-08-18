@@ -1328,6 +1328,8 @@ TrackPointer RekordboxPlaylistModel::getTrack(const QModelIndex& index) const {
             readAnalyze(track, sampleRate, timingOffset, true, anlzPath);
             readAnalyze(track, sampleRate, timingOffset, false, anlzPathExt);
         } else {
+            // The base ANLZ file can contain both the beat grid and cues.
+            readAnalyze(track, sampleRate, timingOffset, true, anlzPath);
             readAnalyze(track, sampleRate, timingOffset, false, anlzPath);
         }
     }
