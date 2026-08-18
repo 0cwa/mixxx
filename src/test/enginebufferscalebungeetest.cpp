@@ -1156,7 +1156,8 @@ void writeOracleFailureTrace(const std::vector<AlignmentOracleEntry>& trace,
         return;
     }
     output << "reproduction_command=mixxx-test --gtest_color=no "
-              "--gtest_filter=EngineBufferScaleBungeeBufferWindowTest.RealQueuedOutputAlignmentOracleAndOneFrameNegativeControl\n";
+              "--gtest_filter=EngineBufferScaleBungeeBufferWindowTest."
+              "RealQueuedOutputAlignmentOracleAndOneFrameNegativeControl\n";
     output << "first_divergent_clock=1 source-window/output, 2 "
               "source-accounting, "
               "3 VisualPlayPosition prediction, 4 renderer semantic probe\n";

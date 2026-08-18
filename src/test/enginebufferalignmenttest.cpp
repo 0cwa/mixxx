@@ -147,7 +147,9 @@ struct DeterministicSource {
                             0.05 * std::sin(phase * 0.19));
         }
 
-        std::copy(kMarkerCode.begin(), kMarkerCode.end(), samples.begin() + kMarkerSourceFrame * kChannels);
+        std::copy(kMarkerCode.begin(),
+                kMarkerCode.end(),
+                samples.begin() + kMarkerSourceFrame * kChannels);
         for (int frame = 0; frame < kEngineMarkerFrames; ++frame) {
             for (int channel = 0; channel < kChannels; ++channel) {
                 samples[(kEngineMarkerSourceFrame + frame) * kChannels + channel] =
