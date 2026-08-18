@@ -1,3 +1,5 @@
+#ifdef __BUNGEE__
+
 // Integration tests for EngineBuffer with the Bungee keylock engine.
 //
 // These tests exercise the REAL EngineBufferScaleBungee (not a mock scaler)
@@ -11,8 +13,10 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <span>
 
 #include "control/controlobject.h"
+#include "engine/bufferscalers/enginebufferscalebungee.h"
 #include "engine/enginebuffer.h"
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
@@ -73,11 +77,13 @@ TEST_F(EngineBufferBungeeTest, BungeeEngineSelected) {
     ProcessBuffer();
 
     EngineBuffer* pEB = m_pChannel1->getEngineBuffer();
-    EXPECT_EQ(pEB->m_pScaleBungee, pEB->m_pScaleKeylock);
+    EXPECT_EQ(static_cast<EngineBufferScale*>(pEB->m_pScaleBungee),
+            pEB->m_pScaleKeylock.loadAcquire());
 
     setKeylock(true);
     ProcessBuffer();
-    EXPECT_EQ(pEB->m_pScaleBungee, pEB->m_pScale);
+    EXPECT_EQ(static_cast<EngineBufferScale*>(pEB->m_pScaleBungee),
+            pEB->m_pScale);
 
     // Several more clean buffers while keylock is on.
     EXPECT_TRUE(processFinite(5));
@@ -109,17 +115,22 @@ TEST_F(EngineBufferBungeeTest, BungeeKeylockEngineSwitch) {
     EXPECT_TRUE(processFinite(4));
 
     EngineBuffer* pEB = m_pChannel1->getEngineBuffer();
-    EXPECT_NE(pEB->m_pScaleBungee, pEB->m_pScaleKeylock);
+    EXPECT_NE(static_cast<EngineBufferScale*>(pEB->m_pScaleBungee),
+            pEB->m_pScaleKeylock.loadAcquire());
 
     // Switch to Bungee mid-play.
     selectEngine(EngineBuffer::KeylockEngine::Bungee);
     EXPECT_TRUE(processFinite(1));
-    EXPECT_EQ(pEB->m_pScaleBungee, pEB->m_pScaleKeylock);
+    EXPECT_EQ(static_cast<EngineBufferScale*>(pEB->m_pScaleBungee),
+            pEB->m_pScaleKeylock.loadAcquire());
     EXPECT_TRUE(processFinite(4));
 
     // Switch back to SoundTouch.
     selectEngine(EngineBuffer::KeylockEngine::SoundTouch);
     EXPECT_TRUE(processFinite(1));
-    EXPECT_NE(pEB->m_pScaleBungee, pEB->m_pScaleKeylock);
+    EXPECT_NE(static_cast<EngineBufferScale*>(pEB->m_pScaleBungee),
+            pEB->m_pScaleKeylock.loadAcquire());
     EXPECT_TRUE(processFinite(4));
 }
+
+#endif // __BUNGEE__

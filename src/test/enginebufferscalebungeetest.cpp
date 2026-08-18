@@ -1,3 +1,5 @@
+#ifdef __BUNGEE__
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -1067,8 +1069,10 @@ bool oracleTraceIsValid(const std::vector<AlignmentOracleEntry>& trace,
             drained.copiedOutputFrames <= kOracleSmallRequestFrames ||
             newGrain.copiedOutputFrames != kOracleSmallRequestFrames ||
             first.remainingOutputFrames <= 1 ||
-            leftover.remainingOutputFrames != first.remainingOutputFrames - kOracleSmallRequestFrames ||
-            drained.remainingOutputFrames != 0 || newGrain.remainingOutputFrames <= 0) {
+            leftover.remainingOutputFrames !=
+                    first.remainingOutputFrames - kOracleSmallRequestFrames ||
+            drained.remainingOutputFrames != 0 ||
+            newGrain.remainingOutputFrames <= 0) {
         return false;
     }
 
@@ -1399,3 +1403,5 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
             << "A one-frame predicted-display perturbation must be rejected "
                "by the independent VSync timeline check.";
 }
+
+#endif // __BUNGEE__

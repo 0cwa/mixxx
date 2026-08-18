@@ -24,15 +24,7 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
-#ifdef __BUNGEE__
-#include "engine/bufferscalers/enginebufferscalebungee.h"
-#endif
-
-#ifdef __SIGNALSMITH__
-#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
-#endif
-
-//for the writer
+// for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
 #include <QTextStream>
@@ -56,6 +48,12 @@ class ControlPotmeter;
 class EngineBufferScale;
 class EngineBufferScaleLinear;
 class EngineBufferScaleST;
+#ifdef __BUNGEE__
+class EngineBufferScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+class EngineBufferScaleSignalSmith;
+#endif
 class EngineSync;
 class EngineWorkerScheduler;
 class VisualPlayPosition;
@@ -400,9 +398,6 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInLeaderChange);
     FRIEND_TEST(EngineSyncTest, BeatMapQuantizePlay);
     FRIEND_TEST(EngineBufferTest, ScalerNoTransport);
-    FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
-    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
-    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
     EngineSync* m_pEngineSync;
     SyncControl* m_pSyncControl;
     VinylControlControl* m_pVinylControlControl;

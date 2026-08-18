@@ -37,21 +37,23 @@ EngineBuffer::KeylockEngine defaultStableKeylockEngine() {
 }
 
 std::array<EngineBuffer::KeylockEngine, 4> explicitPerDeckKeylockEngines() {
+    std::array<EngineBuffer::KeylockEngine, 4> engines = {
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::SoundTouch,
+            EngineBuffer::KeylockEngine::SoundTouch,
+    };
 #ifdef __RUBBERBAND__
-    return {
-            EngineBuffer::KeylockEngine::SoundTouch,
-            EngineBuffer::KeylockEngine::RubberBandFaster,
-            EngineBuffer::KeylockEngine::RubberBandFiner,
-            EngineBuffer::KeylockEngine::SoundTouch,
-    };
-#else
-    return {
-            EngineBuffer::KeylockEngine::SoundTouch,
-            EngineBuffer::KeylockEngine::SoundTouch,
-            EngineBuffer::KeylockEngine::SoundTouch,
-            EngineBuffer::KeylockEngine::SoundTouch,
-    };
+    engines[1] = EngineBuffer::KeylockEngine::RubberBandFaster;
+    engines[2] = EngineBuffer::KeylockEngine::RubberBandFiner;
 #endif
+#ifdef __BUNGEE__
+    engines[0] = EngineBuffer::KeylockEngine::Bungee;
+#endif
+#ifdef __SIGNALSMITH__
+    engines[3] = EngineBuffer::KeylockEngine::SignalSmith;
+#endif
+    return engines;
 }
 
 } // namespace

@@ -30,7 +30,7 @@ EngineBuffer
 | `m_dBaseRate` | Input-to-output sample-rate ratio. Almost always `1.0` because Bungee's `resampleMode_autoOut` handles SR conversion internally. |
 | `m_dTempoRatio` | Absolute (unsigned) tempo ratio; `1.0` = original speed. Values below `MIN_SEEK_SPEED` are clamped to `0.0` (stopped). |
 | `m_bBackwards` | `true` when the caller requested a negative tempo ratio (reverse playback). |
-| `m_effectiveRate` | `m_dBaseRate × m_dTempoRatio`; always `≥ 0`. |
+| `m_effectiveRate` | `m_dBaseRate × m_dTempoRatio`, latched at grain boundaries and held for queued output until the next boundary; always `≥ 0`. |
 | `m_request.speed` | Signed speed sent to Bungee each grain: `±m_effectiveRate`. Bungee request positions are input-frame timestamps, so sample-rate conversion must be included here. |
 
 `scaleBuffer()` returns `readFramesProcessed = m_effectiveRate × framesProduced`.
@@ -89,8 +89,10 @@ Before each `analyseGrain()` call (`ensureInputForCurrentChunk`):
    a track or after a seek the window may not cover the full chunk):
 
    ```text
-   muteHead = inputChunk.begin - bufferedInputBeginFrame  (frames before window)
-   muteTail = inputChunk.end   - bufferedInputEndFrame    (frames after window)
+   availableBegin = max(bufferedInputBeginFrame, inputChunk.begin)
+   availableEnd   = max(availableBegin, min(bufferedInputEndFrame, inputChunk.end))
+   muteHead = availableBegin - inputChunk.begin  (frames missing before window)
+   muteTail = inputChunk.end - availableEnd      (frames missing after window)
    ```
 
 4. Call `analyseGrain(channelBufferPtrs[0] + dataOffset, channelStride,

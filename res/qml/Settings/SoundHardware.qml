@@ -23,6 +23,7 @@ Category {
         microphoneMonitorMode.currentIndex = micMonitorMode.value;
         soundApi.options = manager.getHostAPIList();
         soundApi.selected = manager.getAPI();
+        keylock.loading = true;
         keylock.update();
         keylock.loadedEngineId = keylockEngine1.value;
         const keylockEngineIndex = keylock.engineIds.indexOf(keylock.loadedEngineId);
@@ -31,6 +32,8 @@ Category {
         } else if (keylock.options.length > 0) {
             keylock.selected = keylock.options[0];
         }
+        keylock.loading = false;
+        keylock.selectionChanged = false;
 
         // Router
         router.multiSoundcard.selected = router.multiSoundcard.options[manager.getSyncBuffers()];
@@ -63,7 +66,7 @@ Category {
         const keylockEngineIndex = keylock.options.indexOf(keylock.selected);
         if (keylockEngineIndex >= 0 && keylockEngineIndex < keylock.engineIds.length) {
             const keylockEngineId = keylock.engineIds[keylockEngineIndex];
-            if (keylockEngineId !== keylock.loadedEngineId) {
+            if (keylock.selectionChanged && keylockEngineId !== keylock.loadedEngineId) {
                 manager.setKeylockEngineForAllDecks(keylockEngineId);
             }
         }
@@ -347,15 +350,20 @@ Category {
                                                 break;
                                             case 2:
                                                 engineIds.push(engine);
-                                                options.push(qsTr("Rubberband R3"));
+                                                options.push(qsTr("Rubberband R3 MW"));
                                                 tooltips.push(qsTr("Near-hi-fi quality"));
                                                 break;
                                             case 3:
                                                 engineIds.push(engine);
-                                                options.push(qsTr("Bungee"));
+                                                options.push(qsTr("Rubberband R3 SW"));
                                                 tooltips.push(qsTr("High quality"));
                                                 break;
                                             case 4:
+                                                engineIds.push(engine);
+                                                options.push(qsTr("Bungee"));
+                                                tooltips.push(qsTr("High quality"));
+                                                break;
+                                            case 5:
                                                 engineIds.push(engine);
                                                 options.push(qsTr("Signalsmith Stretch"));
                                                 tooltips.push(qsTr("Experimental"));
@@ -372,9 +380,14 @@ Category {
                                     options: []
                                     property var engineIds: []
                                     property int loadedEngineId: -1
+                                    property bool loading: false
+                                    property bool selectionChanged: false
                                     tooltips: []
 
                                     onSelectedChanged: {
+                                        if (loading)
+                                            return;
+                                        selectionChanged = true;
                                         root.hasChanges = true;
                                     }
 

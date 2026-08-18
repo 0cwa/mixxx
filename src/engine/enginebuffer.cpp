@@ -4,8 +4,6 @@
 #include <mutex>
 #endif
 
-#include <QtDebug>
-
 #include "control/controllinpotmeter.h"
 #include "control/controlpotmeter.h"
 #include "control/controlproxy.h"
@@ -157,8 +155,10 @@ EngineBuffer::EngineBuffer(const QString& group,
     if (!m_pReader) {
         m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
     }
-    connect(m_pReader, &CachingReader::trackLoading,
-            this, &EngineBuffer::slotTrackLoading,
+    connect(m_pReader,
+            &CachingReader::trackLoading,
+            this,
+            &EngineBuffer::slotTrackLoading,
             Qt::DirectConnection);
     connect(m_pReader, &CachingReader::trackLoaded,
             this, &EngineBuffer::slotTrackLoaded,
@@ -316,9 +316,6 @@ EngineBuffer::EngineBuffer(const QString& group,
 
     if (PlayerManager::isDeckGroup(group)) {
         m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
-        m_pKeylockEngine->connectValueChanged(this,
-                &EngineBuffer::slotKeylockEngineChanged,
-                Qt::DirectConnection);
     }
     // Construct scaling objects
     m_pScaleLinear = new EngineBufferScaleLinear(m_pReadAheadManager);
@@ -332,6 +329,11 @@ EngineBuffer::EngineBuffer(const QString& group,
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
 #endif
+    if (m_pKeylockEngine) {
+        m_pKeylockEngine->connectValueChanged(this,
+                &EngineBuffer::slotKeylockEngineChanged,
+                Qt::DirectConnection);
+    }
     slotKeylockEngineChanged(m_pKeylockEngine
                     ? m_pKeylockEngine->get()
                     : static_cast<double>(defaultKeylockEngine()));
@@ -814,8 +816,8 @@ double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
         return 0.0;
     }
 
-    const double position = std::min(
-            absolutePlaypos, m_trackEndPositionOld.value());
+    const double position = std::max(0.0,
+            std::min(absolutePlaypos, m_trackEndPositionOld.value()));
     return position / m_trackEndPositionOld.value();
 }
 
@@ -934,18 +936,15 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
     EngineBufferScale* pScaleKeylock = nullptr;
     switch (engine) {
     case KeylockEngine::SoundTouch:
-        qWarning() << m_group << "---> ST";
         pScaleKeylock = m_pScaleST;
         break;
 #ifdef __RUBBERBAND__
     case KeylockEngine::RubberBandFaster:
-        qWarning() << m_group << "---> RB faster";
         m_pScaleRB->useEngineFiner(false);
         m_pScaleRB->useOptionWindowShort(false);
         pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandFiner:
-        qWarning() << m_group << "---> RB finer";
         m_pScaleRB->useEngineFiner(
                 true); // in case of Rubberband V2 it falls back to RUBBERBAND_FASTER
         m_pScaleRB->useOptionWindowShort(false);
@@ -968,7 +967,6 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
         break;
 #endif
     default:
-        qWarning() << m_group << "---> default";
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
         return;
     }

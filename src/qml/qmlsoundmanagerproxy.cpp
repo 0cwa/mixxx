@@ -188,11 +188,17 @@ QList<EngineBuffer::KeylockEngine> QmlSoundManagerProxy::getKeylockEngines() con
 }
 
 void QmlSoundManagerProxy::setKeylockEngine(EngineBuffer::KeylockEngine keylockEngine) {
+    if (!EngineBuffer::isKeylockEngineAvailable(keylockEngine)) {
+        return;
+    }
     m_pendingKeylockEngine = keylockEngine;
 }
 
 void QmlSoundManagerProxy::setKeylockEngineForAllDecks(
         EngineBuffer::KeylockEngine keylockEngine) {
+    if (!EngineBuffer::isKeylockEngineAvailable(keylockEngine)) {
+        return;
+    }
     m_pendingKeylockEngineForAllDecks = keylockEngine;
 }
 

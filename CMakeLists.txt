@@ -2895,7 +2895,7 @@ if(BUILD_TESTING)
     src/test/colormapperjsproxy_test.cpp
     src/test/colorpalette_test.cpp
     src/test/configobject_test.cpp
-    $<$<BOOL:${BUNGEE}>:src/test/settingsmanager_test.cpp>
+    src/test/settingsmanager_test.cpp
     src/test/controller_mapping_validation_test.cpp
     src/test/controller_mapping_settings_test.cpp
     src/test/controllers/controller_columnid_regression_test.cpp
@@ -4868,7 +4868,7 @@ if(RUBBERBAND)
 endif()
 
 # Bungee
-option(BUNGEE "Enable the Bungee engine for pitch-bending" ON)
+option(BUNGEE "Enable the Bungee engine for pitch-bending" OFF)
 option(
   BUNGEE_FETCH_FALLBACK
   "Fetch and build Bungee via ExternalProject_Add when no system or vcpkg package is found"
@@ -5233,7 +5233,7 @@ Or skip the source-fetch path: cmake -DBUNGEE_FETCH_FALLBACK=OFF (requires syste
 
   if(QML)
     target_link_libraries(mixxx-qml-lib PRIVATE Bungee::Bungee)
-    target_compile_definitions(mixxx-qml-lib PUBLIC __BUNGEE__)
+    target_compile_definitions(mixxx-qml-lib PRIVATE __BUNGEE__)
   endif()
 
   target_sources(

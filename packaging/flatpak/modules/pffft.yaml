@@ -13,4 +13,4 @@ sources:
     dest: pffft-src
     dest-filename: CMakeLists.txt
 post-install:
-  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/pffft README.txt
+  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/pffft README.md

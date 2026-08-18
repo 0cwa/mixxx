@@ -24,6 +24,9 @@
 #include <vector>
 
 #include "control/controlobject.h"
+#ifdef __BUNGEE__
+#include "engine/bufferscalers/enginebufferscalebungee.h"
+#endif
 #include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/controls/enginecontrol.h"
@@ -63,10 +66,13 @@ constexpr double kBungeeMarkerOnsetThreshold = 0.8;
 #endif
 constexpr int kMarkerNeighbourFrames = 8;
 constexpr int kRendererWidth = 1000;
-constexpr const char* kTracePath =
-        "/tmp/mixxx-enginebuffer-alignment.trace";
-constexpr const char* kEngineMarkerTracePath =
-        "/tmp/mixxx-engine-marker-alignment.trace";
+const QString kTracePath =
+        QDir(QDir::tempPath())
+                .filePath(QStringLiteral("mixxx-enginebuffer-alignment.trace"));
+const QString kEngineMarkerTracePath =
+        QDir(QDir::tempPath())
+                .filePath(
+                        QStringLiteral("mixxx-engine-marker-alignment.trace"));
 
 static_assert(kMarkerSourceFrame + kMarkerFrames < kTrackFrames);
 static_assert(kEngineMarkerSourceFrame + kEngineMarkerFrames < kTrackFrames);
@@ -136,8 +142,9 @@ struct DeterministicSource {
             const double phase = 0.017 * static_cast<double>(frame);
             samples[frame * kChannels] = static_cast<CSAMPLE>(
                     0.18 * std::sin(phase) + 0.07 * std::sin(phase * 0.37));
-            samples[frame * kChannels + 1] = static_cast<CSAMPLE>(
-                    0.16 * std::cos(phase * 0.71) - 0.05 * std::sin(phase * 0.19));
+            samples[frame * kChannels + 1] =
+                    static_cast<CSAMPLE>(0.16 * std::cos(phase * 0.71) -
+                            0.05 * std::sin(phase * 0.19));
         }
 
         std::copy(kMarkerCode.begin(), kMarkerCode.end(), samples.begin() + kMarkerSourceFrame * kChannels);
@@ -687,7 +694,9 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
     StretchedMarkerProbeResult result;
     result.similarity = findEngineMarkerOnset(
             emitted, 1.25, markerThreshold);
-    result.callbackIndex = result.similarity.outputFrame / kBufferFrames;
+    result.callbackIndex = result.similarity.outputFrame >= 0
+            ? result.similarity.outputFrame / kBufferFrames
+            : -1;
     if (result.callbackIndex >= 0 && result.callbackIndex < 80) {
         result.playPosBeforeFrames = playPositionsBefore[result.callbackIndex];
         result.playPosAfterFrames = playPositionsAfter[result.callbackIndex];
@@ -734,7 +743,7 @@ static_assert(std::is_trivially_copyable_v<AlignmentObservation>);
 void writeFailureTrace(const AlignmentObservation* observations,
         std::size_t observationCount,
         int sourceMarkerOccurrences) {
-    std::ofstream trace(kTracePath, std::ios::trunc);
+    std::ofstream trace(kTracePath.toStdString(), std::ios::trunc);
     if (!trace) {
         return;
     }
@@ -802,7 +811,7 @@ void writeEngineMarkerFailureTrace(const char* engine,
         int firstDivergentClock,
         double maximumOutput,
         const char* scenario = "EngineMarkerTracksEnginePosition") {
-    std::ofstream trace(kEngineMarkerTracePath, std::ios::trunc);
+    std::ofstream trace(kEngineMarkerTracePath.toStdString(), std::ios::trunc);
     if (!trace) {
         return;
     }
@@ -1200,7 +1209,7 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
 
     EXPECT_TRUE(allChecksPassed)
             << "first divergent clock=" << firstDivergentClock
-            << "; failure trace=" << kTracePath;
+            << "; failure trace=" << kTracePath.toStdString();
 }
 
 #ifdef __SIGNALSMITH__
@@ -1325,8 +1334,12 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
 
     const MarkerSimilarity bestSimilarity =
             findBestEngineMarkerSimilarity(emitted);
-    const int bestCallback = bestSimilarity.outputFrame / kBufferFrames;
-    const int markerOutputFrame = bestSimilarity.outputFrame % kBufferFrames;
+    const int bestCallback = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame / kBufferFrames
+            : -1;
+    const int markerOutputFrame = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame % kBufferFrames
+            : -1;
     const double markerPlayPosBefore = bestCallback >= 0 && bestCallback < 80
             ? playPositionsBefore[bestCallback]
             : 0.0;
@@ -1361,7 +1374,8 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
             static_cast<double>(kEngineMarkerSourceFrame * kChannels));
     const double rendererPlayheadPixel = renderer.transformSamplePositionInRendererWorld(
             markerRendererPosBefore);
-    const bool markerObserved = bestSimilarity.correlation >= 0.3;
+    const bool markerObserved = bestSimilarity.outputFrame >= 0 &&
+            bestSimilarity.correlation >= 0.3;
     const double bestPlayPos = markerPlayPosBefore;
     const int firstDivergentClock = !markerObserved
             ? 1
@@ -1534,7 +1548,9 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
             << ", output frame=" << probe.similarity.outputFrame
             << ", maximum output=" << probe.maximumOutput;
 
-    const int markerOutputFrame = probe.similarity.outputFrame % kBufferFrames;
+    const int markerOutputFrame = probe.similarity.outputFrame >= 0
+            ? probe.similarity.outputFrame % kBufferFrames
+            : -1;
     qDebug() << "SignalSmith stretched probe" << probe.callbackIndex
              << probe.similarity.outputFrame << markerOutputFrame
              << probe.visualPlayPosBeforeFrames << probe.effectiveRate
@@ -1677,8 +1693,12 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
 
     const MarkerSimilarity bestSimilarity =
             findBestEngineMarkerSimilarity(emitted);
-    const int bestCallback = bestSimilarity.outputFrame / kBufferFrames;
-    const int markerOutputFrame = bestSimilarity.outputFrame % kBufferFrames;
+    const int bestCallback = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame / kBufferFrames
+            : -1;
+    const int markerOutputFrame = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame % kBufferFrames
+            : -1;
     const double markerPlayPosBefore = bestCallback >= 0 && bestCallback < 80
             ? playPositionsBefore[bestCallback]
             : 0.0;
@@ -1713,7 +1733,8 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
             static_cast<double>(kEngineMarkerSourceFrame * kChannels));
     const double rendererPlayheadPixel = renderer.transformSamplePositionInRendererWorld(
             markerRendererPosBefore);
-    const bool markerObserved = bestSimilarity.correlation >= 0.3;
+    const bool markerObserved = bestSimilarity.outputFrame >= 0 &&
+            bestSimilarity.correlation >= 0.3;
     const double bestPlayPos = markerPlayPosBefore;
     const int firstDivergentClock = !markerObserved
             ? 1
@@ -1886,7 +1907,9 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
             << ", output frame=" << probe.similarity.outputFrame
             << ", maximum output=" << probe.maximumOutput;
 
-    const int markerOutputFrame = probe.similarity.outputFrame % kBufferFrames;
+    const int markerOutputFrame = probe.similarity.outputFrame >= 0
+            ? probe.similarity.outputFrame % kBufferFrames
+            : -1;
     qDebug() << "Bungee stretched probe" << probe.callbackIndex
              << probe.similarity.outputFrame << markerOutputFrame
              << probe.visualPlayPosBeforeFrames << probe.effectiveRate
