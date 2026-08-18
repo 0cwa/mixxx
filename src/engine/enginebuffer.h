@@ -201,8 +201,7 @@ class EngineBuffer : public EngineObject {
     // registration itself is serialized, but callers must keep the context
     // alive until all EngineBuffers created through the factory are destroyed.
     // Passing nullptr restores the production CachingReader construction path.
-    using TestReaderFactory = CachingReader* (*)(
-            const QString& group,
+    using TestReaderFactory = CachingReader* (*)(const QString& group,
             UserSettingsPointer pConfig,
             mixxx::audio::ChannelCount maxSupportedChannel,
             void* pContext);

@@ -784,7 +784,6 @@ TEST(EngineBufferScaleBungeePlaypositionAccountingTest,
     EXPECT_GT(std::fabs(changedSecond - kChangedTempo * kSecondOutputFrames), 1e-6)
             << "This test must fail if scaleBuffer reports the current "
                "effectiveRate for leftover old-tempo output.";
-
 }
 
 // Direct invariant test for the high-speed grain-outrun failure mode.
@@ -1068,8 +1067,7 @@ bool oracleTraceIsValid(const std::vector<AlignmentOracleEntry>& trace,
             drained.copiedOutputFrames <= kOracleSmallRequestFrames ||
             newGrain.copiedOutputFrames != kOracleSmallRequestFrames ||
             first.remainingOutputFrames <= 1 ||
-            leftover.remainingOutputFrames != first.remainingOutputFrames -
-                    kOracleSmallRequestFrames ||
+            leftover.remainingOutputFrames != first.remainingOutputFrames - kOracleSmallRequestFrames ||
             drained.remainingOutputFrames != 0 || newGrain.remainingOutputFrames <= 0) {
         return false;
     }
@@ -1094,7 +1092,7 @@ bool oracleTraceIsValid(const std::vector<AlignmentOracleEntry>& trace,
     if (std::abs(first.returnedSourceFrames - initialRate) > 0.5 ||
             std::abs(leftover.returnedSourceFrames - initialRate) > 0.5 ||
             std::abs(drained.returnedSourceFrames -
-                            initialRate * drained.copiedOutputFrames) > 0.5 ||
+                    initialRate * drained.copiedOutputFrames) > 0.5 ||
             std::abs(newGrain.returnedSourceFrames - changedRate) > 0.5 ||
             first.suppliedSourceFramesAfter < first.suppliedSourceFramesBefore ||
             leftover.suppliedSourceFramesAfter <
@@ -1155,7 +1153,8 @@ void writeOracleFailureTrace(const std::vector<AlignmentOracleEntry>& trace,
     }
     output << "reproduction_command=mixxx-test --gtest_color=no "
               "--gtest_filter=EngineBufferScaleBungeeBufferWindowTest.RealQueuedOutputAlignmentOracleAndOneFrameNegativeControl\n";
-    output << "first_divergent_clock=1 source-window/output, 2 source-accounting, "
+    output << "first_divergent_clock=1 source-window/output, 2 "
+              "source-accounting, "
               "3 VisualPlayPosition prediction, 4 renderer semantic probe\n";
     output << "reason=" << reason << '\n';
     output << std::setprecision(17)
@@ -1214,14 +1213,14 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
 
     std::vector<CSAMPLE> oneFrame(kChannelCount);
     const auto capture = [&](int callbackIndex,
-                             SINT requestedFrames,
-                             const std::vector<CSAMPLE>& output,
-                             double returnedSourceFrames,
-                             SINT copiedFrames,
-                             SINT suppliedSourceSamplesBefore,
-                             SINT suppliedSourceSamplesAfter,
-                             double sourceWindowBeginFrame,
-                             double sourceWindowEndFrame) {
+                                 SINT requestedFrames,
+                                 const std::vector<CSAMPLE>& output,
+                                 double returnedSourceFrames,
+                                 SINT copiedFrames,
+                                 SINT suppliedSourceSamplesBefore,
+                                 SINT suppliedSourceSamplesAfter,
+                                 double sourceWindowBeginFrame,
+                                 double sourceWindowEndFrame) {
         AlignmentOracleEntry entry{};
         entry.callbackIndex = callbackIndex;
         entry.requestedOutputFrames = requestedFrames;
@@ -1233,9 +1232,11 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
         cumulativeSourceFrames += returnedSourceFrames;
         entry.sourceAccountingAfter = cumulativeSourceFrames;
         entry.suppliedSourceFramesBefore = static_cast<double>(
-                suppliedSourceSamplesBefore) / kChannelCount;
+                                                   suppliedSourceSamplesBefore) /
+                kChannelCount;
         entry.suppliedSourceFramesAfter = static_cast<double>(
-                suppliedSourceSamplesAfter) / kChannelCount;
+                                                  suppliedSourceSamplesAfter) /
+                kChannelCount;
         entry.effectiveRate = effectiveRate();
         entry.sourceWindowBeginFrame = sourceWindowBeginFrame;
         entry.sourceWindowEndFrame = sourceWindowEndFrame;
@@ -1391,10 +1392,10 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     perturbed.back().predictedDisplayPosition +=
             1.0 / static_cast<double>(kOracleFeedFrames);
     EXPECT_FALSE(oracleTraceIsValid(perturbed,
-                         static_cast<double>(suppliedSourceSamplesBeforeFirst) /
-                                 kChannelCount,
-                         kOracleInitialTempo,
-                         kOracleChangedTempo))
+            static_cast<double>(suppliedSourceSamplesBeforeFirst) /
+                    kChannelCount,
+            kOracleInitialTempo,
+            kOracleChangedTempo))
             << "A one-frame predicted-display perturbation must be rejected "
                "by the independent VSync timeline check.";
 }

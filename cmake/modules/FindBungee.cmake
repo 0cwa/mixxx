@@ -113,7 +113,13 @@ if(Bungee_FOUND)
       endif()
 
       get_filename_component(_Bungee_LIBRARY_NAME "${Bungee_LIBRARY}" NAME_WE)
-      string(REGEX REPLACE "^lib" "" _Bungee_LIBRARY_NAME "${_Bungee_LIBRARY_NAME}")
+      string(
+        REGEX REPLACE
+        "^lib"
+        ""
+        _Bungee_LIBRARY_NAME
+        "${_Bungee_LIBRARY_NAME}"
+      )
       foreach(_Bungee_PC_LINK_LIBRARY IN LISTS _Bungee_PC_LINK_LIBRARIES)
         get_filename_component(
           _Bungee_PC_LINK_LIBRARY_NAME
@@ -121,8 +127,8 @@ if(Bungee_FOUND)
           NAME_WE
         )
         string(
-          REGEX
-          REPLACE "^-l|^lib"
+          REGEX REPLACE
+          "^-l|^lib"
           ""
           _Bungee_PC_LINK_LIBRARY_NAME
           "${_Bungee_PC_LINK_LIBRARY_NAME}"
@@ -131,7 +137,11 @@ if(Bungee_FOUND)
           NOT _Bungee_PC_LINK_LIBRARY STREQUAL Bungee_LIBRARY
           AND NOT _Bungee_PC_LINK_LIBRARY_NAME STREQUAL _Bungee_LIBRARY_NAME
         )
-          list(APPEND _Bungee_INTERFACE_LINK_LIBRARIES "${_Bungee_PC_LINK_LIBRARY}")
+          list(
+            APPEND
+            _Bungee_INTERFACE_LINK_LIBRARIES
+            "${_Bungee_PC_LINK_LIBRARY}"
+          )
         endif()
       endforeach()
       set(_Bungee_INTERFACE_LINK_DIRECTORIES ${_Bungee_PC_LIBRARY_DIRS})
@@ -154,7 +164,8 @@ if(Bungee_FOUND)
     if(_Bungee_INTERFACE_LINK_DIRECTORIES)
       set_property(
         TARGET Bungee::Bungee
-        PROPERTY INTERFACE_LINK_DIRECTORIES "${_Bungee_INTERFACE_LINK_DIRECTORIES}"
+        PROPERTY
+          INTERFACE_LINK_DIRECTORIES "${_Bungee_INTERFACE_LINK_DIRECTORIES}"
       )
     endif()
     if(_Bungee_INTERFACE_LINK_OPTIONS)

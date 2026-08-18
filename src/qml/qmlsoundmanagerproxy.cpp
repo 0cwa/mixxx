@@ -17,6 +17,14 @@ namespace qml {
 namespace {
 const ConfigKey kKeylockEngineCfgkey =
         ConfigKey(QStringLiteral("[App]"), QStringLiteral("keylock_engine"));
+const ConfigKey kKeylockEngineCfgkey1 =
+        ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("keylock_engine"));
+const ConfigKey kKeylockEngineCfgkey2 =
+        ConfigKey(QStringLiteral("[Channel2]"), QStringLiteral("keylock_engine"));
+const ConfigKey kKeylockEngineCfgkey3 =
+        ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("keylock_engine"));
+const ConfigKey kKeylockEngineCfgkey4 =
+        ConfigKey(QStringLiteral("[Channel4]"), QStringLiteral("keylock_engine"));
 
 } // namespace
 
@@ -83,6 +91,10 @@ QmlSoundManagerProxy::QmlSoundManagerProxy(
         : QObject(parent),
           m_pSoundManager(pSoundManager),
           m_keylockEngine(kKeylockEngineCfgkey),
+          m_keylockEngine1(kKeylockEngineCfgkey1),
+          m_keylockEngine2(kKeylockEngineCfgkey2),
+          m_keylockEngine3(kKeylockEngineCfgkey3),
+          m_keylockEngine4(kKeylockEngineCfgkey4),
           m_config(m_pSoundManager->getConfig()) {
     connect(m_pSoundManager.get(), &SoundManager::devicesClosed, this, [this]() {
         SoundDeviceStatus status = SoundDeviceStatus::Ok;
@@ -99,6 +111,23 @@ QmlSoundManagerProxy::QmlSoundManagerProxy(
                 m_pSoundManager->userSettings()->setValue(
                         kKeylockEngineCfgkey, keylockEngine);
                 m_pendingKeylockEngine.reset();
+            }
+
+            if (m_pendingKeylockEngineForAllDecks) {
+                const auto keylockEngine = *m_pendingKeylockEngineForAllDecks;
+                m_keylockEngine1.set(static_cast<double>(keylockEngine));
+                m_keylockEngine2.set(static_cast<double>(keylockEngine));
+                m_keylockEngine3.set(static_cast<double>(keylockEngine));
+                m_keylockEngine4.set(static_cast<double>(keylockEngine));
+                m_pSoundManager->userSettings()->setValue(
+                        kKeylockEngineCfgkey1, keylockEngine);
+                m_pSoundManager->userSettings()->setValue(
+                        kKeylockEngineCfgkey2, keylockEngine);
+                m_pSoundManager->userSettings()->setValue(
+                        kKeylockEngineCfgkey3, keylockEngine);
+                m_pSoundManager->userSettings()->setValue(
+                        kKeylockEngineCfgkey4, keylockEngine);
+                m_pendingKeylockEngineForAllDecks.reset();
             }
 
             status = m_pSoundManager->setConfig(m_config);
@@ -160,6 +189,11 @@ QList<EngineBuffer::KeylockEngine> QmlSoundManagerProxy::getKeylockEngines() con
 
 void QmlSoundManagerProxy::setKeylockEngine(EngineBuffer::KeylockEngine keylockEngine) {
     m_pendingKeylockEngine = keylockEngine;
+}
+
+void QmlSoundManagerProxy::setKeylockEngineForAllDecks(
+        EngineBuffer::KeylockEngine keylockEngine) {
+    m_pendingKeylockEngineForAllDecks = keylockEngine;
 }
 
 EngineBuffer::KeylockEngine QmlSoundManagerProxy::getKeylockEngine() const {

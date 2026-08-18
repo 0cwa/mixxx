@@ -72,22 +72,38 @@ static_assert(kMarkerSourceFrame + kMarkerFrames < kTrackFrames);
 static_assert(kEngineMarkerSourceFrame + kEngineMarkerFrames < kTrackFrames);
 
 const std::array<CSAMPLE, kMarkerFrames * kChannels> kMarkerCode = {
-        -0.731f, 0.419f,
-        0.913f, -0.277f,
-        -0.151f, -0.887f,
-        0.643f, 0.752f,
-        -0.962f, 0.083f,
-        0.307f, -0.538f,
-        0.844f, 0.194f,
-        -0.406f, 0.971f,
-        0.118f, -0.674f,
-        -0.819f, 0.365f,
-        0.556f, -0.923f,
-        0.278f, 0.607f,
-        -0.489f, -0.126f,
-        0.786f, -0.348f,
-        -0.052f, 0.895f,
-        0.472f, -0.764f,
+        -0.731f,
+        0.419f,
+        0.913f,
+        -0.277f,
+        -0.151f,
+        -0.887f,
+        0.643f,
+        0.752f,
+        -0.962f,
+        0.083f,
+        0.307f,
+        -0.538f,
+        0.844f,
+        0.194f,
+        -0.406f,
+        0.971f,
+        0.118f,
+        -0.674f,
+        -0.819f,
+        0.365f,
+        0.556f,
+        -0.923f,
+        0.278f,
+        0.607f,
+        -0.489f,
+        -0.126f,
+        0.786f,
+        -0.348f,
+        -0.052f,
+        0.895f,
+        0.472f,
+        -0.764f,
 };
 
 CSAMPLE engineMarkerSample(int markerFrame, int channel) {
@@ -124,8 +140,7 @@ struct DeterministicSource {
                     0.16 * std::cos(phase * 0.71) - 0.05 * std::sin(phase * 0.19));
         }
 
-        std::copy(kMarkerCode.begin(), kMarkerCode.end(),
-                samples.begin() + kMarkerSourceFrame * kChannels);
+        std::copy(kMarkerCode.begin(), kMarkerCode.end(), samples.begin() + kMarkerSourceFrame * kChannels);
         for (int frame = 0; frame < kEngineMarkerFrames; ++frame) {
             for (int channel = 0; channel < kChannels; ++channel) {
                 samples[(kEngineMarkerSourceFrame + frame) * kChannels + channel] =
@@ -377,7 +392,7 @@ MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
     const int lastFrame = std::min(outputFrames - 1, expectedOutputFrame + 1400);
     for (int frame = firstFrame; frame <= lastFrame; ++frame) {
         const double score = std::abs(static_cast<double>(
-                output[frame * kChannels]) -
+                                              output[frame * kChannels]) -
                 static_cast<double>(output[frame * kChannels + 1]));
         if (score >= threshold) {
             MarkerSimilarity onset;
@@ -474,7 +489,7 @@ void configureAlignmentControls(const QString& group,
         EngineBuffer::KeylockEngine engine,
         double rateRatio) {
     ControlObject::set(ConfigKey(QStringLiteral("[App]"),
-            QStringLiteral("samplerate")),
+                               QStringLiteral("samplerate")),
             kSampleRate);
     ControlObject::set(ConfigKey(group, QStringLiteral("keylock_engine")),
             static_cast<double>(engine));
@@ -793,7 +808,8 @@ void writeEngineMarkerFailureTrace(const char* engine,
     }
     trace << std::setprecision(17);
     trace << "reproduction_command=mixxx-test --gtest_color=no "
-             "--gtest_filter=EngineBufferAlignmentTest." << engine
+             "--gtest_filter=EngineBufferAlignmentTest."
+          << engine
           << scenario << '\n';
     trace << "engine=" << engine << '\n';
     trace << "clock_map=1 source->output, 2 output->m_playPos, "
@@ -1115,7 +1131,8 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
             observation.rendererNeighbourPixel =
                     renderer.transformSamplePositionInRendererWorld(
                             static_cast<double>((kMarkerSourceFrame +
-                                    kMarkerNeighbourFrames) * kChannels));
+                                                        kMarkerNeighbourFrames) *
+                                    kChannels));
         }
 
         check(sourceMarkerOccurrences == 1, 1, &observation);
@@ -1128,38 +1145,38 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
         if (markerMatch.found) {
             check(markerMatch.outputFrame == kVSyncOffsetFrames, 1, &observation);
             check(std::abs(observation.markerSourceFrame -
-                                    (observation.playPosBeforeFrames +
-                                            markerMatch.outputFrame)) < 1e-9,
+                          (observation.playPosBeforeFrames +
+                                  markerMatch.outputFrame)) < 1e-9,
                     2,
                     &observation);
             check(std::abs(observation.playPosAfterFrames -
-                                    (observation.playPosBeforeFrames +
-                                            kBufferFrames)) < 1e-9,
+                          (observation.playPosBeforeFrames +
+                                  kBufferFrames)) < 1e-9,
                     2,
                     &observation);
             check(std::abs(observation.effectiveRate - 1.0) < 1e-9,
                     2,
                     &observation);
             check(std::abs(observation.visualAtNextVSyncBefore -
-                                    observation.expectedVisualAtNextVSync) < 1e-9,
+                          observation.expectedVisualAtNextVSync) < 1e-9,
                     3,
                     &observation);
             check(std::abs(observation.visualEnginePlayPosBefore -
-                                    observation.playPosBeforeFrames /
-                                            engineTrackFrames) < 1e-9,
+                          observation.playPosBeforeFrames /
+                                  engineTrackFrames) < 1e-9,
                     3,
                     &observation);
             check(std::abs(observation.rendererTruePosSample -
-                                    kMarkerSourceFrame * kChannels) < 1e-9,
+                          kMarkerSourceFrame * kChannels) < 1e-9,
                     4,
                     &observation);
             check(std::abs(observation.rendererMarkerPixel -
-                                    kExpectedMarkerPixel) < 1e-9,
+                          kExpectedMarkerPixel) < 1e-9,
                     4,
                     &observation);
             check(std::abs(observation.rendererNeighbourPixel -
-                                    (kExpectedMarkerPixel +
-                                            kMarkerNeighbourFrames)) < 1e-9,
+                          (kExpectedMarkerPixel +
+                                  kMarkerNeighbourFrames)) < 1e-9,
                     4,
                     &observation);
         }
@@ -1178,8 +1195,7 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
                 observations[i].firstDivergentClock = firstDivergentClock;
             }
         }
-        writeFailureTrace(observations.data(), observationCount,
-                sourceMarkerOccurrences);
+        writeFailureTrace(observations.data(), observationCount, sourceMarkerOccurrences);
     }
 
     EXPECT_TRUE(allChecksPassed)
@@ -1235,7 +1251,7 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
             mixxx::Duration::fromSeconds(kTrackSeconds));
 
     ControlObject::set(ConfigKey(QStringLiteral("[App]"),
-            QStringLiteral("samplerate")),
+                               QStringLiteral("samplerate")),
             kSampleRate);
 
     ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock_engine")),
@@ -1350,12 +1366,12 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
     const int firstDivergentClock = !markerObserved
             ? 1
             : (std::abs(kEngineMarkerSourceFrame -
-                               (markerVisualPlayPosBefore + markerOutputFrame)) > 2.0
-                    ? 3
-                    : (std::abs(markerRendererPosBefore -
-                                       markerVisualVSyncPosBefore * kChannels) > 1e-9
-                            ? 4
-                            : 0));
+                       (markerVisualPlayPosBefore + markerOutputFrame)) > 2.0
+                              ? 3
+                              : (std::abs(markerRendererPosBefore -
+                                         markerVisualVSyncPosBefore * kChannels) > 1e-9
+                                                ? 4
+                                                : 0));
 
     if (!markerObserved) {
         writeEngineMarkerFailureTrace(
@@ -1444,7 +1460,7 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
                     markerOutputFrame);
     ASSERT_TRUE(markerPixelReplay.rendererInitialized);
     if (std::abs(markerPixelReplay.playheadPixel -
-                        markerPixelReplay.markerPixel) > 1.0) {
+                markerPixelReplay.markerPixel) > 1.0) {
         writeEngineMarkerFailureTrace(
                 "SignalSmith",
                 bestSimilarity.correlation,
@@ -1534,7 +1550,7 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
     EXPECT_GT(probe.readAheadObservationCount, 0u);
     EXPECT_GE(probe.readAheadEndFrames, probe.readAheadStartFrames);
     EXPECT_NEAR(probe.visualPlayPosBeforeFrames +
-                        kVSyncOffsetFrames * probe.effectiveRate,
+                    kVSyncOffsetFrames * probe.effectiveRate,
             probe.visualVSyncPosBeforeFrames,
             1e-9);
 
@@ -1547,8 +1563,8 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
     ASSERT_TRUE(pixel.rendererInitialized);
     const bool stretchedAlignmentPassed =
             std::abs(kEngineMarkerSourceFrame -
-                            (probe.visualPlayPosBeforeFrames +
-                                    markerOutputFrame * probe.effectiveRate)) <= 2.0 &&
+                    (probe.visualPlayPosBeforeFrames +
+                            markerOutputFrame * probe.effectiveRate)) <= 2.0 &&
             std::abs(pixel.playheadPixel - pixel.markerPixel) <= 1.0;
     if (!stretchedAlignmentPassed) {
         writeEngineMarkerFailureTrace(
@@ -1587,7 +1603,7 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
             mixxx::Duration::fromSeconds(kTrackSeconds));
 
     ControlObject::set(ConfigKey(QStringLiteral("[App]"),
-            QStringLiteral("samplerate")),
+                               QStringLiteral("samplerate")),
             kSampleRate);
 
     ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock_engine")),
@@ -1702,12 +1718,12 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
     const int firstDivergentClock = !markerObserved
             ? 1
             : (std::abs(kEngineMarkerSourceFrame -
-                               (markerVisualPlayPosBefore + markerOutputFrame)) > 2.0
-                    ? 3
-                    : (std::abs(markerRendererPosBefore -
-                                       markerVisualVSyncPosBefore * kChannels) > 1e-9
-                            ? 4
-                            : 0));
+                       (markerVisualPlayPosBefore + markerOutputFrame)) > 2.0
+                              ? 3
+                              : (std::abs(markerRendererPosBefore -
+                                         markerVisualVSyncPosBefore * kChannels) > 1e-9
+                                                ? 4
+                                                : 0));
 
     if (!markerObserved) {
         writeEngineMarkerFailureTrace(
@@ -1796,7 +1812,7 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
                     markerOutputFrame);
     ASSERT_TRUE(markerPixelReplay.rendererInitialized);
     if (std::abs(markerPixelReplay.playheadPixel -
-                        markerPixelReplay.markerPixel) > 1.0) {
+                markerPixelReplay.markerPixel) > 1.0) {
         writeEngineMarkerFailureTrace(
                 "Bungee",
                 bestSimilarity.correlation,
@@ -1886,7 +1902,7 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
     EXPECT_GT(probe.readAheadObservationCount, 0u);
     EXPECT_GE(probe.readAheadEndFrames, probe.readAheadStartFrames);
     EXPECT_NEAR(probe.visualPlayPosBeforeFrames +
-                        kVSyncOffsetFrames * probe.effectiveRate,
+                    kVSyncOffsetFrames * probe.effectiveRate,
             probe.visualVSyncPosBeforeFrames,
             1e-9);
 
@@ -1899,8 +1915,8 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
     ASSERT_TRUE(pixel.rendererInitialized);
     const bool stretchedAlignmentPassed =
             std::abs(kEngineMarkerSourceFrame -
-                            (probe.visualPlayPosBeforeFrames +
-                                    markerOutputFrame * probe.effectiveRate)) <= 2.0 &&
+                    (probe.visualPlayPosBeforeFrames +
+                            markerOutputFrame * probe.effectiveRate)) <= 2.0 &&
             std::abs(pixel.playheadPixel - pixel.markerPixel) <= 1.0;
     if (!stretchedAlignmentPassed) {
         writeEngineMarkerFailureTrace(

@@ -79,8 +79,9 @@ strip_separator() {
 run_in_toolbox_at() {
     local cwd=$1
     shift
+    local nested_script="set -euo pipefail; cd \"\$1\"; shift; exec \"\$@\""
     "${HOST_COMMAND_PREFIX[@]}" toolbox run --container "$TOOLBOX_NAME" \
-        bash -lc 'set -euo pipefail; cd "$1"; shift; exec "$@"' \
+        bash -lc "$nested_script" \
         bash "$cwd" "$@"
 }
 

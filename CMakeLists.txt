@@ -3651,8 +3651,7 @@ if(SIGNALSMITH)
   target_include_directories(
     mixxx-lib
     SYSTEM
-    PUBLIC
-      ${SIGNALSMITH_INCLUDE_DIRS}
+    PUBLIC ${SIGNALSMITH_INCLUDE_DIRS}
   )
   target_sources(
     mixxx-lib
@@ -4121,8 +4120,7 @@ if(QML)
     target_include_directories(
       mixxx-qml-lib
       SYSTEM
-      PUBLIC
-        ${SIGNALSMITH_INCLUDE_DIRS}
+      PUBLIC ${SIGNALSMITH_INCLUDE_DIRS}
     )
     target_compile_definitions(mixxx-qml-lib PUBLIC __SIGNALSMITH__)
   endif()

@@ -1,9 +1,8 @@
 #include "preferences/settingsmanager.h"
 
-#include <array>
-
 #include <QDir>
 #include <QTemporaryDir>
+#include <array>
 
 #include "config.h"
 #include "engine/enginebuffer.h"

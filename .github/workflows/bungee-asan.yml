@@ -20,6 +20,10 @@
 
 name: Bungee ASan
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
@@ -152,12 +156,6 @@ jobs:
           -DLILV=OFF
           -DOPUS=OFF
           -DQTKEYCHAIN=OFF
-          # VINYLCONTROL=ON: keep the workflow lean overall, but enable the
-          # internal vinyl-control engine controls so EngineBuffer creates
-          # VinylControlControl on each main deck.  Without it, KeyControl's
-          # vinyl-control ControlProxies fail their debug assert in the
-          # signal-path-test fixture (no production xwax/HID dependency is
-          # added; xwax is bundled).
           -DVINYLCONTROL=ON
           -DHID=OFF
           -DBULK=OFF

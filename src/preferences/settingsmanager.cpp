@@ -1,8 +1,7 @@
 #include "preferences/settingsmanager.h"
 
-#include <array>
-
 #include <QDir>
+#include <array>
 
 #include "control/control.h"
 #include "engine/enginebuffer.h"

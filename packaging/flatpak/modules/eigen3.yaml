@@ -16,4 +16,4 @@ sources:
       stable-only: true
       url-template: https://gitlab.com/libeigen/eigen/-/archive/$version/eigen-$version.tar.gz
 post-install:
-  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/eigen3 COPYING*
+  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/eigen3 ../COPYING*
