@@ -433,6 +433,7 @@ class FixedVSyncProvider final : public VSyncTimeProvider {
     const std::chrono::microseconds m_offset;
 };
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 struct MarkerPlayheadPixelResult {
     bool rendererInitialized = false;
     double markerPixel = 0.0;
@@ -475,6 +476,7 @@ MarkerPlayheadPixelResult replayMarkerAtSyntheticVSync(
     }
     return result;
 }
+#endif
 
 struct StretchedMarkerProbeResult {
     MarkerSimilarity similarity;
@@ -645,6 +647,7 @@ void writeCommonScalerPositionTrace(
                      << " (" << records.size() << " records)";
 }
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 StretchedMarkerProbeResult runStretchedMarkerProbe(
         EngineBuffer* pEngineBuffer,
         const QString& group,
@@ -715,6 +718,7 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
     result.maximumOutput = maximumOutput;
     return result;
 }
+#endif
 
 struct AlignmentObservation {
     int callbackIndex = -1;
@@ -791,6 +795,7 @@ void writeFailureTrace(const AlignmentObservation* observations,
     }
 }
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 void writeEngineMarkerFailureTrace(const char* engine,
         double correlation,
         double normalizedError,
@@ -843,6 +848,7 @@ void writeEngineMarkerFailureTrace(const char* engine,
     trace << "read_ahead_observation_count=" << readAheadObservationCount << '\n';
     trace << "maximum_output=" << maximumOutput << '\n';
 }
+#endif
 
 } // namespace
 
