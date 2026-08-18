@@ -388,6 +388,7 @@ MarkerSimilarity findBestEngineMarkerSimilarity(
     return best;
 }
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
         double sourceRate,
         double threshold) {
@@ -413,6 +414,7 @@ MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
     }
     return {};
 }
+#endif
 
 class FixedVSyncProvider final : public VSyncTimeProvider {
   public:
