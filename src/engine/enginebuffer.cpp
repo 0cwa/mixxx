@@ -1,6 +1,8 @@
 #include "engine/enginebuffer.h"
 
-#include <QtDebug>
+#ifdef BUILD_TESTING
+#include <mutex>
+#endif
 
 #include "control/controllinpotmeter.h"
 #include "control/controlpotmeter.h"
@@ -38,6 +40,14 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
+#ifdef __BUNGEE__
+#include "engine/bufferscalers/enginebufferscalebungee.h"
+#endif
+
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
+
 #ifdef __VINYLCONTROL__
 #include "engine/controls/vinylcontrolcontrol.h"
 #endif
@@ -52,6 +62,12 @@ constexpr double kLinearScalerElipsis =
 constexpr int kPlaypositionUpdateRate = 15; // updates per second
 
 const QString kAppGroup = QStringLiteral("[App]");
+
+#ifdef BUILD_TESTING
+std::mutex s_testReaderFactoryMutex;
+EngineBuffer::TestReaderFactory s_testReaderFactory = nullptr;
+void* s_testReaderFactoryContext = nullptr;
+#endif
 
 } // anonymous namespace
 
@@ -86,6 +102,10 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_bSlipEnabledProcessing(false),
           m_slipModeState(SlipModeState::Disabled),
           m_quantize(ControlFlag::AllowMissingOrInvalid),
+          m_pKeylockEngine(nullptr),
+          m_iKeylockEngine(static_cast<int>(defaultKeylockEngine())),
+          m_iKeylockEngineChangeVersion(0),
+          m_keylockEngineChangeVersion(0),
           m_pRepeat(nullptr),
           m_startButton(nullptr),
           m_endButton(nullptr),
@@ -108,14 +128,37 @@ EngineBuffer::EngineBuffer(const QString& group,
     // This should be a static assertion, but isValid() is not constexpr.
     DEBUG_ASSERT(kInitialPlayPosition.isValid());
 
+    m_pScaleKeylock.storeRelease(nullptr);
     m_queuedSeek.setValue(kNoQueuedSeek);
 
     // zero out crossfade buffer
     SampleUtil::clear(m_pCrossfadeBuffer, kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount);
 
-    m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
-    connect(m_pReader, &CachingReader::trackLoading,
-            this, &EngineBuffer::slotTrackLoading,
+#ifdef BUILD_TESTING
+    // Tests may provide a reader whose read() method serves preloaded samples.
+    // This hook is intentionally resolved once, during construction. The
+    // audio callback continues to use the normal CachingReader, the normal
+    // ReadAheadManager, and the normal scaler graph without an injected
+    // branch or synchronization primitive. The mutex only protects this
+    // construction-time registration state; it is never taken by process().
+    {
+        const std::lock_guard<std::mutex> lock(s_testReaderFactoryMutex);
+        if (s_testReaderFactory) {
+            m_pReader = s_testReaderFactory(
+                    group,
+                    pConfig,
+                    maxSupportedChannel,
+                    s_testReaderFactoryContext);
+        }
+    }
+#endif
+    if (!m_pReader) {
+        m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
+    }
+    connect(m_pReader,
+            &CachingReader::trackLoading,
+            this,
+            &EngineBuffer::slotTrackLoading,
             Qt::DirectConnection);
     connect(m_pReader, &CachingReader::trackLoaded,
             this, &EngineBuffer::slotTrackLoaded,
@@ -201,10 +244,6 @@ EngineBuffer::EngineBuffer(const QString& group,
     m_pLoopingControl = new LoopingControl(group, pConfig);
     addControl(m_pLoopingControl);
 
-    m_pEngineSync = pMixingEngine->getEngineSync();
-
-    m_pSyncControl = new SyncControl(group, pConfig, pChannel, m_pEngineSync);
-
 #ifdef __VINYLCONTROL__
     if (PlayerManager::isDeckGroup(group)) {
         m_pVinylControlControl = new VinylControlControl(group, pConfig);
@@ -216,6 +255,10 @@ EngineBuffer::EngineBuffer(const QString& group,
         addControl(m_pVinylControlControl);
     }
 #endif
+
+    m_pEngineSync = pMixingEngine->getEngineSync();
+
+    m_pSyncControl = new SyncControl(group, pConfig, pChannel, m_pEngineSync);
 
     // Create the Rate Controller
     m_pRateControl = new RateControl(group, pConfig);
@@ -271,17 +314,29 @@ EngineBuffer::EngineBuffer(const QString& group,
             m_pCueControl);
     m_pReadAheadManager->addRateControl(m_pRateControl);
 
-    m_pKeylockEngine = new ControlProxy(kAppGroup, QStringLiteral("keylock_engine"), this);
-    m_pKeylockEngine->connectValueChanged(this,
-            &EngineBuffer::slotKeylockEngineChanged,
-            Qt::DirectConnection);
+    if (PlayerManager::isDeckGroup(group)) {
+        m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
+    }
     // Construct scaling objects
     m_pScaleLinear = new EngineBufferScaleLinear(m_pReadAheadManager);
     m_pScaleST = new EngineBufferScaleST(m_pReadAheadManager);
 #ifdef __RUBBERBAND__
     m_pScaleRB = new EngineBufferScaleRubberBand(m_pReadAheadManager);
 #endif
-    slotKeylockEngineChanged(m_pKeylockEngine->get());
+#ifdef __BUNGEE__
+    m_pScaleBungee = new EngineBufferScaleBungee(m_pReadAheadManager);
+#endif
+#ifdef __SIGNALSMITH__
+    m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
+#endif
+    if (m_pKeylockEngine) {
+        m_pKeylockEngine->connectValueChanged(this,
+                &EngineBuffer::slotKeylockEngineChanged,
+                Qt::DirectConnection);
+    }
+    slotKeylockEngineChanged(m_pKeylockEngine
+                    ? m_pKeylockEngine->get()
+                    : static_cast<double>(defaultKeylockEngine()));
     m_pScaleVinyl = m_pScaleLinear;
     m_pScale = m_pScaleVinyl;
     m_pScale->clear();
@@ -337,6 +392,12 @@ EngineBuffer::~EngineBuffer() {
 #ifdef __RUBBERBAND__
     delete m_pScaleRB;
 #endif
+#ifdef __BUNGEE__
+    delete m_pScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+    delete m_pScaleSignalSmith;
+#endif
 
     delete m_pKeylock;
     delete m_pReplayGain;
@@ -358,10 +419,15 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
 
     // m_pScaleKeylock and m_pScaleVinyl could change out from under us,
     // so cache it.
-    EngineBufferScale* keylock_scale = m_pScaleKeylock;
+    const int keylockEngineChangeVersion =
+            m_iKeylockEngineChangeVersion.loadAcquire();
+    EngineBufferScale* keylock_scale = m_pScaleKeylock.loadAcquire();
     EngineBufferScale* vinyl_scale = m_pScaleVinyl;
+    const bool keylockEngineChanged =
+            keylockEngineChangeVersion != m_keylockEngineChangeVersion ||
+            m_pScale != keylock_scale;
 
-    if (bEnable && m_pScale != keylock_scale) {
+    if (bEnable && keylockEngineChanged) {
         if (m_speed_old != 0.0) {
             // Crossfade if we are not paused.
             // If we start from zero a ramping gain is
@@ -370,6 +436,7 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
         }
         m_pScale = keylock_scale;
         m_pScale->clear();
+        m_keylockEngineChangeVersion = keylockEngineChangeVersion;
         m_bScalerChanged = true;
     } else if (!bEnable && m_pScale != vinyl_scale) {
         if (m_speed_old != 0.0) {
@@ -744,13 +811,14 @@ void EngineBuffer::seekExact(mixxx::audio::FramePos position) {
     doSeekPlayPos(position, SEEK_EXACT);
 }
 
-double EngineBuffer::fractionalPlayposFromAbsolute(mixxx::audio::FramePos absolutePlaypos) {
+double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
     if (!m_trackEndPositionOld.isValid()) {
         return 0.0;
     }
 
-    const auto position = std::min<mixxx::audio::FramePos>(absolutePlaypos, m_trackEndPositionOld);
-    return position.value() / m_trackEndPositionOld.value();
+    const double position = std::min(
+            absolutePlaypos, m_trackEndPositionOld.value());
+    return position / m_trackEndPositionOld.value();
 }
 
 void EngineBuffer::doSeekFractional(double fractionalPos, enum SeekRequest seekType) {
@@ -865,31 +933,48 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
         return;
     }
     const KeylockEngine engine = static_cast<KeylockEngine>(dIndex);
+    EngineBufferScale* pScaleKeylock = nullptr;
     switch (engine) {
     case KeylockEngine::SoundTouch:
-        m_pScaleKeylock = m_pScaleST;
+        pScaleKeylock = m_pScaleST;
         break;
 #ifdef __RUBBERBAND__
     case KeylockEngine::RubberBandFaster:
         m_pScaleRB->useEngineFiner(false);
         m_pScaleRB->useOptionWindowShort(false);
-        m_pScaleKeylock = m_pScaleRB;
+        pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandFiner:
         m_pScaleRB->useEngineFiner(
                 true); // in case of Rubberband V2 it falls back to RUBBERBAND_FASTER
         m_pScaleRB->useOptionWindowShort(false);
-        m_pScaleKeylock = m_pScaleRB;
+        pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandR3ShortWindow:
         m_pScaleRB->useEngineFiner(true);
         m_pScaleRB->useOptionWindowShort(true);
-        m_pScaleKeylock = m_pScaleRB;
+        pScaleKeylock = m_pScaleRB;
+        break;
+#endif
+#ifdef __BUNGEE__
+    case KeylockEngine::Bungee:
+        pScaleKeylock = m_pScaleBungee;
+        break;
+#endif
+#ifdef __SIGNALSMITH__
+    case KeylockEngine::SignalSmith:
+        pScaleKeylock = m_pScaleSignalSmith;
         break;
 #endif
     default:
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
-        break;
+        return;
+    }
+
+    m_pScaleKeylock.storeRelease(pScaleKeylock);
+    const int iEngine = static_cast<int>(engine);
+    if (m_iKeylockEngine.fetchAndStoreRelease(iEngine) != iEngine) {
+        m_iKeylockEngineChangeVersion.fetchAndAddRelease(1);
     }
 }
 
@@ -1239,6 +1324,12 @@ void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
 #ifdef __RUBBERBAND__
     m_pScaleRB->setSignal(m_sampleRate, m_channelCount);
 #endif
+#ifdef __BUNGEE__
+    m_pScaleBungee->setSignal(m_sampleRate, m_channelCount);
+#endif
+#ifdef __SIGNALSMITH__
+    m_pScaleSignalSmith->setSignal(m_sampleRate, m_channelCount);
+#endif
 
     if (isTrackLoaded() && m_pause.tryLock()) {
         processTrackLocked(pOutput, bufferSize, m_sampleRate);
@@ -1499,18 +1590,24 @@ void EngineBuffer::updateIndicators(double speed, std::size_t bufferSize) {
     // Increase samplesCalculated by the buffer size
     m_samplesSinceLastIndicatorUpdate += bufferSize;
 
-    const double fFractionalPlaypos = fractionalPlayposFromAbsolute(m_playPos);
-    const double fFractionalSlipPos = fractionalPlayposFromAbsolute(m_slipPos);
+    const double visualPlayPosition =
+            m_playPos.value() + m_pScale->getVisualPlayPositionOffset();
+    const double fFractionalPlaypos =
+            fractionalPlayposFromAbsolute(visualPlayPosition);
+    const double fFractionalSlipPos =
+            fractionalPlayposFromAbsolute(m_slipPos.value());
 
     auto loopInfo = m_pLoopingControl->getLoopInfo();
 
     double fFractionalLoopStartPos = 0.0;
     if (loopInfo.startPosition.isValid()) {
-        fFractionalLoopStartPos = fractionalPlayposFromAbsolute(loopInfo.startPosition);
+        fFractionalLoopStartPos =
+                fractionalPlayposFromAbsolute(loopInfo.startPosition.value());
     }
     double fFractionalLoopEndPos = 0.0;
     if (loopInfo.endPosition.isValid()) {
-        fFractionalLoopEndPos = fractionalPlayposFromAbsolute(loopInfo.endPosition);
+        fFractionalLoopEndPos =
+                fractionalPlayposFromAbsolute(loopInfo.endPosition.value());
     }
 
     const double tempoTrackSeconds = m_trackEndPositionOld.value() /
@@ -1677,10 +1774,21 @@ void EngineBuffer::setScalerForTest(
         EngineBufferScale* pScaleVinyl,
         EngineBufferScale* pScaleKeylock) {
     m_pScaleVinyl = pScaleVinyl;
-    m_pScaleKeylock = pScaleKeylock;
+    m_pScaleKeylock.storeRelease(pScaleKeylock);
     m_pScale = m_pScaleVinyl;
     m_pScale->clear();
     m_bScalerChanged = true;
     // This bool is permanently set and can't be undone.
     m_bScalerOverride = true;
 }
+
+#ifdef BUILD_TESTING
+void EngineBuffer::setTestReaderFactory(
+        TestReaderFactory factory,
+        void* pContext) {
+    DEBUG_ASSERT(factory != nullptr || pContext == nullptr);
+    const std::lock_guard<std::mutex> lock(s_testReaderFactoryMutex);
+    s_testReaderFactory = factory;
+    s_testReaderFactoryContext = factory ? pContext : nullptr;
+}
+#endif

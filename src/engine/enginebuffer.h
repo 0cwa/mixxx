@@ -3,6 +3,7 @@
 #include <gtest/gtest_prod.h>
 
 #include <QAtomicInt>
+#include <QAtomicPointer>
 #include <QMutex>
 #include <initializer_list>
 
@@ -23,7 +24,7 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
-//for the writer
+// for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
 #include <QTextStream>
@@ -47,6 +48,12 @@ class ControlPotmeter;
 class EngineBufferScale;
 class EngineBufferScaleLinear;
 class EngineBufferScaleST;
+#ifdef __BUNGEE__
+class EngineBufferScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+class EngineBufferScaleSignalSmith;
+#endif
 class EngineSync;
 class EngineWorkerScheduler;
 class VisualPlayPosition;
@@ -90,6 +97,12 @@ class EngineBuffer : public EngineObject {
         RubberBandFiner = 2,
         RubberBandR3ShortWindow = 3,
 #endif
+#ifdef __BUNGEE__
+        Bungee = 4,
+#endif
+#ifdef __SIGNALSMITH__
+        SignalSmith = 5,
+#endif
     };
     Q_ENUM(KeylockEngine);
 
@@ -100,6 +113,12 @@ class EngineBuffer : public EngineObject {
             KeylockEngine::RubberBandFaster,
             KeylockEngine::RubberBandFiner,
             KeylockEngine::RubberBandR3ShortWindow,
+#endif
+#ifdef __BUNGEE__
+            KeylockEngine::Bungee,
+#endif
+#ifdef __SIGNALSMITH__
+            KeylockEngine::SignalSmith,
 #endif
     };
 
@@ -171,6 +190,24 @@ class EngineBuffer : public EngineObject {
             EngineBufferScale* pScaleVinyl,
             EngineBufferScale* pScaleKeylock);
 
+#ifdef BUILD_TESTING
+    // Installs a factory used only while constructing EngineBuffers in tests.
+    // The returned reader becomes owned by the EngineBuffer and is deleted by
+    // its destructor. The factory is consulted during construction only, so
+    // installing or clearing it must happen outside the audio callback and
+    // while no test is concurrently constructing an EngineBuffer. The
+    // registration itself is serialized, but callers must keep the context
+    // alive until all EngineBuffers created through the factory are destroyed.
+    // Passing nullptr restores the production CachingReader construction path.
+    using TestReaderFactory = CachingReader* (*)(const QString& group,
+            UserSettingsPointer pConfig,
+            mixxx::audio::ChannelCount maxSupportedChannel,
+            void* pContext);
+    static void setTestReaderFactory(
+            TestReaderFactory factory,
+            void* pContext = nullptr);
+#endif
+
     // For injection of fake tracks.
     void loadFakeTrack(TrackPointer pTrack, bool bPlay);
 
@@ -185,12 +222,20 @@ class EngineBuffer : public EngineObject {
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
                 return tr("Rubberband R3 MW (slow, highest quality)");
             }
-            [[fallthrough]];
+            return tr("Rubberband (fast, medium quality)");
         case KeylockEngine::RubberBandR3ShortWindow:
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
                 return tr("Rubberband R3 SW (fast, high quality)");
             }
-            [[fallthrough]];
+            return tr("Rubberband (fast, medium quality)");
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            return tr("Bungee (high quality)");
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return tr("Signalsmith Stretch (experimental)");
 #endif
         default:
 #ifdef __RUBBERBAND__
@@ -211,6 +256,14 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::RubberBandFiner:
         case KeylockEngine::RubberBandR3ShortWindow:
             return EngineBufferScaleRubberBand::isEngineFinerAvailable();
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            return true;
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return true;
 #endif
         default:
             return false;
@@ -299,7 +352,7 @@ class EngineBuffer : public EngineObject {
 
     void hintReader(const double rate);
 
-    double fractionalPlayposFromAbsolute(mixxx::audio::FramePos position);
+    double fractionalPlayposFromAbsolute(double position);
 
     void doSeekFractional(double fractionalPos, enum SeekRequest seekType);
     void doSeekPlayPos(mixxx::audio::FramePos position, enum SeekRequest seekType);
@@ -435,6 +488,12 @@ class EngineBuffer : public EngineObject {
     ControlPotmeter* m_playposSlider;
     ControlProxy* m_pSampleRate;
     ControlProxy* m_pKeylockEngine;
+    // Selected keylock engine identity. This is tracked separately from
+    // m_pScaleKeylock because multiple engine modes may share one scaler
+    // instance, e.g. RubberBand Faster and RubberBand R3.
+    QAtomicInt m_iKeylockEngine;
+    QAtomicInt m_iKeylockEngineChangeVersion;
+    int m_keylockEngineChangeVersion;
     ControlPushButton* m_pKeylock;
     ControlProxy* m_pReplayGain;
 
@@ -461,10 +520,15 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferTest, ReadFadeOut);
     FRIEND_TEST(EngineBufferTest, RateTempTest);
     FRIEND_TEST(EngineBufferTest, RatePermTest);
+    FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
+    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
+    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
+    FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
+    FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
     EngineBufferScale* m_pScaleVinyl;
     // The keylock engine is configurable, so it could flip flop between
     // ScaleST and ScaleRB during a single callback.
-    EngineBufferScale* volatile m_pScaleKeylock;
+    QAtomicPointer<EngineBufferScale> m_pScaleKeylock;
 
     // Object used for vinyl-style interpolation scaling of the audio
     EngineBufferScaleLinear* m_pScaleLinear;
@@ -472,6 +536,12 @@ class EngineBuffer : public EngineObject {
     EngineBufferScaleST* m_pScaleST;
 #ifdef __RUBBERBAND__
     EngineBufferScaleRubberBand* m_pScaleRB;
+#endif
+#ifdef __BUNGEE__
+    EngineBufferScaleBungee* m_pScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 
     // Indicates whether the scaler has changed since the last process()
