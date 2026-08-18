@@ -816,8 +816,8 @@ double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
         return 0.0;
     }
 
-    const double position = std::max(0.0,
-            std::min(absolutePlaypos, m_trackEndPositionOld.value()));
+    const double position = std::min(
+            absolutePlaypos, m_trackEndPositionOld.value());
     return position / m_trackEndPositionOld.value();
 }
 
