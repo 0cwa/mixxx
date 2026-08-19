@@ -1,10 +1,12 @@
+#include "engine/controls/seek30control.h"
+
 #include <cmath>
 #include <limits>
-#include "engine/controls/seek30control.h"
-#include "track/track.h"
-#include "track/cue.h"
+#include <utility>
 
 #include "moc_seek30control.cpp"
+#include "track/cue.h"
+#include "track/track.h"
 
 void Seek30Control::trackLoaded(TrackPointer pNewTrack) {
     m_pLoadedTrack = pNewTrack;
@@ -74,7 +76,7 @@ int Seek30Control::createMemoryCueAt(const mixxx::audio::FramePos& pos) {
     // Don't allow creating a second memory cue in the same position as another
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
     double curPos = pos.toEngineSamplePos();
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (!pCue) continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if (std::abs(curPos - testPos) < kEps) {
@@ -122,7 +124,7 @@ void Seek30Control::clearCurrent(double v) {
     // Avoid floating point errors
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (!pCue) continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if (std::abs(curPos - testPos) < kEps) {
@@ -183,7 +185,7 @@ void Seek30Control::clearNext(double v) {
     // Avoid floating point errors
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (!pCue) continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((testPos - curPos) > kEps) {
@@ -216,9 +218,9 @@ void Seek30Control::clearNearest(double v) {
 
     // Find the memory cue with the smallest distance to the playhead.
     CuePointer bestCue;
-    double bestDiff = std::numeric_limits<double>::infinity();
+    double bestDiff = std::numeric_limits<double>::max();
 
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (!pCue) {
             continue;
         }
@@ -286,7 +288,7 @@ void Seek30Control::slotSeek30(double v) {
     // Avoid floating point errors
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (!pCue) continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((testPos - curPos) > kEps) {
