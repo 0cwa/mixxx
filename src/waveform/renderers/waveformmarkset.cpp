@@ -5,8 +5,8 @@
 #include <optional>
 #include <set>
 
-#include "util/defs.h"
 #include "track/cue.h"
+#include "util/defs.h"
 
 WaveformMarkSet::WaveformMarkSet() {
 }

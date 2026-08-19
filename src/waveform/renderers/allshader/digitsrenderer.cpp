@@ -238,12 +238,11 @@ void allshader::DigitsRenderNode::update(
         float y,
         bool multiLine,
         const QString& s1,
-        const QString& s2)
-{
+        const QString& s2) {
     const int numVerticesPerRectangle = 6;
     const int reserved = (s1.length() + s2.length()) * numVerticesPerRectangle;
     geometry().allocate(reserved);
-    TexturedVertexUpdater vtx{ geometry().vertexDataAs<Geometry::TexturedPoint2D>() };
+    TexturedVertexUpdater vtx{geometry().vertexDataAs<Geometry::TexturedPoint2D>()};
 
     const float ch = height();
 
@@ -261,16 +260,18 @@ void allshader::DigitsRenderNode::update(
     } else {
         // single‐line: compute total width (s1 + gap + s2), then start at x - total
         float totalW = 0.f;
-        if (!s1.isEmpty())  totalW += stringWidth(s1);
+        if (!s1.isEmpty())
+            totalW += stringWidth(s1);
         if (!s2.isEmpty()) {
-            if (!s1.isEmpty()) totalW += ch * 0.75f;
+            if (!s1.isEmpty())
+                totalW += ch * 0.75f;
             totalW += stringWidth(s2);
         }
 
         float x0 = x - totalW;
         if (!s1.isEmpty()) {
             float w1 = addVertices(vtx, x0, y, s1);
-            x0 += w1 + ch * 0.75f;   // leave the same gap you used before
+            x0 += w1 + ch * 0.75f; // leave the same gap you used before
         }
         if (!s2.isEmpty()) {
             addVertices(vtx, x0, y, s2);
@@ -281,7 +282,6 @@ void allshader::DigitsRenderNode::update(
     markDirtyGeometry();
     markDirtyMaterial();
 }
-
 
 // void allshader::DigitsRenderNode::update(
 //         float x,

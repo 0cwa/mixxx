@@ -20,7 +20,8 @@ void Seek30Control::rebuildMemoryCueCache() {
     }
     const QList<CuePointer> cues = m_pLoadedTrack->getCuePoints();
     for (const auto& pCue : cues) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         if (pCue->getType() == mixxx::CueType::Memory) {
             m_memoryCues.append(pCue);
         }
@@ -30,10 +31,12 @@ void Seek30Control::rebuildMemoryCueCache() {
 
 void Seek30Control::sortCueCache() {
     // Optional: keep a stable order (by start position)
-    std::sort(m_memoryCues.begin(), m_memoryCues.end(),
-        [](const CuePointer& a, const CuePointer& b) {
-            return a->getStartAndEndPosition().startPosition < b->getStartAndEndPosition().startPosition;
-        });
+    std::sort(m_memoryCues.begin(),
+            m_memoryCues.end(),
+            [](const CuePointer& a, const CuePointer& b) {
+                return a->getStartAndEndPosition().startPosition <
+                        b->getStartAndEndPosition().startPosition;
+            });
 }
 
 int Seek30Control::nextFreeMemoryCueIndex() const {
@@ -41,7 +44,8 @@ int Seek30Control::nextFreeMemoryCueIndex() const {
     // We’ll accept either. If all are -1, we’ll just use size() as the next index.
     QSet<int> used;
     for (const auto& pCue : m_memoryCues) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
 
         // Prefer an explicit index if your Cue has one
         int idx = -1;
@@ -52,7 +56,8 @@ int Seek30Control::nextFreeMemoryCueIndex() const {
             idx = pCue->getHotCue();
         }
 
-        if (idx >= 0) used.insert(idx);
+        if (idx >= 0)
+            used.insert(idx);
     }
 
     if (used.isEmpty()) {
@@ -77,7 +82,8 @@ int Seek30Control::createMemoryCueAt(const mixxx::audio::FramePos& pos) {
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
     double curPos = pos.toEngineSamplePos();
     for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if (std::abs(curPos - testPos) < kEps) {
             return -1;
@@ -100,13 +106,15 @@ int Seek30Control::createMemoryCueAt(const mixxx::audio::FramePos& pos) {
 }
 
 void Seek30Control::clearAll(double v) {
-    if (v <= 0 || !m_pLoadedTrack) return;
+    if (v <= 0 || !m_pLoadedTrack)
+        return;
     m_pLoadedTrack->removeCuesOfType(mixxx::CueType::Memory);
     m_memoryCues.clear();
 }
 
 void Seek30Control::clearCurrent(double v) {
-    if (v <= 0 || !m_pLoadedTrack) return;
+    if (v <= 0 || !m_pLoadedTrack)
+        return;
 
     // Read normalized play position [0..1] and track duration [s] from COs.
     const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
@@ -125,7 +133,8 @@ void Seek30Control::clearCurrent(double v) {
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
     for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if (std::abs(curPos - testPos) < kEps) {
             m_pLoadedTrack->removeCue(pCue);
@@ -136,7 +145,8 @@ void Seek30Control::clearCurrent(double v) {
 }
 
 void Seek30Control::clearPrev(double v) {
-    if (v <= 0 || !m_pLoadedTrack) return;
+    if (v <= 0 || !m_pLoadedTrack)
+        return;
 
     // Read normalized play position [0..1] and track duration [s] from COs.
     const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
@@ -156,7 +166,8 @@ void Seek30Control::clearPrev(double v) {
 
     for (int i = m_memoryCues.size() - 1; i >= 0; --i) {
         auto pCue = m_memoryCues.at(i);
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((curPos - testPos) > kEps) {
             m_pLoadedTrack->removeCue(pCue);
@@ -167,7 +178,8 @@ void Seek30Control::clearPrev(double v) {
 }
 
 void Seek30Control::clearNext(double v) {
-    if (v <= 0 || !m_pLoadedTrack) return;
+    if (v <= 0 || !m_pLoadedTrack)
+        return;
 
     // Read normalized play position [0..1] and track duration [s] from COs.
     const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
@@ -186,7 +198,8 @@ void Seek30Control::clearNext(double v) {
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
     for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((testPos - curPos) > kEps) {
             m_pLoadedTrack->removeCue(pCue);
@@ -229,7 +242,7 @@ void Seek30Control::clearNearest(double v) {
 
         // Prefer smaller diff; on ties, prefer the cue at or behind the playhead.
         if (diff < bestDiff - 1e-9 ||
-            (std::abs(diff - bestDiff) <= 1e-9 && cuePos <= curPos)) {
+                (std::abs(diff - bestDiff) <= 1e-9 && cuePos <= curPos)) {
             bestDiff = diff;
             bestCue = pCue;
         }
@@ -237,12 +250,13 @@ void Seek30Control::clearNearest(double v) {
 
     if (bestCue) {
         m_pLoadedTrack->removeCue(bestCue);
-        m_memoryCues.removeOne(bestCue);  // keep cache in sync
+        m_memoryCues.removeOne(bestCue); // keep cache in sync
     }
 }
 
 void Seek30Control::createAtCurrent(double v) {
-    if (v <= 0) return;
+    if (v <= 0)
+        return;
 
     // Read normalized play position [0..1] and track duration [s] from COs.
     const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
@@ -266,11 +280,11 @@ void Seek30Control::createAtCurrent(double v) {
     }
 
     createMemoryCueAt(currentPos);
-
 }
 
 void Seek30Control::slotSeek30(double v) {
-    if (v <= 0 || !m_pLoadedTrack) return;
+    if (v <= 0 || !m_pLoadedTrack)
+        return;
 
     // Read normalized play position [0..1] and track duration [s] from COs.
     const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
@@ -289,7 +303,8 @@ void Seek30Control::slotSeek30(double v) {
     constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
 
     for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((testPos - curPos) > kEps) {
             getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
@@ -299,7 +314,8 @@ void Seek30Control::slotSeek30(double v) {
 }
 
 void Seek30Control::slotSeek30Prev(double v) {
-    if (v <= 0 || !m_pLoadedTrack) return;
+    if (v <= 0 || !m_pLoadedTrack)
+        return;
 
     // Read normalized play position [0..1] and track duration [s] from COs.
     const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
@@ -319,14 +335,16 @@ void Seek30Control::slotSeek30Prev(double v) {
 
     for (int i = m_memoryCues.size() - 1; i >= 0; --i) {
         auto pCue = m_memoryCues.at(i);
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         if ((curPos - testPos) > kEps) {
             // Allow skipping the current memory cue if it's within 1.5 seconds
             auto playControl = ControlObject::getControl(ConfigKey(m_group, "play"));
             double playValue = playControl->get(); // or appropriate getter
             bool isPlaying = (playValue > 0.0);
-            if(isPlaying && std::abs(curPos - testPos) < (m_sampleRate.toDouble() * 1.5)) continue;
+            if (isPlaying && std::abs(curPos - testPos) < (m_sampleRate.toDouble() * 1.5))
+                continue;
 
             getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
             break;

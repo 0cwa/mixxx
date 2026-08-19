@@ -1115,7 +1115,6 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
                 pThisStemMenu,
                 false,
                 tr("Stems"));
-
     }
     pStemsMenu->addSeparator();
 

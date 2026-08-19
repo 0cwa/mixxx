@@ -30,7 +30,9 @@ class allshader::WaveformRenderMemoryCues final
     void preprocess() override;
 
   public slots:
-    void setColor(const QColor& color) { m_color = color; }
+    void setColor(const QColor& color) {
+        m_color = color;
+    }
 
   private:
     QColor m_color;

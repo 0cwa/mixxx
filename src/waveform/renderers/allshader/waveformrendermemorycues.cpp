@@ -1,15 +1,15 @@
 #include "waveform/renderers/allshader/waveformrendermemorycues.h"
 
-#include <QtDebug>
 #include <QDomNode>
+#include <QtDebug>
 
 #include "moc_waveformrendermemorycues.cpp"
 #include "rendergraph/geometry.h"
 #include "rendergraph/material/unicolormaterial.h"
 #include "rendergraph/vertexupdaters/vertexupdater.h"
 #include "skin/legacy/skincontext.h"
-#include "track/track.h"
 #include "track/cue.h"
+#include "track/track.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 #include "widget/wskincolor.h"
 
@@ -53,7 +53,6 @@ bool WaveformRenderMemoryCues::preprocessInner() {
     auto positionType = m_isSlipRenderer ? ::WaveformRendererAbstract::Slip
                                          : ::WaveformRendererAbstract::Play;
 
-
     const float devicePixelRatio = m_waveformRenderer->getDevicePixelRatio();
 
     m_color.setAlphaF(1.0f);
@@ -80,11 +79,12 @@ bool WaveformRenderMemoryCues::preprocessInner() {
     QList<CuePointer> memoryCuesOnScreen;
     const QList<CuePointer> cues = trackInfo->getCuePoints();
     for (const auto& pCue : cues) {
-        if (!pCue) continue;
+        if (!pCue)
+            continue;
         if (pCue->getType() == mixxx::CueType::Memory) {
             double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
-            if(testPos > (firstDisplayedPosition * trackSamples)
-                    && testPos < (lastDisplayedPosition * trackSamples)) {
+            if (testPos > (firstDisplayedPosition * trackSamples) &&
+                    testPos < (lastDisplayedPosition * trackSamples)) {
                 memoryCuesOnScreen.append(pCue);
             }
         }
@@ -94,7 +94,8 @@ bool WaveformRenderMemoryCues::preprocessInner() {
 
     const int numVerticesPerLine = 6; // 2 triangles
 
-    const int reserved = (memoryCuesOnScreen.size() * 3) + (memoryCuesOnScreen.size() * numVerticesPerLine);
+    const int reserved = (memoryCuesOnScreen.size() * 3) +
+            (memoryCuesOnScreen.size() * numVerticesPerLine);
     geometry().allocate(reserved);
 
     VertexUpdater vertexUpdater{geometry().vertexDataAs<Geometry::Point2D>()};

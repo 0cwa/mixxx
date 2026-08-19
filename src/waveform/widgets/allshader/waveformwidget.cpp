@@ -11,7 +11,6 @@
 #include "waveform/renderers/allshader/waveformrenderbeat.h"
 #include "waveform/renderers/allshader/waveformrenderdownbeat.h"
 #include "waveform/renderers/allshader/waveformrenderdownbeat16.h"
-#include "waveform/renderers/allshader/waveformrendermemorycues.h"
 #include "waveform/renderers/allshader/waveformrendererendoftrack.h"
 #include "waveform/renderers/allshader/waveformrendererfiltered.h"
 #include "waveform/renderers/allshader/waveformrendererhsv.h"
@@ -23,6 +22,7 @@
 #include "waveform/renderers/allshader/waveformrenderertextured.h"
 #include "waveform/renderers/allshader/waveformrendermark.h"
 #include "waveform/renderers/allshader/waveformrendermarkrange.h"
+#include "waveform/renderers/allshader/waveformrendermemorycues.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "waveform/widgets/allshader/moc_waveformwidget.cpp"
 
