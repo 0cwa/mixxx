@@ -15,7 +15,6 @@ WMemoryCueButton::WMemoryCueButton(QWidget* pParent, const QString& group)
           m_group(group) {
     setFocusPolicy(Qt::NoFocus);
 }
-
 void WMemoryCueButton::setup(const QDomNode& node, const SkinContext& context) {
     // Pass through to base to pick up stylesheet, size, etc.
     WPushButton::setup(node, context);
@@ -85,4 +84,3 @@ void WMemoryCueButton::mousePressEvent(QMouseEvent* pEvent) {
     m_pCueMenuPopup->setTrackCueGroup(pTrack, pMemoryCue, m_group);
     m_pCueMenuPopup->popup(mapToGlobal(QPoint(0, height())));
 }
-

@@ -293,7 +293,7 @@ void allshader::DigitsRenderNode::update(
 //     const int reserved = (s1.length() + s2.length()) * numVerticesPerRectangle;
 //     geometry().allocate(reserved);
 //     TexturedVertexUpdater vertexUpdater{geometry().vertexDataAs<Geometry::TexturedPoint2D>()};
-// 
+//
 //     const float ch = height();
 //     if (!s1.isEmpty()) {
 //         const auto w = addVertices(vertexUpdater,
@@ -312,7 +312,7 @@ void allshader::DigitsRenderNode::update(
 //                 y,
 //                 s2);
 //     }
-// 
+//
 //     DEBUG_ASSERT(reserved == vertexUpdater.index());
 // }
 

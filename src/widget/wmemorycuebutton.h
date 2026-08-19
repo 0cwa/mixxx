@@ -21,4 +21,3 @@ class WMemoryCueButton : public WPushButton {
     const QString m_group;
     parented_ptr<WCueMenuPopup> m_pCueMenuPopup;
 };
-
