@@ -135,7 +135,6 @@ class QmlSoundManagerProxy : public QObject {
     Q_INVOKABLE QList<EngineBuffer::KeylockEngine> getKeylockEngines() const;
     Q_INVOKABLE EngineBuffer::KeylockEngine getKeylockEngine() const;
     Q_INVOKABLE void setKeylockEngine(EngineBuffer::KeylockEngine);
-    Q_INVOKABLE void setKeylockEngineForAllDecks(EngineBuffer::KeylockEngine);
     Q_INVOKABLE QString getAPI() const;
     Q_INVOKABLE void setAPI(const QString& api);
     Q_INVOKABLE unsigned int getSyncBuffers() const;
@@ -175,13 +174,8 @@ class QmlSoundManagerProxy : public QObject {
 
     std::shared_ptr<SoundManager> m_pSoundManager;
     PollingControlProxy m_keylockEngine;
-    PollingControlProxy m_keylockEngine1;
-    PollingControlProxy m_keylockEngine2;
-    PollingControlProxy m_keylockEngine3;
-    PollingControlProxy m_keylockEngine4;
 
     std::optional<EngineBuffer::KeylockEngine> m_pendingKeylockEngine;
-    std::optional<EngineBuffer::KeylockEngine> m_pendingKeylockEngineForAllDecks;
     SoundManagerConfig m_config;
     QAtomicInt m_commitInProgress;
 };

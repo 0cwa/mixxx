@@ -25,7 +25,7 @@ Category {
         soundApi.selected = manager.getAPI();
         keylock.loading = true;
         keylock.update();
-        keylock.loadedEngineId = keylockEngine1.value;
+        keylock.loadedEngineId = keylockEngine.value;
         const keylockEngineIndex = keylock.engineIds.indexOf(keylock.loadedEngineId);
         if (keylockEngineIndex >= 0) {
             keylock.selected = keylock.options[keylockEngineIndex];
@@ -67,7 +67,7 @@ Category {
         if (keylockEngineIndex >= 0 && keylockEngineIndex < keylock.engineIds.length) {
             const keylockEngineId = keylock.engineIds[keylockEngineIndex];
             if (keylock.selectionChanged && keylockEngineId !== keylock.loadedEngineId) {
-                manager.setKeylockEngineForAllDecks(keylockEngineId);
+                manager.setKeylockEngine(keylockEngineId);
             }
         }
 
@@ -217,9 +217,9 @@ Category {
         key: "talkover_mix"
     }
     Mixxx.ControlProxy {
-        id: keylockEngine1
+        id: keylockEngine
 
-        group: "[Channel1]"
+        group: "[App]"
         key: "keylock_engine"
     }
     ScrollView {

@@ -271,7 +271,9 @@ class EngineBuffer : public EngineObject {
     }
 
     constexpr static KeylockEngine defaultKeylockEngine() {
-#ifdef __RUBBERBAND__
+#ifdef __BUNGEE__
+        return KeylockEngine::Bungee;
+#elif defined(__RUBBERBAND__)
         return KeylockEngine::RubberBandFaster;
 #else
         return KeylockEngine::SoundTouch;
