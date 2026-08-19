@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QWheelEvent>
 
+#include "control/controlobject.h"
 #include "rendergraph/engine.h"
 #include "rendergraph/opacitynode.h"
 #include "waveform/renderers/allshader/waveformrenderbackground.h"

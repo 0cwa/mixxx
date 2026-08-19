@@ -1,8 +1,5 @@
 #pragma once
 
-#include "control/controlobject.h"
-#include "rendergraph/engine.h"
-#include "rendergraph/opacitynode.h"
 #include "waveform/renderers/allshader/waveformrenderersignalbase.h"
 #include "waveform/widgets/waveformwidgetabstract.h"
 #include "waveform/widgets/waveformwidgetvars.h"

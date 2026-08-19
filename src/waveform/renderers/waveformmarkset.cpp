@@ -103,11 +103,14 @@ void WaveformMarkSet::syncMemoryCueMarks(const QString& group,
 
         // Construct a mark with no position/visibility control objects. The fixed
         // position is supplied below so this mark is not tied to a ControlObject.
+        const QString textColor = tmpl->m_textColor.isValid()
+                ? tmpl->m_textColor.name()
+                : QStringLiteral("#ffffff");
         auto mark = WaveformMark::create(
                 group,
                 QString(),
                 QString(),
-                tmpl->m_textColor,
+                textColor,
                 QString("AlignBottom"),
                 pCue->getLabel().isEmpty() ? QString("Memory Cue") : pCue->getLabel(),
                 tmpl->m_pixmapPath,
@@ -128,7 +131,6 @@ void WaveformMarkSet::syncMemoryCueMarks(const QString& group,
 
         m_marks.push_front(pMark);
         m_memoryCueMarks.push_back(pMark);
-        qDebug() << "Added waveform mark for memory cue at" << pos;
     }
 }
 
