@@ -128,7 +128,7 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
                   false,
                   false,
                   static_cast<double>(pConfig->getValue(
-                          ConfigKey(group, "keylock_engine"),
+                          ConfigKey(kAppGroup, "keylock_engine"),
                           EngineBuffer::defaultKeylockEngine())))),
           m_mainGainOld(0.0),
           m_boothGainOld(0.0),

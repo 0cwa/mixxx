@@ -33,8 +33,10 @@ namespace {
 
 const QString kAppGroup = QStringLiteral("[App]");
 const QString kMasterGroup = QStringLiteral("[Master]");
+
 const ConfigKey kKeylockEngingeCfgkey =
         ConfigKey(kAppGroup, QStringLiteral("keylock_engine"));
+
 const ConfigKey kKeylockMultiThreadingCfgkey =
         ConfigKey(kAppGroup, QStringLiteral("keylock_multithreading"));
 const ConfigKey kPipeWire =
@@ -74,7 +76,7 @@ const QString kKeylockMultiThreadedUnavailableMono = QStringLiteral("<i>") +
         QStringLiteral("</i>");
 const QString kKeylockMultiThreadedUnavailableRubberband =
         QStringLiteral("<i>") +
-        QObject::tr("Dual threading mode is only available with RubberBand.") +
+        QObject::tr("Dual threading mode is only available with the RubberBand engine.") +
         QStringLiteral("</i>");
 #endif
 } // namespace
@@ -366,6 +368,9 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
             this,
             &DlgPrefSound::mainOutputModeComboBoxChanged);
     m_pMainMonoMixdown->connectValueChanged(this, &DlgPrefSound::mainMonoMixdownChanged);
+#ifdef __RUBBERBAND__
+    updateKeylockDualThreadingCheckbox();
+#endif
 
 #ifdef __LINUX__
     qDebug() << "RLimit Cur " << RLimit::getCurRtPrio();
@@ -680,7 +685,6 @@ void DlgPrefSound::loadSettings(const SoundManagerConfig& config) {
         engineClockComboBox->setCurrentIndex(0);
     }
 
-    // Default keylock engine is Rubberband Faster (v2)
     const auto keylockEngine = static_cast<EngineBuffer::KeylockEngine>(
             m_pSettings->getValue(kKeylockEngingeCfgkey,
                     static_cast<int>(EngineBuffer::defaultKeylockEngine())));
@@ -699,6 +703,7 @@ void DlgPrefSound::loadSettings(const SoundManagerConfig& config) {
     keylockDualthreadedCheckBox->setChecked(m_pSettings->getValue(
             kKeylockMultiThreadingCfgkey,
             false));
+    updateKeylockDualThreadingCheckbox();
 #endif
 
     // Collect selected I/O channel indices for all non-empty device comboboxes
@@ -956,9 +961,12 @@ void DlgPrefSound::settingChanged() {
 
 #ifdef __RUBBERBAND__
 void DlgPrefSound::updateKeylockDualThreadingCheckbox() {
-    bool supportedScaler = keylockComboBox->currentData()
-                                   .value<EngineBuffer::KeylockEngine>() !=
-            EngineBuffer::KeylockEngine::SoundTouch;
+    const auto isRubberBandEngine = [](EngineBuffer::KeylockEngine engine) {
+        return engine == EngineBuffer::KeylockEngine::RubberBandFaster ||
+                engine == EngineBuffer::KeylockEngine::RubberBandFiner;
+    };
+    bool supportedScaler = isRubberBandEngine(
+            keylockComboBox->currentData().value<EngineBuffer::KeylockEngine>());
     bool monoMix = mainOutputModeComboBox->currentIndex() == 1;
     keylockDualthreadedCheckBox->setEnabled(!monoMix && supportedScaler);
     keylockDualthreadedCheckBox->setToolTip(monoMix
@@ -1082,7 +1090,7 @@ void DlgPrefSound::slotResetToDefaults() {
     loadSettings(newConfig);
 
     const auto keylockEngine = EngineBuffer::defaultKeylockEngine();
-    const int index = keylockComboBox->findData(QVariant::fromValue(keylockEngine));
+    int index = keylockComboBox->findData(QVariant::fromValue(keylockEngine));
     DEBUG_ASSERT(index >= 0);
     if (index >= 0) {
         keylockComboBox->setCurrentIndex(index);
@@ -1168,6 +1176,10 @@ void DlgPrefSound::mainOutputModeComboBoxChanged(int value) {
 void DlgPrefSound::mainMonoMixdownChanged(double value) {
     const bool mainMonoMixdownEnabled = (value != 0);
     mainOutputModeComboBox->setCurrentIndex(mainMonoMixdownEnabled ? 1 : 0);
+
+#ifdef __RUBBERBAND__
+    updateKeylockDualThreadingCheckbox();
+#endif
 }
 
 void DlgPrefSound::micMonitorModeComboBoxChanged(int value) {

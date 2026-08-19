@@ -15,9 +15,8 @@ namespace mixxx {
 namespace qml {
 
 namespace {
-const QString kAppGroup = QStringLiteral("[App]");
 const ConfigKey kKeylockEngineCfgkey =
-        ConfigKey(kAppGroup, QStringLiteral("keylock_engine"));
+        ConfigKey(QStringLiteral("[App]"), QStringLiteral("keylock_engine"));
 
 } // namespace
 
@@ -94,6 +93,14 @@ QmlSoundManagerProxy::QmlSoundManagerProxy(
                 return;
             }
 
+            if (m_pendingKeylockEngine) {
+                const auto keylockEngine = *m_pendingKeylockEngine;
+                m_keylockEngine.set(static_cast<double>(keylockEngine));
+                m_pSoundManager->userSettings()->setValue(
+                        kKeylockEngineCfgkey, keylockEngine);
+                m_pendingKeylockEngine.reset();
+            }
+
             status = m_pSoundManager->setConfig(m_config);
         }
         if (status != SoundDeviceStatus::Ok) {
@@ -152,8 +159,10 @@ QList<EngineBuffer::KeylockEngine> QmlSoundManagerProxy::getKeylockEngines() con
 }
 
 void QmlSoundManagerProxy::setKeylockEngine(EngineBuffer::KeylockEngine keylockEngine) {
-    m_keylockEngine.set(static_cast<double>(keylockEngine));
-    m_pSoundManager->userSettings()->setValue(kKeylockEngineCfgkey, keylockEngine);
+    if (!EngineBuffer::isKeylockEngineAvailable(keylockEngine)) {
+        return;
+    }
+    m_pendingKeylockEngine = keylockEngine;
 }
 
 EngineBuffer::KeylockEngine QmlSoundManagerProxy::getKeylockEngine() const {

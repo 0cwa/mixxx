@@ -58,6 +58,9 @@ modules:
   - modules/libebur128.yaml
   - modules/libkeyfinder.yaml
   - modules/libdjinterop.yaml
+  - modules/eigen3.yaml
+  - modules/pffft.yaml
+  - modules/bungee.yaml
   - name: mixxx
     buildsystem: cmake-ninja
     run-tests: true
@@ -71,6 +74,7 @@ modules:
       - -DINSTALL_USER_UDEV_RULES=OFF
       - -DBUILD_BENCH=OFF
       - -DBUILD_TESTING=ON
+      - -DBUNGEE=ON
     sources:
       - type: dir
         path: ../../
