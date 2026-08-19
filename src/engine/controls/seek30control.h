@@ -152,5 +152,5 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
     mixxx::audio::SampleRate m_sampleRate;
 
-    TrackPointer m_pLoadedTrack; // is written from an engine worker thread
+    TrackPointer m_pLoadedTrack{}; // is written from an engine worker thread
 };
