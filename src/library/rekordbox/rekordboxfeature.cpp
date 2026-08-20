@@ -1205,7 +1205,9 @@ void applyXmlMetadata(
     const QJsonArray beatgrid = metadata.value(QStringLiteral("beatgrid")).toArray();
     if (!track->isBpmLocked()) {
         for (const QJsonValue& value : beatgrid) {
-            const double seconds = value.toObject().value(QStringLiteral("position")).toDouble(-1.0);
+            const double seconds = value.toObject()
+                                           .value(QStringLiteral("position"))
+                                           .toDouble(-1.0);
             if (seconds >= 0.0) {
                 beatPositions << mixxx::audio::FramePos(seconds * sampleRate.value());
             }

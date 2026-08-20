@@ -13,7 +13,10 @@
 namespace mixxx::rekordbox {
 namespace {
 
-void diagnostic(Library* library, Diagnostic::Severity severity, const QString& message, const QXmlStreamReader& xml) {
+void diagnostic(Library* library,
+        Diagnostic::Severity severity,
+        const QString& message,
+        const QXmlStreamReader& xml) {
     library->diagnostics.push_back(
             {severity, message, xml.lineNumber(), xml.columnNumber()});
 }
@@ -22,20 +25,32 @@ QString attribute(const QXmlStreamAttributes& attributes, const char* name) {
     return attributes.value(QLatin1String(name)).toString();
 }
 
-int integer(const QString& value, const QString& field, Library* library, const QXmlStreamReader& xml) {
+int integer(const QString& value,
+        const QString& field,
+        Library* library,
+        const QXmlStreamReader& xml) {
     bool ok = false;
     const int result = value.toInt(&ok);
     if (!value.isEmpty() && !ok) {
-        diagnostic(library, Diagnostic::Severity::Warning, QStringLiteral("Invalid integer in %1: %2").arg(field, value), xml);
+        diagnostic(library,
+                Diagnostic::Severity::Warning,
+                QStringLiteral("Invalid integer in %1: %2").arg(field, value),
+                xml);
     }
     return ok ? result : 0;
 }
 
-double real(const QString& value, const QString& field, Library* library, const QXmlStreamReader& xml) {
+double real(const QString& value,
+        const QString& field,
+        Library* library,
+        const QXmlStreamReader& xml) {
     bool ok = false;
     const double result = value.toDouble(&ok);
     if (!value.isEmpty() && !ok) {
-        diagnostic(library, Diagnostic::Severity::Warning, QStringLiteral("Invalid number in %1: %2").arg(field, value), xml);
+        diagnostic(library,
+                Diagnostic::Severity::Warning,
+                QStringLiteral("Invalid number in %1: %2").arg(field, value),
+                xml);
     }
     return ok ? result : 0.0;
 }
@@ -44,8 +59,14 @@ void parseTrackChild(QXmlStreamReader* xml, Track* track, Library* library) {
     const auto name = xml->name();
     const auto attributes = xml->attributes();
     if (name == QLatin1String("TEMPO")) {
-        track->beatgrid.push_back({real(attribute(attributes, "Inizio"), QStringLiteral("TEMPO/Inizio"), library, *xml),
-                real(attribute(attributes, "Bpm"), QStringLiteral("TEMPO/Bpm"), library, *xml)});
+        track->beatgrid.push_back({real(attribute(attributes, "Inizio"),
+                                           QStringLiteral("TEMPO/Inizio"),
+                                           library,
+                                           *xml),
+                real(attribute(attributes, "Bpm"),
+                        QStringLiteral("TEMPO/Bpm"),
+                        library,
+                        *xml)});
     } else if (name == QLatin1String("POSITION_MARK")) {
         CueOrLoop cue;
         cue.name = attribute(attributes, "Name");
@@ -58,7 +79,10 @@ void parseTrackChild(QXmlStreamReader* xml, Track* track, Library* library) {
                 QStringLiteral("POSITION_MARK/End"),
                 library,
                 *xml);
-        cue.beatNumber = integer(attribute(attributes, "Num"), QStringLiteral("POSITION_MARK/Num"), library, *xml);
+        cue.beatNumber = integer(attribute(attributes, "Num"),
+                QStringLiteral("POSITION_MARK/Num"),
+                library,
+                *xml);
         const QString red = attribute(attributes, "Red");
         const QString green = attribute(attributes, "Green");
         const QString blue = attribute(attributes, "Blue");
@@ -123,7 +147,10 @@ Track parseTrack(QXmlStreamReader* xml, Library* library) {
             QStringLiteral("PlayCount"),
             library,
             *xml);
-    track.bpm = real(attribute(attributes, "AverageBpm"), QStringLiteral("AverageBpm"), library, *xml);
+    track.bpm = real(attribute(attributes, "AverageBpm"),
+            QStringLiteral("AverageBpm"),
+            library,
+            *xml);
 
     while (xml->readNextStartElement()) {
         parseTrackChild(xml, &track, library);
@@ -135,10 +162,16 @@ Playlist parsePlaylist(QXmlStreamReader* xml, Library* library) {
     const auto attributes = xml->attributes();
     Playlist playlist;
     playlist.name = attribute(attributes, "Name");
-    playlist.type = integer(attribute(attributes, "Type"), QStringLiteral("NODE/Type"), library, *xml);
+    playlist.type = integer(attribute(attributes, "Type"),
+            QStringLiteral("NODE/Type"),
+            library,
+            *xml);
     while (xml->readNextStartElement()) {
         if (xml->name() == QLatin1String("PLAYLIST")) {
-            const int id = integer(attribute(xml->attributes(), "Key"), QStringLiteral("PLAYLIST/Key"), library, *xml);
+            const int id = integer(attribute(xml->attributes(), "Key"),
+                    QStringLiteral("PLAYLIST/Key"),
+                    library,
+                    *xml);
             playlist.trackIds.push_back(id);
             xml->skipCurrentElement();
         } else if (xml->name() == QLatin1String("NODE")) {
@@ -243,12 +276,19 @@ Library parseXml(QIODevice* device) {
                 }
             }
         } else {
-            diagnostic(&library, Diagnostic::Severity::Warning, QStringLiteral("Unexpected root element: %1").arg(xml.name().toString()), xml);
+            diagnostic(&library,
+                    Diagnostic::Severity::Warning,
+                    QStringLiteral("Unexpected root element: %1")
+                            .arg(xml.name().toString()),
+                    xml);
             xml.skipCurrentElement();
         }
     }
     if (!foundRoot && !xml.hasError()) {
-        diagnostic(&library, Diagnostic::Severity::Error, QStringLiteral("Missing DJ_PLAYLISTS root element"), xml);
+        diagnostic(&library,
+                Diagnostic::Severity::Error,
+                QStringLiteral("Missing DJ_PLAYLISTS root element"),
+                xml);
     }
     if (xml.hasError()) {
         diagnostic(&library, Diagnostic::Severity::Error, xml.errorString(), xml);
