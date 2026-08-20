@@ -23,8 +23,17 @@ Category {
         microphoneMonitorMode.currentIndex = micMonitorMode.value;
         soundApi.options = manager.getHostAPIList();
         soundApi.selected = manager.getAPI();
+        keylock.loading = true;
         keylock.update();
-        keylock.selected = keylock.options[manager.getKeylockEngine()];
+        keylock.loadedEngineId = keylockEngine1.value;
+        const keylockEngineIndex = keylock.engineIds.indexOf(keylock.loadedEngineId);
+        if (keylockEngineIndex >= 0) {
+            keylock.selected = keylock.options[keylockEngineIndex];
+        } else if (keylock.options.length > 0) {
+            keylock.selected = keylock.options[0];
+        }
+        keylock.loading = false;
+        keylock.selectionChanged = false;
 
         // Router
         router.multiSoundcard.selected = router.multiSoundcard.options[manager.getSyncBuffers()];
@@ -54,7 +63,13 @@ Category {
         manager.setAudioBufferSizeIndex(audioBuffer.currentIndex + 1);
         micMonitorMode.value = microphoneMonitorMode.currentIndex;
         manager.setAPI(soundApi.selected);
-        manager.setKeylockEngine(keylock.options.indexOf(keylock.selected));
+        const keylockEngineIndex = keylock.options.indexOf(keylock.selected);
+        if (keylockEngineIndex >= 0 && keylockEngineIndex < keylock.engineIds.length) {
+            const keylockEngineId = keylock.engineIds[keylockEngineIndex];
+            if (keylock.selectionChanged && keylockEngineId !== keylock.loadedEngineId) {
+                manager.setKeylockEngineForAllDecks(keylockEngineId);
+            }
+        }
 
         // Router
         manager.setSyncBuffers(router.multiSoundcard.options.indexOf(router.multiSoundcard.selected));
@@ -201,6 +216,12 @@ Category {
         group: "[Master]"
         key: "talkover_mix"
     }
+    Mixxx.ControlProxy {
+        id: keylockEngine1
+
+        group: "[Channel1]"
+        key: "keylock_engine"
+    }
     ScrollView {
         id: scrollView
 
@@ -312,24 +333,44 @@ Category {
                                     id: keylock
 
                                     function update() {
+                                        let engineIds = [];
                                         let options = [];
                                         let tooltips = [];
                                         for (let engine of Mixxx.SoundManager.getKeylockEngines()) {
                                             switch (engine) {
                                             case 0:
+                                                engineIds.push(engine);
                                                 options.push(qsTr("Soundtouch"));
                                                 tooltips.push(qsTr("Faster"));
                                                 break;
                                             case 1:
+                                                engineIds.push(engine);
                                                 options.push(qsTr("Rubberband"));
                                                 tooltips.push(qsTr("Better"));
                                                 break;
                                             case 2:
-                                                options.push(qsTr("Rubberband R3"));
+                                                engineIds.push(engine);
+                                                options.push(qsTr("Rubberband R3 MW"));
                                                 tooltips.push(qsTr("Near-hi-fi quality"));
+                                                break;
+                                            case 3:
+                                                engineIds.push(engine);
+                                                options.push(qsTr("Rubberband R3 SW"));
+                                                tooltips.push(qsTr("High quality"));
+                                                break;
+                                            case 4:
+                                                engineIds.push(engine);
+                                                options.push(qsTr("Bungee"));
+                                                tooltips.push(qsTr("High quality"));
+                                                break;
+                                            case 5:
+                                                engineIds.push(engine);
+                                                options.push(qsTr("Signalsmith Stretch"));
+                                                tooltips.push(qsTr("Experimental"));
                                                 break;
                                             }
                                         }
+                                        keylock.engineIds = engineIds;
                                         keylock.options = options;
                                         keylock.tooltips = tooltips;
                                     }
@@ -337,9 +378,16 @@ Category {
                                     maxWidth: tabSection.width * 0.4
                                     normalizedWidth: false
                                     options: []
+                                    property var engineIds: []
+                                    property int loadedEngineId: -1
+                                    property bool loading: false
+                                    property bool selectionChanged: false
                                     tooltips: []
 
                                     onSelectedChanged: {
+                                        if (loading)
+                                            return;
+                                        selectionChanged = true;
                                         root.hasChanges = true;
                                     }
 
