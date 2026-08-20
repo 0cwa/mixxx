@@ -14,13 +14,12 @@
 #include <QJsonParseError>
 #include <QMap>
 #include <QMessageBox>
-#include <QSettings>
 #include <QSet>
+#include <QSettings>
 #include <QString>
 #include <QTextCodec>
-#include <QtDebug>
 #include <QUrl>
-
+#include <QtDebug>
 #include <algorithm>
 #include <functional>
 #include <utility>
@@ -30,8 +29,8 @@
 #include "library/library.h"
 #include "library/memorycuepromotionconfig.h"
 #include "library/queryutil.h"
-#include "library/rekordbox/rekordboxxmlparser.h"
 #include "library/rekordbox/rekordboxconstants.h"
+#include "library/rekordbox/rekordboxxmlparser.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
@@ -323,7 +322,7 @@ QList<TreeItem*> findRekordboxDevices() {
 }
 
 template<typename Base, typename T>
-inline bool instanceof (const T* ptr) {
+inline bool instanceof(const T* ptr) {
     return dynamic_cast<const Base*>(ptr) != nullptr;
 }
 
@@ -360,15 +359,15 @@ QString getText(rekordbox_pdb_t::device_sql_string_t* deviceString) {
         return text;
     }
 
-    if (instanceof <rekordbox_pdb_t::device_sql_short_ascii_t>(deviceString->body())) {
+    if (instanceof<rekordbox_pdb_t::device_sql_short_ascii_t>(deviceString->body())) {
         rekordbox_pdb_t::device_sql_short_ascii_t* shortAsciiString =
                 static_cast<rekordbox_pdb_t::device_sql_short_ascii_t*>(deviceString->body());
         text = QString::fromStdString(shortAsciiString->text());
-    } else if (instanceof <rekordbox_pdb_t::device_sql_long_ascii_t>(deviceString->body())) {
+    } else if (instanceof<rekordbox_pdb_t::device_sql_long_ascii_t>(deviceString->body())) {
         rekordbox_pdb_t::device_sql_long_ascii_t* longAsciiString =
                 static_cast<rekordbox_pdb_t::device_sql_long_ascii_t*>(deviceString->body());
         text = QString::fromStdString(longAsciiString->text());
-    } else if (instanceof <rekordbox_pdb_t::device_sql_long_utf16le_t>(deviceString->body())) {
+    } else if (instanceof<rekordbox_pdb_t::device_sql_long_utf16le_t>(deviceString->body())) {
         rekordbox_pdb_t::device_sql_long_utf16le_t* longUtf16leString =
                 static_cast<rekordbox_pdb_t::device_sql_long_utf16le_t*>(deviceString->body());
         text = fromUtf16LeString(longUtf16leString->text());
@@ -537,14 +536,14 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
     const mixxx::DbConnectionPooler dbConnectionPooler(dbConnectionPool);
     QSqlDatabase database = mixxx::DbConnectionPooled(dbConnectionPool);
 
-    //Open the database connection in this thread.
+    // Open the database connection in this thread.
     VERIFY_OR_DEBUG_ASSERT(database.isOpen()) {
         qDebug() << "Failed to open database for Rekordbox parser."
                  << database.lastError();
         return QString();
     }
 
-    //Give thread a low priority
+    // Give thread a low priority
     QThread* thisThread = QThread::currentThread();
     thisThread->setPriority(QThread::LowPriority);
 
@@ -683,7 +682,7 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
                                         playlistNameMap[playlistTree->id()] =
                                                 getText(playlistTree->name());
                                         playlistIsFolderMap[playlistTree
-                                                                    ->id()] =
+                                                        ->id()] =
                                                 playlistTree->is_folder();
                                         playlistTreeMap
                                                 [playlistTree->parent_id()]
@@ -790,7 +789,8 @@ QString parseXmlLibrary(
     deleteTracks.prepare(
             "DELETE FROM " + kRekordboxLibraryTable +
             " WHERE device=:device AND NOT EXISTS ("
-            "SELECT 1 FROM " + kRekordboxPlaylistTracksTable +
+            "SELECT 1 FROM " +
+            kRekordboxPlaylistTracksTable +
             " AS playlist_tracks WHERE playlist_tracks.track_id=" +
             kRekordboxLibraryTable + ".id)");
     deleteTracks.bindValue(":device", device);
@@ -916,7 +916,7 @@ QString parseXmlLibrary(
 
     std::function<bool(const mixxx::rekordbox::Playlist&, const QString&)> addPlaylist;
     addPlaylist = [&](const mixxx::rekordbox::Playlist& playlist,
-                              const QString& parentPath) {
+                          const QString& parentPath) {
         const QString path = parentPath + kPLaylistPathDelimiter + playlist.name;
         if (!insertPlaylist(path)) {
             return false;
@@ -1108,7 +1108,8 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
     deleteTracksQuery.prepare(
             "DELETE FROM " + kRekordboxLibraryTable +
             " WHERE device=:device AND NOT EXISTS ("
-            "SELECT 1 FROM " + kRekordboxPlaylistTracksTable +
+            "SELECT 1 FROM " +
+            kRekordboxPlaylistTracksTable +
             " AS playlist_tracks WHERE playlist_tracks.track_id=" +
             kRekordboxLibraryTable + ".id)");
     deleteTracksQuery.bindValue(":device", child->getLabel());
@@ -1219,8 +1220,7 @@ void applyXmlMetadata(
         if (beatPositions.size() >= 2) {
             beats = mixxx::Beats::fromBeatPositions(sampleRate, beatPositions);
         } else {
-            const double bpm = beatgrid.first().toObject().value(QStringLiteral("bpm"))
-                                       .toDouble();
+            const double bpm = beatgrid.first().toObject().value(QStringLiteral("bpm")).toDouble();
             if (bpm > 0.0) {
                 beats = mixxx::Beats::fromConstTempo(
                         sampleRate, beatPositions.front(), mixxx::Bpm(bpm));
@@ -1521,7 +1521,7 @@ void readAnalyze(TrackPointer track,
             track->trySetBeats(pBeats);
         }
 
-        for (const pending_hot_cue_t& hotCue : pendingHotCues) {
+        for (const pending_hot_cue_t& hotCue : std::as_const(pendingHotCues)) {
             setHotCue(track,
                     hotCue.position,
                     mixxx::audio::kInvalidFramePos,
@@ -1531,7 +1531,7 @@ void readAnalyze(TrackPointer track,
         }
 
         memoryCuesAndLoops = mixxx::rekordbox::normalizeMemoryCueLoops(
-                std::move(memoryCuesAndLoops));
+                memoryCuesAndLoops);
         if (!memoryCuesAndLoops.isEmpty()) {
             bool mainCueFound = false;
 
@@ -1586,7 +1586,7 @@ void applyXmlTrackAnnotations(
     applyXmlMetadata(std::move(track), sampleRate, serializedMetadata);
 }
 
-QList<MemoryCueLoop> normalizeMemoryCueLoops(QList<MemoryCueLoop> cues) {
+QList<MemoryCueLoop> normalizeMemoryCueLoops(const QList<MemoryCueLoop>& cues) {
     QList<MemoryCueLoop> normalized;
     for (const MemoryCueLoop& cue : cues) {
         if (cue.endPosition.isValid()) {
@@ -1623,24 +1623,26 @@ QList<MemoryCueLoop> normalizeMemoryCueLoops(QList<MemoryCueLoop> cues) {
         normalized << cue;
     }
 
-    std::stable_sort(normalized.begin(), normalized.end(), [](const MemoryCueLoop& a, const MemoryCueLoop& b) {
-        if (a.startPosition != b.startPosition) {
-            return a.startPosition < b.startPosition;
-        }
-        if (a.endPosition.isValid() != b.endPosition.isValid()) {
-            return !a.endPosition.isValid();
-        }
-        if (a.endPosition != b.endPosition) {
-            return a.endPosition < b.endPosition;
-        }
-        if (a.comment != b.comment) {
-            return a.comment < b.comment;
-        }
-        if (a.color != b.color) {
-            return a.color.has_value();
-        }
-        return a.sourceOrder < b.sourceOrder;
-    });
+    std::stable_sort(normalized.begin(),
+            normalized.end(),
+            [](const MemoryCueLoop& a, const MemoryCueLoop& b) {
+                if (a.startPosition != b.startPosition) {
+                    return a.startPosition < b.startPosition;
+                }
+                if (a.endPosition.isValid() != b.endPosition.isValid()) {
+                    return !a.endPosition.isValid();
+                }
+                if (a.endPosition != b.endPosition) {
+                    return a.endPosition < b.endPosition;
+                }
+                if (a.comment != b.comment) {
+                    return a.comment < b.comment;
+                }
+                if (a.color != b.color) {
+                    return a.color.has_value();
+                }
+                return a.sourceOrder < b.sourceOrder;
+            });
     return normalized;
 }
 
@@ -2121,14 +2123,14 @@ QString RekordboxFeature::formatRootViewHtml() const {
     }
     html.append(QString("</ul>"));
 
-    //Colorize links in lighter blue, instead of QT default dark blue.
-    //Links are still different from regular text, but readable on dark/light backgrounds.
-    //https://github.com/mixxxdj/mixxx/issues/9103
+    // Colorize links in lighter blue, instead of QT default dark blue.
+    // Links are still different from regular text, but readable on dark/light backgrounds.
+    // https://github.com/mixxxdj/mixxx/issues/9103
     html.append(QString("<a style=\"color:#0496FF;\" href=\"refresh\">%1</a>")
-                        .arg(refreshLink));
+                    .arg(refreshLink));
     const QString xmlImportLink = tr("Import Rekordbox XML collection (read-only)");
     html.append(QString("<br/><a style=\"color:#0496FF;\" href=\"%1\">%2</a>")
-                        .arg(kRekordboxXmlImportLink, xmlImportLink));
+                    .arg(kRekordboxXmlImportLink, xmlImportLink));
     return html;
 }
 
@@ -2142,7 +2144,7 @@ void RekordboxFeature::activate() {
     m_devicesFuture = QtConcurrent::run(findRekordboxDevices);
     m_devicesFutureWatcher.setFuture(m_devicesFuture);
     m_title = tr("(loading) Rekordbox");
-    //calls a slot in the sidebar model such that 'Rekordbox (isLoading)' is displayed.
+    // calls a slot in the sidebar model such that 'Rekordbox (isLoading)' is displayed.
     emit featureIsLoading(this, true);
 
     emit enableCoverArtDisplay(true);
@@ -2155,7 +2157,7 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
         return;
     }
 
-    //access underlying TreeItem object
+    // access underlying TreeItem object
     TreeItem* item = static_cast<TreeItem*>(index.internalPointer());
     if (!(item && item->getData().isValid())) {
         return;

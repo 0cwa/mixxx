@@ -58,7 +58,7 @@ struct MemoryCueLoop {
 // CUES and CUES2 commonly contain the same loop. Deduplicate only loops with
 // the same complete interval, and prefer the richer CUES2 record. Memory cues
 // are never deduplicated by position because multiple cues may share a start.
-QList<MemoryCueLoop> normalizeMemoryCueLoops(QList<MemoryCueLoop> cues);
+QList<MemoryCueLoop> normalizeMemoryCueLoops(const QList<MemoryCueLoop>& cues);
 
 /// Returns a stable identity for a track's external ANLZ source.
 QString analyzeImportSourceIdentity(

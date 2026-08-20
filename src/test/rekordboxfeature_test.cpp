@@ -18,7 +18,12 @@ MemoryCueLoop cue(double start,
         mixxx::RgbColor::optional_t color,
         bool extended,
         int order) {
-    return {FramePos(start), end < 0 ? FramePos() : FramePos(end), std::move(comment), color, extended, order};
+    return {FramePos(start),
+            end < 0 ? FramePos() : FramePos(end),
+            std::move(comment),
+            color,
+            extended,
+            order};
 }
 
 TEST(RekordboxFeatureTest, ExtendedLoopReplacesLegacyDuplicate) {

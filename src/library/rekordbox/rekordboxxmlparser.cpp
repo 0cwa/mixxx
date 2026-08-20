@@ -8,6 +8,7 @@
 #include <QSet>
 #include <QUrl>
 #include <QXmlStreamReader>
+#include <utility>
 
 namespace mixxx::rekordbox {
 namespace {
@@ -49,8 +50,14 @@ void parseTrackChild(QXmlStreamReader* xml, Track* track, Library* library) {
         CueOrLoop cue;
         cue.name = attribute(attributes, "Name");
         cue.type = attribute(attributes, "Type");
-        cue.start = real(attribute(attributes, "Start"), QStringLiteral("POSITION_MARK/Start"), library, *xml);
-        cue.end = real(attribute(attributes, "End"), QStringLiteral("POSITION_MARK/End"), library, *xml);
+        cue.start = real(attribute(attributes, "Start"),
+                QStringLiteral("POSITION_MARK/Start"),
+                library,
+                *xml);
+        cue.end = real(attribute(attributes, "End"),
+                QStringLiteral("POSITION_MARK/End"),
+                library,
+                *xml);
         cue.beatNumber = integer(attribute(attributes, "Num"), QStringLiteral("POSITION_MARK/Num"), library, *xml);
         const QString red = attribute(attributes, "Red");
         const QString green = attribute(attributes, "Green");
@@ -84,14 +91,38 @@ Track parseTrack(QXmlStreamReader* xml, Library* library) {
     track.remixer = attribute(attributes, "Remixer");
     track.kind = attribute(attributes, "Kind");
     track.dateAdded = attribute(attributes, "DateAdded");
-    track.year = integer(attribute(attributes, "Year"), QStringLiteral("Year"), library, *xml);
-    track.durationSeconds = integer(attribute(attributes, "TotalTime"), QStringLiteral("TotalTime"), library, *xml);
-    track.trackNumber = integer(attribute(attributes, "TrackNumber"), QStringLiteral("TrackNumber"), library, *xml);
-    track.discNumber = integer(attribute(attributes, "DiscNumber"), QStringLiteral("DiscNumber"), library, *xml);
-    track.bitrate = integer(attribute(attributes, "BitRate"), QStringLiteral("BitRate"), library, *xml);
-    track.sampleRate = integer(attribute(attributes, "SampleRate"), QStringLiteral("SampleRate"), library, *xml);
-    track.rating = integer(attribute(attributes, "Rating"), QStringLiteral("Rating"), library, *xml);
-    track.playCount = integer(attribute(attributes, "PlayCount"), QStringLiteral("PlayCount"), library, *xml);
+    track.year = integer(attribute(attributes, "Year"),
+            QStringLiteral("Year"),
+            library,
+            *xml);
+    track.durationSeconds = integer(attribute(attributes, "TotalTime"),
+            QStringLiteral("TotalTime"),
+            library,
+            *xml);
+    track.trackNumber = integer(attribute(attributes, "TrackNumber"),
+            QStringLiteral("TrackNumber"),
+            library,
+            *xml);
+    track.discNumber = integer(attribute(attributes, "DiscNumber"),
+            QStringLiteral("DiscNumber"),
+            library,
+            *xml);
+    track.bitrate = integer(attribute(attributes, "BitRate"),
+            QStringLiteral("BitRate"),
+            library,
+            *xml);
+    track.sampleRate = integer(attribute(attributes, "SampleRate"),
+            QStringLiteral("SampleRate"),
+            library,
+            *xml);
+    track.rating = integer(attribute(attributes, "Rating"),
+            QStringLiteral("Rating"),
+            library,
+            *xml);
+    track.playCount = integer(attribute(attributes, "PlayCount"),
+            QStringLiteral("PlayCount"),
+            library,
+            *xml);
     track.bpm = real(attribute(attributes, "AverageBpm"), QStringLiteral("AverageBpm"), library, *xml);
 
     while (xml->readNextStartElement()) {
@@ -225,16 +256,16 @@ Library parseXml(QIODevice* device) {
 
     QHash<int, int> trackIdCounts;
     QSet<QString> locations;
-    for (const Track& track : library.tracks) {
+    for (const Track& track : std::as_const(library.tracks)) {
         ++trackIdCounts[track.id];
         const QString normalizedLocation = normalizeLocation(track.location);
         if (normalizedLocation.isEmpty()) {
-            library.diagnostics.push_back(
-                    {Diagnostic::Severity::Warning,
-                            QStringLiteral("Track %1 has no Location and will be skipped during import")
-                                    .arg(track.id),
-                            0,
-                            0});
+            library.diagnostics.push_back({Diagnostic::Severity::Warning,
+                    QStringLiteral("Track %1 has no Location and will be "
+                                   "skipped during import")
+                            .arg(track.id),
+                    0,
+                    0});
         } else if (locations.contains(normalizedLocation)) {
             library.diagnostics.push_back(
                     {Diagnostic::Severity::Warning,

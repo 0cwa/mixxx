@@ -59,9 +59,12 @@ TEST(RekordboxXmlParserTest, RetainsUnlistedTracksAndReportsMalformedInput) {
     EXPECT_EQ(library.tracks[0].id, 8);
     EXPECT_TRUE(library.hasErrors());
     ASSERT_FALSE(library.diagnostics.isEmpty());
-    const auto error = std::find_if(library.diagnostics.cbegin(), library.diagnostics.cend(), [](const auto& diagnostic) {
-        return diagnostic.severity == mixxx::rekordbox::Diagnostic::Severity::Error;
-    });
+    const auto error = std::find_if(library.diagnostics.cbegin(),
+            library.diagnostics.cend(),
+            [](const auto& diagnostic) {
+                return diagnostic.severity ==
+                        mixxx::rekordbox::Diagnostic::Severity::Error;
+            });
     ASSERT_NE(error, library.diagnostics.cend());
     EXPECT_GT(error->line, 0);
 }
@@ -96,9 +99,12 @@ TEST(RekordboxXmlParserTest, NormalizesLocalFileLocationsBeforeDuplicateDetectio
     EXPECT_EQ(library.tracks[1].location, "/song.mp3");
     EXPECT_FALSE(library.tracks[0].location.isEmpty());
     EXPECT_EQ(library.tracks[0].location, library.tracks[1].location);
-    EXPECT_TRUE(std::any_of(library.diagnostics.cbegin(), library.diagnostics.cend(), [](const auto& diagnostic) {
-        return diagnostic.message == "Duplicate track Location: /song.mp3";
-    }));
+    EXPECT_TRUE(std::any_of(library.diagnostics.cbegin(),
+            library.diagnostics.cend(),
+            [](const auto& diagnostic) {
+                return diagnostic.message ==
+                        "Duplicate track Location: /song.mp3";
+            }));
 }
 
 TEST(RekordboxXmlParserTest, PreservesNonLocalLocations) {
@@ -129,7 +135,10 @@ TEST(RekordboxXmlParserTest, PreservesRemoteFileLocationsDuringDuplicateDetectio
     ASSERT_EQ(library.tracks.size(), 2);
     EXPECT_EQ(library.tracks[0].location, "file://remote/song.mp3");
     EXPECT_EQ(library.tracks[1].location, "file://remote/song.mp3");
-    EXPECT_TRUE(std::any_of(library.diagnostics.cbegin(), library.diagnostics.cend(), [](const auto& diagnostic) {
-        return diagnostic.message == "Duplicate track Location: file://remote/song.mp3";
-    }));
+    EXPECT_TRUE(std::any_of(library.diagnostics.cbegin(),
+            library.diagnostics.cend(),
+            [](const auto& diagnostic) {
+                return diagnostic.message ==
+                        "Duplicate track Location: file://remote/song.mp3";
+            }));
 }
