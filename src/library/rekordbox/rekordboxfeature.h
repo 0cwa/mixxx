@@ -26,15 +26,65 @@
 
 #include <QFuture>
 #include <QFutureWatcher>
+#include <QHash>
+#include <QList>
+#include <QSet>
 #include <QStringListModel>
+#include <QVector>
 #include <QtConcurrentRun>
 #include <fstream>
 
+#include "audio/frame.h"
 #include "library/baseexternallibraryfeature.h"
 #include "library/baseexternalplaylistmodel.h"
 #include "library/baseexternaltrackmodel.h"
+#include "library/memorycuepromotionconfig.h"
+#include "library/rekordbox/rekordboxxmlparser.h"
 #include "library/treeitemmodel.h"
+#include "util/color/rgbcolor.h"
 #include "util/parented_ptr.h"
+
+namespace mixxx::rekordbox {
+
+struct MemoryCueLoop {
+    audio::FramePos startPosition;
+    audio::FramePos endPosition;
+    QString comment;
+    RgbColor::optional_t color;
+    bool fromExtendedSection{false};
+    int sourceOrder{0};
+};
+
+// CUES and CUES2 commonly contain the same loop. Deduplicate only loops with
+// the same complete interval, and prefer the richer CUES2 record. Memory cues
+// are never deduplicated by position because multiple cues may share a start.
+QList<MemoryCueLoop> normalizeMemoryCueLoops(const QList<MemoryCueLoop>& cues);
+
+/// Returns a stable identity for a track's external ANLZ source.
+QString analyzeImportSourceIdentity(
+        const QString& trackLocation,
+        const QString& analyzePath);
+
+/// Returns whether an ANLZ source has not been imported in the current model.
+bool shouldImportAnalyzeSource(
+        const QString& sourceIdentity,
+        const QSet<QString>& importedSources);
+
+/// Records the database identity used by XML playlist/order mappings.
+void recordXmlTrackMapping(
+        QHash<int, int>* trackIds,
+        QVector<int>* importedTrackIds,
+        int xmlTrackId,
+        int databaseTrackId);
+
+/// Applies XML timing annotations to an externally loaded Track. Beatgrids are
+/// applied only while BPM is unlocked; cues and loops are always considered.
+void applyXmlTrackAnnotations(
+        TrackPointer track,
+        audio::SampleRate sampleRate,
+        const QByteArray& serializedMetadata);
+
+} // namespace mixxx::rekordbox
 
 class TrackCollectionManager;
 class BaseExternalPlaylistModel;
@@ -44,13 +94,18 @@ class RekordboxPlaylistModel : public BaseExternalPlaylistModel {
   public:
     RekordboxPlaylistModel(QObject* parent,
             TrackCollectionManager* pTrackCollectionManager,
-            QSharedPointer<BaseTrackCache> trackSource);
+            QSharedPointer<BaseTrackCache> trackSource,
+            UserSettingsPointer pConfig);
     TrackPointer getTrack(const QModelIndex& index) const override;
     bool isColumnHiddenByDefault(int column) override;
     bool isColumnInternal(int column) override;
 
   protected:
     void initSortColumnMapping() override;
+
+  private:
+    UserSettingsPointer m_pConfig;
+    mutable QSet<QString> m_importedAnalyzeSources;
 };
 
 class RekordboxFeature : public BaseExternalLibraryFeature {
