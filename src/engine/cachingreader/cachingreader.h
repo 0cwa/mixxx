@@ -3,6 +3,7 @@
 #include <QAtomicInt>
 #include <QHash>
 #include <QList>
+#include <QTimer>
 #include <QVarLengthArray>
 #include <QVector>
 #include <list>
@@ -136,12 +137,31 @@ class CachingReader : public QObject {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
+    void reportDiagnostics();
+
     const UserSettingsPointer m_pConfig;
+    const QString m_group;
 
     // Thread-safe FIFOs for communication between the engine callback and
     // reader thread.
     FIFO<CachingReaderChunkReadRequest> m_chunkReadRequestFIFO;
     FIFO<ReaderStatusUpdate> m_readerStatusUpdateFIFO;
+
+    // Audio-thread counters sampled by reportDiagnostics(). Updating them must
+    // remain allocation-free and lock-free.
+    QAtomicInt m_diagnosticSubmitAttempts;
+    QAtomicInt m_diagnosticSubmitFailures;
+    QAtomicInt m_diagnosticCacheMisses;
+    QAtomicInt m_diagnosticLastFailedChunk;
+    QAtomicInt m_diagnosticStatusConsumed;
+
+    // Accessed only by the QObject thread that owns the diagnostics timer.
+    QTimer m_diagnosticsTimer;
+    int m_lastReportedSubmitFailures;
+    int m_lastReportedCacheMisses;
+    int m_lastReportedWorkerProgress;
+    int m_lastReportedActiveChunk;
+    bool m_diagnosticEpisodeActive;
 
     // Looks for the provided chunk number in the index of in-memory chunks and
     // returns it if it is present. If not, returns nullptr. If it is present then

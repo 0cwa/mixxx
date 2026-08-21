@@ -27,6 +27,9 @@ class FIFO {
     int writeAvailable() const {
         return PaUtil_GetRingBufferWriteAvailable(&m_ringBuffer);
     }
+    int capacity() const {
+        return static_cast<int>(m_data.size());
+    }
     int read(DataType* pData, int count) {
         return PaUtil_ReadRingBuffer(&m_ringBuffer, pData, count);
     }
