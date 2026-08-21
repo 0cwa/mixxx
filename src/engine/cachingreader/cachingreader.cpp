@@ -1,6 +1,7 @@
 #include "engine/cachingreader/cachingreader.h"
 
 #include <QtDebug>
+#include <algorithm>
 
 #include "moc_cachingreader.cpp"
 #include "util/assert.h"
@@ -41,6 +42,7 @@ CachingReader::CachingReader(const QString& group,
         UserSettingsPointer config,
         mixxx::audio::ChannelCount maxSupportedChannel)
         : m_pConfig(config),
+          m_group(group),
           // Limit the number of in-flight requests to the worker. This should
           // prevent to overload the worker when it is not able to fetch those
           // requests from the FIFO timely. Otherwise outdated requests pile up
@@ -55,6 +57,16 @@ CachingReader::CachingReader(const QString& group,
           // allocated chunks, because the worker use writeBlocking(). Otherwise
           // the worker could get stuck in a hot loop!!!
           m_readerStatusUpdateFIFO(kNumberOfCachedChunksInMemory),
+          m_diagnosticSubmitAttempts(0),
+          m_diagnosticSubmitFailures(0),
+          m_diagnosticCacheMisses(0),
+          m_diagnosticLastFailedChunk(-1),
+          m_diagnosticStatusConsumed(0),
+          m_lastReportedSubmitFailures(0),
+          m_lastReportedCacheMisses(0),
+          m_lastReportedWorkerProgress(0),
+          m_lastReportedActiveChunk(-1),
+          m_diagnosticEpisodeActive(false),
           m_state(STATE_IDLE),
           m_mruCachingReaderChunk(nullptr),
           m_lruCachingReaderChunk(nullptr),
@@ -91,11 +103,107 @@ CachingReader::CachingReader(const QString& group,
             Qt::DirectConnection);
 
     m_worker.start(QThread::HighPriority);
+
+    // Format and emit diagnostics from this object's thread, never from the
+    // realtime engine callback.
+    m_diagnosticsTimer.setInterval(5000);
+    connect(&m_diagnosticsTimer,
+            &QTimer::timeout,
+            this,
+            &CachingReader::reportDiagnostics);
+    m_diagnosticsTimer.start();
 }
 
 CachingReader::~CachingReader() {
+    m_diagnosticsTimer.stop();
     m_worker.quitWait();
     qDeleteAll(m_chunks);
+}
+
+void CachingReader::reportDiagnostics() {
+    const int submitAttempts = m_diagnosticSubmitAttempts.loadAcquire();
+    const int submitFailures = m_diagnosticSubmitFailures.loadAcquire();
+    const int cacheMisses = m_diagnosticCacheMisses.loadAcquire();
+    const int workerProgress = m_worker.diagnosticCompletedRequests();
+    const int activeChunk = m_worker.diagnosticActiveChunk();
+    const auto workerState = m_worker.diagnosticState();
+    const int requestPending = std::max(0,
+            submitAttempts - submitFailures -
+                    m_worker.diagnosticDequeuedRequests());
+    const int requestCapacity = m_chunkReadRequestFIFO.capacity();
+    const int statusPending = std::max(0,
+            m_worker.diagnosticPublishedStatuses() -
+                    m_diagnosticStatusConsumed.loadAcquire());
+    const int statusCapacity = m_worker.diagnosticStatusCapacity();
+
+    const int newSubmitFailures = submitFailures - m_lastReportedSubmitFailures;
+    const int newCacheMisses = cacheMisses - m_lastReportedCacheMisses;
+    const bool statusBackpressure =
+            workerState == CachingReaderWorker::DiagnosticState::PublishingStatus &&
+            statusPending >= statusCapacity;
+    const bool decoderStall =
+            workerState == CachingReaderWorker::DiagnosticState::Decoding &&
+            activeChunk >= 0 && activeChunk == m_lastReportedActiveChunk &&
+            workerProgress == m_lastReportedWorkerProgress;
+    if (newSubmitFailures == 0 && newCacheMisses == 0 &&
+            !statusBackpressure && !decoderStall) {
+        if (m_diagnosticEpisodeActive) {
+            kLogger.info() << m_group
+                           << "CachingReader diagnostics recovered:"
+                           << "request FIFO" << requestPending << "/"
+                           << requestCapacity << "status FIFO" << statusPending
+                           << "/" << statusCapacity << "worker progress"
+                           << workerProgress;
+            m_diagnosticEpisodeActive = false;
+        }
+        m_lastReportedWorkerProgress = workerProgress;
+        m_lastReportedActiveChunk = activeChunk;
+        return;
+    }
+
+    const char* stateName = "waiting";
+    switch (workerState) {
+    case CachingReaderWorker::DiagnosticState::Waiting:
+        break;
+    case CachingReaderWorker::DiagnosticState::LoadingTrack:
+        stateName = "loading-track";
+        break;
+    case CachingReaderWorker::DiagnosticState::Decoding:
+        stateName = "decoding";
+        break;
+    case CachingReaderWorker::DiagnosticState::PublishingStatus:
+        stateName = "publishing-status";
+        break;
+    }
+
+    const char* classification = "cache-miss";
+    if (statusBackpressure) {
+        classification = "status-backpressure";
+    } else if (decoderStall) {
+        classification = "decoder-stall-suspected";
+    } else if (newSubmitFailures > 0) {
+        classification = "request-saturation";
+    }
+
+    kLogger.warning() << m_group << "CachingReader diagnostics:"
+                      << classification << "request FIFO" << requestPending << "/"
+                      << requestCapacity << "status FIFO" << statusPending << "/"
+                      << statusCapacity << "submit attempts" << submitAttempts
+                      << "new submit failures" << newSubmitFailures
+                      << "total submit failures" << submitFailures
+                      << "new cache misses" << newCacheMisses
+                      << "total cache misses" << cacheMisses << "last failed chunk"
+                      << m_diagnosticLastFailedChunk.loadAcquire() << "worker state"
+                      << stateName << "active chunk" << activeChunk
+                      << "last completed chunk"
+                      << m_worker.diagnosticLastCompletedChunk() << "worker progress"
+                      << workerProgress;
+
+    m_diagnosticEpisodeActive = true;
+    m_lastReportedSubmitFailures = submitFailures;
+    m_lastReportedCacheMisses = cacheMisses;
+    m_lastReportedWorkerProgress = workerProgress;
+    m_lastReportedActiveChunk = activeChunk;
 }
 
 void CachingReader::freeChunkFromList(CachingReaderChunkForOwner* pChunk) {
@@ -235,6 +343,7 @@ void CachingReader::newTrack(TrackPointer pTrack) {
 void CachingReader::process() {
     ReaderStatusUpdate update;
     while (m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+        m_diagnosticStatusConsumed.fetchAndAddRelaxed(1);
         auto* pChunk = update.takeFromWorker();
         if (pChunk) {
             // Result of a read request (with a chunk)
@@ -470,6 +579,7 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
                     DEBUG_ASSERT(!pChunk ||
                             (pChunk->getState() == CachingReaderChunkForOwner::READ_PENDING));
                     Counter("CachingReader::read(): Failed to read chunk on cache miss")++;
+                    m_diagnosticCacheMisses.fetchAndAddRelaxed(1);
                     if (kLogger.traceEnabled()) {
                         kLogger.trace()
                                 << "Cache miss for chunk with index"
@@ -600,11 +710,13 @@ void CachingReader::hintAndMaybeWake(const HintVector& hintList) {
                             << "Requesting read of chunk"
                             << request.chunk;
                 }
+                m_diagnosticSubmitAttempts.fetchAndAddRelaxed(1);
                 if (m_chunkReadRequestFIFO.write(&request, 1) != 1) {
-                    kLogger.warning()
-                            << "Failed to submit read request for chunk"
-                            << chunkIndex;
-                    // Revoke the chunk from the worker and free it
+                    m_diagnosticLastFailedChunk.storeRelease(chunkIndex);
+                    m_diagnosticSubmitFailures.fetchAndAddRelaxed(1);
+                    // Revoke the chunk from the worker and free it. The
+                    // diagnostics timer reports this failure off the realtime
+                    // callback thread at a bounded rate.
                     pChunk->takeFromWorker();
                     freeChunk(pChunk);
                 }
