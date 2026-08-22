@@ -75,6 +75,7 @@ modules:
       - -DBUILD_BENCH=OFF
       - -DBUILD_TESTING=ON
       - -DBUNGEE=ON
+      - -DSIGNALSMITH=OFF
     sources:
       - type: dir
         path: ../../

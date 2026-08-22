@@ -145,6 +145,7 @@ jobs:
           cmake -S .. -B .
           -DCMAKE_BUILD_TYPE=Debug
           -DBUNGEE=ON
+          -DSIGNALSMITH=OFF
           -DSANITIZE_ADDRESS=ON
           -DBUILD_TESTING=ON
           -DBUILD_BENCH=OFF
