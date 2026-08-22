@@ -691,7 +691,7 @@ NS4FX.Deck = function(number, midi_chan) {
     const deck = this;
     this.number = number;
     this.midi_chan = midi_chan;
-    this.active = (number === 1 || number === 2);
+    this.active = true;
 
     // If using stems, create state objects for each pad to track hold timers and states.
     // This is necessary for the hold-for-volume/effect functionality.
