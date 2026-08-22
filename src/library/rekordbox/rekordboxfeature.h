@@ -78,6 +78,7 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
 
   private:
     QString formatRootViewHtml() const;
+    void restorePendingDeviceMarker();
     std::unique_ptr<BaseSqlTableModel> createPlaylistModelForPlaylist(
             const QVariant& data) override;
 
@@ -88,6 +89,7 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
     QFuture<QList<TreeItem*>> m_devicesFuture;
     QFutureWatcher<QString> m_tracksFutureWatcher;
     QFuture<QString> m_tracksFuture;
+    TreeItem* m_pPendingDeviceItem{nullptr};
     QString m_title;
 
     QSharedPointer<BaseTrackCache> m_trackSource;

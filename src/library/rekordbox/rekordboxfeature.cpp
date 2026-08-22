@@ -1810,11 +1810,17 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
              << " playlist: " << playlist << " doParseDeviceDB: " << doParseDeviceDB;
 
     if (doParseDeviceDB) {
+        if (m_pPendingDeviceItem) {
+            qWarning() << "Rekordbox import is already in progress";
+            return;
+        }
+
         qDebug() << "Parse Rekordbox Device DB: " << playlist;
 
         // Let a worker thread do the XML parsing
         m_tracksFuture = QtConcurrent::run(parseDeviceDB, static_cast<Library*>(parent())->dbConnectionPool(), item);
         m_tracksFutureWatcher.setFuture(m_tracksFuture);
+        m_pPendingDeviceItem = item;
 
         // This device is now a playlist element, future activations should treat is
         // as such
@@ -1903,23 +1909,44 @@ void RekordboxFeature::onRekordboxDevicesFound() {
     emit featureLoadingFinished(this);
 }
 
+void RekordboxFeature::restorePendingDeviceMarker() {
+    if (!m_pPendingDeviceItem) {
+        return;
+    }
+
+    QList<QVariant> data = m_pPendingDeviceItem->getData().toList();
+    if (data.size() > 1) {
+        data[1] = QVariant(IS_RECORDBOX_DEVICE);
+        m_pPendingDeviceItem->setData(QVariant(data));
+    }
+    m_pPendingDeviceItem = nullptr;
+    m_pSidebarModel->triggerRepaint();
+}
+
 void RekordboxFeature::onTracksFound() {
     qDebug() << "onTracksFound";
-    m_pSidebarModel->triggerRepaint();
 
     QString devicePlaylist;
     try {
         devicePlaylist = m_tracksFuture.result();
     } catch (const std::exception& e) {
         qWarning() << "Failed to load Rekordbox database:" << e.what();
+        restorePendingDeviceMarker();
+        return;
+    } catch (...) {
+        qWarning() << "Failed to load Rekordbox database due to an unknown error";
+        restorePendingDeviceMarker();
         return;
     }
 
     if (devicePlaylist.isEmpty()) {
         qWarning() << "Rekordbox import did not produce a device playlist";
+        restorePendingDeviceMarker();
         return;
     }
 
+    m_pPendingDeviceItem = nullptr;
+    m_pSidebarModel->triggerRepaint();
     qDebug() << "Show Rekordbox Device Playlist: " << devicePlaylist;
 
     m_pRekordboxPlaylistModel->setPlaylist(devicePlaylist);
