@@ -378,9 +378,8 @@ NS4FX.init = function(id, debug) {
     midi.sendShortMsg(0xB2, 0x1F, 0);
     midi.sendShortMsg(0xB3, 0x1F, 0);
 
-    // setup elapsed/remaining tracking locally; Mixxx 2.7 no longer exposes [Controls], ShowDurationRemaining.
-    NS4FX.showDurationRemaining = 0;
-    NS4FX.timeElapsedCallback(NS4FX.showDurationRemaining);
+    // setup elapsed/remaining tracking
+    engine.makeConnection("[Controls]", "ShowDurationRemaining", NS4FX.timeElapsedCallback);
 
     // setup vumeter tracking
     engine.makeUnbufferedConnection("[Channel1]", "vu_meter_left", NS4FX.vuCallback);
@@ -1890,14 +1889,19 @@ NS4FX.sendScreenPitchMidi = function(deck, rate) {
 
 
 NS4FX.elapsedToggle = function() {
-    NS4FX.showDurationRemaining = NS4FX.showDurationRemaining === 1 ? 0 : 1;
-    NS4FX.timeElapsedCallback(NS4FX.showDurationRemaining);
+    const currentSetting = engine.getValue("[Controls]", "ShowDurationRemaining");
+    if (currentSetting === 0) {
+        engine.setValue("[Controls]", "ShowDurationRemaining", 1);
+    } else {
+        engine.setValue("[Controls]", "ShowDurationRemaining", 0);
+    }
+
     if (NS4FX.decks !== undefined) {
-        NS4FX.decks.forEachComponent(function(deck) {
+        NS4FX.decks.forEachComponentContainer(function(deck) {
             if (deck.position !== undefined) {
                 deck.position.trigger();
             }
-        });
+        }, false);
     }
 };
 
@@ -1926,7 +1930,7 @@ NS4FX.timeElapsedCallback = function(value, _group, _control) {
 
 NS4FX.timeMs = function(_deck, position, duration) {
     const elapsed = duration * position * 1000;
-    if (NS4FX.showDurationRemaining === 1) {
+    if (engine.getValue("[Controls]", "ShowDurationRemaining") === 1) {
         return Math.max(0, Math.round(duration * 1000 - elapsed));
     }
     return Math.round(elapsed);
