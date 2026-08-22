@@ -4876,7 +4876,7 @@ if(RUBBERBAND)
 endif()
 
 # Bungee
-option(BUNGEE "Enable the Bungee engine for pitch-bending" OFF)
+option(BUNGEE "Enable the Bungee engine for pitch-bending" ON)
 option(
   BUNGEE_FETCH_FALLBACK
   "Fetch and build Bungee via ExternalProject_Add when no system or vcpkg package is found"
