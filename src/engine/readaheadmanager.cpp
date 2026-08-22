@@ -309,8 +309,9 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
 
             // do crossfade from the current buffer into the new loop beginning
             if (plan.samplesFromReader != 0) { // avoid division by zero
-                SampleUtil::linearCrossfadeBuffersOut(
-                        pOutput + SampleUtil::ceilPlayPosToFrameStart(plan.crossFadeStart, channelCount),
+                SampleUtil::linearCrossfadeBuffersOut(pOutput +
+                                SampleUtil::ceilPlayPosToFrameStart(
+                                        plan.crossFadeStart, channelCount),
                         m_pCrossFadeBuffer,
                         plan.crossFadeSamples,
                         channelCount);
