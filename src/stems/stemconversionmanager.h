@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QList>
+#include <QMutex>
 #include <QObject>
 #include <memory>
 #include <optional>
@@ -21,12 +22,14 @@ class StemConversionManager : public QObject {
 
     struct ConversionInfo {
         TrackId trackId;
+        QString trackPath;
         QString trackTitle;
         float progress;
     };
 
     struct ConversionStatus {
         TrackId trackId;
+        QString trackPath;
         QString trackTitle;
         StemConverter::ConversionState state;
         float progress;
@@ -78,7 +81,9 @@ class StemConversionManager : public QObject {
     void saveHistory();
 
     std::unique_ptr<QThreadPool> m_pThreadPool;
+    mutable QMutex m_statusMutex;
     TrackId m_currentTrackId;
+    QString m_currentTrackPath;
     QList<PendingConversion> m_conversionQueue;
     QList<ConversionStatus> m_conversionHistory;
     StemConverterPointer m_pCurrentConverter;

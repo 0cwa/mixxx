@@ -8,10 +8,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutexLocker>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
-
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -26,6 +27,29 @@
 namespace {
 const mixxx::Logger kLogger("StemConverter");
 constexpr int kStemModelSampleRate = 44100;
+constexpr int kStemModelChannels = 2;
+constexpr int kExternalProcessTimeoutMs = 10 * 60 * 1000;
+constexpr int kProcessTerminateGracePeriodMs = 1000;
+
+bool waitForProcess(QProcess* pProcess, const QString& description) {
+    if (!pProcess->waitForStarted(5000)) {
+        kLogger.warning() << "Failed to start" << description << pProcess->errorString();
+        return false;
+    }
+    if (pProcess->waitForFinished(kExternalProcessTimeoutMs)) {
+        return true;
+    }
+
+    kLogger.warning() << "Timed out waiting for" << description;
+    pProcess->terminate();
+    if (!pProcess->waitForFinished(kProcessTerminateGracePeriodMs)) {
+        pProcess->kill();
+        if (!pProcess->waitForFinished(kProcessTerminateGracePeriodMs)) {
+            kLogger.warning() << "Could not stop" << description;
+        }
+    }
+    return false;
+}
 }
 
 bool StemConverter::interleavedToPlanar(const std::vector<float>& interleaved,
@@ -89,42 +113,71 @@ StemConverter::StemConverter(QObject* parent)
 #endif
 }
 
+bool StemConverter::isValidConversionInput(const TrackPointer& pTrack) {
+    return pTrack && !pTrack->getLocation().isEmpty();
+}
+
+bool StemConverter::requiresAudioFormatConversion(int sampleRate, int channels) {
+    return sampleRate != kStemModelSampleRate || channels != kStemModelChannels;
+}
+
+void StemConverter::setProgress(float progress) {
+    QMutexLocker locker(&m_statusMutex);
+    m_progress = progress;
+}
+
+void StemConverter::setState(ConversionState state) {
+    QMutexLocker locker(&m_statusMutex);
+    m_state = state;
+}
+
+void StemConverter::setTrackTitle(const QString& trackTitle) {
+    QMutexLocker locker(&m_statusMutex);
+    m_trackTitle = trackTitle;
+}
+
+void StemConverter::setTrackPath(const QString& trackPath) {
+    QMutexLocker locker(&m_statusMutex);
+    m_trackPath = trackPath;
+}
+
 void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resolution) {
     if (!pTrack) {
         qWarning() << "Cannot convert null track";
         emit conversionFailed(TrackId(), QStringLiteral("Track is null"));
-        m_state = ConversionState::Failed;
+        setState(ConversionState::Failed);
         return;
     }
 
     const TrackId trackId = pTrack->getId();
-    if (!trackId.isValid()) {
-        qWarning() << "Cannot convert track with an invalid ID";
-        emit conversionFailed(trackId, QStringLiteral("Track ID is invalid"));
-        m_state = ConversionState::Failed;
+    if (!isValidConversionInput(pTrack)) {
+        qWarning() << "Cannot convert track without a source path";
+        emit conversionFailed(trackId, QStringLiteral("Track file path is empty"));
+        setState(ConversionState::Failed);
         return;
     }
 
     m_pTrack = pTrack;
     m_resolution = resolution;
 
-    QString trackFilePath = pTrack->getLocation();
+    const QString trackFilePath = QFileInfo(pTrack->getLocation()).absoluteFilePath();
     QFileInfo fileInfo(trackFilePath);
-    m_trackTitle = fileInfo.fileName();
+    setTrackTitle(fileInfo.fileName());
+    setTrackPath(QDir::cleanPath(trackFilePath));
 
-    m_state = ConversionState::Processing;
-    m_progress = 0.0f;
+    setState(ConversionState::Processing);
+    setProgress(0.0f);
 
     if (trackFilePath.isEmpty()) {
         qWarning() << "Track file path is empty";
         emit conversionFailed(trackId, QStringLiteral("Track file path is empty"));
-        m_state = ConversionState::Failed;
+        setState(ConversionState::Failed);
         return;
     }
 
-    emit conversionStarted(trackId, m_trackTitle);
-    m_progress = 0.1f;
-    emit conversionProgress(trackId, m_progress, QStringLiteral("Starting ONNX separation..."));
+    emit conversionStarted(trackId, getTrackTitle());
+    setProgress(0.1f);
+    emit conversionProgress(trackId, 0.1f, QStringLiteral("Starting ONNX separation..."));
 
 #ifdef __STEM_CONVERSION__
     QString stemsDir = getStemsDirectory(trackFilePath);
@@ -132,7 +185,7 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
         const QString errorMsg = QStringLiteral("ONNX separation failed");
         kLogger.warning() << errorMsg;
         emit conversionFailed(trackId, errorMsg);
-        m_state = ConversionState::Failed;
+        setState(ConversionState::Failed);
         return;
     }
 #else
@@ -140,49 +193,57 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
             QStringLiteral("STEM conversion not available (ONNX Runtime not compiled)");
     kLogger.warning() << errorMsg;
     emit conversionFailed(trackId, errorMsg);
-    m_state = ConversionState::Failed;
+    setState(ConversionState::Failed);
     return;
 #endif
 
-    m_progress = 0.5f;
-    emit conversionProgress(trackId, m_progress, QStringLiteral("Converting stems to M4A..."));
+    setProgress(0.5f);
+    emit conversionProgress(trackId, 0.5f, QStringLiteral("Converting stems to M4A..."));
 
     if (!convertStemsToM4A(stemsDir)) {
         const QString errorMsg = QStringLiteral("Stem conversion to M4A failed");
         kLogger.warning() << errorMsg;
         emit conversionFailed(trackId, errorMsg);
-        m_state = ConversionState::Failed;
+        setState(ConversionState::Failed);
         return;
     }
 
-    m_progress = 0.7f;
-    emit conversionProgress(trackId, m_progress, QStringLiteral("Creating STEM container..."));
+    setProgress(0.7f);
+    emit conversionProgress(trackId, 0.7f, QStringLiteral("Creating STEM container..."));
 
     if (!createStemContainer(trackFilePath, stemsDir)) {
         const QString errorMsg = QStringLiteral("STEM container creation failed");
         kLogger.warning() << errorMsg;
         emit conversionFailed(trackId, errorMsg);
-        m_state = ConversionState::Failed;
+        setState(ConversionState::Failed);
         return;
     }
 
-    m_progress = 1.0f;
-    emit conversionProgress(trackId, m_progress, QStringLiteral("Conversion completed successfully!"));
+    setProgress(1.0f);
+    emit conversionProgress(trackId, 1.0f, QStringLiteral("Conversion completed successfully!"));
     emit conversionCompleted(trackId);
 
-    m_state = ConversionState::Completed;
+    setState(ConversionState::Completed);
     kLogger.info() << "Track conversion completed:" << trackFilePath;
 }
 
 float StemConverter::getProgress() const {
+    QMutexLocker locker(&m_statusMutex);
     return m_progress;
 }
 
 QString StemConverter::getTrackTitle() const {
+    QMutexLocker locker(&m_statusMutex);
     return m_trackTitle;
 }
 
+QString StemConverter::getTrackPath() const {
+    QMutexLocker locker(&m_statusMutex);
+    return m_trackPath;
+}
+
 StemConverter::ConversionState StemConverter::getState() const {
+    QMutexLocker locker(&m_statusMutex);
     return m_state;
 }
 
@@ -351,11 +412,16 @@ bool StemConverter::decodeAudioFile(const QString& inputPath,
     }
 
     auto pTrack = Track::newTemporary(inputPath);
+    if (!isValidConversionInput(pTrack)) {
+        kLogger.warning() << "Cannot decode audio without a source path:" << inputPath;
+        return false;
+    }
 
-    SoundSourceProxy proxy(pTrack);
-    auto pAudioSource = proxy.openAudioSource(mixxx::AudioSource::OpenParams(
-            mixxx::audio::ChannelCount(kModelChannels),
-            mixxx::audio::SampleRate(targetSampleRate)));
+    auto pProxy = std::make_unique<SoundSourceProxy>(pTrack);
+    mixxx::AudioSourcePointer pAudioSource = pProxy->openAudioSource(
+            mixxx::AudioSource::OpenParams(
+                    mixxx::audio::ChannelCount(kModelChannels),
+                    mixxx::audio::SampleRate(targetSampleRate)));
     if (!pAudioSource) {
         kLogger.warning() << "Failed to open audio file:" << inputPath;
         return false;
@@ -363,9 +429,63 @@ bool StemConverter::decodeAudioFile(const QString& inputPath,
 
     sampleRate = pAudioSource->getSignalInfo().getSampleRate();
     channels = pAudioSource->getSignalInfo().getChannelCount();
+    QTemporaryDir convertedInputDir;
+    if (requiresAudioFormatConversion(sampleRate, channels)) {
+        pAudioSource->close();
+        if (!convertedInputDir.isValid()) {
+            kLogger.warning() << "Failed to create temporary directory for audio conversion";
+            return false;
+        }
+
+        const QString convertedInputPath = convertedInputDir.filePath("stem-input.wav");
+        const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        if (ffmpegPath.isEmpty()) {
+            kLogger.warning() << "ffmpeg executable not found for audio conversion";
+            return false;
+        }
+
+        QProcess ffmpegProcess;
+        const QStringList arguments{
+                QStringLiteral("-nostdin"),
+                QStringLiteral("-hide_banner"),
+                QStringLiteral("-loglevel"),
+                QStringLiteral("error"),
+                QStringLiteral("-i"),
+                inputPath,
+                QStringLiteral("-vn"),
+                QStringLiteral("-ac"),
+                QString::number(kModelChannels),
+                QStringLiteral("-ar"),
+                QString::number(targetSampleRate),
+                QStringLiteral("-c:a"),
+                QStringLiteral("pcm_f32le"),
+                QStringLiteral("-y"),
+                convertedInputPath};
+        ffmpegProcess.start(ffmpegPath, arguments);
+        if (!waitForProcess(&ffmpegProcess, QStringLiteral("ffmpeg audio conversion")) ||
+                ffmpegProcess.exitStatus() != QProcess::NormalExit ||
+                ffmpegProcess.exitCode() != 0 || !QFile::exists(convertedInputPath)) {
+            kLogger.warning() << "ffmpeg could not convert audio to the model format"
+                              << ffmpegProcess.readAllStandardError();
+            return false;
+        }
+
+        pTrack = Track::newTemporary(convertedInputPath);
+        pProxy = std::make_unique<SoundSourceProxy>(pTrack);
+        pAudioSource = pProxy->openAudioSource(mixxx::AudioSource::OpenParams(
+                mixxx::audio::ChannelCount(kModelChannels),
+                mixxx::audio::SampleRate(targetSampleRate)));
+        if (!pAudioSource) {
+            kLogger.warning() << "Failed to open converted audio file:" << convertedInputPath;
+            return false;
+        }
+        sampleRate = pAudioSource->getSignalInfo().getSampleRate();
+        channels = pAudioSource->getSignalInfo().getChannelCount();
+    }
+
     if (sampleRate != targetSampleRate || channels != kModelChannels) {
-        kLogger.warning() << "Audio source did not honor model format request. Sample rate:"
-                          << sampleRate << "channels:" << channels;
+        kLogger.warning() << "Audio source is not in the model format after conversion."
+                          << "Sample rate:" << sampleRate << "channels:" << channels;
         return false;
     }
 
@@ -416,6 +536,7 @@ bool StemConverter::decodeAudioFile(const QString& inputPath,
     kLogger.info() << "Audio decoded at model sample rate:" << sampleRate
                    << "frames:" << originalFrames;
 
+    pAudioSource->close();
     return true;
 }
 
@@ -579,8 +700,7 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
              << "-y" << m4aPath;
 
         ffmpegProcess.start(ffmpegPath, args);
-        if (!ffmpegProcess.waitForFinished(-1)) {
-            kLogger.warning() << "ffmpeg timeout for:" << stemName;
+        if (!waitForProcess(&ffmpegProcess, QStringLiteral("ffmpeg stem conversion"))) {
             return false;
         }
 
@@ -613,8 +733,7 @@ bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& o
 
     process.start(ffmpegPath, arguments);
 
-    if (!process.waitForFinished(-1)) {
-        kLogger.warning() << "ffmpeg process failed:" << process.errorString();
+    if (!waitForProcess(&process, QStringLiteral("ffmpeg track conversion"))) {
         return false;
     }
 
@@ -686,9 +805,7 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
 
     ffmpegProcess.start(ffmpegPath, ffmpegArgs);
 
-    if (!ffmpegProcess.waitForFinished(-1)) {
-        QString errorMsg = ffmpegProcess.errorString();
-        kLogger.warning() << "ffmpeg process failed:" << errorMsg;
+    if (!waitForProcess(&ffmpegProcess, QStringLiteral("ffmpeg STEM container creation"))) {
         return false;
     }
 
@@ -826,9 +943,7 @@ bool StemConverter::addStemMetadata(const QString& outputPath) {
     kLogger.info() << "Running MP4Box:" << mp4boxPath << mp4boxArgs.join(" ");
     mp4boxProcess.start(mp4boxPath, mp4boxArgs);
 
-    if (!mp4boxProcess.waitForFinished(-1)) {
-        QString errorMsg = mp4boxProcess.errorString();
-        kLogger.warning() << "MP4Box process failed:" << errorMsg;
+    if (!waitForProcess(&mp4boxProcess, QStringLiteral("MP4Box metadata update"))) {
         QFile::remove(tempJsonPath);
         return false;
     }

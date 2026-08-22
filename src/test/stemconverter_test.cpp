@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QTemporaryFile>
 #include <vector>
 
 TEST(StemConverterTest, ConvertsStereoInterleavedAudioToPlanarAndBack) {
@@ -25,4 +26,20 @@ TEST(StemConverterTest, RejectsInvalidAudioLayout) {
     EXPECT_FALSE(StemConverter::interleavedToPlanar(samples, 2, 3, &output));
     EXPECT_FALSE(StemConverter::planarToInterleaved(samples, 2, 3, &output));
     EXPECT_FALSE(StemConverter::planarToInterleaved(samples, 2, 0, &output));
+}
+
+TEST(StemConverterTest, UsesPathAsIdentityForTemporaryTrack) {
+    QTemporaryFile inputFile;
+    ASSERT_TRUE(inputFile.open());
+
+    const auto pTrack = Track::newTemporary(inputFile.fileName());
+    ASSERT_TRUE(pTrack);
+    EXPECT_FALSE(pTrack->getId().isValid());
+    EXPECT_TRUE(StemConverter::isValidConversionInput(pTrack));
+}
+
+TEST(StemConverterTest, DetectsAudioThatNeedsModelFormatConversion) {
+    EXPECT_FALSE(StemConverter::requiresAudioFormatConversion(44100, 2));
+    EXPECT_TRUE(StemConverter::requiresAudioFormatConversion(48000, 2));
+    EXPECT_TRUE(StemConverter::requiresAudioFormatConversion(44100, 1));
 }

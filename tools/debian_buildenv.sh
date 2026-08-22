@@ -65,6 +65,7 @@ case "$1" in
                 libsndfile1-dev
                 ffmpeg
                 sox
+                wget
             )
         else
             INSTALL_DEMUCS=false
@@ -179,24 +180,27 @@ case "$1" in
             # Get the actual user running sudo
             ACTUAL_USER="${SUDO_USER:-$USER}"
 
-            # Download htdemucs ONNX mixxx htdemucs model
+            # Download every model selectable in the stem conversion UI.
             echo ""
-            echo "Downloading mixxx htdemucs ONNX model..."
+            echo "Downloading Mixxx HTDemucs ONNX models..."
             echo ""
 
             MODEL_PATH="${MIXXX_STEM_MODEL_DIR:-/home/$ACTUAL_USER/.local/mixxx_models}"
-            MODEL_FILE="$MODEL_PATH/htdemucs.onnx"
+            MODEL_URL_BASE="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel"
+            MODEL_FILES=(htdemucs.onnx htdemucs_ft.onnx)
 
             # Create directory with proper ownership
             if sudo -u "$ACTUAL_USER" mkdir -p "$MODEL_PATH"; then
-                # Download model file
-                if sudo -u "$ACTUAL_USER" wget -c https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx -O "$MODEL_FILE"; then
-                    echo "Model downloaded successfully to $MODEL_FILE"
-                    sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$MODEL_FILE"
-                else
-                    echo "Failed to download mixxx htdemucs ONNX model"
-                    exit 1
-                fi
+                for MODEL_NAME in "${MODEL_FILES[@]}"; do
+                    MODEL_FILE="$MODEL_PATH/$MODEL_NAME"
+                    if sudo -u "$ACTUAL_USER" wget -c "$MODEL_URL_BASE/$MODEL_NAME" -O "$MODEL_FILE"; then
+                        echo "Model downloaded successfully to $MODEL_FILE"
+                        sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$MODEL_FILE"
+                    else
+                        echo "Failed to download Mixxx HTDemucs model $MODEL_NAME"
+                        exit 1
+                    fi
+                done
             else
                 echo "Failed to create model path: $MODEL_PATH"
                 exit 1

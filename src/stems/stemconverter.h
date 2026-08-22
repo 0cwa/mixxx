@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMutex>
 #include <QObject>
 #include <QString>
 #include <cstddef>
@@ -44,6 +45,9 @@ class StemConverter : public QObject {
     /// Get the title of the track being converted
     QString getTrackTitle() const;
 
+    /// Get the source path used as the conversion identity for temporary tracks.
+    QString getTrackPath() const;
+
     /// Get the current conversion state
     ConversionState getState() const;
 
@@ -58,6 +62,12 @@ class StemConverter : public QObject {
             int channels,
             std::size_t frames,
             std::vector<float>* pInterleaved);
+
+    /// Temporary tracks are not database records, so their path is their identity.
+    static bool isValidConversionInput(const TrackPointer& pTrack);
+
+    /// Return whether decoded audio must be converted for HTDemucs.
+    static bool requiresAudioFormatConversion(int sampleRate, int channels);
 
   signals:
     /// Emitted when conversion starts
@@ -115,6 +125,11 @@ class StemConverter : public QObject {
     bool runOnnxSeparation(const QString& trackFilePath, const QString& outputDir);
 #endif
 
+    void setProgress(float progress);
+    void setState(ConversionState state);
+    void setTrackTitle(const QString& trackTitle);
+    void setTrackPath(const QString& trackPath);
+
     /// Get the directory where stems are created.
     QString getStemsDirectory(const QString& trackFilePath);
 
@@ -149,6 +164,8 @@ class StemConverter : public QObject {
     ConversionState m_state;
     float m_progress;
     QString m_trackTitle;
+    QString m_trackPath;
+    mutable QMutex m_statusMutex;
 };
 
 using StemConverterPointer = std::shared_ptr<StemConverter>;

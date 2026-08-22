@@ -6,9 +6,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutexLocker>
 #include <QRunnable>
 #include <QStandardPaths>
 #include <QThreadPool>
+#include <QVariant>
 
 #include "util/logger.h"
 
@@ -65,40 +67,60 @@ StemConversionManager::~StemConversionManager() {
     // Conversion tasks hold raw signal receivers and must finish before this
     // manager is destroyed. QThreadPool owns and deletes its QRunnables.
     m_pThreadPool->waitForDone();
-    m_pCurrentConverter.reset();
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_pCurrentConverter.reset();
+    }
     saveHistory();
 }
 
 void StemConversionManager::convertTrack(const TrackPointer& pTrack,
         StemConverter::Resolution resolution) {
-    if (!pTrack || !pTrack->getId().isValid() || pTrack->getLocation().isEmpty()) {
-        kLogger.warning() << "Cannot convert null, invalid, or location-less track";
+    if (!StemConverter::isValidConversionInput(pTrack)) {
+        kLogger.warning() << "Cannot convert null or location-less track";
         return;
     }
 
-    // Add to queue
-    m_conversionQueue.append(PendingConversion{pTrack, resolution});
-    emit queueChanged(m_conversionQueue.size());
+    bool startNext = false;
+    int pendingCount = 0;
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_conversionQueue.append(PendingConversion{pTrack, resolution});
+        pendingCount = m_conversionQueue.size();
+        startNext = !m_pCurrentConverter;
+    }
+    emit queueChanged(pendingCount);
 
     // If no conversion is in progress, start the next one
-    if (m_currentTrackId.isValid() == false) {
+    if (startNext) {
         processNextInQueue();
     }
 }
 
 void StemConversionManager::processNextInQueue() {
-    if (m_conversionQueue.isEmpty()) {
-        m_currentTrackId = TrackId();
-        m_pCurrentConverter.reset();
+    PendingConversion pending;
+    int pendingCount = 0;
+    {
+        QMutexLocker locker(&m_statusMutex);
+        if (m_conversionQueue.isEmpty()) {
+            m_currentTrackId = TrackId();
+            m_currentTrackPath.clear();
+            m_pCurrentConverter.reset();
+        } else {
+            pending = m_conversionQueue.takeFirst();
+            m_currentTrackId = pending.pTrack->getId();
+            m_currentTrackPath = pending.pTrack->getLocation();
+            pendingCount = m_conversionQueue.size();
+        }
+    }
+    if (!pending.pTrack) {
         emit queueChanged(0);
         return;
     }
 
     // Get the first track from the queue
-    PendingConversion pending = m_conversionQueue.takeFirst();
     const TrackPointer pTrack = pending.pTrack;
     const StemConverter::Resolution resolution = pending.resolution;
-    m_currentTrackId = pTrack->getId();
 
     // Create the converter
     StemConverterPointer pConverter = std::make_shared<StemConverter>();
@@ -121,22 +143,28 @@ void StemConversionManager::processNextInQueue() {
             this,
             &StemConversionManager::onConversionFailed);
 
+    // Store the converter before starting the task so an invalid TrackId does
+    // not make a temporary-track conversion appear idle.
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_pCurrentConverter = pConverter;
+    }
+
     // Execute the conversion in a separate thread (asynchronous)
     auto pTask = std::make_unique<StemConversionTask>(pConverter, pTrack, resolution);
     m_pThreadPool->start(pTask.release());
 
-    // Store the converter to access signals
-    m_pCurrentConverter = pConverter;
-
-    emit queueChanged(m_conversionQueue.size());
+    emit queueChanged(pendingCount);
 }
 
 void StemConversionManager::onConversionStarted(TrackId trackId, const QString& trackTitle) {
-    if (!trackId.isValid()) {
-        kLogger.warning() << "Ignoring conversion-start signal with invalid track ID";
-        return;
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_currentTrackId = trackId;
+        if (m_pCurrentConverter) {
+            m_currentTrackPath = m_pCurrentConverter->getTrackPath();
+        }
     }
-    m_currentTrackId = trackId;
     emit conversionStarted(trackId, trackTitle);
 }
 
@@ -146,77 +174,93 @@ void StemConversionManager::onConversionProgress(
 }
 
 void StemConversionManager::onConversionCompleted(TrackId trackId) {
-    if (!trackId.isValid()) {
-        kLogger.warning() << "Ignoring conversion-completed signal with invalid track ID";
-        return;
-    }
     kLogger.info() << "Conversion completed for track:" << trackId;
-    QString trackTitle = m_pCurrentConverter ? m_pCurrentConverter->getTrackTitle() : "Unknown";
+    QString trackTitle = QStringLiteral("Unknown");
+    QString trackPath;
 
-    // Add to history
-    ConversionStatus status;
-    status.trackId = trackId;
-    status.trackTitle = trackTitle;
-    status.state = StemConverter::ConversionState::Completed;
-    status.progress = 1.0f;
-    m_conversionHistory.prepend(status);
+    {
+        QMutexLocker locker(&m_statusMutex);
+        if (m_pCurrentConverter) {
+            trackTitle = m_pCurrentConverter->getTrackTitle();
+            trackPath = m_pCurrentConverter->getTrackPath();
+        }
 
-    // Limit history to 100 items
-    if (m_conversionHistory.size() > 100) {
-        m_conversionHistory.removeLast();
+        ConversionStatus status;
+        status.trackId = trackId;
+        status.trackPath = trackPath;
+        status.trackTitle = trackTitle;
+        status.state = StemConverter::ConversionState::Completed;
+        status.progress = 1.0f;
+        m_conversionHistory.prepend(status);
+
+        // Limit history to 100 items
+        if (m_conversionHistory.size() > 100) {
+            m_conversionHistory.removeLast();
+        }
     }
     saveHistory();
 
     emit conversionCompleted(trackId, trackTitle);
 
     // Process next in queue
-    m_currentTrackId = TrackId();
-    m_pCurrentConverter.reset();
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_currentTrackId = TrackId();
+        m_currentTrackPath.clear();
+        m_pCurrentConverter.reset();
+    }
     processNextInQueue();
 }
 
 void StemConversionManager::onConversionFailed(TrackId trackId, const QString& errorMessage) {
-    if (!trackId.isValid()) {
-        kLogger.warning() << "Ignoring conversion-failed signal with invalid track ID";
-        return;
-    }
     kLogger.warning() << "Conversion failed for track:" << trackId << "Error:" << errorMessage;
-    QString trackTitle = m_pCurrentConverter ? m_pCurrentConverter->getTrackTitle() : "Unknown";
+    QString trackTitle = QStringLiteral("Unknown");
+    QString trackPath;
 
-    // Add to history
-    ConversionStatus status;
-    status.trackId = trackId;
-    status.trackTitle = trackTitle;
-    status.state = StemConverter::ConversionState::Failed;
-    status.progress = 0.0f;
-    m_conversionHistory.prepend(status);
+    {
+        QMutexLocker locker(&m_statusMutex);
+        if (m_pCurrentConverter) {
+            trackTitle = m_pCurrentConverter->getTrackTitle();
+            trackPath = m_pCurrentConverter->getTrackPath();
+        }
 
-    // Limit history to 100 items
-    if (m_conversionHistory.size() > 100) {
-        m_conversionHistory.removeLast();
+        ConversionStatus status;
+        status.trackId = trackId;
+        status.trackPath = trackPath;
+        status.trackTitle = trackTitle;
+        status.state = StemConverter::ConversionState::Failed;
+        status.progress = 0.0f;
+        m_conversionHistory.prepend(status);
+
+        // Limit history to 100 items
+        if (m_conversionHistory.size() > 100) {
+            m_conversionHistory.removeLast();
+        }
     }
     saveHistory();
 
     emit conversionFailed(trackId, trackTitle, errorMessage);
 
     // Process next in queue
-    m_currentTrackId = TrackId();
-    m_pCurrentConverter.reset();
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_currentTrackId = TrackId();
+        m_currentTrackPath.clear();
+        m_pCurrentConverter.reset();
+    }
     processNextInQueue();
 }
 
 std::optional<StemConversionManager::ConversionInfo>
 StemConversionManager::getCurrentConversion() const {
-    if (!m_currentTrackId.isValid()) {
-        return std::nullopt;
-    }
-
+    QMutexLocker locker(&m_statusMutex);
     if (!m_pCurrentConverter) {
         return std::nullopt;
     }
 
     ConversionInfo info;
     info.trackId = m_currentTrackId;
+    info.trackPath = m_currentTrackPath;
     info.trackTitle = m_pCurrentConverter->getTrackTitle();
     info.progress = m_pCurrentConverter->getProgress();
 
@@ -224,11 +268,15 @@ StemConversionManager::getCurrentConversion() const {
 }
 
 QList<StemConversionManager::ConversionStatus> StemConversionManager::getConversionHistory() const {
+    QMutexLocker locker(&m_statusMutex);
     return m_conversionHistory;
 }
 
 void StemConversionManager::clearConversionHistory() {
-    m_conversionHistory.clear();
+    {
+        QMutexLocker locker(&m_statusMutex);
+        m_conversionHistory.clear();
+    }
     saveHistory();
 }
 
@@ -251,6 +299,11 @@ void StemConversionManager::loadHistory() {
     for (const QJsonValue& value : historyArray) {
         QJsonObject obj = value.toObject();
         ConversionStatus status;
+        const int trackId = obj["track_id"].toInt(-1);
+        if (trackId >= 0) {
+            status.trackId = TrackId(QVariant(trackId));
+        }
+        status.trackPath = obj["path"].toString();
         status.trackTitle = obj["title"].toString();
         const int state = obj["state"].toInt(-1);
         if (state < static_cast<int>(StemConverter::ConversionState::Idle) ||
@@ -265,9 +318,19 @@ void StemConversionManager::loadHistory() {
 }
 
 void StemConversionManager::saveHistory() {
+    QList<ConversionStatus> history;
+    {
+        QMutexLocker locker(&m_statusMutex);
+        history = m_conversionHistory;
+    }
+
     QJsonArray historyArray;
-    for (const auto& status : m_conversionHistory) {
+    for (const auto& status : history) {
         QJsonObject obj;
+        if (status.trackId.isValid()) {
+            obj["track_id"] = QJsonValue::fromVariant(status.trackId.toVariant());
+        }
+        obj["path"] = status.trackPath;
         obj["title"] = status.trackTitle;
         obj["state"] = static_cast<int>(status.state);
         obj["progress"] = status.progress;
