@@ -64,9 +64,10 @@ bool isWritableDatabase(const QSqlDatabase& database) {
     }
 
     const QFileInfo databaseFile(databasePath);
+    const QFileInfo databaseDirectory(databaseFile.dir().absolutePath());
     const bool writable = databaseFile.exists()
-            ? databaseFile.isWritable() && databaseFile.dir().isWritable()
-            : databaseFile.dir().exists() && databaseFile.dir().isWritable();
+            ? databaseFile.isWritable() && databaseDirectory.isWritable()
+            : databaseDirectory.exists() && databaseDirectory.isWritable();
     if (!writable) {
         qWarning() << "Rekordbox import destination is not writable"
                    << databaseName;
