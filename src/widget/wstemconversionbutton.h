@@ -1,7 +1,7 @@
 #pragma once
 
-#include <QPushButton>
 #include <QPointer>
+#include <QPushButton>
 #include <QTimer>
 
 #include "stems/stemconversionmanager.h"

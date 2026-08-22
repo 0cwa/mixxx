@@ -2883,7 +2883,8 @@ if(STEM)
   set(MIXXX_ONNX_RUNTIME_TARGET "")
   foreach(
     MIXXX_ONNX_RUNTIME_CANDIDATE
-    IN ITEMS
+    IN
+    ITEMS
       ONNX::Runtime
       ONNXRuntime::ONNXRuntime
       onnxruntime::onnxruntime
@@ -2896,10 +2897,7 @@ if(STEM)
   endforeach()
 
   if(NOT MIXXX_ONNX_RUNTIME_TARGET)
-    find_library(
-      ONNXRUNTIME_LIBRARY
-      NAMES onnxruntime libonnxruntime
-    )
+    find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime libonnxruntime)
     find_path(
       ONNXRUNTIME_INCLUDE_DIR
       NAMES onnxruntime_cxx_api.h

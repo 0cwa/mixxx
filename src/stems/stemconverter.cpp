@@ -50,14 +50,15 @@ bool waitForProcess(QProcess* pProcess, const QString& description) {
     }
     return false;
 }
-}
+} // namespace
 
 bool StemConverter::interleavedToPlanar(const std::vector<float>& interleaved,
         int channels,
         std::size_t frames,
         std::vector<float>* pPlanar) {
-    if (!pPlanar || channels <= 0 || frames > std::numeric_limits<std::size_t>::max() /
-                    static_cast<std::size_t>(channels) ||
+    if (!pPlanar || channels <= 0 ||
+            frames > std::numeric_limits<std::size_t>::max() /
+                            static_cast<std::size_t>(channels) ||
             interleaved.size() != frames * static_cast<std::size_t>(channels)) {
         return false;
     }
@@ -77,8 +78,9 @@ bool StemConverter::planarToInterleaved(const std::vector<float>& planar,
         int channels,
         std::size_t frames,
         std::vector<float>* pInterleaved) {
-    if (!pInterleaved || channels <= 0 || frames > std::numeric_limits<std::size_t>::max() /
-                    static_cast<std::size_t>(channels) ||
+    if (!pInterleaved || channels <= 0 ||
+            frames > std::numeric_limits<std::size_t>::max() /
+                            static_cast<std::size_t>(channels) ||
             planar.size() != frames * static_cast<std::size_t>(channels)) {
         return false;
     }
@@ -273,10 +275,11 @@ bool StemConverter::loadOnnxModel() {
         if (modelDirectory.isEmpty()) {
             modelDirectory = QDir(
                     QStandardPaths::writableLocation(QStandardPaths::HomeLocation))
-                                      .filePath(QStringLiteral(".local/mixxx_models"));
+                                     .filePath(QStringLiteral(".local/mixxx_models"));
         }
-        const QString modelPath = QDir(modelDirectory).filePath(
-                QString::fromLatin1(modelConfig.fileName));
+        const QString modelPath =
+                QDir(modelDirectory)
+                        .filePath(QString::fromLatin1(modelConfig.fileName));
 
         if (!QFile::exists(modelPath)) {
             kLogger.warning() << "ONNX model not found at:" << modelPath;
@@ -636,8 +639,8 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
                 kLogger.warning() << "ONNX output is shorter than the input chunk";
                 return false;
             }
-            outputStems[stem].insert(
-                    outputStems[stem].end(), chunkStems[stem].begin(),
+            outputStems[stem].insert(outputStems[stem].end(),
+                    chunkStems[stem].begin(),
                     chunkStems[stem].begin() + chunkSamples);
         }
     }
@@ -780,8 +783,10 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
     ffmpegArgs << "-i" << (stemsDir + "/other.m4a");
     ffmpegArgs << "-i" << (stemsDir + "/vocals.m4a");
 
-    for (const QString& stemName : {QStringLiteral("drums"), QStringLiteral("bass"),
-                 QStringLiteral("other"), QStringLiteral("vocals")}) {
+    for (const QString& stemName : {QStringLiteral("drums"),
+                 QStringLiteral("bass"),
+                 QStringLiteral("other"),
+                 QStringLiteral("vocals")}) {
         if (!QFile::exists(stemsDir + "/" + stemName + ".m4a")) {
             kLogger.warning() << "Stem M4A file not found:" << stemName;
             return false;

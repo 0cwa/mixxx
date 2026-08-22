@@ -140,7 +140,6 @@ WTrackMenu::WTrackMenu(
     createMenus();
     createActions();
     setupActions();
-
 }
 
 #ifdef __STEM_CONVERSION__

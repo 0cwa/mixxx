@@ -31,7 +31,6 @@ DlgStemConversion::DlgStemConversion(
     createUI();
     connectSignals();
     updateConversionList();
-
 }
 
 void DlgStemConversion::createUI() {
