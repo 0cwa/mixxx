@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <QFile>
+#include <QFileInfo>
 #include <QSqlDatabase>
 #include <QTemporaryDir>
 
@@ -20,6 +21,7 @@ TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
 
     const QString databasePath = temporaryDirectory.filePath("mixxxdb.sqlite");
     const QString connectionName = QStringLiteral("rekordbox-import-test");
+    bool permissionCheckSkipped = false;
     {
         QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
         database.setDatabaseName(databasePath);
@@ -31,11 +33,17 @@ TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
                 databasePath,
                 QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
         ASSERT_TRUE(database.open());
-        EXPECT_FALSE(mixxx::rekordbox::isWritableDatabase(database));
+        permissionCheckSkipped = QFileInfo(databasePath).isWritable();
+        if (!permissionCheckSkipped) {
+            EXPECT_FALSE(mixxx::rekordbox::isWritableDatabase(database));
+        }
 
         database.close();
     }
     QSqlDatabase::removeDatabase(connectionName);
+    if (permissionCheckSkipped) {
+        GTEST_SKIP() << "The test runner can write files without write permission bits";
+    }
 }
 
 } // namespace
