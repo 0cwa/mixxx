@@ -58,6 +58,24 @@ class ReadAheadManagerMock : public ReadAheadManager {
         return requested_samples;
     }
 
+    NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount) override {
+        const int retryCall = m_iRetryReadCallCount++;
+        m_retryReadSourcePositions.push_back(m_iReadPosition);
+        m_retryReadRequestedSamples.push_back(requested_samples);
+        if (retryCall == m_retryPendingCall) {
+            return {0, true};
+        }
+        return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
+    }
+
+    void cancelPendingRetry() override {
+        ++m_cancelPendingRetryCallCount;
+        ReadAheadManager::cancelPendingRetry();
+    }
+
     void setReadBuffer(CSAMPLE* pBuffer, SINT iBufferSize) {
         m_pBuffer = pBuffer;
         m_iBufferSize = iBufferSize;
@@ -77,6 +95,22 @@ class ReadAheadManagerMock : public ReadAheadManager {
         m_iReadCallCount = 0;
     }
 
+    void setRetryPendingCall(int call) {
+        m_retryPendingCall = call;
+    }
+
+    const std::vector<SINT>& retryReadSourcePositions() const {
+        return m_retryReadSourcePositions;
+    }
+
+    const std::vector<SINT>& retryReadRequestedSamples() const {
+        return m_retryReadRequestedSamples;
+    }
+
+    int cancelPendingRetryCallCount() const {
+        return m_cancelPendingRetryCallCount;
+    }
+
     MOCK_METHOD4(getNextSamples,
             SINT(double dRate,
                     CSAMPLE* buffer,
@@ -88,6 +122,11 @@ class ReadAheadManagerMock : public ReadAheadManager {
     SINT m_iReadPosition;
     SINT m_iSamplesRead;
     SINT m_iReadCallCount;
+    int m_iRetryReadCallCount{0};
+    int m_retryPendingCall{-1};
+    int m_cancelPendingRetryCallCount{0};
+    std::vector<SINT> m_retryReadSourcePositions;
+    std::vector<SINT> m_retryReadRequestedSamples;
 };
 
 class EngineBufferScaleBungeeTest : public MixxxTest {
@@ -408,6 +447,76 @@ TEST_F(EngineBufferScaleBungeeTest, ReadFailureHandling) {
     SampleUtil::free(pOutput);
 }
 
+TEST_F(EngineBufferScaleBungeeTest,
+        RetriesLateMissFromSameSourceRangeWithoutAdvancingGrain) {
+    SetRate(1.0);
+
+    constexpr SINT kBufferSize = 65536;
+    CSAMPLE readBuffer[kBufferSize];
+    for (SINT i = 0; i < kBufferSize; ++i) {
+        readBuffer[i] = static_cast<CSAMPLE>(0.9f);
+    }
+    m_pReadAheadMock->setReadBuffer(readBuffer, kBufferSize);
+
+    m_pReadAheadMock->setRetryPendingCall(1);
+    EXPECT_CALL(*m_pReadAheadMock, getNextSamples(_, _, _, _))
+            .WillRepeatedly(Invoke(
+                    m_pReadAheadMock, &ReadAheadManagerMock::getNextSamplesFake));
+
+    constexpr SINT kOutputBufferSize = 2048;
+    CSAMPLE* pOutput = SampleUtil::alloc(kOutputBufferSize);
+
+    EXPECT_GE(m_pScaler->scaleBuffer(pOutput, kOutputBufferSize), 0.0);
+
+    const auto& retryStarts = m_pReadAheadMock->retryReadSourcePositions();
+    const auto& retrySizes = m_pReadAheadMock->retryReadRequestedSamples();
+    ASSERT_EQ(2u, retryStarts.size());
+    ASSERT_EQ(2u, retrySizes.size());
+    EXPECT_EQ(0, retryStarts[0]);
+    EXPECT_GT(retryStarts[1], retryStarts[0]);
+
+    double framesRead = 0.0;
+    for (int attempt = 0; attempt < 4 && framesRead <= 0.0; ++attempt) {
+        framesRead = m_pScaler->scaleBuffer(pOutput, kOutputBufferSize);
+    }
+    ASSERT_GE(retryStarts.size(), 3u);
+    ASSERT_GE(retrySizes.size(), 3u);
+    EXPECT_EQ(retryStarts[1], retryStarts[2]);
+    EXPECT_EQ(retrySizes[1], retrySizes[2]);
+    EXPECT_GT(framesRead, 0.0);
+
+    SampleUtil::free(pOutput);
+}
+
+TEST_F(EngineBufferScaleBungeeTest, ClearCompletesRetryPendingGrainSafely) {
+    SetRate(1.0);
+
+    constexpr SINT kBufferSize = 65536;
+    CSAMPLE readBuffer[kBufferSize];
+    SampleUtil::fill(readBuffer, 0.9f, kBufferSize);
+    m_pReadAheadMock->setReadBuffer(readBuffer, kBufferSize);
+    m_pReadAheadMock->setRetryPendingCall(0);
+
+    EXPECT_CALL(*m_pReadAheadMock, getNextSamples(_, _, _, _))
+            .WillRepeatedly(Invoke(
+                    m_pReadAheadMock, &ReadAheadManagerMock::getNextSamplesFake));
+
+    constexpr SINT kOutputBufferSize = 2048;
+    CSAMPLE* pOutput = SampleUtil::alloc(kOutputBufferSize);
+
+    EXPECT_EQ(0.0, m_pScaler->scaleBuffer(pOutput, kOutputBufferSize));
+    m_pScaler->clear();
+    EXPECT_EQ(1, m_pReadAheadMock->cancelPendingRetryCallCount());
+
+    double framesRead = 0.0;
+    for (int attempt = 0; attempt < 4 && framesRead <= 0.0; ++attempt) {
+        framesRead = m_pScaler->scaleBuffer(pOutput, kOutputBufferSize);
+    }
+    EXPECT_GT(framesRead, 0.0);
+
+    SampleUtil::free(pOutput);
+}
+
 TEST_F(EngineBufferScaleBungeeTest, ReusesBufferedInputAcrossOverlappingGrains) {
     SetRate(1.0);
 
@@ -589,6 +698,13 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
                 suppliedSourceSamplesBefore,
                 m_iReadPosition});
         return samplesToRead;
+    }
+
+    NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount) override {
+        return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
     }
 
     void setReadBuffer(std::vector<CSAMPLE> buffer) {

@@ -21,6 +21,7 @@ EngineBufferScaleBungee::EngineBufferScaleBungee(ReadAheadManager* pReadAheadMan
           m_bufferedInputBeginFrame(0),
           m_bufferedInputEndFrame(0),
           m_bResetNeeded(true),
+          m_inputRetryPending(false),
           m_remainingOutputFrames(0),
           m_outputChunkConsumed(0),
           m_lastReadFramesProcessed(0.0),
@@ -45,6 +46,8 @@ EngineBufferScaleBungee::EngineBufferScaleBungee(ReadAheadManager* pReadAheadMan
 }
 
 void EngineBufferScaleBungee::onSignalChanged() {
+    completePendingGrainForReset();
+
     const int channelCount = static_cast<int>(getOutputSignal().getChannelCount());
     if (m_channelBufferPtrs.size() != static_cast<size_t>(channelCount)) {
         m_channelBufferPtrs.resize(channelCount);
@@ -145,6 +148,7 @@ void EngineBufferScaleBungee::setScaleParameters(double base_rate,
     m_request.speed = m_bBackwards ? -requestedEffectiveRate : requestedEffectiveRate;
 
     if (wasBackwards != m_bBackwards) {
+        completePendingGrainForReset();
         m_bResetNeeded = true;
     }
 }
@@ -180,14 +184,14 @@ void EngineBufferScaleBungee::deinterleaveInput(
     }
 }
 
-SINT EngineBufferScaleBungee::consumeReadAheadGap(
+EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAheadGap(
         double signedEffectiveRate,
         SINT framesToConsume) {
     if (framesToConsume <= 0) {
-        return 0;
+        return {0, false};
     }
     if (!m_pReadAheadManager || !getOutputSignal().isValid()) {
-        return framesToConsume;
+        return {framesToConsume, false};
     }
 
     SINT consumedFrames = 0;
@@ -197,12 +201,16 @@ SINT EngineBufferScaleBungee::consumeReadAheadGap(
                 framesToConsume - consumedFrames,
                 kMaxGrainFrames);
         const SINT samplesRequested = getOutputSignal().frames2samples(framesRequested);
-        const SINT availableSamples = m_pReadAheadManager->getNextSamples(
+        const auto readResult = m_pReadAheadManager->getNextSamplesWithRetry(
                 signedEffectiveRate,
                 m_interleavedReadBuffer.data(),
                 samplesRequested,
                 getOutputSignal().getChannelCount());
-        const SINT availableFrames = getOutputSignal().samples2frames(availableSamples);
+        if (readResult.retryPending) {
+            return {consumedFrames, true};
+        }
+        const SINT availableFrames =
+                getOutputSignal().samples2frames(readResult.samplesRead);
         if (availableFrames <= 0) {
             if (++readFailedCount > 1) {
                 break;
@@ -217,24 +225,25 @@ SINT EngineBufferScaleBungee::consumeReadAheadGap(
     // this can return fewer frames than requested; the caller records only the
     // consumed prefix, and processGrain() handles the incomplete window on its
     // next invariant check.
-    return consumedFrames;
+    return {consumedFrames, false};
 }
 
-void EngineBufferScaleBungee::discardBufferedInputBefore(
+bool EngineBufferScaleBungee::discardBufferedInputBefore(
         SINT framePosition,
         double signedEffectiveRate) {
     if (framePosition <= m_bufferedInputBeginFrame) {
-        return;
+        return false;
     }
 
     const SINT bufferedFrames = m_bufferedInputEndFrame - m_bufferedInputBeginFrame;
     if (bufferedFrames <= 0) {
-        const SINT consumedGapFrames = consumeReadAheadGap(
+        const auto readResult = consumeReadAheadGap(
                 signedEffectiveRate,
                 framePosition - m_bufferedInputEndFrame);
-        m_bufferedInputBeginFrame = m_bufferedInputEndFrame + consumedGapFrames;
+        m_bufferedInputBeginFrame =
+                m_bufferedInputEndFrame + readResult.framesRead;
         m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
-        return;
+        return readResult.retryPending;
     }
 
     const SINT oldBufferedInputEndFrame = m_bufferedInputEndFrame;
@@ -249,23 +258,26 @@ void EngineBufferScaleBungee::discardBufferedInputBefore(
 
     m_bufferedInputBeginFrame += discardFrames;
     if (remainingFrames <= 0) {
-        const SINT consumedGapFrames = consumeReadAheadGap(
+        const auto readResult = consumeReadAheadGap(
                 signedEffectiveRate,
                 framePosition - oldBufferedInputEndFrame);
         // Advance beyond the old m_bufferedInputEndFrame only after consuming
         // the skipped source gap from ReadAheadManager. This keeps future
         // appendInputFrames() calls from labeling old sequential samples with
         // this future absolute frame.
-        m_bufferedInputBeginFrame = oldBufferedInputEndFrame + consumedGapFrames;
+        m_bufferedInputBeginFrame =
+                oldBufferedInputEndFrame + readResult.framesRead;
         m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
+        return readResult.retryPending;
     }
+    return false;
 }
 
-SINT EngineBufferScaleBungee::appendInputFrames(
+EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::appendInputFrames(
         double signedEffectiveRate,
         SINT framesToRead) {
     if (framesToRead <= 0 || !m_pReadAheadManager) {
-        return 0;
+        return {0, false};
     }
 
     const SINT bufferedFrames = m_bufferedInputEndFrame - m_bufferedInputBeginFrame;
@@ -273,47 +285,52 @@ SINT EngineBufferScaleBungee::appendInputFrames(
     const SINT framesRequested = std::min(framesToRead,
             std::min(availableCapacity, kMaxGrainFrames));
     if (framesRequested <= 0) {
-        return 0;
+        return {0, false};
     }
 
     const SINT samplesRequested = getOutputSignal().frames2samples(framesRequested);
-    const SINT availableSamples = m_pReadAheadManager->getNextSamples(
+    const auto readResult = m_pReadAheadManager->getNextSamplesWithRetry(
             signedEffectiveRate,
             m_interleavedReadBuffer.data(),
             samplesRequested,
             getOutputSignal().getChannelCount());
-    const SINT availableFrames = getOutputSignal().samples2frames(availableSamples);
+    if (readResult.retryPending) {
+        return {0, true};
+    }
+    const SINT availableFrames =
+            getOutputSignal().samples2frames(readResult.samplesRead);
     if (availableFrames <= 0) {
-        return 0;
+        return {0, false};
     }
 
     deinterleaveInput(m_interleavedReadBuffer.data(), bufferedFrames, availableFrames);
     m_bufferedInputEndFrame += availableFrames;
-    return availableFrames;
+    return {availableFrames, false};
 }
 
-SINT EngineBufferScaleBungee::ensureInputForCurrentChunk(double signedEffectiveRate) {
+bool EngineBufferScaleBungee::ensureInputForCurrentChunk(double signedEffectiveRate) {
     if (m_currentInputChunk.end <= m_currentInputChunk.begin) {
-        return 0;
+        return false;
     }
 
     if (m_bufferedInputBeginFrame < m_currentInputChunk.begin) {
-        discardBufferedInputBefore(m_currentInputChunk.begin, signedEffectiveRate);
+        if (discardBufferedInputBefore(
+                    m_currentInputChunk.begin, signedEffectiveRate)) {
+            return true;
+        }
     }
 
     while (m_bufferedInputEndFrame < m_currentInputChunk.end) {
         const SINT missingFrames = m_currentInputChunk.end - m_bufferedInputEndFrame;
-        if (appendInputFrames(signedEffectiveRate, missingFrames) <= 0) {
+        const auto readResult = appendInputFrames(signedEffectiveRate, missingFrames);
+        if (readResult.retryPending) {
+            return true;
+        }
+        if (readResult.framesRead <= 0) {
             break;
         }
     }
-
-    const SINT availableBegin = std::max(m_bufferedInputBeginFrame,
-            static_cast<SINT>(m_currentInputChunk.begin));
-    const SINT availableEnd = std::max(availableBegin,
-            std::min(m_bufferedInputEndFrame,
-                    static_cast<SINT>(m_currentInputChunk.end)));
-    return availableEnd - availableBegin;
+    return false;
 }
 
 void EngineBufferScaleBungee::copyOutputFrames(
@@ -408,30 +425,43 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     m_effectiveRate = m_dBaseRate * m_dTempoRatio;
     const double signedEffectiveRate = (m_bBackwards ? -1.0 : 1.0) * m_effectiveRate;
 
-    if (m_bResetNeeded) {
-        m_request.position = 0.0;
-        m_request.reset = true;
-        m_bResetNeeded = false;
-        m_currentInputChunk.begin = 0;
-        m_currentInputChunk.end = 0;
-        m_bufferedInputBeginFrame = 0;
-        m_bufferedInputEndFrame = 0;
-    } else {
-        m_request.reset = false;
-        if (util_isnan(m_request.position)) {
+    if (!m_inputRetryPending) {
+        if (m_bResetNeeded) {
             m_request.position = 0.0;
+            m_request.reset = true;
+            m_bResetNeeded = false;
+            m_currentInputChunk.begin = 0;
+            m_currentInputChunk.end = 0;
+            m_bufferedInputBeginFrame = 0;
+            m_bufferedInputEndFrame = 0;
+        } else {
+            m_request.reset = false;
+            if (util_isnan(m_request.position)) {
+                m_request.position = 0.0;
+            }
         }
+
+        m_request.speed = signedEffectiveRate;
+
+        m_currentInputChunk = m_pStretcher->specifyGrain(m_request);
     }
-
-    m_request.speed = signedEffectiveRate;
-
-    m_currentInputChunk = m_pStretcher->specifyGrain(m_request);
     const SINT framesNeeded = m_currentInputChunk.end - m_currentInputChunk.begin;
     if (framesNeeded <= 0) {
+        Bungee::OutputChunk discardedOutput{};
+        if (!synthesiseMutedGrain(m_currentInputChunk, &discardedOutput)) {
+            m_pStretcher.reset();
+        }
+        m_bResetNeeded = true;
         return 0;
     }
 
-    ensureInputForCurrentChunk(signedEffectiveRate);
+    if (ensureInputForCurrentChunk(signedEffectiveRate)) {
+        // Analysing a retryable cache miss as a muted grain would advance
+        // Bungee's request and permanently skip the pending input range.
+        m_inputRetryPending = true;
+        return 0;
+    }
+    m_inputRetryPending = false;
 
     const SINT availableBegin = std::max(m_bufferedInputBeginFrame,
             static_cast<SINT>(m_currentInputChunk.begin));
@@ -449,13 +479,18 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     // of m_contiguousChannelBuffer.
     const SINT grainSize = static_cast<SINT>(
             m_currentInputChunk.end - m_currentInputChunk.begin);
-    if (dataOffset + grainSize > m_channelStride) {
+    if (m_channelBufferPtrs.empty() || !m_channelBufferPtrs[0] ||
+            dataOffset + grainSize > m_channelStride) {
+        Bungee::OutputChunk discardedOutput{};
+        if (!synthesiseMutedGrain(m_currentInputChunk, &discardedOutput)) {
+            m_pStretcher.reset();
+        }
         m_bResetNeeded = true;
         return 0;
     }
-    DEBUG_ASSERT(m_channelBufferPtrs.empty() || dataOffset + grainSize <= m_channelStride);
+    DEBUG_ASSERT(dataOffset + grainSize <= m_channelStride);
     m_pStretcher->analyseGrain(
-            m_channelBufferPtrs.empty() ? nullptr : m_channelBufferPtrs[0] + dataOffset,
+            m_channelBufferPtrs[0] + dataOffset,
             m_channelStride,
             muteHead,
             muteTail);
@@ -507,6 +542,18 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
             continue;
         }
 
+        if (m_inputRetryPending) {
+            SampleUtil::clear(
+                    pOutput, getOutputSignal().frames2samples(remainingFrames));
+            break;
+        }
+
+        if (!m_pStretcher) {
+            SampleUtil::clear(
+                    pOutput, getOutputSignal().frames2samples(remainingFrames));
+            break;
+        }
+
         if (lastProcessFailed) {
             if (!m_pStretcher->isFlushed()) {
                 Bungee::Request flushRequest{};
@@ -516,8 +563,13 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
                 flushRequest.reset = true;
                 flushRequest.resampleMode = resampleMode_autoOut;
 
-                m_pStretcher->specifyGrain(flushRequest);
-                m_pStretcher->synthesiseGrain(m_outputChunk);
+                const auto flushInputChunk =
+                        m_pStretcher->specifyGrain(flushRequest);
+                if (!synthesiseMutedGrain(flushInputChunk, &m_outputChunk)) {
+                    SampleUtil::clear(pOutput,
+                            getOutputSignal().frames2samples(remainingFrames));
+                    break;
+                }
                 m_outputChunkConsumed = 0;
                 m_remainingOutputFrames = 0;
 
@@ -538,7 +590,50 @@ double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
     return readFramesProcessed;
 }
 
+void EngineBufferScaleBungee::completePendingGrainForReset() {
+    if (!m_inputRetryPending) {
+        return;
+    }
+
+    if (m_pReadAheadManager) {
+        m_pReadAheadManager->cancelPendingRetry();
+    }
+    if (m_pStretcher) {
+        Bungee::OutputChunk discardedOutput{};
+        if (!synthesiseMutedGrain(m_currentInputChunk, &discardedOutput)) {
+            m_pStretcher.reset();
+        }
+    }
+    m_inputRetryPending = false;
+}
+
+bool EngineBufferScaleBungee::synthesiseMutedGrain(
+        const Bungee::InputChunk& inputChunk,
+        Bungee::OutputChunk* pOutputChunk) {
+    const SINT grainFrames = std::max<SINT>(0, inputChunk.end - inputChunk.begin);
+    VERIFY_OR_DEBUG_ASSERT(m_pStretcher && pOutputChunk &&
+            !m_channelBufferPtrs.empty() && m_channelBufferPtrs[0] &&
+            grainFrames <= m_channelStride) {
+        return false;
+    }
+
+    // Bungee requires specify/analyse/synthesise ordering even when a pending
+    // grain is abandoned or the pipeline is flushed. Supply a valid planar
+    // range from the preallocated input window and mute the whole grain.
+    for (float* pChannel : m_channelBufferPtrs) {
+        VERIFY_OR_DEBUG_ASSERT(pChannel) {
+            return false;
+        }
+        SampleUtil::clear(pChannel, grainFrames);
+    }
+    m_pStretcher->analyseGrain(
+            m_channelBufferPtrs[0], m_channelStride, grainFrames, 0);
+    m_pStretcher->synthesiseGrain(*pOutputChunk);
+    return true;
+}
+
 void EngineBufferScaleBungee::clear() {
+    completePendingGrainForReset();
     m_bResetNeeded = true;
     m_remainingOutputFrames = 0;
     m_outputChunkConsumed = 0;

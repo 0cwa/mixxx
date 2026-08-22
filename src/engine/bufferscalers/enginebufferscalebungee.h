@@ -111,25 +111,35 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     void clear() override;
 
   private:
+    struct InputReadResult {
+        SINT framesRead;
+        bool retryPending;
+    };
+
     void onSignalChanged() override;
 
     // Process a single grain and return the number of output frames produced.
     SINT processGrain(CSAMPLE* pOutputBuffer, SINT maxFrames);
 
+    // Complete Bungee's call sequence before abandoning a retry-pending grain.
+    void completePendingGrainForReset();
+    bool synthesiseMutedGrain(
+            const Bungee::InputChunk& inputChunk, Bungee::OutputChunk* pOutputChunk);
+
     // Deinterleave input data into the buffered planar input window for Bungee.
     void deinterleaveInput(const CSAMPLE* pBuffer, SINT destOffsetFrames, SINT frames);
 
     // Discard buffered input that is no longer needed by future overlapping grains.
-    void discardBufferedInputBefore(SINT framePosition, double signedEffectiveRate = 1.0);
+    bool discardBufferedInputBefore(SINT framePosition, double signedEffectiveRate = 1.0);
 
     // Consume skipped source frames from ReadAheadManager without storing them.
-    SINT consumeReadAheadGap(double signedEffectiveRate, SINT framesToConsume);
+    InputReadResult consumeReadAheadGap(double signedEffectiveRate, SINT framesToConsume);
 
     // Read more input from ReadAheadManager into the buffered planar window.
-    SINT appendInputFrames(double signedEffectiveRate, SINT framesToRead);
+    InputReadResult appendInputFrames(double signedEffectiveRate, SINT framesToRead);
 
     // Ensure the current input chunk is covered by the buffered planar window.
-    SINT ensureInputForCurrentChunk(double signedEffectiveRate);
+    bool ensureInputForCurrentChunk(double signedEffectiveRate);
 
     // Copy nFrames from m_outputChunk into pDest starting at offsetInChunk.
     // Uses SampleUtil::interleaveBuffer for the stereo fast path.
@@ -173,6 +183,9 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
 
     // Whether we need to reset on the next processed grain.
     bool m_bResetNeeded;
+
+    // The current input range must be retried without advancing Bungee.
+    bool m_inputRetryPending;
 
     // Output frames remaining from the current synthesised grain.
     SINT m_remainingOutputFrames;

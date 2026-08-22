@@ -23,6 +23,11 @@ class RateControl;
 /// point.
 class ReadAheadManager {
   public:
+    struct NextSamplesResult {
+        SINT samplesRead;
+        bool retryPending;
+    };
+
     ReadAheadManager(); // Only for testing: ReadAheadManagerMock
     ReadAheadManager(CachingReader* reader,
             LoopingControl* pLoopingControl,
@@ -38,6 +43,20 @@ class ReadAheadManager {
             CSAMPLE* buffer,
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount);
+
+    /// Like getNextSamples(), but leave the read-ahead position unchanged when
+    /// the reader reports a cache miss. This is used by grain-based scalers
+    /// that must retry the exact same input range instead of analysing silence
+    /// as real input.
+    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount);
+
+    /// Discard a retryable read plan that can no longer be completed by the
+    /// caller. The next retryable request will query the loop and cue controls
+    /// again and create a new plan.
+    virtual void cancelPendingRetry();
 
     /// Used to add a new EngineControls that ReadAheadManager will use to decide
     /// which samples to return.
@@ -69,6 +88,51 @@ class ReadAheadManager {
             mixxx::audio::ChannelCount channelCount);
 
   private:
+    struct ReadPlan {
+        bool active{false};
+        bool inReverse{false};
+        bool reachedTrigger{false};
+        double requestPosition{0.0};
+        double target{0.0};
+        double positionAfterTrigger{0.0};
+        double samplesToSeekTrigger{0.0};
+        SINT requestSamples{0};
+        SINT requestedSamples{0};
+        SINT samplesFromReader{0};
+        SINT preseekSamples{0};
+        SINT startSample{0};
+        int seekReadPosition{0};
+        int crossFadeStart{0};
+        int crossFadeSamples{0};
+        int crossFadeReadPosition{0};
+        mixxx::audio::ChannelCount channelCount;
+        mixxx::audio::FramePos loopTriggerPosition;
+        mixxx::audio::FramePos loopTargetPosition;
+        mixxx::audio::FramePos jumpTriggerPosition;
+        mixxx::audio::FramePos jumpTargetPosition;
+        mixxx::audio::FramePos targetPosition;
+
+        bool matches(double position,
+                bool reverse,
+                SINT samples,
+                mixxx::audio::ChannelCount channels) const {
+            return active && requestPosition == position &&
+                    inReverse == reverse && requestSamples == samples &&
+                    channelCount.value() == channels.value();
+        }
+    };
+
+    ReadPlan makeReadPlan(bool inReverse,
+            SINT requestSamples,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount);
+
+    NextSamplesResult getNextSamplesInternal(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount,
+            bool retryOnCacheMiss);
+
     /// An entry in the read log indicates the virtual playposition the read
     /// began at and the virtual playposition it ended at.
     struct ReadLogEntry {
@@ -133,4 +197,5 @@ class ReadAheadManager {
     CSAMPLE* m_pCrossFadeBuffer;
     int m_cacheMissCount;
     bool m_cacheMissExpected;
+    ReadPlan m_pendingRetry;
 };
