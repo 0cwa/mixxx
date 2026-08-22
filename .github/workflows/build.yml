@@ -232,12 +232,10 @@ jobs:
 
       - name: "[macOS] Set up cmake"
         uses: jwlawson/actions-setup-cmake@v2.2
-        # Ubuntu 24.04 should use the CMake version from the repos.
+        # SignalSmith requires CMake 3.24, while Mixxx itself requires 3.22.
         if: runner.os == 'macOS'
         with:
-          # This should always match the minimum required version in
-          # our CMakeLists.txt
-          cmake-version: "3.22.x"
+          cmake-version: "3.24.x"
 
       - name: "[Windows] Set up cmake"
         uses: jwlawson/actions-setup-cmake@v2.2
