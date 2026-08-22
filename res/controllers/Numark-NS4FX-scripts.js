@@ -379,7 +379,7 @@ NS4FX.init = function(id, debug) {
     midi.sendShortMsg(0xB3, 0x1F, 0);
 
     // setup elapsed/remaining tracking
-    engine.makeConnection("[Controls]", "ShowDurationRemaining", NS4FX.timeElapsedCallback);
+    engine.makeConnection("[Controls]", "ShowDurationRemaining", NS4FX.timeElapsedCallback).trigger();
 
     // setup vumeter tracking
     engine.makeUnbufferedConnection("[Channel1]", "vu_meter_left", NS4FX.vuCallback);
