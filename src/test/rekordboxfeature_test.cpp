@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <QFile>
+#include <QFileInfo>
 #include <QSqlDatabase>
 #include <QTemporaryDir>
 
@@ -31,7 +32,10 @@ TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
                 databasePath,
                 QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
         ASSERT_TRUE(database.open());
-        EXPECT_FALSE(mixxx::rekordbox::isWritableDatabase(database));
+        // QFileInfo::isWritable() reflects the current user's effective access.
+        // This remains true for root even when the write permission bits are cleared.
+        EXPECT_EQ(mixxx::rekordbox::isWritableDatabase(database),
+                QFileInfo(databasePath).isWritable());
 
         database.close();
     }
