@@ -16,6 +16,12 @@
 #include "track/trackref.h"
 #include "util/color/rgbcolor.h"
 #include "util/parented_ptr.h"
+#ifdef __STEM_CONVERSION__
+#include "stems/dlgstemconversion.h"
+#include "stems/stemconversionmanager.h"
+#include "widget/dlgstemconversionoptions.h"
+#include "widget/wstemconversionbutton.h"
+#endif
 
 class DlgTagFetcher;
 class DlgTrackInfo;
@@ -92,6 +98,11 @@ class WTrackMenu : public QMenu {
             TrackModel* trackModel = nullptr);
     ~WTrackMenu() override;
 
+#ifdef __STEM_CONVERSION__
+    /// Set the CoreServices-owned conversion manager used by context menus.
+    static void setStemConversionManager(StemConversionManager* pManager);
+#endif
+
     void loadTrackModelIndex(
             const QModelIndex& trackIndex) {
         loadTrackModelIndices(QModelIndexList{trackIndex});
@@ -162,6 +173,11 @@ class WTrackMenu : public QMenu {
     void slotReanalyze();
     void slotReanalyzeWithFixedTempo();
     void slotReanalyzeWithVariableTempo();
+
+#ifdef __STEM_CONVERSION__
+    // STEMS Conversion
+    void slotConvertToStems();
+#endif
 
     // BPM
     void slotLockBpm();
@@ -362,6 +378,9 @@ class WTrackMenu : public QMenu {
     parented_ptr<QAction> m_pReanalyzeConstBpmAction;
     parented_ptr<QAction> m_pReanalyzeVarBpmAction;
 
+    // STEMS actions
+    parented_ptr<QAction> m_pConvertToStemsAction;
+
     // Clear track metadata actions
     parented_ptr<QAction> m_pClearBeatsAction;
     parented_ptr<QAction> m_pClearPlayCountAction;
@@ -390,6 +409,11 @@ class WTrackMenu : public QMenu {
     std::unique_ptr<DlgTrackInfoMulti> m_pDlgTrackInfoMulti;
     std::unique_ptr<DlgTagFetcher> m_pDlgTagFetcher;
 
+#ifdef __STEM_CONVERSION__
+    // STEMS conversion dialog (must be member to prevent destruction)
+    parented_ptr<DlgStemConversion> m_pStemConversionDialog;
+#endif
+
     struct UpdateExternalTrackCollection {
         QPointer<ExternalTrackCollection> pExternalTrackCollection;
         QAction* pAction{};
@@ -406,6 +430,10 @@ class WTrackMenu : public QMenu {
     const Features m_eTrackModelFeatures;
 
     QString m_trackProperty;
+
+#ifdef __STEM_CONVERSION__
+    static QPointer<StemConversionManager> s_pStemConversionManager;
+#endif
 
     static bool s_showPurgeSuccessPopup;
     static bool s_confirmForAutoDjReplace;

@@ -53,6 +53,23 @@ case "$1" in
             sudo apt-get install libjack-jackd2-dev;
         fi
 
+        # Stem conversion setup is opt-in through an environment variable so
+        # this script remains safe for unattended CI and packaging jobs.
+        INSTALL_DEMUCS="${MIXXX_INSTALL_STEM_CONVERSION:-false}"
+        if [[ "$INSTALL_DEMUCS" == "true" ]]; then
+            INSTALL_DEMUCS=true
+
+            # Add demucs dependencies if user wants it
+            PACKAGES_EXTRA+=(
+                libonnxruntime-dev
+                libsndfile1-dev
+                ffmpeg
+                sox
+            )
+        else
+            INSTALL_DEMUCS=false
+        fi
+
         # Install a faster linker. Prefer mold, fall back to lld
         if apt-cache show mold 2>/dev/null >/dev/null;
         then
@@ -65,8 +82,8 @@ case "$1" in
         fi
 
         # Check if fonts-ubuntu is available (from non-free repository)
-        if apt-cache show fonts-ubuntu 2>/dev/null >/dev/null; then
-            sudo apt-get install -y --no-install-recommends fonts-ubuntu
+        if apt-cache show fonts-ubuntu 2>/dev/null | grep -q "Package: fonts-ubuntu"; then
+            FONTS_UBUNTU_AVAILABLE=true
         else
             echo ""
             echo "WARNING: The package 'fonts-ubuntu' is not available."
@@ -74,10 +91,8 @@ case "$1" in
             echo ""
             echo "See also: https://wiki.debian.org/SourcesList"
             echo ""
-            read -p "Would you like to exit to manually enable 'non-free' now? (y = Exit / n = Continue without fonts): " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                echo "Please edit your /etc/apt/sources.list, run 'sudo apt update', and restart this script."
+            if [[ "${MIXXX_REQUIRE_UBUNTU_FONTS:-false}" == "true" ]]; then
+                echo "The package 'fonts-ubuntu' is unavailable; enable Debian non-free and retry."
                 exit 1
             fi
         fi
@@ -154,6 +169,110 @@ case "$1" in
             qml6-module-qt-labs-folderlistmodel \
             qml6-module-qtmultimedia \
             "${PACKAGES_EXTRA[@]}"
+
+        if [[ "${FONTS_UBUNTU_AVAILABLE:-false}" == true ]]; then
+            sudo apt-get install -y --no-install-recommends fonts-ubuntu
+        fi
+
+        # Install demucs if user requested it
+        if [ "$INSTALL_DEMUCS" = true ]; then
+            # Get the actual user running sudo
+            ACTUAL_USER="${SUDO_USER:-$USER}"
+
+            # Download htdemucs ONNX mixxx htdemucs model
+            echo ""
+            echo "Downloading mixxx htdemucs ONNX model..."
+            echo ""
+
+            MODEL_PATH="${MIXXX_STEM_MODEL_DIR:-/home/$ACTUAL_USER/.local/mixxx_models}"
+            MODEL_FILE="$MODEL_PATH/htdemucs.onnx"
+
+            # Create directory with proper ownership
+            if sudo -u "$ACTUAL_USER" mkdir -p "$MODEL_PATH"; then
+                # Download model file
+                if sudo -u "$ACTUAL_USER" wget -c https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx -O "$MODEL_FILE"; then
+                    echo "Model downloaded successfully to $MODEL_FILE"
+                    sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$MODEL_FILE"
+                else
+                    echo "Failed to download mixxx htdemucs ONNX model"
+                    exit 1
+                fi
+            else
+                echo "Failed to create model path: $MODEL_PATH"
+                exit 1
+            fi
+
+            # Check if MP4Box is already installed system-wide
+            echo ""
+            if command -v MP4Box &> /dev/null; then
+                echo "✓ MP4Box is already installed at: $(command -v MP4Box)"
+                MP4BOX_PATH=$(command -v MP4Box)
+            else
+                echo "MP4Box not found. Compiling GPAC v2.4.0 from source..."
+
+                GPAC_BUILD_DIR="/tmp/gpac_build"
+
+                # Create build directory
+                mkdir -p "$GPAC_BUILD_DIR"
+                cd "$GPAC_BUILD_DIR" || exit 1
+
+                # Download GPAC v2.4.0
+                echo "Downloading GPAC v2.4.0..."
+                wget -q https://github.com/gpac/gpac/archive/refs/tags/v2.4.0.tar.gz -O gpac-2.4.0.tar.gz
+
+                if [ ! -f "gpac-2.4.0.tar.gz" ]; then
+                    echo "Failed to download GPAC"
+                    exit 1
+                fi
+
+                # Extract
+                echo "Extracting GPAC..."
+                tar -xzf gpac-2.4.0.tar.gz
+                cd gpac-2.4.0 || exit 1
+
+                # Configure and compile for system installation
+                echo "Configuring GPAC..."
+                if ! ./configure --prefix=/usr/local; then
+                    echo "GPAC configuration failed"
+                    exit 1
+                fi
+
+                echo "Compiling GPAC (this may take a few minutes)..."
+                if ! make -j"$(nproc)"; then
+                    echo "GPAC compilation failed"
+                    exit 1
+                fi
+
+                echo "Installing GPAC to system..."
+                if sudo make install; then
+                    echo "GPAC v2.4.0 compiled and installed successfully"
+                    echo "Location: /usr/local/bin/MP4Box"
+
+                    # Verify MP4Box
+                    if [ -f "/usr/local/bin/MP4Box" ]; then
+                        echo "MP4Box executable found"
+                        /usr/local/bin/MP4Box -version
+                        MP4BOX_PATH="/usr/local/bin/MP4Box"
+                    else
+                        echo "MP4Box executable not found after installation"
+                        exit 1
+                    fi
+                else
+                    echo "Failed to install GPAC"
+                    exit 1
+                fi
+
+                # Clean up build directory
+                cd /
+                rm -rf "$GPAC_BUILD_DIR"
+            fi
+
+            echo ""
+            echo "✓ Mixxx Python environment setup complete!"
+            echo "Virtual environment location: $VENV_PATH"
+            echo "Demucs: $VENV_PATH/bin/demucs"
+            echo "MP4Box: $MP4BOX_PATH"
+        fi
         ;;
     *)
         echo "Usage: $0 [options]"

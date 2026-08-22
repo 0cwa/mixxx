@@ -2875,6 +2875,78 @@ if(STEM)
       PRIVATE src/waveform/renderers/allshader/waveformrendererstem.cpp
     )
   endif()
+
+  # ONNX Runtime - STEMS CONVERSION. Distributions export several different
+  # target names, so discover an existing target first and only fall back to
+  # a manually imported library when no package target is available.
+  find_package(ONNXRuntime CONFIG QUIET)
+  set(MIXXX_ONNX_RUNTIME_TARGET "")
+  foreach(
+    MIXXX_ONNX_RUNTIME_CANDIDATE
+    IN ITEMS
+      ONNX::Runtime
+      ONNXRuntime::ONNXRuntime
+      onnxruntime::onnxruntime
+      onnxruntime
+  )
+    if(TARGET ${MIXXX_ONNX_RUNTIME_CANDIDATE})
+      set(MIXXX_ONNX_RUNTIME_TARGET ${MIXXX_ONNX_RUNTIME_CANDIDATE})
+      break()
+    endif()
+  endforeach()
+
+  if(NOT MIXXX_ONNX_RUNTIME_TARGET)
+    find_library(
+      ONNXRUNTIME_LIBRARY
+      NAMES onnxruntime libonnxruntime
+    )
+    find_path(
+      ONNXRUNTIME_INCLUDE_DIR
+      NAMES onnxruntime_cxx_api.h
+      PATH_SUFFIXES onnxruntime
+    )
+
+    if(ONNXRUNTIME_LIBRARY AND ONNXRUNTIME_INCLUDE_DIR)
+      add_library(mixxx_onnxruntime UNKNOWN IMPORTED GLOBAL)
+      set_target_properties(
+        mixxx_onnxruntime
+        PROPERTIES
+          IMPORTED_LOCATION "${ONNXRUNTIME_LIBRARY}"
+          INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
+      )
+      set(MIXXX_ONNX_RUNTIME_TARGET mixxx_onnxruntime)
+    endif()
+  endif()
+
+  if(MIXXX_ONNX_RUNTIME_TARGET)
+    set(STEM_CONVERSION TRUE)
+    message(
+      STATUS
+      "ONNX Runtime target '${MIXXX_ONNX_RUNTIME_TARGET}' found. Enabling STEM conversion support."
+    )
+  else()
+    set(STEM_CONVERSION FALSE)
+    message(
+      STATUS
+      "ONNX Runtime not found. STEM conversion support will be disabled."
+    )
+  endif()
+
+  if(STEM_CONVERSION)
+    target_compile_definitions(mixxx-lib PUBLIC __STEM_CONVERSION__)
+
+    target_link_libraries(mixxx-lib PRIVATE ${MIXXX_ONNX_RUNTIME_TARGET})
+
+    target_sources(
+      mixxx-lib
+      PRIVATE
+        src/stems/stemconverter.cpp
+        src/stems/stemconversionmanager.cpp
+        src/stems/dlgstemconversion.cpp
+        src/widget/wstemconversionbutton.cpp
+        src/widget/dlgstemconversionoptions.cpp
+    )
+  endif()
 endif()
 
 if(BUILD_TESTING)
@@ -2901,6 +2973,7 @@ if(BUILD_TESTING)
     src/test/colorpalette_test.cpp
     src/test/configobject_test.cpp
     src/test/settingsmanager_test.cpp
+    $<$<BOOL:${STEM_CONVERSION}>:src/test/stemconverter_test.cpp>
     src/test/controller_mapping_validation_test.cpp
     src/test/controller_mapping_settings_test.cpp
     src/test/controllers/controller_columnid_regression_test.cpp

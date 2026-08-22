@@ -1,0 +1,856 @@
+#include "stems/stemconverter.h"
+
+#include <QByteArray>
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QTemporaryFile>
+
+#include <algorithm>
+#include <cstring>
+#include <limits>
+
+#ifdef __STEM_CONVERSION__
+#include <sndfile.h>
+#endif
+
+#include "sources/soundsourceproxy.h"
+#include "util/logger.h"
+
+namespace {
+const mixxx::Logger kLogger("StemConverter");
+constexpr int kStemModelSampleRate = 44100;
+}
+
+bool StemConverter::interleavedToPlanar(const std::vector<float>& interleaved,
+        int channels,
+        std::size_t frames,
+        std::vector<float>* pPlanar) {
+    if (!pPlanar || channels <= 0 || frames > std::numeric_limits<std::size_t>::max() /
+                    static_cast<std::size_t>(channels) ||
+            interleaved.size() != frames * static_cast<std::size_t>(channels)) {
+        return false;
+    }
+
+    pPlanar->assign(interleaved.size(), 0.0f);
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        for (int channel = 0; channel < channels; ++channel) {
+            (*pPlanar)[static_cast<std::size_t>(channel) * frames + frame] =
+                    interleaved[frame * static_cast<std::size_t>(channels) +
+                            static_cast<std::size_t>(channel)];
+        }
+    }
+    return true;
+}
+
+bool StemConverter::planarToInterleaved(const std::vector<float>& planar,
+        int channels,
+        std::size_t frames,
+        std::vector<float>* pInterleaved) {
+    if (!pInterleaved || channels <= 0 || frames > std::numeric_limits<std::size_t>::max() /
+                    static_cast<std::size_t>(channels) ||
+            planar.size() != frames * static_cast<std::size_t>(channels)) {
+        return false;
+    }
+
+    pInterleaved->assign(planar.size(), 0.0f);
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        for (int channel = 0; channel < channels; ++channel) {
+            (*pInterleaved)[frame * static_cast<std::size_t>(channels) +
+                    static_cast<std::size_t>(channel)] =
+                    planar[static_cast<std::size_t>(channel) * frames + frame];
+        }
+    }
+    return true;
+}
+
+StemConverter::StemConverter(QObject* parent)
+        : QObject(parent),
+          m_state(ConversionState::Idle),
+          m_progress(0.0f),
+          m_trackTitle("Unknown") {
+#ifdef __STEM_CONVERSION__
+    // Suppress ONNX Runtime verbose output
+    qputenv("ORT_DISABLE_TELEMETRY", QByteArrayLiteral("1"));
+    qputenv("ORT_DISABLE_LOGGING", QByteArrayLiteral("1"));
+
+    try {
+        m_pOrtEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "StemConverter");
+        kLogger.info() << "ONNX Runtime environment initialized";
+    } catch (const std::exception& e) {
+        kLogger.warning() << "Failed to initialize ONNX Runtime:" << e.what();
+    }
+#endif
+}
+
+void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resolution) {
+    if (!pTrack) {
+        qWarning() << "Cannot convert null track";
+        emit conversionFailed(TrackId(), QStringLiteral("Track is null"));
+        m_state = ConversionState::Failed;
+        return;
+    }
+
+    const TrackId trackId = pTrack->getId();
+    if (!trackId.isValid()) {
+        qWarning() << "Cannot convert track with an invalid ID";
+        emit conversionFailed(trackId, QStringLiteral("Track ID is invalid"));
+        m_state = ConversionState::Failed;
+        return;
+    }
+
+    m_pTrack = pTrack;
+    m_resolution = resolution;
+
+    QString trackFilePath = pTrack->getLocation();
+    QFileInfo fileInfo(trackFilePath);
+    m_trackTitle = fileInfo.fileName();
+
+    m_state = ConversionState::Processing;
+    m_progress = 0.0f;
+
+    if (trackFilePath.isEmpty()) {
+        qWarning() << "Track file path is empty";
+        emit conversionFailed(trackId, QStringLiteral("Track file path is empty"));
+        m_state = ConversionState::Failed;
+        return;
+    }
+
+    emit conversionStarted(trackId, m_trackTitle);
+    m_progress = 0.1f;
+    emit conversionProgress(trackId, m_progress, QStringLiteral("Starting ONNX separation..."));
+
+#ifdef __STEM_CONVERSION__
+    QString stemsDir = getStemsDirectory(trackFilePath);
+    if (!runOnnxSeparation(trackFilePath, stemsDir)) {
+        const QString errorMsg = QStringLiteral("ONNX separation failed");
+        kLogger.warning() << errorMsg;
+        emit conversionFailed(trackId, errorMsg);
+        m_state = ConversionState::Failed;
+        return;
+    }
+#else
+    const QString errorMsg =
+            QStringLiteral("STEM conversion not available (ONNX Runtime not compiled)");
+    kLogger.warning() << errorMsg;
+    emit conversionFailed(trackId, errorMsg);
+    m_state = ConversionState::Failed;
+    return;
+#endif
+
+    m_progress = 0.5f;
+    emit conversionProgress(trackId, m_progress, QStringLiteral("Converting stems to M4A..."));
+
+    if (!convertStemsToM4A(stemsDir)) {
+        const QString errorMsg = QStringLiteral("Stem conversion to M4A failed");
+        kLogger.warning() << errorMsg;
+        emit conversionFailed(trackId, errorMsg);
+        m_state = ConversionState::Failed;
+        return;
+    }
+
+    m_progress = 0.7f;
+    emit conversionProgress(trackId, m_progress, QStringLiteral("Creating STEM container..."));
+
+    if (!createStemContainer(trackFilePath, stemsDir)) {
+        const QString errorMsg = QStringLiteral("STEM container creation failed");
+        kLogger.warning() << errorMsg;
+        emit conversionFailed(trackId, errorMsg);
+        m_state = ConversionState::Failed;
+        return;
+    }
+
+    m_progress = 1.0f;
+    emit conversionProgress(trackId, m_progress, QStringLiteral("Conversion completed successfully!"));
+    emit conversionCompleted(trackId);
+
+    m_state = ConversionState::Completed;
+    kLogger.info() << "Track conversion completed:" << trackFilePath;
+}
+
+float StemConverter::getProgress() const {
+    return m_progress;
+}
+
+QString StemConverter::getTrackTitle() const {
+    return m_trackTitle;
+}
+
+StemConverter::ConversionState StemConverter::getState() const {
+    return m_state;
+}
+
+#ifdef __STEM_CONVERSION__
+StemConverter::ModelConfig StemConverter::getModelConfig(Resolution resolution) {
+    // Both official HTDemucs variants operate at 44.1 kHz. Low resolution
+    // selects the faster base model; it is not a 16 kHz model.
+    if (resolution == Resolution::High) {
+        return {"htdemucs_ft.onnx", kStemModelSampleRate};
+    }
+    return {"htdemucs.onnx", kStemModelSampleRate};
+}
+
+bool StemConverter::loadOnnxModel() {
+    if (m_pOrtSession && m_loadedResolution && *m_loadedResolution == m_resolution) {
+        return true; // Already loaded
+    }
+
+    if (!m_pOrtEnv) {
+        kLogger.warning() << "ONNX Runtime environment not initialized";
+        return false;
+    }
+
+    try {
+        const ModelConfig modelConfig = getModelConfig(m_resolution);
+        QString modelDirectory = qEnvironmentVariable("MIXXX_STEM_MODEL_DIR");
+        if (modelDirectory.isEmpty()) {
+            modelDirectory = QDir(
+                    QStandardPaths::writableLocation(QStandardPaths::HomeLocation))
+                                      .filePath(QStringLiteral(".local/mixxx_models"));
+        }
+        const QString modelPath = QDir(modelDirectory).filePath(
+                QString::fromLatin1(modelConfig.fileName));
+
+        if (!QFile::exists(modelPath)) {
+            kLogger.warning() << "ONNX model not found at:" << modelPath;
+            return false;
+        }
+
+        Ort::SessionOptions sessionOptions;
+        sessionOptions.SetIntraOpNumThreads(4);
+        sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+        m_pOrtSession = std::make_unique<Ort::Session>(
+                *m_pOrtEnv,
+                modelPath.toStdString().c_str(),
+                sessionOptions);
+        m_loadedResolution = m_resolution;
+
+        kLogger.info() << "ONNX model loaded successfully from:" << modelPath;
+        return true;
+    } catch (const std::exception& e) {
+        kLogger.warning() << "Failed to load ONNX model:" << e.what();
+        return false;
+    }
+}
+
+bool StemConverter::runInference(const std::vector<float>& inputAudio,
+        int sampleRate,
+        std::vector<std::vector<float>>& outputStems) {
+    if (!m_pOrtSession) {
+        kLogger.warning() << "ONNX session not initialized";
+        return false;
+    }
+
+    try {
+        const ModelConfig modelConfig = getModelConfig(m_resolution);
+        if (sampleRate != modelConfig.sampleRate) {
+            kLogger.warning() << "Unexpected sample rate for ONNX model:" << sampleRate
+                              << "expected" << modelConfig.sampleRate;
+            return false;
+        }
+
+        if (inputAudio.size() != kChunkFrames * kModelChannels) {
+            kLogger.warning() << "Unexpected interleaved input size:" << inputAudio.size();
+            return false;
+        }
+
+        std::vector<float> planarInput;
+        if (!interleavedToPlanar(
+                    inputAudio, kModelChannels, kChunkFrames, &planarInput)) {
+            kLogger.warning() << "Could not convert interleaved model input to planar layout";
+            return false;
+        }
+
+        const std::vector<int64_t> inputShape = {
+                1, kModelChannels, static_cast<int64_t>(kChunkFrames)};
+
+        Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+                m_allocator.GetInfo(),
+                planarInput.data(),
+                planarInput.size(),
+                inputShape.data(),
+                inputShape.size());
+
+        auto inputName = m_pOrtSession->GetInputNameAllocated(0, m_allocator);
+        auto outputName = m_pOrtSession->GetOutputNameAllocated(0, m_allocator);
+        const char* inputNames[] = {inputName.get()};
+        const char* outputNames[] = {outputName.get()};
+
+        // Run inference
+        auto outputTensors = m_pOrtSession->Run(
+                Ort::RunOptions{nullptr},
+                inputNames,
+                &inputTensor,
+                1,
+                outputNames,
+                1);
+
+        // Extract output stems from the single output tensor
+        // Output shape is expected to be [1, 4, 2, 343980] (batch, stems, channels, samples)
+        if (outputTensors.empty()) {
+            kLogger.warning() << "ONNX inference returned no output tensor";
+            return false;
+        }
+
+        auto& outputTensor = outputTensors.front();
+        float* outputData = outputTensor.GetTensorMutableData<float>();
+        auto tensorInfo = outputTensor.GetTensorTypeAndShapeInfo();
+        auto outputShape = tensorInfo.GetShape();
+
+        // HTDemucs output is [batch, stems, channels, samples].
+        if (outputShape.size() != 4 || outputShape[0] != 1 || outputShape[1] != 4 ||
+                outputShape[2] != kModelChannels || outputShape[3] <= 0 ||
+                outputShape[3] > static_cast<int64_t>(kChunkFrames)) {
+            kLogger.warning() << "Unexpected output tensor shape:" << outputShape.size();
+            return false;
+        }
+
+        int64_t numStems = outputShape[1];
+        int64_t numChannels = outputShape[2];
+        int64_t numSamples = outputShape[3];
+
+        outputStems.resize(numStems);
+        for (int i = 0; i < numStems; ++i) {
+            int64_t stemSize = numChannels * numSamples;
+            float* stemStart = outputData + (i * stemSize);
+            std::vector<float> planarStem(stemStart, stemStart + stemSize);
+            if (!planarToInterleaved(
+                        planarStem,
+                        static_cast<int>(numChannels),
+                        static_cast<std::size_t>(numSamples),
+                        &outputStems[i])) {
+                kLogger.warning() << "Could not convert ONNX output to interleaved layout";
+                return false;
+            }
+        }
+
+        kLogger.info() << "ONNX inference completed successfully";
+        return true;
+    } catch (const std::exception& e) {
+        kLogger.warning() << "ONNX inference failed:" << e.what();
+        return false;
+    }
+}
+
+bool StemConverter::decodeAudioFile(const QString& inputPath,
+        int targetSampleRate,
+        std::vector<float>& audioData,
+        int& sampleRate,
+        int& channels,
+        std::size_t& originalFrames) {
+    if (targetSampleRate <= 0) {
+        kLogger.warning() << "Invalid target sample rate:" << targetSampleRate;
+        return false;
+    }
+
+    auto pTrack = Track::newTemporary(inputPath);
+
+    SoundSourceProxy proxy(pTrack);
+    auto pAudioSource = proxy.openAudioSource(mixxx::AudioSource::OpenParams(
+            mixxx::audio::ChannelCount(kModelChannels),
+            mixxx::audio::SampleRate(targetSampleRate)));
+    if (!pAudioSource) {
+        kLogger.warning() << "Failed to open audio file:" << inputPath;
+        return false;
+    }
+
+    sampleRate = pAudioSource->getSignalInfo().getSampleRate();
+    channels = pAudioSource->getSignalInfo().getChannelCount();
+    if (sampleRate != targetSampleRate || channels != kModelChannels) {
+        kLogger.warning() << "Audio source did not honor model format request. Sample rate:"
+                          << sampleRate << "channels:" << channels;
+        return false;
+    }
+
+    const SINT totalFrames = pAudioSource->frameLength();
+    if (totalFrames <= 0) {
+        kLogger.warning() << "Audio source has no readable frames:" << inputPath;
+        return false;
+    }
+
+    audioData.clear();
+    audioData.reserve(static_cast<std::size_t>(totalFrames) * kModelChannels);
+    mixxx::SampleBuffer sampleBuffer(static_cast<SINT>(kChunkFrames * kModelChannels));
+    SINT frameOffset = 0;
+    while (frameOffset < totalFrames) {
+        const SINT requestedFrames = std::min<SINT>(
+                static_cast<SINT>(kChunkFrames), totalFrames - frameOffset);
+        sampleBuffer.clear();
+        const auto readableFrames = pAudioSource->readSampleFrames(
+                mixxx::WritableSampleFrames(
+                        mixxx::IndexRange::between(frameOffset, frameOffset + requestedFrames),
+                        mixxx::SampleBuffer::WritableSlice(sampleBuffer)));
+        const SINT decodedFrames = readableFrames.frameIndexRange().length();
+        if (decodedFrames <= 0 || decodedFrames > requestedFrames) {
+            kLogger.warning() << "Audio source returned an invalid frame count:" << decodedFrames;
+            return false;
+        }
+
+        const std::size_t sampleCount = static_cast<std::size_t>(decodedFrames) * channels;
+        if (readableFrames.readableLength() < static_cast<SINT>(sampleCount)) {
+            kLogger.warning() << "Audio source returned too few samples for its frame count";
+            return false;
+        }
+        audioData.insert(audioData.end(),
+                readableFrames.readableData(),
+                readableFrames.readableData() + sampleCount);
+        frameOffset += decodedFrames;
+        if (decodedFrames < requestedFrames) {
+            break;
+        }
+    }
+
+    originalFrames = audioData.size() / static_cast<std::size_t>(channels);
+    if (originalFrames == 0) {
+        kLogger.warning() << "Audio source produced no samples:" << inputPath;
+        return false;
+    }
+
+    kLogger.info() << "Audio decoded at model sample rate:" << sampleRate
+                   << "frames:" << originalFrames;
+
+    return true;
+}
+
+bool StemConverter::saveStemToWav(const std::vector<float>& audioData,
+        const QString& outputPath,
+        int sampleRate,
+        int channels,
+        std::size_t originalFrames) {
+    if (channels != kModelChannels || originalFrames == 0 ||
+            originalFrames > audioData.size() / static_cast<std::size_t>(channels) ||
+            originalFrames > static_cast<std::size_t>(std::numeric_limits<sf_count_t>::max())) {
+        kLogger.warning() << "Invalid stem audio dimensions for WAV output";
+        return false;
+    }
+
+    SF_INFO sfInfo;
+    memset(&sfInfo, 0, sizeof(sfInfo));
+
+    sfInfo.samplerate = sampleRate;
+    sfInfo.channels = channels;
+    sfInfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+
+    SNDFILE* outfile = sf_open(outputPath.toStdString().c_str(), SFM_WRITE, &sfInfo);
+    if (!outfile) {
+        kLogger.warning() << "Failed to create WAV file:" << sf_strerror(nullptr);
+        return false;
+    }
+
+    // Only write the original frames, not the padding
+    const sf_count_t framesToWrite = static_cast<sf_count_t>(originalFrames);
+    sf_count_t writtenFrames = sf_writef_float(outfile, audioData.data(), framesToWrite);
+
+    if (writtenFrames != framesToWrite) {
+        kLogger.warning() << "Failed to write all frames to WAV file";
+        sf_close(outfile);
+        return false;
+    }
+
+    sf_close(outfile);
+    kLogger.info() << "Stem saved to WAV:" << outputPath;
+    return true;
+}
+
+bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QString& outputDir) {
+    kLogger.info() << "Starting ONNX separation for:" << trackFilePath;
+
+    if (!loadOnnxModel()) {
+        kLogger.warning() << "Failed to load ONNX model";
+        return false;
+    }
+
+    const ModelConfig modelConfig = getModelConfig(m_resolution);
+    std::vector<float> audioData;
+    int sampleRate = 0;
+    int channels = 0;
+
+    if (!decodeAudioFile(
+                trackFilePath,
+                modelConfig.sampleRate,
+                audioData,
+                sampleRate,
+                channels,
+                m_originalFrames)) {
+        kLogger.warning() << "Failed to decode audio file";
+        return false;
+    }
+
+    QStringList stemNames = {"drums", "bass", "other", "vocals"};
+    std::vector<std::vector<float>> outputStems(stemNames.size());
+    for (auto& outputStem : outputStems) {
+        outputStem.reserve(m_originalFrames * static_cast<std::size_t>(channels));
+    }
+
+    // HTDemucs accepts one fixed-size window. Process every window so short
+    // tracks are padded but long tracks are never silently truncated.
+    const std::size_t samplesPerFrame = static_cast<std::size_t>(channels);
+    for (std::size_t frameOffset = 0; frameOffset < m_originalFrames;
+            frameOffset += kChunkFrames) {
+        const std::size_t chunkFrames = std::min(
+                kChunkFrames, m_originalFrames - frameOffset);
+        std::vector<float> inputChunk(kChunkFrames * samplesPerFrame, 0.0f);
+        std::copy_n(audioData.begin() + frameOffset * samplesPerFrame,
+                chunkFrames * samplesPerFrame,
+                inputChunk.begin());
+
+        std::vector<std::vector<float>> chunkStems;
+        if (!runInference(inputChunk, sampleRate, chunkStems) ||
+                chunkStems.size() != stemNames.size()) {
+            kLogger.warning() << "Failed to run ONNX inference for chunk at frame:"
+                              << frameOffset;
+            return false;
+        }
+
+        for (std::size_t stem = 0; stem < chunkStems.size(); ++stem) {
+            const std::size_t chunkSamples = chunkFrames * samplesPerFrame;
+            if (chunkStems[stem].size() < chunkSamples) {
+                kLogger.warning() << "ONNX output is shorter than the input chunk";
+                return false;
+            }
+            outputStems[stem].insert(
+                    outputStems[stem].end(), chunkStems[stem].begin(),
+                    chunkStems[stem].begin() + chunkSamples);
+        }
+    }
+
+    QDir().mkpath(outputDir);
+
+    for (size_t i = 0; i < outputStems.size(); ++i) {
+        QString stemPath = outputDir + "/" + stemNames[i] + ".wav";
+        if (!saveStemToWav(outputStems[i], stemPath, sampleRate, channels, m_originalFrames)) {
+            kLogger.warning() << "Failed to save stem:" << stemNames[i];
+            return false;
+        }
+    }
+
+    kLogger.info() << "ONNX separation completed successfully";
+    return true;
+}
+#endif
+
+QString StemConverter::getStemsDirectory(const QString& trackFilePath) {
+    QFileInfo fileInfo(trackFilePath);
+    QString fileName = fileInfo.baseName();
+    QString dirPath = fileInfo.absolutePath();
+
+    // Create stems directory
+    return dirPath + "/" + fileName;
+}
+
+bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
+    kLogger.info() << "Converting stems to M4A:" << stemsDir;
+
+    QDir dir(stemsDir);
+    if (!dir.exists()) {
+        kLogger.warning() << "Stems directory does not exist:" << stemsDir;
+        return false;
+    }
+
+    QStringList stemNames = {"drums", "bass", "other", "vocals"};
+
+    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (ffmpegPath.isEmpty()) {
+        kLogger.warning() << "ffmpeg executable not found";
+        return false;
+    }
+
+    for (const QString& stemName : stemNames) {
+        QString wavPath = stemsDir + "/" + stemName + ".wav";
+        QString m4aPath = stemsDir + "/" + stemName + ".m4a";
+
+        if (!QFile::exists(wavPath)) {
+            kLogger.warning() << "WAV file not found:" << wavPath;
+            return false;
+        }
+
+        QProcess ffmpegProcess;
+        QStringList args;
+        args << "-i" << wavPath
+             << "-c:a" << "aac"
+             << "-b:a" << "320k"
+             << "-y" << m4aPath;
+
+        ffmpegProcess.start(ffmpegPath, args);
+        if (!ffmpegProcess.waitForFinished(-1)) {
+            kLogger.warning() << "ffmpeg timeout for:" << stemName;
+            return false;
+        }
+
+        if (ffmpegProcess.exitCode() != 0) {
+            kLogger.warning() << "ffmpeg failed for:" << stemName;
+            return false;
+        }
+    }
+
+    kLogger.info() << "All stems converted to M4A";
+    return true;
+}
+
+bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& outputPath) {
+    kLogger.info() << "Converting to M4A:" << inputPath;
+
+    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (ffmpegPath.isEmpty()) {
+        kLogger.warning() << "ffmpeg executable not found";
+        return false;
+    }
+
+    QProcess process;
+    QStringList arguments;
+
+    arguments << "-i" << inputPath;
+    arguments << "-ar" << QString::number(kStemModelSampleRate);
+    arguments << "-c:a" << "alac";
+    arguments << "-y" << outputPath;
+
+    process.start(ffmpegPath, arguments);
+
+    if (!process.waitForFinished(-1)) {
+        kLogger.warning() << "ffmpeg process failed:" << process.errorString();
+        return false;
+    }
+
+    if (process.exitCode() != 0) {
+        QString errorOutput = process.readAllStandardError();
+        kLogger.warning() << "ffmpeg error:" << errorOutput;
+        return false;
+    }
+
+    kLogger.info() << "Converted to M4A:" << outputPath;
+    return true;
+}
+
+bool StemConverter::createStemContainer(const QString& trackFilePath, const QString& stemsDir) {
+    kLogger.info() << "Creating STEM container";
+
+    QFileInfo fileInfo(trackFilePath);
+    QString fileName = fileInfo.baseName();
+    QString trackDir = fileInfo.absolutePath();
+    QString outputPath = trackDir + "/" + fileName + ".stem.m4a";
+
+    // Create mixdown M4A from original track
+    QString mixdownM4A = stemsDir + "/mixdown.m4a";
+    if (!convertTrackToM4A(trackFilePath, mixdownM4A)) {
+        kLogger.warning() << "Failed to create mixdown M4A";
+        return false;
+    }
+
+    // Create multi-track M4A with ffmpeg
+    // Combine: mixdown.m4a + drums.m4a + bass.m4a + other.m4a + vocals.m4a
+    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (ffmpegPath.isEmpty()) {
+        kLogger.warning() << "ffmpeg executable not found";
+        return false;
+    }
+
+    QProcess ffmpegProcess;
+    QStringList ffmpegArgs;
+
+    ffmpegArgs << "-y";
+    ffmpegArgs << "-i" << mixdownM4A;
+    ffmpegArgs << "-i" << (stemsDir + "/drums.m4a");
+    ffmpegArgs << "-i" << (stemsDir + "/bass.m4a");
+    ffmpegArgs << "-i" << (stemsDir + "/other.m4a");
+    ffmpegArgs << "-i" << (stemsDir + "/vocals.m4a");
+
+    for (const QString& stemName : {QStringLiteral("drums"), QStringLiteral("bass"),
+                 QStringLiteral("other"), QStringLiteral("vocals")}) {
+        if (!QFile::exists(stemsDir + "/" + stemName + ".m4a")) {
+            kLogger.warning() << "Stem M4A file not found:" << stemName;
+            return false;
+        }
+    }
+
+    // Map all audio tracks
+    ffmpegArgs << "-map" << "0:a:0"; // mixdown
+    ffmpegArgs << "-map" << "1:a:0"; // drums
+    ffmpegArgs << "-map" << "2:a:0"; // bass
+    ffmpegArgs << "-map" << "3:a:0"; // other
+    ffmpegArgs << "-map" << "4:a:0"; // vocals
+
+    ffmpegArgs << "-c:a" << "alac";
+    ffmpegArgs << "-movflags" << "+faststart";
+    ffmpegArgs << "-fflags" << "+bitexact";
+    ffmpegArgs << outputPath;
+
+    kLogger.info() << "Running ffmpeg to create multi-track M4A...";
+    kLogger.info() << "Command: ffmpeg" << ffmpegArgs.join(" ");
+
+    ffmpegProcess.start(ffmpegPath, ffmpegArgs);
+
+    if (!ffmpegProcess.waitForFinished(-1)) {
+        QString errorMsg = ffmpegProcess.errorString();
+        kLogger.warning() << "ffmpeg process failed:" << errorMsg;
+        return false;
+    }
+
+    if (ffmpegProcess.exitCode() != 0) {
+        QString errorOutput = ffmpegProcess.readAllStandardError();
+        kLogger.warning() << "ffmpeg error:" << errorOutput;
+        return false;
+    }
+
+    if (!QFile::exists(outputPath)) {
+        kLogger.warning() << "ffmpeg reported success but did not create:" << outputPath;
+        return false;
+    }
+
+    kLogger.info() << "Multi-track M4A created:" << outputPath;
+
+    // Add STEM metadata atom
+    if (!addStemMetadata(outputPath)) {
+        kLogger.warning() << "Failed to add STEM metadata";
+        return false;
+    }
+
+    kLogger.info() << "STEM container created:" << outputPath;
+    return true;
+}
+
+QString StemConverter::createStemManifest() {
+    QJsonObject masteringDsp;
+
+    // Compressor settings
+    QJsonObject compressor;
+    compressor["enabled"] = false;
+    compressor["ratio"] = 3;
+    compressor["output_gain"] = 0.5;
+    compressor["release"] = 0.3;
+    compressor["attack"] = 0.003;
+    compressor["input_gain"] = 0.5;
+    compressor["threshold"] = 0;
+    compressor["hp_cutoff"] = 300;
+    compressor["dry_wet"] = 50;
+
+    // Limiter settings
+    QJsonObject limiter;
+    limiter["enabled"] = false;
+    limiter["release"] = 0.05;
+    limiter["threshold"] = 0;
+    limiter["ceiling"] = -0.35;
+
+    masteringDsp["compressor"] = compressor;
+    masteringDsp["limiter"] = limiter;
+
+    // Stems metadata
+    QJsonObject drums;
+    drums["name"] = "Drums";
+    drums["color"] = "#009E73";
+
+    QJsonObject bass;
+    bass["name"] = "Bass";
+    bass["color"] = "#D55E00";
+
+    QJsonObject other;
+    other["name"] = "Other";
+    other["color"] = "#CC79A7";
+
+    QJsonObject vox;
+    vox["name"] = "Vox";
+    vox["color"] = "#56B4E9";
+
+    QJsonArray stems;
+    stems.append(drums);
+    stems.append(bass);
+    stems.append(other);
+    stems.append(vox);
+
+    QJsonObject root;
+    root["mastering_dsp"] = masteringDsp;
+    root["version"] = 1;
+    root["stems"] = stems;
+
+    QJsonDocument doc(root);
+    return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+}
+
+QString StemConverter::findMP4Box() {
+    const QString mp4boxPath = QStandardPaths::findExecutable(QStringLiteral("MP4Box"));
+    if (!mp4boxPath.isEmpty()) {
+        kLogger.info() << "Found MP4Box in PATH:" << mp4boxPath;
+        return mp4boxPath;
+    }
+
+    kLogger.warning() << "MP4Box not found in system";
+    return "";
+}
+
+bool StemConverter::addStemMetadata(const QString& outputPath) {
+    kLogger.info() << "Adding STEM metadata to:" << outputPath;
+
+    QString mp4boxPath = findMP4Box();
+    if (mp4boxPath.isEmpty()) {
+        kLogger.warning() << "MP4Box not found";
+        return false;
+    }
+
+    if (!QFile::exists(outputPath)) {
+        kLogger.warning() << "Cannot add metadata to missing output:" << outputPath;
+        return false;
+    }
+
+    // Create temporary JSON file with STEM manifest
+    QString stemManifest = createStemManifest();
+
+    QTemporaryFile tempJsonFile;
+    if (!tempJsonFile.open()) {
+        kLogger.warning() << "Failed to create temporary JSON file";
+        return false;
+    }
+
+    const QByteArray manifestBytes = stemManifest.toUtf8();
+    if (tempJsonFile.write(manifestBytes) != manifestBytes.size()) {
+        kLogger.warning() << "Failed to write temporary STEM manifest";
+        return false;
+    }
+    tempJsonFile.close();
+
+    QString tempJsonPath = tempJsonFile.fileName();
+    kLogger.info() << "Created temporary JSON at:" << tempJsonPath;
+
+    // Run MP4Box to add STEM metadata
+    QProcess mp4boxProcess;
+    QStringList mp4boxArgs;
+
+    mp4boxArgs << "-udta" << QString("0:type=stem:src=%1").arg(tempJsonPath);
+    mp4boxArgs << outputPath;
+
+    kLogger.info() << "Running MP4Box:" << mp4boxPath << mp4boxArgs.join(" ");
+    mp4boxProcess.start(mp4boxPath, mp4boxArgs);
+
+    if (!mp4boxProcess.waitForFinished(-1)) {
+        QString errorMsg = mp4boxProcess.errorString();
+        kLogger.warning() << "MP4Box process failed:" << errorMsg;
+        QFile::remove(tempJsonPath);
+        return false;
+    }
+
+    if (mp4boxProcess.exitStatus() != QProcess::NormalExit ||
+            mp4boxProcess.exitCode() != 0) {
+        QString errorOutput = mp4boxProcess.readAllStandardError();
+        kLogger.warning() << "MP4Box error:" << errorOutput;
+        QFile::remove(tempJsonPath);
+        return false;
+    }
+
+    QString standardOutput = mp4boxProcess.readAllStandardOutput();
+    kLogger.info() << "MP4Box output:" << standardOutput;
+
+    if (!QFile::exists(outputPath)) {
+        kLogger.warning() << "MP4Box reported success but output is missing:" << outputPath;
+        return false;
+    }
+
+    kLogger.info() << "STEM metadata added successfully";
+    return true;
+}
+
+#include "moc_stemconverter.cpp"
