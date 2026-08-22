@@ -27,6 +27,9 @@
 #ifdef __BUNGEE__
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
 #include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/controls/enginecontrol.h"
