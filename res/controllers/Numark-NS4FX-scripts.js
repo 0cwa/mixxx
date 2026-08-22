@@ -742,10 +742,17 @@ NS4FX.Deck = function(number, midi_chan) {
             // when the duration changes, we need to update the play position
 
             deck.position.trigger();
-            // When a new track loads, the hotcue states can flicker. Delay the LED update
-            // briefly so the engine state has settled, but avoid disconnect/reconnect churn.
+            // When a new track loads, the hotcue states can flicker. Disconnect the
+            // active hotcue callbacks until the engine state has settled.
+            if (deck.padmode_str === "hotcue") {
+                deck.hotcues.forEachComponent(function(component) {
+                    component.disconnect();
+                });
+            }
+
             engine.beginTimer(50, function() {
                 if (deck.padmode_str === "hotcue") {
+                    deck.hotcues.reconnectComponents();
                     deck.hotcue_buttons.updateLEDs();
                 }
             }, true);
