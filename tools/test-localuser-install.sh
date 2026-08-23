@@ -51,6 +51,71 @@ assert_succeeds localuser-prefix-normal \
     env HOME="$test_home" MIXXX_INSTALL_PREFIX="$test_home/.local" \
     MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" "$LOCALUSER" help
 
+mkdir -p "$TEST_ROOT/fake-bin"
+toolbox_invocation_log=$TEST_ROOT/toolbox.invocations
+cat >"$TEST_ROOT/fake-bin/toolbox" <<'FAKE_TOOLBOX'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'invoked\n' >>"${FAKE_TOOLBOX_INVOCATION_LOG:?}"
+FAKE_TOOLBOX
+chmod +x "$TEST_ROOT/fake-bin/toolbox"
+
+# Configure arguments may not replace the enforced install prefix. Check the
+# separated, inline, typed, and `-D`-separator forms before toolbox/CMake is
+# invoked.
+assert_fails localuser-configure-prefix-separated \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure --prefix "$TEST_ROOT/escape"
+assert_fails localuser-configure-prefix-inline \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure "--prefix=$TEST_ROOT/escape"
+assert_fails localuser-configure-cmake-prefix-separated \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure -DCMAKE_INSTALL_PREFIX "$TEST_ROOT/escape"
+assert_fails localuser-configure-cmake-prefix-inline \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure "-DCMAKE_INSTALL_PREFIX=$TEST_ROOT/escape"
+assert_fails localuser-configure-cmake-prefix-typed \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure "-DCMAKE_INSTALL_PREFIX:PATH=$TEST_ROOT/escape"
+assert_fails localuser-configure-d-separator \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure -D "CMAKE_INSTALL_PREFIX=$TEST_ROOT/escape"
+assert_fails localuser-configure-d-separator-typed \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure -D "CMAKE_INSTALL_PREFIX:PATH=$TEST_ROOT/escape"
+[[ ! -s "$toolbox_invocation_log" ]] || \
+    fail "configure prefix override reached the toolbox"
+
+assert_succeeds localuser-configure-allowed \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure -DSIGNALSMITH=OFF
+[[ -s "$toolbox_invocation_log" ]] || fail "allowed configure did not reach toolbox"
+
 for unsafe_prefix in / ../../../../ "$test_home/../.." "$test_home/.mixxx"; do
     assert_fails "installer-prefix-${#unsafe_prefix}" \
         env HOME="$test_home" "$INSTALLER" "$build_dir" "$unsafe_prefix" lib
@@ -79,6 +144,10 @@ while (($#)); do
         --prefix)
             stage=$2
             shift 2
+            ;;
+        -P)
+            printf 'runtime\n' >>"${FAKE_INVOCATION_LOG:?}"
+            exit 0
             ;;
         *)
             shift
@@ -111,6 +180,8 @@ chmod +x "$TEST_ROOT/fake-cmake"
 fake_cmake=$TEST_ROOT/fake-cmake
 invocation_log=$TEST_ROOT/fake-cmake.invocations
 : >"$invocation_log"
+printf '# disposable runtime dependency script\n' \
+    >"$build_dir/InstallMixxxRuntimeDependencies.cmake"
 
 # User install arguments may not replace the disposable prefix. This check is
 # deliberately made before the fake CMake command can write anything.
@@ -129,8 +200,55 @@ assert_fails cmake-prefix-override \
     FAKE_INVOCATION_LOG="$invocation_log" FAKE_MIXXX=/bin/false \
     "$INSTALLER" "$build_dir" "$live_prefix" lib \
     "-DCMAKE_INSTALL_PREFIX=$TEST_ROOT/escape"
+assert_fails cmake-prefix-override-separated \
+    env HOME="$test_home" MIXXX_CMAKE_COMMAND="$fake_cmake" \
+    FAKE_INVOCATION_LOG="$invocation_log" FAKE_MIXXX=/bin/false \
+    "$INSTALLER" "$build_dir" "$live_prefix" lib \
+    -DCMAKE_INSTALL_PREFIX "$TEST_ROOT/escape"
+assert_fails cmake-prefix-override-typed \
+    env HOME="$test_home" MIXXX_CMAKE_COMMAND="$fake_cmake" \
+    FAKE_INVOCATION_LOG="$invocation_log" FAKE_MIXXX=/bin/false \
+    "$INSTALLER" "$build_dir" "$live_prefix" lib \
+    "-DCMAKE_INSTALL_PREFIX:PATH=$TEST_ROOT/escape"
+assert_fails cmake-prefix-override-d-separator \
+    env HOME="$test_home" MIXXX_CMAKE_COMMAND="$fake_cmake" \
+    FAKE_INVOCATION_LOG="$invocation_log" FAKE_MIXXX=/bin/false \
+    "$INSTALLER" "$build_dir" "$live_prefix" lib \
+    -D "CMAKE_INSTALL_PREFIX=$TEST_ROOT/escape"
 [[ ! -s "$invocation_log" ]] || fail "prefix override invoked CMake"
 [[ ! -e "$TEST_ROOT/escape" ]] || fail "prefix override created an escape path"
+
+# A failure while allocating the rollback directory must remove the already
+# acquired lock and staging directory.
+real_mktemp=$(command -v mktemp)
+mktemp_fail_count=$TEST_ROOT/mktemp-fail.count
+printf '0\n' >"$mktemp_fail_count"
+cat >"$TEST_ROOT/fake-bin/mktemp" <<'FAKE_MKTEMP'
+#!/usr/bin/env bash
+set -euo pipefail
+count=$(<"${FAKE_MKTEMP_COUNT:?}")
+count=$((count + 1))
+printf '%s\n' "$count" >"$FAKE_MKTEMP_COUNT"
+if ((count == 2)); then
+    exit 73
+fi
+exec "$REAL_MKTEMP" "$@"
+FAKE_MKTEMP
+chmod +x "$TEST_ROOT/fake-bin/mktemp"
+setup_failure_prefix=$test_home/.local/setup-failure
+assert_fails setup-failure \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_MKTEMP_COUNT="$mktemp_fail_count" REAL_MKTEMP="$real_mktemp" \
+    MIXXX_CMAKE_COMMAND="$fake_cmake" FAKE_INVOCATION_LOG="$invocation_log" \
+    FAKE_MIXXX=/bin/false "$INSTALLER" "$build_dir" \
+    "$setup_failure_prefix" lib
+[[ ! -e "${setup_failure_prefix}.mixxx-install-lock" ]] || \
+    fail "setup failure left the install lock"
+if find "$test_home/.local" -maxdepth 1 \
+    \( -name '.mixxx-install.*' -o -name '.mixxx-rollback.*' \) \
+    -print -quit | grep -q .; then
+    fail "setup failure left disposable install state"
+fi
 
 # A simulated dependency-scan failure must leave the existing live install
 # byte-for-byte unchanged and remove all disposable state.
@@ -197,31 +315,30 @@ find "$live_prefix" -mindepth 1 -printf '%P %y %l\n' | sort >"$TEST_ROOT/layout-
 cmp -- "$TEST_ROOT/layout-before" "$TEST_ROOT/layout-after" || \
     fail "repeated install changed the canonical layout"
 
-# Verify the wrapper-only CMake install guard with a tiny disposable project.
+# Direct CMake installs must not enter the wrapper-only runtime staging path,
+# even when supplied with the old marker and a spoof-shaped prefix. The
+# generated runtime script is deliberately present but is not an install rule.
 mkdir -p "$TEST_ROOT/guard-source"
 printf '%s\n' 'payload' >"$TEST_ROOT/guard-source/payload"
 printf '%s\n' \
     'cmake_minimum_required(VERSION 3.24)' \
     'project(mixxx-runtime-install-guard NONE)' \
-    "install(SCRIPT \"$ROOT/cmake/CheckMixxxRuntimeInstall.cmake.in\")" \
     "install(FILES \"\${CMAKE_CURRENT_SOURCE_DIR}/payload\" DESTINATION .)" \
     >"$TEST_ROOT/guard-source/CMakeLists.txt"
 cmake -S "$TEST_ROOT/guard-source" -B "$TEST_ROOT/guard-build" \
     >"$TEST_ROOT/guard-configure.log"
-assert_fails direct-cmake-install \
-    env -u MIXXX_LOCALUSER_INSTALL_STAGING cmake --install \
-    "$TEST_ROOT/guard-build" --prefix "$TEST_ROOT/direct-prefix"
-[[ ! -e "$TEST_ROOT/direct-prefix/payload" ]] || \
-    fail "unguarded direct CMake install copied payload"
-assert_fails direct-cmake-install-marker \
+printf '%s\n' \
+    "file(WRITE \"$TEST_ROOT/runtime-was-invoked\" yes)" \
+    >"$TEST_ROOT/guard-build/InstallMixxxRuntimeDependencies.cmake"
+assert_succeeds direct-cmake-install-spoof \
     env MIXXX_LOCALUSER_INSTALL_STAGING=1 cmake --install \
-    "$TEST_ROOT/guard-build" --prefix "$TEST_ROOT/direct-prefix"
-[[ ! -e "$TEST_ROOT/direct-prefix/payload" ]] || \
-    fail "marked direct CMake install copied payload"
-assert_succeeds wrapped-cmake-install \
-    env MIXXX_LOCALUSER_INSTALL_STAGING=1 cmake --install \
-    "$TEST_ROOT/guard-build" --prefix "$TEST_ROOT/.mixxx-install.test"
-[[ -e "$TEST_ROOT/.mixxx-install.test/payload" ]] || \
-    fail "guarded CMake install did not copy payload"
+    "$TEST_ROOT/guard-build" --prefix "$TEST_ROOT/.mixxx-install.spoof"
+[[ -e "$TEST_ROOT/.mixxx-install.spoof/payload" ]] || \
+    fail "direct CMake install did not copy ordinary payload"
+[[ ! -e "$TEST_ROOT/runtime-was-invoked" ]] || \
+    fail "direct CMake install invoked the runtime dependency script"
+if rg -q 'CheckMixxxRuntimeInstall' "$ROOT/CMakeLists.txt"; then
+    fail "CMakeLists.txt still registers the obsolete direct-install guard"
+fi
 
-printf 'PASS: localuser installer safety, rollback, ELF paths, guard, and idempotence\n'
+printf 'PASS: localuser installer safety, rollback, ELF paths, spoof, and idempotence\n'

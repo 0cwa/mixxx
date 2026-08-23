@@ -160,6 +160,35 @@ strip_separator() {
     printf '%s\0' "$@"
 }
 
+reject_prefix_overrides() {
+    local argument
+    while (($#)); do
+        argument=$1
+        shift
+        case "$argument" in
+            --prefix|--prefix=*|-DCMAKE_INSTALL_PREFIX|-DCMAKE_INSTALL_PREFIX=*|\
+                -DCMAKE_INSTALL_PREFIX:*)
+                printf 'Do not override the enforced install prefix: %s\n' \
+                    "$argument" >&2
+                exit 2
+                ;;
+            -D)
+                if (($#)); then
+                    case "$1" in
+                        CMAKE_INSTALL_PREFIX|CMAKE_INSTALL_PREFIX=*|\
+                            CMAKE_INSTALL_PREFIX:*)
+                            printf 'Do not override the enforced install prefix: -D %s\n' \
+                                "$1" >&2
+                            exit 2
+                            ;;
+                    esac
+                    shift
+                fi
+                ;;
+        esac
+    done
+}
+
 run_in_toolbox_at() {
     local cwd=$1
     shift
@@ -170,6 +199,8 @@ run_in_toolbox_at() {
 }
 
 configure() {
+    reject_prefix_overrides "$@"
+
     local args=()
     while IFS= read -r -d '' arg; do
         args+=("$arg")

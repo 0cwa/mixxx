@@ -11,6 +11,15 @@ LIVE_PREFIX_INPUT=$2
 INSTALL_LIBDIR=$3
 shift 3
 
+STAGE=
+ROLLBACK_DIR=
+LOCK_DIR=
+LOCK_ACQUIRED=0
+ACTIVATED_PATHS=()
+BACKED_UP_PATHS=()
+ROLLBACK_NEEDED=1
+CLEANUP_DONE=0
+
 if ! command -v realpath >/dev/null 2>&1; then
     printf 'realpath is required to validate the user-local install prefix\n' >&2
     exit 2
@@ -79,12 +88,28 @@ LIVE_PREFIX=$(canonical_user_prefix "$LIVE_PREFIX_INPUT")
 
 reject_prefix_overrides() {
     local argument
-    for argument in "$@"; do
+    while (($#)); do
+        argument=$1
+        shift
         case "$argument" in
-            --prefix|--prefix=*|-DCMAKE_INSTALL_PREFIX|-DCMAKE_INSTALL_PREFIX=*)
+            --prefix|--prefix=*|-DCMAKE_INSTALL_PREFIX|-DCMAKE_INSTALL_PREFIX=*|\
+                -DCMAKE_INSTALL_PREFIX:*)
                 printf 'Do not override the staging prefix with install argument: %s\n' \
                     "$argument" >&2
                 exit 2
+                ;;
+            -D)
+                if (($#)); then
+                    case "$1" in
+                        CMAKE_INSTALL_PREFIX|CMAKE_INSTALL_PREFIX=*|\
+                            CMAKE_INSTALL_PREFIX:*)
+                            printf 'Do not override the staging prefix with install argument: -D %s\n' \
+                                "$1" >&2
+                            exit 2
+                            ;;
+                    esac
+                    shift
+                fi
                 ;;
         esac
     done
@@ -110,23 +135,16 @@ LIVE_PARENT=${LIVE_PREFIX%/*}
 if [[ "$LIVE_PARENT" == "$LIVE_PREFIX" ]]; then
     LIVE_PARENT=.
 fi
-mkdir -p "$LIVE_PARENT"
-
 LOCK_DIR=${LIVE_PREFIX}.mixxx-install-lock
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf 'Mixxx install is already active: %s\n' "$LIVE_PREFIX" >&2
-    exit 1
-fi
-
-STAGE=$(mktemp -d "$LIVE_PARENT/.mixxx-install.XXXXXX")
-ROLLBACK_DIR=$(mktemp -d "$LIVE_PARENT/.mixxx-rollback.XXXXXX")
-ACTIVATED_PATHS=()
-BACKED_UP_PATHS=()
-ROLLBACK_NEEDED=1
 
 cleanup() {
     local status=$?
     set +e
+
+    if ((CLEANUP_DONE)); then
+        return "$status"
+    fi
+    CLEANUP_DONE=1
 
     if ((ROLLBACK_NEEDED)); then
         local index
@@ -148,18 +166,45 @@ cleanup() {
         done
     fi
 
-    rm -rf -- "$STAGE" "$ROLLBACK_DIR" "$LOCK_DIR"
+    if [[ -n "$STAGE" ]]; then
+        rm -rf -- "$STAGE"
+    fi
+    if [[ -n "$ROLLBACK_DIR" ]]; then
+        rm -rf -- "$ROLLBACK_DIR"
+    fi
+    if ((LOCK_ACQUIRED)); then
+        rm -rf -- "$LOCK_DIR"
+        LOCK_ACQUIRED=0
+    fi
     exit "$status"
 }
 trap cleanup EXIT
 
+mkdir -p "$LIVE_PARENT"
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf 'Mixxx install is already active: %s\n' "$LIVE_PREFIX" >&2
+    exit 1
+fi
+LOCK_ACQUIRED=1
+
+STAGE=$(mktemp -d "$LIVE_PARENT/.mixxx-install.XXXXXX")
+ROLLBACK_DIR=$(mktemp -d "$LIVE_PARENT/.mixxx-rollback.XXXXXX")
+
 cmake_command=${MIXXX_CMAKE_COMMAND:-cmake}
-MIXXX_LOCALUSER_INSTALL_STAGING=1 \
-    "$cmake_command" --install "$BUILD_DIR" "$@" --prefix "$STAGE"
+"$cmake_command" --install "$BUILD_DIR" "$@" --prefix "$STAGE"
 
 if [[ ! -x "$STAGE/bin/mixxx" ]]; then
     printf 'Staged Mixxx executable is missing: %s\n' "$STAGE/bin/mixxx" >&2
     exit 1
+fi
+
+runtime_dependency_script=$BUILD_DIR/InstallMixxxRuntimeDependencies.cmake
+if [[ -f "$runtime_dependency_script" ]]; then
+    "$cmake_command" \
+        -DCMAKE_INSTALL_PREFIX="$STAGE" \
+        -DMIXXX_RUNTIME_EXECUTABLE="$STAGE/bin/mixxx" \
+        -P "$runtime_dependency_script"
 fi
 
 if ! command -v readelf >/dev/null 2>&1; then

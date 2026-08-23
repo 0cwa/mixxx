@@ -1,6 +1,6 @@
 # Resolve and install the optional runtime dependencies for the native
-# user-local install. The generated install script is guarded in CMakeLists.txt
-# and can only run through tools/localuser-install.sh's staging prefix.
+# user-local install. The wrapper invokes this generated script explicitly
+# after the ordinary CMake install has populated its disposable prefix.
 
 if(NOT DEFINED MIXXX_RUNTIME_EXECUTABLE)
   message(FATAL_ERROR "MIXXX_RUNTIME_EXECUTABLE was not provided")
