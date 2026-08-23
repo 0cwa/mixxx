@@ -62,7 +62,8 @@ chmod +x "$TEST_ROOT/fake-bin/toolbox"
 
 # Configure arguments may not replace the enforced install prefix. Check the
 # separated, inline, typed, and `-D`-separator forms before toolbox/CMake is
-# invoked.
+# invoked. CMake's `--install-prefix` configure option must be rejected in
+# both its separated and inline forms as well.
 assert_fails localuser-configure-prefix-separated \
     env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
     FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
@@ -75,6 +76,18 @@ assert_fails localuser-configure-prefix-inline \
     MIXXX_INSTALL_PREFIX="$test_home/.local" \
     MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
     "$LOCALUSER" configure "--prefix=$TEST_ROOT/escape"
+assert_fails localuser-configure-install-prefix-separated \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure --install-prefix "$TEST_ROOT/escape"
+assert_fails localuser-configure-install-prefix-inline \
+    env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
+    FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
+    MIXXX_INSTALL_PREFIX="$test_home/.local" \
+    MIXXX_CONTAINER_INSTALL_PREFIX="$test_home/.local" \
+    "$LOCALUSER" configure "--install-prefix=$TEST_ROOT/escape"
 assert_fails localuser-configure-cmake-prefix-separated \
     env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \
     FAKE_TOOLBOX_INVOCATION_LOG="$toolbox_invocation_log" \
@@ -107,6 +120,13 @@ assert_fails localuser-configure-d-separator-typed \
     "$LOCALUSER" configure -D "CMAKE_INSTALL_PREFIX:PATH=$TEST_ROOT/escape"
 [[ ! -s "$toolbox_invocation_log" ]] || \
     fail "configure prefix override reached the toolbox"
+for rejected_configure_prefix in \
+    localuser-configure-install-prefix-separated \
+    localuser-configure-install-prefix-inline; do
+    rg -q -- 'Do not override the enforced install prefix: --install-prefix' \
+        "$TEST_ROOT/$rejected_configure_prefix.log" || \
+        fail "$rejected_configure_prefix did not explain the rejected prefix"
+done
 
 assert_succeeds localuser-configure-allowed \
     env HOME="$test_home" PATH="$TEST_ROOT/fake-bin:$PATH" \

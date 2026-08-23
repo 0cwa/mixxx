@@ -166,7 +166,8 @@ reject_prefix_overrides() {
         argument=$1
         shift
         case "$argument" in
-            --prefix|--prefix=*|-DCMAKE_INSTALL_PREFIX|-DCMAKE_INSTALL_PREFIX=*|\
+            --prefix|--prefix=*|--install-prefix|--install-prefix=*|\
+                -DCMAKE_INSTALL_PREFIX|-DCMAKE_INSTALL_PREFIX=*|\
                 -DCMAKE_INSTALL_PREFIX:*)
                 printf 'Do not override the enforced install prefix: %s\n' \
                     "$argument" >&2
