@@ -1,6 +1,6 @@
 # Resolve and install the optional runtime dependencies for the native
-# user-local install. This runs from the generated CMake install script, so
-# CMAKE_INSTALL_PREFIX is the staging prefix selected by localuser.sh.
+# user-local install. The generated install script is guarded in CMakeLists.txt
+# and can only run through tools/localuser-install.sh's staging prefix.
 
 if(NOT DEFINED MIXXX_RUNTIME_EXECUTABLE)
   message(FATAL_ERROR "MIXXX_RUNTIME_EXECUTABLE was not provided")

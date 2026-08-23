@@ -7,9 +7,90 @@ if [[ $# -lt 3 ]]; then
 fi
 
 BUILD_DIR=$1
-LIVE_PREFIX=${2%/}
+LIVE_PREFIX_INPUT=$2
 INSTALL_LIBDIR=$3
 shift 3
+
+if ! command -v realpath >/dev/null 2>&1; then
+    printf 'realpath is required to validate the user-local install prefix\n' >&2
+    exit 2
+fi
+
+user_home_scopes=()
+add_user_home_scope() {
+    local scope=$1
+    local canonical_scope
+    canonical_scope=$(realpath -m -- "$scope") || {
+        printf 'Unable to canonicalize user home scope: %s\n' "$scope" >&2
+        exit 2
+    }
+    user_home_scopes+=("$canonical_scope")
+}
+
+add_user_home_scope "$HOME"
+case "$HOME" in
+    /home/*)
+        add_user_home_scope "/var/home/${HOME#/home/}"
+        ;;
+    /var/home/*)
+        add_user_home_scope "/home/${HOME#/var/home/}"
+        ;;
+esac
+
+canonical_user_prefix() {
+    local input=$1
+    local canonical_prefix
+    local scope
+
+    case "$input" in
+        /*) ;;
+        *)
+            printf 'Install prefix must be an absolute path: %s\n' "$input" >&2
+            exit 2
+            ;;
+    esac
+
+    canonical_prefix=$(realpath -m -- "$input") || {
+        printf 'Unable to canonicalize install prefix: %s\n' "$input" >&2
+        exit 2
+    }
+
+    for scope in "${user_home_scopes[@]}"; do
+        if [[ "$scope" == "/" && "$canonical_prefix" != "/" ]] || \
+            [[ "$scope" != "/" && "$canonical_prefix" == "$scope"/* ]]; then
+            case "$canonical_prefix" in
+                */.mixxx|*/.mixxx/*)
+                    break
+                    ;;
+                *)
+                    printf '%s\n' "$canonical_prefix"
+                    return 0
+                    ;;
+            esac
+        fi
+    done
+
+    printf 'Install prefix must be a user-local prefix inside the user home: %s\n' \
+        "$input" >&2
+    exit 2
+}
+
+LIVE_PREFIX=$(canonical_user_prefix "$LIVE_PREFIX_INPUT")
+
+reject_prefix_overrides() {
+    local argument
+    for argument in "$@"; do
+        case "$argument" in
+            --prefix|--prefix=*|-DCMAKE_INSTALL_PREFIX|-DCMAKE_INSTALL_PREFIX=*)
+                printf 'Do not override the staging prefix with install argument: %s\n' \
+                    "$argument" >&2
+                exit 2
+                ;;
+        esac
+    done
+}
+
+reject_prefix_overrides "$@"
 
 case "$INSTALL_LIBDIR" in
     ''|.|..|../*|*/..|*/../*|/*)
@@ -73,33 +154,75 @@ cleanup() {
 trap cleanup EXIT
 
 cmake_command=${MIXXX_CMAKE_COMMAND:-cmake}
-"$cmake_command" --install "$BUILD_DIR" --prefix "$STAGE" "$@"
+MIXXX_LOCALUSER_INSTALL_STAGING=1 \
+    "$cmake_command" --install "$BUILD_DIR" "$@" --prefix "$STAGE"
 
 if [[ ! -x "$STAGE/bin/mixxx" ]]; then
     printf 'Staged Mixxx executable is missing: %s\n' "$STAGE/bin/mixxx" >&2
     exit 1
 fi
 
-# The CMake scanner performs architecture/ABI-aware dependency resolution.
-# Keep the installed ELF relocatable as an additional guard against an
-# accidental host path in the generated native install.
-if command -v readelf >/dev/null 2>&1; then
-    runpath=$(readelf -d "$STAGE/bin/mixxx" 2>/dev/null | sed -n \
-        -e 's/.*(RUNPATH).*: \[\(.*\)\]/\1/p' \
-        -e 's/.*(RPATH).*: \[\(.*\)\]/\1/p' || true)
-    if [[ -n "$runpath" ]]; then
-        IFS=: read -ra runpath_entries <<< "$runpath"
+if ! command -v readelf >/dev/null 2>&1; then
+    printf 'readelf is required to validate installed ELF RUNPATH/RPATH\n' >&2
+    exit 1
+fi
+
+validate_elf_runpaths() {
+    local staged_file=$1
+    local origin_dir=${staged_file%/*}
+    local runpath
+    local runpath_entry
+    local relative_runpath
+    local resolved_runpath
+    local -a runpath_entries
+
+    if ! readelf -h "$staged_file" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    while IFS= read -r runpath; do
+        IFS=: read -r -a runpath_entries <<< "$runpath"
         for runpath_entry in "${runpath_entries[@]}"; do
             case "$runpath_entry" in
-                "\$ORIGIN"|"\$ORIGIN/"*) ;;
+                "\$ORIGIN") ;;
+                "\$ORIGIN/"*)
+                    relative_runpath=${runpath_entry#"\$ORIGIN"}
+                    case "$relative_runpath" in
+                        *'\$'*)
+                            printf 'Staged ELF has an unsupported RUNPATH/RPATH token: %s -> %s\n' \
+                                "$staged_file" "$runpath_entry" >&2
+                            exit 1
+                            ;;
+                    esac
+                    resolved_runpath=$(realpath -m -- \
+                        "$origin_dir/$relative_runpath")
+                    case "$resolved_runpath" in
+                        "$STAGE"|"$STAGE"/*) ;;
+                        *)
+                            printf 'Staged ELF RUNPATH/RPATH escapes the stage: %s -> %s\n' \
+                                "$staged_file" "$runpath_entry" >&2
+                            exit 1
+                            ;;
+                    esac
+                    ;;
                 *)
-                    printf 'Staged Mixxx RUNPATH is not relative: %s\n' "$runpath" >&2
+                    printf '%s\n' \
+                        "Staged ELF RUNPATH/RPATH is not a safe \$ORIGIN path: $staged_file -> $runpath_entry" \
+                        >&2
                     exit 1
                     ;;
             esac
         done
-    fi
-fi
+    done < <(
+        readelf -d "$staged_file" 2>/dev/null |
+            sed -n -E 's/.*\((RUNPATH|RPATH)\).*: \[(.*)\]/\2/p'
+    )
+}
+
+mapfile -d '' staged_regular_files < <(find "$STAGE" -type f -print0)
+for staged_regular_file in "${staged_regular_files[@]}"; do
+    validate_elf_runpaths "$staged_regular_file"
+done
 
 mapfile -d '' staged_symlinks < <(find "$STAGE" -type l -print0)
 for staged_symlink in "${staged_symlinks[@]}"; do
@@ -109,6 +232,16 @@ for staged_symlink in "${staged_symlinks[@]}"; do
             "$staged_symlink" "$symlink_target" >&2
         exit 1
     fi
+    resolved_symlink=$(realpath -m -- \
+        "${staged_symlink%/*}/$symlink_target")
+    case "$resolved_symlink" in
+        "$STAGE"|"$STAGE"/*) ;;
+        *)
+            printf 'Staged symlink escapes the stage: %s -> %s\n' \
+                "$staged_symlink" "$symlink_target" >&2
+            exit 1
+            ;;
+    esac
 done
 
 move_to_backup() {

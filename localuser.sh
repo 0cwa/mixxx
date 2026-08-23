@@ -15,20 +15,80 @@ esac
 TOOLBOX_NAME=${MIXXX_TOOLBOX:-mixxx-build}
 BUILD_DIR=${MIXXX_BUILD_DIR:-$PROJECT_DIR/build}
 BUILD_TYPE=${MIXXX_BUILD_TYPE:-RelWithDebInfo}
-INSTALL_PREFIX=${MIXXX_INSTALL_PREFIX:-$HOME/.local}
+INSTALL_PREFIX_INPUT=${MIXXX_INSTALL_PREFIX:-$HOME/.local}
 INSTALL_LIBDIR=${MIXXX_INSTALL_LIBDIR:-lib}
 SIGNALSMITH=${MIXXX_SIGNALSMITH:-ON}
+
+if ! command -v realpath >/dev/null 2>&1; then
+    printf 'realpath is required to validate the user-local install prefix\n' >&2
+    exit 2
+fi
+
+user_home_scopes=()
+add_user_home_scope() {
+    local scope=$1
+    local canonical_scope
+    canonical_scope=$(realpath -m -- "$scope") || {
+        printf 'Unable to canonicalize user home scope: %s\n' "$scope" >&2
+        exit 2
+    }
+    user_home_scopes+=("$canonical_scope")
+}
+
+add_user_home_scope "$HOME"
+case "$HOME" in
+    /home/*)
+        add_user_home_scope "/var/home/${HOME#/home/}"
+        ;;
+    /var/home/*)
+        add_user_home_scope "/home/${HOME#/var/home/}"
+        ;;
+esac
+
+canonical_user_prefix() {
+    local input=$1
+    local label=$2
+    local canonical_prefix
+    local scope
+
+    case "$input" in
+        /*) ;;
+        *)
+            printf '%s must be an absolute path: %s\n' "$label" "$input" >&2
+            exit 2
+            ;;
+    esac
+
+    canonical_prefix=$(realpath -m -- "$input") || {
+        printf 'Unable to canonicalize %s: %s\n' "$label" "$input" >&2
+        exit 2
+    }
+
+    for scope in "${user_home_scopes[@]}"; do
+        if [[ "$scope" == "/" && "$canonical_prefix" != "/" ]] || \
+            [[ "$scope" != "/" && "$canonical_prefix" == "$scope"/* ]]; then
+            case "$canonical_prefix" in
+                */.mixxx|*/.mixxx/*)
+                    break
+                    ;;
+                *)
+                    printf '%s\n' "$canonical_prefix"
+                    return 0
+                    ;;
+            esac
+        fi
+    done
+
+    printf '%s must be a user-local prefix inside the user home: %s\n' \
+        "$label" "$input" >&2
+    exit 2
+}
+
+INSTALL_PREFIX=$(canonical_user_prefix "$INSTALL_PREFIX_INPUT" MIXXX_INSTALL_PREFIX)
 
 case "$INSTALL_LIBDIR" in
     ''|.|..|../*|*/..|*/../*|/*)
         printf 'MIXXX_INSTALL_LIBDIR must be relative: %s\n' "$INSTALL_LIBDIR" >&2
-        exit 2
-        ;;
-esac
-
-case "$INSTALL_PREFIX" in
-    /|/bin|/etc|/lib|/lib32|/lib64|/opt|/sbin|/usr|/usr/*|/var|/var/cache|/var/lib|/var/log|/var/run|/var/spool|/var/tmp|*/.mixxx|*/.mixxx/*)
-        printf 'MIXXX_INSTALL_PREFIX must be a user-local prefix: %s\n' "$INSTALL_PREFIX" >&2
         exit 2
         ;;
 esac
@@ -46,7 +106,11 @@ container_path() {
 
 CONTAINER_PROJECT_DIR=${MIXXX_CONTAINER_PROJECT_DIR:-$(container_path "$PROJECT_DIR")}
 CONTAINER_BUILD_DIR=${MIXXX_CONTAINER_BUILD_DIR:-$(container_path "$BUILD_DIR")}
-CONTAINER_INSTALL_PREFIX=${MIXXX_CONTAINER_INSTALL_PREFIX:-$(container_path "$INSTALL_PREFIX")}
+CONTAINER_INSTALL_PREFIX_INPUT=${MIXXX_CONTAINER_INSTALL_PREFIX:-$(container_path "$INSTALL_PREFIX")}
+CONTAINER_INSTALL_PREFIX_CANONICAL=$(canonical_user_prefix \
+    "$(container_path "$CONTAINER_INSTALL_PREFIX_INPUT")" \
+    MIXXX_CONTAINER_INSTALL_PREFIX)
+CONTAINER_INSTALL_PREFIX=$(container_path "$CONTAINER_INSTALL_PREFIX_CANONICAL")
 
 HOST_COMMAND_PREFIX=()
 if [[ -e /.flatpak-info ]] && command -v flatpak-spawn >/dev/null 2>&1; then

@@ -2563,15 +2563,22 @@ endif()
 
 if(NOT ANDROID)
   if(MIXXX_INSTALL_RUNTIME_DEPENDENCIES)
+    # Runtime dependency staging is failure-safe only through
+    # tools/localuser-install.sh, which installs into a disposable prefix
+    # before activation. Reject direct cmake --install invocations before any
+    # target or resource can be copied to a live prefix.
+    install(
+      SCRIPT
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMixxxRuntimeInstall.cmake.in"
+    )
     install(
       TARGETS mixxx
       RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
       BUNDLE DESTINATION .
     )
-    # CMake's RUNTIME_DEPENDENCY_SET installs the target before it scans for
-    # dependencies. Keep the target install rule, but run the allowlisted
-    # scanner from a generated script so it can preserve complete SONAME
-    # symlink chains with file(INSTALL ... FOLLOW_SYMLINK_CHAIN).
+    # Keep the target install rule, but run the allowlisted scanner from a
+    # generated script so it can preserve complete SONAME symlink chains with
+    # file(INSTALL ... FOLLOW_SYMLINK_CHAIN).
     set(
       MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT
       "${CMAKE_CURRENT_BINARY_DIR}/InstallMixxxRuntimeDependencies.cmake"
