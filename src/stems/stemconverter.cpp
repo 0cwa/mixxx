@@ -188,6 +188,14 @@ bool StemConverter::requiresAudioFormatConversion(int sampleRate, int channels) 
     return sampleRate != kStemModelSampleRate || channels != kStemModelChannels;
 }
 
+bool StemConverter::hasNextChunk(
+        std::size_t frameOffset,
+        std::size_t chunkStepFrames,
+        std::size_t totalFrames) {
+    return chunkStepFrames > 0 && frameOffset < totalFrames &&
+            chunkStepFrames < totalFrames - frameOffset;
+}
+
 void StemConverter::setProgress(float progress) {
     QMutexLocker locker(&m_statusMutex);
     m_progress = progress;
@@ -726,7 +734,8 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
         }
 
         const bool hasPreviousChunk = frameOffset > 0;
-        const bool hasNextChunk = frameOffset + kChunkFrames < m_originalFrames;
+        const bool hasNextChunk = StemConverter::hasNextChunk(
+                frameOffset, kChunkStepFrames, m_originalFrames);
         const std::size_t fadeOutStart = chunkFrames > kChunkOverlapFrames
                 ? chunkFrames - kChunkOverlapFrames
                 : 0;

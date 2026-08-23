@@ -81,6 +81,12 @@ class StemConverter : public QObject {
     /// Return whether decoded audio must be converted for HTDemucs.
     static bool requiresAudioFormatConversion(int sampleRate, int channels);
 
+    /// Return whether an overlapping inference window starts after this one.
+    static bool hasNextChunk(
+            std::size_t frameOffset,
+            std::size_t chunkStepFrames,
+            std::size_t totalFrames);
+
     /// Return a collision-resistant directory for the converted stems.
     static QString getStemsDirectory(const QString& trackFilePath);
 

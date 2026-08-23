@@ -115,6 +115,27 @@ TEST(StemConverterTest, DetectsAudioThatNeedsModelFormatConversion) {
     EXPECT_TRUE(StemConverter::requiresAudioFormatConversion(44100, 1));
 }
 
+TEST(StemConverterTest, DetectsOverlappingExactWindow) {
+    constexpr std::size_t kChunkFrames = 8;
+    constexpr std::size_t kChunkStepFrames = 6;
+
+    EXPECT_TRUE(StemConverter::hasNextChunk(0, kChunkStepFrames, kChunkFrames));
+}
+
+TEST(StemConverterTest, DetectsPartialFinalWindow) {
+    constexpr std::size_t kChunkStepFrames = 6;
+
+    EXPECT_TRUE(StemConverter::hasNextChunk(0, kChunkStepFrames, 7));
+    EXPECT_FALSE(StemConverter::hasNextChunk(kChunkStepFrames, kChunkStepFrames, 7));
+}
+
+TEST(StemConverterTest, DoesNotCreateWindowAtExactEnd) {
+    constexpr std::size_t kChunkStepFrames = 6;
+
+    EXPECT_FALSE(StemConverter::hasNextChunk(
+            kChunkStepFrames, kChunkStepFrames, kChunkStepFrames));
+}
+
 TEST(StemConverterTest, SeparatesSameBasenameWithDifferentExtensions) {
     QTemporaryDir tempDir;
     ASSERT_TRUE(tempDir.isValid());
