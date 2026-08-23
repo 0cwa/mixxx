@@ -87,6 +87,14 @@ class StemConverter : public QObject {
             std::size_t chunkStepFrames,
             std::size_t totalFrames);
 
+    /// Return the blend weight for a frame in an inference window.
+    static float getChunkFrameWeight(
+            std::size_t frameOffset,
+            std::size_t frame,
+            std::size_t chunkWindowFrames,
+            std::size_t chunkStepFrames,
+            std::size_t totalFrames);
+
     /// Return a collision-resistant directory for the converted stems.
     static QString getStemsDirectory(const QString& trackFilePath);
 

@@ -196,6 +196,64 @@ bool StemConverter::hasNextChunk(
             chunkStepFrames < totalFrames - frameOffset;
 }
 
+float StemConverter::getChunkFrameWeight(
+        std::size_t frameOffset,
+        std::size_t frame,
+        std::size_t chunkWindowFrames,
+        std::size_t chunkStepFrames,
+        std::size_t totalFrames) {
+    if (chunkWindowFrames == 0 || frameOffset >= totalFrames) {
+        return 0.0f;
+    }
+
+    const std::size_t chunkFrames = std::min(
+            chunkWindowFrames, totalFrames - frameOffset);
+    if (frame >= chunkFrames) {
+        return 0.0f;
+    }
+
+    const std::size_t chunkEnd = frameOffset + chunkFrames;
+    const std::size_t overlapFrames = chunkWindowFrames > chunkStepFrames
+            ? chunkWindowFrames - chunkStepFrames
+            : 0;
+    if (overlapFrames == 0) {
+        return 1.0f;
+    }
+
+    const std::size_t outputFrame = frameOffset + frame;
+    float weight = 1.0f;
+
+    if (frameOffset >= chunkStepFrames) {
+        const std::size_t previousStart = frameOffset - chunkStepFrames;
+        const std::size_t previousFrames = std::min(
+                chunkWindowFrames, totalFrames - previousStart);
+        const std::size_t previousEnd = previousStart + previousFrames;
+        const std::size_t fadeInFrames = previousEnd > frameOffset
+                ? std::min(chunkFrames, previousEnd - frameOffset)
+                : 0;
+        if (frame < fadeInFrames) {
+            weight *= static_cast<float>(frame + 1) /
+                    static_cast<float>(overlapFrames);
+        }
+    }
+
+    if (hasNextChunk(frameOffset, chunkStepFrames, totalFrames)) {
+        const std::size_t nextStart = frameOffset + chunkStepFrames;
+        const std::size_t nextFrames = std::min(
+                chunkWindowFrames, totalFrames - nextStart);
+        const std::size_t nextEnd = nextStart + nextFrames;
+        const std::size_t fadeOutStart = nextStart;
+        const std::size_t fadeOutEnd = std::min(chunkEnd, nextEnd);
+        if (outputFrame >= fadeOutStart && outputFrame < fadeOutEnd) {
+            const std::size_t fadeOutFrame = outputFrame - fadeOutStart;
+            weight *= static_cast<float>(overlapFrames - fadeOutFrame - 1) /
+                    static_cast<float>(overlapFrames);
+        }
+    }
+
+    return weight;
+}
+
 void StemConverter::setProgress(float progress) {
     QMutexLocker locker(&m_statusMutex);
     m_progress = progress;
@@ -733,25 +791,18 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
             return false;
         }
 
-        const bool hasPreviousChunk = frameOffset > 0;
         const bool hasNextChunk = StemConverter::hasNextChunk(
                 frameOffset, kChunkStepFrames, m_originalFrames);
-        const std::size_t fadeOutStart = chunkFrames > kChunkOverlapFrames
-                ? chunkFrames - kChunkOverlapFrames
-                : 0;
-
+        std::vector<float> chunkWeights(chunkFrames, 0.0f);
         for (std::size_t frame = 0; frame < chunkFrames; ++frame) {
             const std::size_t outputFrame = frameOffset + frame;
-            float weight = 1.0f;
-            if (hasPreviousChunk && frame < kChunkOverlapFrames) {
-                weight *= static_cast<float>(frame + 1) /
-                        static_cast<float>(kChunkOverlapFrames);
-            }
-            if (hasNextChunk && frame >= fadeOutStart) {
-                const std::size_t fadeOutFrame = frame - fadeOutStart;
-                weight *= static_cast<float>(kChunkOverlapFrames - fadeOutFrame - 1) /
-                        static_cast<float>(kChunkOverlapFrames);
-            }
+            const float weight = StemConverter::getChunkFrameWeight(
+                    frameOffset,
+                    frame,
+                    kChunkFrames,
+                    kChunkStepFrames,
+                    m_originalFrames);
+            chunkWeights[frame] = weight;
             outputWeights[outputFrame] += weight;
         }
 
@@ -763,19 +814,10 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
             }
             for (std::size_t frame = 0; frame < chunkFrames; ++frame) {
                 const std::size_t outputFrame = frameOffset + frame;
-                const float weight = (hasPreviousChunk && frame < kChunkOverlapFrames
-                                                     ? static_cast<float>(frame + 1) /
-                                                             static_cast<float>(kChunkOverlapFrames)
-                                                     : 1.0f) *
-                        (hasNextChunk && frame >= fadeOutStart
-                                        ? static_cast<float>(
-                                                  kChunkOverlapFrames -
-                                                  (frame - fadeOutStart) - 1) /
-                                                static_cast<float>(kChunkOverlapFrames)
-                                        : 1.0f);
                 for (std::size_t channel = 0; channel < samplesPerFrame; ++channel) {
                     outputStems[stem][outputFrame * samplesPerFrame + channel] +=
-                            chunkStems[stem][frame * samplesPerFrame + channel] * weight;
+                            chunkStems[stem][frame * samplesPerFrame + channel] *
+                            chunkWeights[frame];
                 }
             }
         }

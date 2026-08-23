@@ -136,6 +136,74 @@ TEST(StemConverterTest, DoesNotCreateWindowAtExactEnd) {
             kChunkStepFrames, kChunkStepFrames, kChunkStepFrames));
 }
 
+TEST(StemConverterTest, BlendsAtNextWindowStartForShortWindow) {
+    constexpr std::size_t kChunkWindowFrames = 8;
+    constexpr std::size_t kChunkStepFrames = 6;
+    constexpr std::size_t kTotalFrames = 7;
+
+    const float firstWindowWeight = StemConverter::getChunkFrameWeight(
+            0, 6, kChunkWindowFrames, kChunkStepFrames, kTotalFrames);
+    const float nextWindowWeight = StemConverter::getChunkFrameWeight(
+            kChunkStepFrames, 0, kChunkWindowFrames, kChunkStepFrames, kTotalFrames);
+
+    EXPECT_FLOAT_EQ(firstWindowWeight, 0.5f);
+    EXPECT_FLOAT_EQ(nextWindowWeight, 0.5f);
+    EXPECT_FLOAT_EQ(firstWindowWeight + nextWindowWeight, 1.0f);
+
+    const float blendedOutput = (1.0f * firstWindowWeight + 3.0f * nextWindowWeight) /
+            (firstWindowWeight + nextWindowWeight);
+    EXPECT_FLOAT_EQ(blendedOutput, 2.0f);
+}
+
+TEST(StemConverterTest, PreservesFullWindowFadeRanges) {
+    constexpr std::size_t kChunkWindowFrames = 8;
+    constexpr std::size_t kChunkStepFrames = 6;
+    constexpr std::size_t kTotalFrames = 20;
+
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(kChunkStepFrames,
+                            0,
+                            kChunkWindowFrames,
+                            kChunkStepFrames,
+                            kTotalFrames),
+            0.5f);
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(kChunkStepFrames,
+                            1,
+                            kChunkWindowFrames,
+                            kChunkStepFrames,
+                            kTotalFrames),
+            1.0f);
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(kChunkStepFrames,
+                            5,
+                            kChunkWindowFrames,
+                            kChunkStepFrames,
+                            kTotalFrames),
+            1.0f);
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(kChunkStepFrames,
+                            6,
+                            kChunkWindowFrames,
+                            kChunkStepFrames,
+                            kTotalFrames),
+            0.5f);
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(kChunkStepFrames,
+                            7,
+                            kChunkWindowFrames,
+                            kChunkStepFrames,
+                            kTotalFrames),
+            0.0f);
+}
+
+TEST(StemConverterTest, DoesNotFadeOutWithoutNextWindow) {
+    constexpr std::size_t kChunkWindowFrames = 8;
+    constexpr std::size_t kChunkStepFrames = 6;
+
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(
+                            0, 5, kChunkWindowFrames, kChunkStepFrames, 6),
+            1.0f);
+    EXPECT_FLOAT_EQ(StemConverter::getChunkFrameWeight(
+                            kChunkStepFrames, 0, kChunkWindowFrames, kChunkStepFrames, 7),
+            0.5f);
+}
+
 TEST(StemConverterTest, SeparatesSameBasenameWithDifferentExtensions) {
     QTemporaryDir tempDir;
     ASSERT_TRUE(tempDir.isValid());
