@@ -20,8 +20,15 @@ INSTALL_LIBDIR=${MIXXX_INSTALL_LIBDIR:-lib}
 SIGNALSMITH=${MIXXX_SIGNALSMITH:-ON}
 
 case "$INSTALL_LIBDIR" in
-    /*)
+    ''|.|..|../*|*/..|*/../*|/*)
         printf 'MIXXX_INSTALL_LIBDIR must be relative: %s\n' "$INSTALL_LIBDIR" >&2
+        exit 2
+        ;;
+esac
+
+case "$INSTALL_PREFIX" in
+    /|/bin|/etc|/lib|/lib32|/lib64|/opt|/sbin|/usr|/usr/*|/var|/var/cache|/var/lib|/var/log|/var/run|/var/spool|/var/tmp|*/.mixxx|*/.mixxx/*)
+        printf 'MIXXX_INSTALL_PREFIX must be a user-local prefix: %s\n' "$INSTALL_PREFIX" >&2
         exit 2
         ;;
 esac
@@ -140,8 +147,8 @@ install_local() {
     done < <(strip_separator "$@")
 
     run_in_toolbox_at "$CONTAINER_PROJECT_DIR" \
-        cmake --install "$CONTAINER_BUILD_DIR" \
-        --prefix "$CONTAINER_INSTALL_PREFIX" \
+        bash "$CONTAINER_PROJECT_DIR/tools/localuser-install.sh" \
+        "$CONTAINER_BUILD_DIR" "$CONTAINER_INSTALL_PREFIX" "$INSTALL_LIBDIR" \
         "${args[@]}"
 }
 

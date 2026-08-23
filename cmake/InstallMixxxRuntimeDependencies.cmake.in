@@ -1,0 +1,49 @@
+# Resolve and install the optional runtime dependencies for the native
+# user-local install. This runs from the generated CMake install script, so
+# CMAKE_INSTALL_PREFIX is the staging prefix selected by localuser.sh.
+
+if(NOT DEFINED MIXXX_RUNTIME_EXECUTABLE)
+  message(FATAL_ERROR "MIXXX_RUNTIME_EXECUTABLE was not provided")
+endif()
+
+file(
+  GET_RUNTIME_DEPENDENCIES
+  EXECUTABLES "${MIXXX_RUNTIME_EXECUTABLE}"
+  RESOLVED_DEPENDENCIES_VAR MIXXX_RUNTIME_RESOLVED_DEPENDENCIES
+  UNRESOLVED_DEPENDENCIES_VAR MIXXX_RUNTIME_UNRESOLVED_DEPENDENCIES
+  POST_INCLUDE_REGEXES
+    ".*/libportmidi\\.so\\..*"
+    ".*/libprotobuf(-lite)?\\.so\\..*"
+    ".*/libmp4(v2)?\\.so\\..*"
+    ".*/libmad\\.so\\..*"
+    ".*/libid3tag\\.so\\..*"
+  # Include the allowlist before excluding everything else. This keeps
+  # system libraries out of the user-local prefix while still resolving all
+  # dependencies before activation.
+  POST_EXCLUDE_REGEXES ".*"
+)
+
+if(MIXXX_RUNTIME_UNRESOLVED_DEPENDENCIES)
+  string(
+    REPLACE
+    ";"
+    "\\n  "
+    MIXXX_RUNTIME_UNRESOLVED_MESSAGE
+    "${MIXXX_RUNTIME_UNRESOLVED_DEPENDENCIES}"
+  )
+  message(
+    FATAL_ERROR
+    "Unable to resolve Mixxx runtime dependencies:\\n  ${MIXXX_RUNTIME_UNRESOLVED_MESSAGE}"
+  )
+endif()
+
+# Keep the portable layout reproducible: install every discovered library and
+# its complete SONAME symlink chain, so a clean install and an upgrade have the
+# same versioned target plus relative symlinks.
+foreach(MIXXX_RUNTIME_DEPENDENCY IN LISTS MIXXX_RUNTIME_RESOLVED_DEPENDENCIES)
+  file(
+    INSTALL "${MIXXX_RUNTIME_DEPENDENCY}"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/@CMAKE_INSTALL_LIBDIR@/mixxx"
+    FOLLOW_SYMLINK_CHAIN
+  )
+endforeach()

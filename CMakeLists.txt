@@ -2563,31 +2563,28 @@ endif()
 
 if(NOT ANDROID)
   if(MIXXX_INSTALL_RUNTIME_DEPENDENCIES)
-    set(MIXXX_RUNTIME_DEPENDENCY_SET "mixxx-user-local-runtime")
     install(
       TARGETS mixxx
-      RUNTIME_DEPENDENCY_SET "${MIXXX_RUNTIME_DEPENDENCY_SET}"
       RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
       BUNDLE DESTINATION .
     )
-    # These libraries are linked by optional Mixxx features and are known to
-    # be supplied by the build toolbox but not necessarily by the host. Keep
-    # this an allowlist so a user-local install never copies system libraries.
+    # CMake's RUNTIME_DEPENDENCY_SET installs the target before it scans for
+    # dependencies. Keep the target install rule, but run the allowlisted
+    # scanner from a generated script so it can preserve complete SONAME
+    # symlink chains with file(INSTALL ... FOLLOW_SYMLINK_CHAIN).
+    set(
+      MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT
+      "${CMAKE_CURRENT_BINARY_DIR}/InstallMixxxRuntimeDependencies.cmake"
+    )
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/InstallMixxxRuntimeDependencies.cmake.in"
+      "${MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT}"
+      @ONLY
+    )
     install(
-      RUNTIME_DEPENDENCY_SET
-      "${MIXXX_RUNTIME_DEPENDENCY_SET}"
-      POST_INCLUDE_REGEXES
-        ".*/libportmidi\\.so\\..*"
-        ".*/libprotobuf(-lite)?\\.so\\..*"
-        ".*/libmp4(v2)?\\.so\\..*"
-        ".*/libmad\\.so\\..*"
-        ".*/libid3tag\\.so\\..*"
-      # CMake applies post-includes before post-excludes, so this makes the
-      # list above an allowlist instead of copying every other dependency.
-      POST_EXCLUDE_REGEXES ".*"
-      LIBRARY
-      DESTINATION
-      "${CMAKE_INSTALL_LIBDIR}/mixxx"
+      CODE
+        "set(MIXXX_RUNTIME_EXECUTABLE \"$<TARGET_FILE:mixxx>\")
+include(\"${MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT}\")"
     )
   else()
     install(
