@@ -83,10 +83,7 @@ find_mp4box() {
     local package_status
 
     if ! dpkg_query_path="$(find_dpkg_query)"; then
-        echo "Cannot verify signed '$GPAC_PACKAGE_NAME' ownership: the dpkg runtime" >&2
-        echo "does not provide /usr/bin/dpkg-query or /bin/dpkg-query on this system." >&2
-        echo "Use a Debian/Ubuntu environment with the dpkg runtime; this backend refuses" >&2
-        echo "to use an arbitrary PATH binary." >&2
+        print_dpkg_query_unavailable
         return 1
     fi
 
@@ -104,6 +101,13 @@ find_mp4box() {
     fi
 
     printf '%s\n' "$mp4box_path"
+}
+
+print_dpkg_query_unavailable() {
+    echo "Cannot verify signed '$GPAC_PACKAGE_NAME' ownership: the dpkg runtime" >&2
+    echo "does not provide /usr/bin/dpkg-query or /bin/dpkg-query on this system." >&2
+    echo "Use a Debian/Ubuntu environment with the dpkg runtime; this backend refuses" >&2
+    echo "to use an arbitrary PATH binary." >&2
 }
 
 find_dpkg_query() {
@@ -202,6 +206,8 @@ run_self_tests() {
     local original_path
     local mp4box_result
     local selected_dpkg_query_path
+    local trusted_dpkg_query_path
+    local poison_marker_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
     test_file="$test_dir/verified-artifact"
@@ -232,6 +238,7 @@ run_self_tests() {
     fake_mp4box_path="$fake_path/MP4Box"
     printf '#!/bin/sh\nexit 0\n' > "$fake_mp4box_path"
     chmod +x "$fake_mp4box_path"
+    poison_marker_path="$test_dir/dpkg-query-used"
 
     package_path="$test_dir/package-root/usr/bin"
     mkdir -p "$package_path"
@@ -249,6 +256,8 @@ run_self_tests() {
         "query_mode_path='$query_mode_path'" \
         "fake_mp4box_path='$fake_mp4box_path'" \
         "package_mp4box_path='$package_mp4box_path'" \
+        "poison_marker_path='$poison_marker_path'" \
+        'touch "$poison_marker_path"' \
         'case "$1" in' \
         '    -W)' \
         '        printf "%s\\n" "install ok installed"' \
@@ -273,11 +282,20 @@ run_self_tests() {
         'esac' > "$dpkg_query_path"
     chmod +x "$dpkg_query_path"
 
+    if ! trusted_dpkg_query_path="$(find_dpkg_query 2>/dev/null)"; then
+        trusted_dpkg_query_path=""
+    fi
     if ! selected_dpkg_query_path="$(PATH="$fake_path:$original_path" find_dpkg_query 2>/dev/null)"; then
         selected_dpkg_query_path=""
     fi
-    if [[ "$selected_dpkg_query_path" == "$dpkg_query_path" ]]; then
-        echo "Self-test failed: PATH-selected dpkg-query became a trust anchor" >&2
+    if [[ -n "$trusted_dpkg_query_path" ]]; then
+        if [[ "$selected_dpkg_query_path" != "$trusted_dpkg_query_path" ]]; then
+            echo "Self-test failed: PATH poisoning changed the trusted dpkg-query helper" >&2
+            rm -rf -- "$test_dir"
+            return 1
+        fi
+    elif [[ -n "$selected_dpkg_query_path" ]]; then
+        echo "Self-test failed: PATH dpkg-query bypassed fail-closed selection" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -294,11 +312,16 @@ run_self_tests() {
         rm -rf -- "$test_dir"
         return 1
     fi
-    if mp4box_result="$(PATH="$fake_path:$original_path" find_mp4box 2>/dev/null)" &&
-            [[ "$mp4box_result" == "$fake_mp4box_path" ]]; then
-        echo "Self-test failed: production MP4Box lookup trusted PATH" >&2
-        rm -rf -- "$test_dir"
-        return 1
+    if [[ -n "$trusted_dpkg_query_path" ]]; then
+        rm -f -- "$poison_marker_path"
+        if PATH="$fake_path:$original_path" find_mp4box >/dev/null 2>&1; then
+            :
+        fi
+        if [[ -e "$poison_marker_path" ]]; then
+            echo "Self-test failed: production MP4Box lookup executed PATH dpkg-query" >&2
+            rm -rf -- "$test_dir"
+            return 1
+        fi
     fi
     if get_model_sha256 "htdemucs_ft.onnx" >/dev/null; then
         echo "Self-test failed: unsupported model has a trusted digest" >&2
@@ -370,11 +393,17 @@ case "$1" in
             exit 1
         fi
 
+        if ! dpkg_query_path="$(find_dpkg_query)"; then
+            print_dpkg_query_unavailable
+            exit 1
+        fi
+
         # If jackd2 is installed as per dpkg database, install libjack-jackd2-dev.
         # This avoids a package deadlock, resulting in jackd2 being removed, and jackd1 being installed,
         # to satisfy portaudio19-dev's need for a jackd dev package. In short, portaudio19-dev needs a
         # jackd dev library, so let's give it one..
-        if [ "$(dpkg-query -W -f='${Status}' jackd2 2>/dev/null | grep -c "ok installed")" -eq 1 ];
+        if [ "$("$dpkg_query_path" -W -f="\${Status}" jackd2 2>/dev/null |
+                grep -c "ok installed")" -eq 1 ];
         then
             if ! sudo apt-get install -y libjack-jackd2-dev; then
                 echo "Failed to install libjack-jackd2-dev; aborting setup." >&2

@@ -23,6 +23,18 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     qputenv("MIXXX_STEM_MODEL_DIR", modelDir.path().toUtf8());
 
     StemConverter converter;
+    int conversionStartedCount = 0;
+    int conversionProgressCount = 0;
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionStarted,
+            [&conversionStartedCount](TrackId, const QString&) { ++conversionStartedCount; });
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionProgress,
+            [&conversionProgressCount](TrackId, float, const QString&) {
+                ++conversionProgressCount;
+            });
     QString failureMessage;
     QObject::connect(
             &converter,
@@ -37,6 +49,8 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     }
 
     EXPECT_EQ(converter.getState(), StemConverter::ConversionState::Failed);
+    EXPECT_EQ(conversionStartedCount, 0);
+    EXPECT_EQ(conversionProgressCount, 0);
     EXPECT_EQ(failureMessage, QStringLiteral("Verified HTDemucs model unavailable"));
     EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
 }

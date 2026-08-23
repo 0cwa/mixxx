@@ -241,13 +241,12 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
         return;
     }
 
-    setState(ConversionState::Processing);
     setProgress(0.0f);
 
 #ifdef __STEM_CONVERSION__
-    // Validate the verified model before announcing conversion progress. A missing
-    // or unloadable model is an early configuration failure, not a failed audio
-    // processing step.
+    // Validate the verified model before entering Processing or announcing
+    // conversion progress. A missing or unloadable model is an early
+    // configuration failure, not a failed audio processing step.
     if (!loadOnnxModel()) {
         const QString errorMsg = QStringLiteral("Verified HTDemucs model unavailable");
         kLogger.warning() << errorMsg;
@@ -256,6 +255,8 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
         return;
     }
 #endif
+
+    setState(ConversionState::Processing);
 
     if (trackFilePath.isEmpty()) {
         qWarning() << "Track file path is empty";
