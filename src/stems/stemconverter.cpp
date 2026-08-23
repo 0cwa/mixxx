@@ -167,6 +167,15 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
     setTrackTitle(fileInfo.fileName());
     setTrackPath(QDir::cleanPath(trackFilePath));
 
+    if (!isResolutionSupported(resolution)) {
+        const QString errorMsg = QStringLiteral(
+                "Fine-tuned HTDemucs is unavailable until a verified model artifact is published");
+        kLogger.warning() << errorMsg;
+        emit conversionFailed(trackId, errorMsg);
+        setState(ConversionState::Failed);
+        return;
+    }
+
     setState(ConversionState::Processing);
     setProgress(0.0f);
 
@@ -251,11 +260,10 @@ StemConverter::ConversionState StemConverter::getState() const {
 
 #ifdef __STEM_CONVERSION__
 StemConverter::ModelConfig StemConverter::getModelConfig(Resolution resolution) {
-    // Both official HTDemucs variants operate at 44.1 kHz. Low resolution
-    // selects the faster base model; it is not a 16 kHz model.
-    if (resolution == Resolution::High) {
-        return {"htdemucs_ft.onnx", kStemModelSampleRate};
+    if (!isResolutionSupported(resolution)) {
+        return {nullptr, 0};
     }
+
     return {"htdemucs.onnx", kStemModelSampleRate};
 }
 
@@ -271,6 +279,10 @@ bool StemConverter::loadOnnxModel() {
 
     try {
         const ModelConfig modelConfig = getModelConfig(m_resolution);
+        if (!modelConfig.fileName) {
+            kLogger.warning() << "Selected HTDemucs model is not supported";
+            return false;
+        }
         QString modelDirectory = qEnvironmentVariable("MIXXX_STEM_MODEL_DIR");
         if (modelDirectory.isEmpty()) {
             modelDirectory = QDir(

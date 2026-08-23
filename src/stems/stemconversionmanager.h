@@ -37,7 +37,7 @@ class StemConversionManager : public QObject {
 
     /// Start converting a track to stems with specified resolution
     void convertTrack(const TrackPointer& pTrack,
-            StemConverter::Resolution resolution = StemConverter::Resolution::High);
+            StemConverter::Resolution resolution = StemConverter::defaultResolution());
 
     /// Get current conversion info
     std::optional<ConversionInfo> getCurrentConversion() const;
@@ -73,7 +73,7 @@ class StemConversionManager : public QObject {
   private:
     struct PendingConversion {
         TrackPointer pTrack;
-        StemConverter::Resolution resolution{StemConverter::Resolution::High};
+        StemConverter::Resolution resolution{StemConverter::defaultResolution()};
     };
 
     void processNextInQueue();

@@ -12,8 +12,8 @@ class DlgStemConversionOptions : public QDialog {
 
   public:
     enum class Resolution {
-        Low, // 44.1 kHz, base model
-        High // 44.1 kHz, fine-tuned model
+        Low, // 44.1 kHz, verified base model
+        High // Unsupported until a verified artifact is published
     };
 
     explicit DlgStemConversionOptions(const QString& trackPath, QWidget* parent = nullptr);

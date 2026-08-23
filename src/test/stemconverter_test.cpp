@@ -8,6 +8,25 @@
 #include <QTemporaryFile>
 #include <vector>
 
+TEST(StemConverterTest, UsesOnlyTheVerifiedModelByDefault) {
+    EXPECT_EQ(StemConverter::defaultResolution(), StemConverter::Resolution::Low);
+    EXPECT_TRUE(StemConverter::isResolutionSupported(StemConverter::Resolution::Low));
+    EXPECT_FALSE(StemConverter::isResolutionSupported(StemConverter::Resolution::High));
+}
+
+TEST(StemConverterTest, RejectsUnsupportedFineTunedModel) {
+    QTemporaryFile inputFile;
+    ASSERT_TRUE(inputFile.open());
+
+    const auto pTrack = Track::newTemporary(inputFile.fileName());
+    ASSERT_TRUE(pTrack);
+
+    StemConverter converter;
+    converter.convertTrack(pTrack, StemConverter::Resolution::High);
+
+    EXPECT_EQ(converter.getState(), StemConverter::ConversionState::Failed);
+}
+
 TEST(StemConverterTest, ConvertsStereoInterleavedAudioToPlanarAndBack) {
     const std::vector<float> interleaved{1.0f, 10.0f, 2.0f, 20.0f, 3.0f, 30.0f};
     const std::vector<float> expectedPlanar{1.0f, 2.0f, 3.0f, 10.0f, 20.0f, 30.0f};

@@ -9,7 +9,7 @@
 DlgStemConversionOptions::DlgStemConversionOptions(const QString& trackPath, QWidget* parent)
         : QDialog(parent),
           m_trackPath(trackPath),
-          m_selectedResolution(Resolution::High) {
+          m_selectedResolution(Resolution::Low) {
     setWindowTitle(tr("Stem Conversion Options"));
     setMinimumWidth(400);
     setMinimumHeight(200);
@@ -49,17 +49,15 @@ void DlgStemConversionOptions::createUI() {
     pResolutionLayout->addWidget(pResolutionLabel);
 
     m_pResolutionComboBox = new QComboBox(this);
-    m_pResolutionComboBox->addItem(
-            tr("High Resolution (44.1 kHz, fine-tuned model) - Recommended"),
-            static_cast<int>(Resolution::High));
-    m_pResolutionComboBox->addItem(tr("Low Resolution (44.1 kHz, faster model)"),
+    m_pResolutionComboBox->addItem(tr("Standard Resolution (44.1 kHz, verified model)"),
             static_cast<int>(Resolution::Low));
     m_pResolutionComboBox->setCurrentIndex(0);
     pResolutionLayout->addWidget(m_pResolutionComboBox);
 
     QLabel* pInfoLabel = new QLabel(
-            tr("High resolution provides better audio quality but takes longer to process.\n"
-               "Low resolution is faster but may result in lower quality separation."),
+            tr("The fine-tuned htdemucs_ft.onnx model is unavailable because no verified "
+               "artifact is published. It will remain disabled until a maintainer provides "
+               "one."),
             this);
     pInfoLabel->setStyleSheet("color: gray; font-size: 10px;");
     pInfoLabel->setWordWrap(true);

@@ -12,8 +12,7 @@ set -o pipefail
 
 HTDEMUCS_MODEL_NAME="htdemucs.onnx"
 HTDEMUCS_MODEL_SHA256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
-GPAC_COMMIT="5d70253ac94e5840be7b86054131dd753af63cc7"
-GPAC_ARCHIVE_SHA256="7651bee9a94b241d0fe34301f385644ff23ba5ffb7020a9da2254337a1a7c9ed"
+GPAC_PACKAGE_NAME="gpac"
 
 get_model_sha256() {
     local model_name="$1"
@@ -78,13 +77,29 @@ download_verified_file() {
     fi
 }
 
+find_mp4box() {
+    local mp4box_path
+
+    if ! mp4box_path="$(command -v MP4Box)"; then
+        echo "MP4Box is unavailable; install the signed distro package '$GPAC_PACKAGE_NAME' and retry." >&2
+        echo "Refusing to download, extract, compile, or sudo-install unverified GPAC source." >&2
+        echo "Maintainer action: provide an authoritative GPAC artifact checksum before adding a source fallback." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$mp4box_path"
+}
+
 run_self_tests() {
     local test_dir
+    local gpac_archive
     local test_file
     local expected_sha256
+    local empty_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
-    test_file="$test_dir/artifact"
+    gpac_archive="$test_dir/gpac-archive.tar.gz"
+    test_file="$gpac_archive"
     printf 'verified test artifact\n' > "$test_file"
     expected_sha256="$(sha256sum "$test_file")"
     expected_sha256="${expected_sha256%% *}"
@@ -96,17 +111,29 @@ run_self_tests() {
     if verify_sha256 \
             "0000000000000000000000000000000000000000000000000000000000000000" \
             "$test_file"; then
-        echo "Self-test failed: checksum mismatch was accepted" >&2
+        echo "Self-test failed: unverified GPAC archive was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
-    if verify_sha256 "$expected_sha256" "$test_dir/missing"; then
-        echo "Self-test failed: missing artifact was accepted" >&2
+    if verify_sha256 "$expected_sha256" "$test_dir/missing-gpac-archive.tar.gz"; then
+        echo "Self-test failed: missing GPAC archive was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    empty_path="$test_dir/empty-bin"
+    mkdir "$empty_path"
+    if PATH="$empty_path" find_mp4box >/dev/null 2>&1; then
+        echo "Self-test failed: missing MP4Box was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
     if get_model_sha256 "htdemucs_ft.onnx" >/dev/null; then
         echo "Self-test failed: unsupported model has a trusted digest" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ "$HTDEMUCS_MODEL_NAME" != "htdemucs.onnx" ]]; then
+        echo "Self-test failed: unsupported model became the installer default" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -169,8 +196,19 @@ case "$1" in
         if [[ "$INSTALL_DEMUCS" == "true" ]]; then
             INSTALL_DEMUCS=true
 
-            # Add demucs dependencies if user wants it
+            if ! apt-cache show "$GPAC_PACKAGE_NAME" 2>/dev/null |
+                    grep -q "^Package: $GPAC_PACKAGE_NAME$"; then
+                echo "The signed distro package '$GPAC_PACKAGE_NAME' is unavailable." >&2
+                echo "Refusing to install GPAC from source without an authoritative artifact checksum." >&2
+                echo "Maintainer action: add a verified GPAC artifact and checksum before enabling a source fallback." >&2
+                exit 1
+            fi
+
+            # Install GPAC/MP4Box from the existing signed distro repositories.
+            # There is intentionally no source-build fallback without an
+            # authoritative GPAC artifact checksum.
             PACKAGES_EXTRA+=(
+                "$GPAC_PACKAGE_NAME"
                 libonnxruntime-dev
                 libsndfile1-dev
                 ffmpeg
@@ -335,84 +373,10 @@ case "$1" in
 
             # Check if MP4Box is already installed system-wide
             echo ""
-            if command -v MP4Box &> /dev/null; then
-                echo "✓ MP4Box is already installed at: $(command -v MP4Box)"
-                MP4BOX_PATH=$(command -v MP4Box)
-            else
-                echo "MP4Box not found. Compiling GPAC v2.4.0 from source..."
-
-                # GitHub does not publish a checksum asset for this release.
-                # Pin the source to the full commit and verify the official
-                # archive bytes before extracting or compiling them.
-                GPAC_BUILD_DIR="$(mktemp -d /tmp/mixxx-gpac.XXXXXX)" || {
-                    echo "Failed to create GPAC build directory" >&2
-                    exit 1
-                }
-                GPAC_ARCHIVE="$GPAC_BUILD_DIR/gpac-$GPAC_COMMIT.tar.gz"
-                GPAC_SOURCE_DIR="$GPAC_BUILD_DIR/gpac-$GPAC_COMMIT"
-
-                cd "$GPAC_BUILD_DIR" || exit 1
-
-                echo "Downloading GPAC commit $GPAC_COMMIT..."
-                if ! wget --quiet --output-document="$GPAC_ARCHIVE" \
-                        "https://github.com/gpac/gpac/archive/$GPAC_COMMIT.tar.gz"; then
-                    echo "Failed to download GPAC commit $GPAC_COMMIT" >&2
-                    exit 1
-                fi
-
-                if ! verify_sha256 "$GPAC_ARCHIVE_SHA256" "$GPAC_ARCHIVE"; then
-                    echo "Refusing to extract or compile unverified GPAC source." >&2
-                    exit 1
-                fi
-
-                # Extract
-                echo "Extracting GPAC..."
-                if ! tar -xzf "$GPAC_ARCHIVE"; then
-                    echo "Failed to extract verified GPAC archive" >&2
-                    exit 1
-                fi
-                if [[ ! -d "$GPAC_SOURCE_DIR" ]]; then
-                    echo "Verified GPAC archive has an unexpected directory layout" >&2
-                    exit 1
-                fi
-                cd "$GPAC_SOURCE_DIR" || exit 1
-
-                # Configure and compile for system installation
-                echo "Configuring GPAC..."
-                if ! ./configure --prefix=/usr/local; then
-                    echo "GPAC configuration failed"
-                    exit 1
-                fi
-
-                echo "Compiling GPAC (this may take a few minutes)..."
-                if ! make -j"$(nproc)"; then
-                    echo "GPAC compilation failed"
-                    exit 1
-                fi
-
-                echo "Installing GPAC to system..."
-                if sudo make install; then
-                    echo "GPAC v2.4.0 compiled and installed successfully"
-                    echo "Location: /usr/local/bin/MP4Box"
-
-                    # Verify MP4Box
-                    if [ -f "/usr/local/bin/MP4Box" ]; then
-                        echo "MP4Box executable found"
-                        /usr/local/bin/MP4Box -version
-                        MP4BOX_PATH="/usr/local/bin/MP4Box"
-                    else
-                        echo "MP4Box executable not found after installation"
-                        exit 1
-                    fi
-                else
-                    echo "Failed to install GPAC"
-                    exit 1
-                fi
-
-                # Clean up the verified source after installation.
-                cd /
-                rm -rf -- "$GPAC_BUILD_DIR"
+            if ! MP4BOX_PATH="$(find_mp4box)"; then
+                exit 1
             fi
+            echo "✓ MP4Box is installed at: $MP4BOX_PATH"
 
             echo ""
             echo "✓ Mixxx Python environment setup complete!"

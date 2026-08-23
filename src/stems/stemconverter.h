@@ -20,9 +20,19 @@ class StemConverter : public QObject {
 
   public:
     enum class Resolution {
-        High, // 44.1 kHz, fine-tuned (htdemucs_ft)
-        Low,  // 44.1 kHz, faster (htdemucs)
+        High, // Unsupported until a verified htdemucs_ft artifact is published.
+        Low,  // 44.1 kHz, verified base model (htdemucs).
     };
+
+    /// Return the only model currently supported by the installer.
+    static constexpr Resolution defaultResolution() {
+        return Resolution::Low;
+    }
+
+    /// Return whether a model has a verified artifact available to Mixxx.
+    static constexpr bool isResolutionSupported(Resolution resolution) {
+        return resolution == Resolution::Low;
+    }
 
     enum class ConversionState {
         Idle,
@@ -36,8 +46,9 @@ class StemConverter : public QObject {
 
     /// Convert a track to STEM format
     /// @param pTrack Track to convert
-    /// @param resolution Output resolution (High or Low)
-    void convertTrack(const TrackPointer& pTrack, Resolution resolution = Resolution::High);
+    /// @param resolution Output resolution (only Low is currently supported)
+    void convertTrack(const TrackPointer& pTrack,
+            Resolution resolution = defaultResolution());
 
     /// Get current conversion progress (0.0 - 1.0)
     float getProgress() const;
@@ -165,7 +176,7 @@ class StemConverter : public QObject {
 #endif
 
     TrackPointer m_pTrack;
-    Resolution m_resolution{Resolution::High};
+    Resolution m_resolution{defaultResolution()};
     ConversionState m_state;
     float m_progress;
     QString m_trackTitle;
