@@ -69,6 +69,12 @@ class StemConverter : public QObject {
     /// Return whether decoded audio must be converted for HTDemucs.
     static bool requiresAudioFormatConversion(int sampleRate, int channels);
 
+    /// Return a collision-resistant directory for the converted stems.
+    static QString getStemsDirectory(const QString& trackFilePath);
+
+    /// Return the final STEM container path for a stems directory.
+    static QString getStemOutputPath(const QString& stemsDir);
+
   signals:
     /// Emitted when conversion starts
     void conversionStarted(TrackId trackId, const QString& trackTitle);
@@ -129,9 +135,6 @@ class StemConverter : public QObject {
     void setState(ConversionState state);
     void setTrackTitle(const QString& trackTitle);
     void setTrackPath(const QString& trackPath);
-
-    /// Get the directory where stems are created.
-    QString getStemsDirectory(const QString& trackFilePath);
 
     /// Convert separated stems (WAV) to M4A format
     bool convertStemsToM4A(const QString& stemsDir);

@@ -662,11 +662,31 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
 
 QString StemConverter::getStemsDirectory(const QString& trackFilePath) {
     QFileInfo fileInfo(trackFilePath);
-    QString fileName = fileInfo.baseName();
-    QString dirPath = fileInfo.absolutePath();
+    const QDir trackDir(fileInfo.absolutePath());
+    const QString baseName = fileInfo.baseName();
 
-    // Create stems directory
-    return dirPath + "/" + fileName;
+    // Keep the legacy basename when it is available. If either the temporary
+    // directory or the final container already exists, add a deterministic
+    // suffix so queued conversions never overwrite an earlier result.
+    for (int collisionIndex = 0;; ++collisionIndex) {
+        const QString collisionSuffix = collisionIndex == 0
+                ? QString()
+                : QStringLiteral("-%1").arg(collisionIndex);
+        const QString outputBaseName = baseName + collisionSuffix;
+        const QString stemsDir = trackDir.filePath(outputBaseName);
+        const QString outputPath = trackDir.filePath(
+                outputBaseName + QStringLiteral(".stem.m4a"));
+
+        if (!QFileInfo(stemsDir).exists() && !QFileInfo(outputPath).exists()) {
+            return stemsDir;
+        }
+    }
+}
+
+QString StemConverter::getStemOutputPath(const QString& stemsDir) {
+    const QFileInfo stemsDirInfo(stemsDir);
+    return stemsDirInfo.absoluteDir().filePath(
+            stemsDirInfo.fileName() + QStringLiteral(".stem.m4a"));
 }
 
 bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
@@ -753,10 +773,7 @@ bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& o
 bool StemConverter::createStemContainer(const QString& trackFilePath, const QString& stemsDir) {
     kLogger.info() << "Creating STEM container";
 
-    QFileInfo fileInfo(trackFilePath);
-    QString fileName = fileInfo.baseName();
-    QString trackDir = fileInfo.absolutePath();
-    QString outputPath = trackDir + "/" + fileName + ".stem.m4a";
+    const QString outputPath = getStemOutputPath(stemsDir);
 
     // Create mixdown M4A from original track
     QString mixdownM4A = stemsDir + "/mixdown.m4a";
