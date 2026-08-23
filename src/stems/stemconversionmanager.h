@@ -24,15 +24,15 @@ class StemConversionManager : public QObject {
         TrackId trackId;
         QString trackPath;
         QString trackTitle;
-        float progress;
+        float progress{0.0f};
     };
 
     struct ConversionStatus {
         TrackId trackId;
         QString trackPath;
         QString trackTitle;
-        StemConverter::ConversionState state;
-        float progress;
+        StemConverter::ConversionState state{StemConverter::ConversionState::Idle};
+        float progress{0.0f};
     };
 
     /// Start converting a track to stems with specified resolution
@@ -73,10 +73,12 @@ class StemConversionManager : public QObject {
   private:
     struct PendingConversion {
         TrackPointer pTrack;
-        StemConverter::Resolution resolution;
+        StemConverter::Resolution resolution{StemConverter::Resolution::High};
     };
 
     void processNextInQueue();
+    QString recordFinishedConversion(
+            TrackId trackId, StemConverter::ConversionState state, float progress);
     void loadHistory();
     void saveHistory();
 

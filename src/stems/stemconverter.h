@@ -92,6 +92,8 @@ class StemConverter : public QObject {
 #ifdef __STEM_CONVERSION__
     static constexpr int kModelChannels = 2;
     static constexpr std::size_t kChunkFrames = 343980;
+    static constexpr std::size_t kChunkOverlapFrames = kChunkFrames / 4;
+    static constexpr std::size_t kChunkStepFrames = kChunkFrames - kChunkOverlapFrames;
     static constexpr int kModelSampleRate = 44100;
 
     struct ModelConfig {
@@ -163,7 +165,7 @@ class StemConverter : public QObject {
 #endif
 
     TrackPointer m_pTrack;
-    Resolution m_resolution;
+    Resolution m_resolution{Resolution::High};
     ConversionState m_state;
     float m_progress;
     QString m_trackTitle;

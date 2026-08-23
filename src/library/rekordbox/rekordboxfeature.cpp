@@ -1818,10 +1818,11 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
 
         qDebug() << "Parse Rekordbox Device DB: " << playlist;
 
+        m_pPendingDeviceItem = item;
+
         // Let a worker thread do the XML parsing
         m_tracksFuture = QtConcurrent::run(parseDeviceDB, static_cast<Library*>(parent())->dbConnectionPool(), item);
         m_tracksFutureWatcher.setFuture(m_tracksFuture);
-        m_pPendingDeviceItem = item;
 
         // This device is now a playlist element, future activations should treat is
         // as such
@@ -1837,6 +1838,14 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
 void RekordboxFeature::onRekordboxDevicesFound() {
     const QList<TreeItem*> result = m_devicesFuture.result();
     auto foundDevices = std::vector<std::unique_ptr<TreeItem>>(result.cbegin(), result.cend());
+
+    if (m_pPendingDeviceItem) {
+        // parseDeviceDB and buildPlaylistTree still use the pending item on the
+        // worker thread. Defer the refresh so it cannot remove that item early.
+        m_deviceRefreshPending = true;
+        qWarning() << "Deferring Rekordbox device refresh until import completes";
+        return;
+    }
 
     clearLastRightClickedIndex();
 
@@ -1922,6 +1931,17 @@ void RekordboxFeature::restorePendingDeviceMarker() {
     }
     m_pPendingDeviceItem = nullptr;
     m_pSidebarModel->triggerRepaint();
+    refreshDevicesAfterImport();
+}
+
+void RekordboxFeature::refreshDevicesAfterImport() {
+    if (!m_deviceRefreshPending) {
+        return;
+    }
+
+    m_deviceRefreshPending = false;
+    m_devicesFuture = QtConcurrent::run(findRekordboxDevices);
+    m_devicesFutureWatcher.setFuture(m_devicesFuture);
 }
 
 void RekordboxFeature::onTracksFound() {
@@ -1952,4 +1972,5 @@ void RekordboxFeature::onTracksFound() {
 
     m_pRekordboxPlaylistModel->setPlaylist(devicePlaylist);
     emit showTrackModel(m_pRekordboxPlaylistModel);
+    refreshDevicesAfterImport();
 }

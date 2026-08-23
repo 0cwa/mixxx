@@ -1680,7 +1680,7 @@ void MixxxMainWindow::initializationProgressUpdate(int progress, const QString& 
 void MixxxMainWindow::slotShowStemConversionDialog() {
     if (!m_pStemConversionDlg) {
         m_pStemConversionDlg = make_parented<DlgStemConversion>(
-                m_pCoreServices->getStemConversionManager(), this);
+                m_pCoreServices->getStemConversionManager().get(), this);
     }
     m_pStemConversionDlg->show();
     m_pStemConversionDlg->raise();

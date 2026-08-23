@@ -20,7 +20,6 @@
 #include "stems/dlgstemconversion.h"
 #include "stems/stemconversionmanager.h"
 #include "widget/dlgstemconversionoptions.h"
-#include "widget/wstemconversionbutton.h"
 #endif
 
 class DlgTagFetcher;
@@ -378,8 +377,10 @@ class WTrackMenu : public QMenu {
     parented_ptr<QAction> m_pReanalyzeConstBpmAction;
     parented_ptr<QAction> m_pReanalyzeVarBpmAction;
 
+#ifdef __STEM_CONVERSION__
     // STEMS actions
     parented_ptr<QAction> m_pConvertToStemsAction;
+#endif
 
     // Clear track metadata actions
     parented_ptr<QAction> m_pClearBeatsAction;

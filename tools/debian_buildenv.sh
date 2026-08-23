@@ -179,13 +179,18 @@ case "$1" in
         if [ "$INSTALL_DEMUCS" = true ]; then
             # Get the actual user running sudo
             ACTUAL_USER="${SUDO_USER:-$USER}"
+            ACTUAL_HOME="$(getent passwd "$ACTUAL_USER" | cut -d: -f6)"
+            if [ -z "$ACTUAL_HOME" ]; then
+                echo "Failed to determine the home directory for $ACTUAL_USER"
+                exit 1
+            fi
 
             # Download every model selectable in the stem conversion UI.
             echo ""
             echo "Downloading Mixxx HTDemucs ONNX models..."
             echo ""
 
-            MODEL_PATH="${MIXXX_STEM_MODEL_DIR:-/home/$ACTUAL_USER/.local/mixxx_models}"
+            MODEL_PATH="${MIXXX_STEM_MODEL_DIR:-$ACTUAL_HOME/.local/mixxx_models}"
             MODEL_URL_BASE="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel"
             MODEL_FILES=(htdemucs.onnx htdemucs_ft.onnx)
 

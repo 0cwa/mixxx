@@ -56,6 +56,6 @@ class WStemConversionButton : public QPushButton {
     bool m_isProcessing;
 
     // Dialog pointer (non-blocking)
-    QPointer<DlgStemConversion> m_pDialog;
+    parented_ptr<DlgStemConversion> m_pDialog;
     parented_ptr<QTimer> m_pAnimationTimer;
 };

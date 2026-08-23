@@ -22,28 +22,12 @@ WStemConversionButton::WStemConversionButton(
 }
 
 void WStemConversionButton::createUI() {
-    setToolTip("Click to view stem conversion status");
+    setObjectName(QStringLiteral("StemConversionButton"));
+    setToolTip(tr("Click to view stem conversion status"));
     setMinimumWidth(50);
     setMinimumHeight(50);
     setMaximumWidth(60);
     setMaximumHeight(60);
-
-    setStyleSheet(
-            "QPushButton {"
-            "    border-radius: 8px;"
-            "    border: 2px solid #555;"
-            "    background-color: #333;"
-            "    color: white;"
-            "    font-weight: bold;"
-            "    font-size: 12px;"
-            "}"
-            "QPushButton:hover {"
-            "    background-color: #444;"
-            "    border: 2px solid #777;"
-            "}"
-            "QPushButton:pressed {"
-            "    background-color: #222;"
-            "}");
 
     setText("STEM");
 
@@ -152,17 +136,17 @@ void WStemConversionButton::onButtonClicked() {
         return;
     }
 
-    // Si la finestra ja existeix, només la mostrem
+    // Show the existing window if it is already open.
     if (m_pDialog) {
         m_pDialog->raise();
         m_pDialog->activateWindow();
         return;
     }
 
-    // Crear la finestra com a finestra modeless (no bloquejant)
-    m_pDialog = make_parented<DlgStemConversion>(m_pConversionManager, this).get();
+    // Create the dialog as a modeless window.
+    m_pDialog = make_parented<DlgStemConversion>(m_pConversionManager, this);
 
-    // Mostrar la finestra (no bloqueja)
+    // Show the non-blocking window.
     m_pDialog->show();
 }
 
@@ -175,15 +159,15 @@ void WStemConversionButton::updateButtonState() {
     m_isProcessing = currentConversion.has_value();
 
     if (m_isProcessing) {
-        setToolTip(QString("Converting: %1\nClick for details")
+        setToolTip(tr("Converting: %1\nClick for details")
                         .arg(currentConversion->trackTitle));
         startAnimation();
     } else if (m_pendingCount > 0) {
-        setToolTip(QString("Pending conversions: %1\nClick for details")
+        setToolTip(tr("Pending conversions: %1\nClick for details")
                         .arg(m_pendingCount));
         stopAnimation();
     } else {
-        setToolTip("No conversions in progress\nClick to view history");
+        setToolTip(tr("No conversions in progress\nClick to view history"));
         stopAnimation();
     }
 

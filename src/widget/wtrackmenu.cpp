@@ -70,6 +70,7 @@ constexpr WTrackMenu::Features WTrackMenu::kDeckTrackMenuFeatures;
 
 namespace {
 const QString kAppGroup = QStringLiteral("[App]");
+constexpr int kMaxFilesToOpenInBrowser = 10;
 
 const QString samplerTrString(int i) {
     return QObject::tr("Sampler %1").arg(i);
@@ -792,9 +793,11 @@ void WTrackMenu::setupActions() {
         m_pAnalyzeMenu->addAction(m_pReanalyzeConstBpmAction);
         m_pAnalyzeMenu->addAction(m_pReanalyzeVarBpmAction);
 
+#ifdef __STEM_CONVERSION__
         // Add separator and Convert to Stems action
         m_pAnalyzeMenu->addSeparator();
         m_pAnalyzeMenu->addAction(m_pConvertToStemsAction);
+#endif
 
         addMenu(m_pAnalyzeMenu);
     }
@@ -1451,7 +1454,6 @@ const QModelIndexList& WTrackMenu::getTrackIndices() const {
 void WTrackMenu::slotOpenInFileBrowser() {
     const auto trackRefs = getTrackRefs();
     // Warn when opening many files to prevent system hangs
-    constexpr int kMaxFilesToOpenInBrowser = 10;
     if (getTrackCount() > kMaxFilesToOpenInBrowser) {
         QMessageBox::StandardButton reply = QMessageBox::question(
                 nullptr,
@@ -1888,6 +1890,21 @@ void WTrackMenu::slotConvertToStems() {
         converterResolution = StemConverter::Resolution::High;
     } else {
         converterResolution = StemConverter::Resolution::Low;
+    }
+
+    if (getTrackCount() > kMaxFilesToOpenInBrowser) {
+        const QMessageBox::StandardButton reply = QMessageBox::question(
+                nullptr,
+                tr("Convert Many Tracks to Stems"),
+                tr("You are about to queue %n tracks for stem conversion. "
+                   "This may take a long time. Are you sure you want to continue?",
+                        "",
+                        getTrackCount()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+        if (reply != QMessageBox::Yes) {
+            return;
+        }
     }
 
     // Queue all selected tracks for conversion with the selected resolution

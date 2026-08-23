@@ -1,5 +1,6 @@
 #include "widget/dlgstemconversionoptions.h"
 
+#include <QDialogButtonBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -9,7 +10,7 @@ DlgStemConversionOptions::DlgStemConversionOptions(const QString& trackPath, QWi
         : QDialog(parent),
           m_trackPath(trackPath),
           m_selectedResolution(Resolution::High) {
-    setWindowTitle("Stem Conversion Options");
+    setWindowTitle(tr("Stem Conversion Options"));
     setMinimumWidth(400);
     setMinimumHeight(200);
     setWindowModality(Qt::ApplicationModal);
@@ -22,7 +23,7 @@ void DlgStemConversionOptions::createUI() {
     QVBoxLayout* pMainLayout = new QVBoxLayout(this);
 
     // Title
-    QLabel* pTitleLabel = new QLabel("Select Stem Conversion Parameters", this);
+    QLabel* pTitleLabel = new QLabel(tr("Select Stem Conversion Parameters"), this);
     QFont titleFont = pTitleLabel->font();
     titleFont.setPointSize(12);
     titleFont.setBold(true);
@@ -32,7 +33,7 @@ void DlgStemConversionOptions::createUI() {
     pMainLayout->addSpacing(10);
 
     // Track path display
-    QGroupBox* pTrackInfoGroup = new QGroupBox("Track to Convert", this);
+    QGroupBox* pTrackInfoGroup = new QGroupBox(tr("Track to Convert"), this);
     QVBoxLayout* pTrackInfoLayout = new QVBoxLayout(pTrackInfoGroup);
     m_pTrackPathLabel = new QLabel(m_trackPath, this);
     m_pTrackPathLabel->setWordWrap(true);
@@ -40,24 +41,25 @@ void DlgStemConversionOptions::createUI() {
     pMainLayout->addWidget(pTrackInfoGroup);
 
     // Resolution selection group
-    QGroupBox* pResolutionGroup = new QGroupBox("Audio Resolution", this);
+    QGroupBox* pResolutionGroup = new QGroupBox(tr("Audio Resolution"), this);
     QVBoxLayout* pResolutionLayout = new QVBoxLayout(pResolutionGroup);
 
     QLabel* pResolutionLabel = new QLabel(
-            "Select the output resolution for stem separation:", this);
+            tr("Select the output resolution for stem separation:"), this);
     pResolutionLayout->addWidget(pResolutionLabel);
 
     m_pResolutionComboBox = new QComboBox(this);
-    m_pResolutionComboBox->addItem("High Resolution (44.1 kHz, fine-tuned model) - Recommended",
+    m_pResolutionComboBox->addItem(
+            tr("High Resolution (44.1 kHz, fine-tuned model) - Recommended"),
             static_cast<int>(Resolution::High));
-    m_pResolutionComboBox->addItem("Low Resolution (44.1 kHz, faster model)",
+    m_pResolutionComboBox->addItem(tr("Low Resolution (44.1 kHz, faster model)"),
             static_cast<int>(Resolution::Low));
     m_pResolutionComboBox->setCurrentIndex(0);
     pResolutionLayout->addWidget(m_pResolutionComboBox);
 
     QLabel* pInfoLabel = new QLabel(
-            "High resolution provides better audio quality but takes longer to process.\n"
-            "Low resolution is faster but may result in lower quality separation.",
+            tr("High resolution provides better audio quality but takes longer to process.\n"
+               "Low resolution is faster but may result in lower quality separation."),
             this);
     pInfoLabel->setStyleSheet("color: gray; font-size: 10px;");
     pInfoLabel->setWordWrap(true);
@@ -67,35 +69,24 @@ void DlgStemConversionOptions::createUI() {
 
     pMainLayout->addStretch();
 
-    // Buttons
-    QHBoxLayout* pButtonLayout = new QHBoxLayout();
-    pButtonLayout->addStretch();
-
-    m_pOkButton = new QPushButton("Start Conversion", this);
-    m_pOkButton->setMinimumWidth(120);
-    pButtonLayout->addWidget(m_pOkButton);
-
-    m_pCancelButton = new QPushButton("Cancel", this);
-    m_pCancelButton->setMinimumWidth(100);
-    pButtonLayout->addWidget(m_pCancelButton);
-
-    pMainLayout->addLayout(pButtonLayout);
+    m_pButtonBox = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    m_pButtonBox->button(QDialogButtonBox::Ok)->setText(tr("Start Conversion"));
+    m_pButtonBox->button(QDialogButtonBox::Ok)->setMinimumWidth(120);
+    m_pButtonBox->button(QDialogButtonBox::Cancel)->setMinimumWidth(100);
+    pMainLayout->addWidget(m_pButtonBox);
 }
 
 void DlgStemConversionOptions::connectSignals() {
-    connect(m_pOkButton, &QPushButton::clicked, this, &DlgStemConversionOptions::onAccepted);
-    connect(m_pCancelButton, &QPushButton::clicked, this, &DlgStemConversionOptions::onRejected);
-}
-
-void DlgStemConversionOptions::onAccepted() {
-    int selectedIndex = m_pResolutionComboBox->currentIndex();
-    m_selectedResolution = static_cast<Resolution>(
-            m_pResolutionComboBox->itemData(selectedIndex).toInt());
-    accept();
-}
-
-void DlgStemConversionOptions::onRejected() {
-    reject();
+    connect(m_pResolutionComboBox,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this,
+            [this](int index) {
+                m_selectedResolution = static_cast<Resolution>(
+                        m_pResolutionComboBox->itemData(index).toInt());
+            });
+    connect(m_pButtonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(m_pButtonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
 }
 
 DlgStemConversionOptions::Resolution DlgStemConversionOptions::getSelectedResolution() const {

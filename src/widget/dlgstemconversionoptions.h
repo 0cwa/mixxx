@@ -3,7 +3,8 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QLabel>
-#include <QPushButton>
+
+class QDialogButtonBox;
 
 /// Dialog that allows the user to select stem conversion parameters
 class DlgStemConversionOptions : public QDialog {
@@ -21,10 +22,6 @@ class DlgStemConversionOptions : public QDialog {
     /// Get the selected resolution
     Resolution getSelectedResolution() const;
 
-  private slots:
-    void onAccepted();
-    void onRejected();
-
   private:
     void createUI();
     void connectSignals();
@@ -32,7 +29,6 @@ class DlgStemConversionOptions : public QDialog {
     QString m_trackPath;
     QLabel* m_pTrackPathLabel;
     QComboBox* m_pResolutionComboBox;
-    QPushButton* m_pOkButton;
-    QPushButton* m_pCancelButton;
+    QDialogButtonBox* m_pButtonBox;
     Resolution m_selectedResolution;
 };

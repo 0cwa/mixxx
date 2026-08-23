@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QMutexLocker>
 #include <QRunnable>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QThreadPool>
 #include <QVariant>
@@ -16,6 +17,7 @@
 
 namespace {
 const mixxx::Logger kLogger("StemConversionManager");
+constexpr int kMaxHistoryItems = 100;
 }
 
 class StemConversionTask : public QRunnable {
@@ -175,30 +177,8 @@ void StemConversionManager::onConversionProgress(
 
 void StemConversionManager::onConversionCompleted(TrackId trackId) {
     kLogger.info() << "Conversion completed for track:" << trackId;
-    QString trackTitle = QStringLiteral("Unknown");
-    QString trackPath;
-
-    {
-        QMutexLocker locker(&m_statusMutex);
-        if (m_pCurrentConverter) {
-            trackTitle = m_pCurrentConverter->getTrackTitle();
-            trackPath = m_pCurrentConverter->getTrackPath();
-        }
-
-        ConversionStatus status;
-        status.trackId = trackId;
-        status.trackPath = trackPath;
-        status.trackTitle = trackTitle;
-        status.state = StemConverter::ConversionState::Completed;
-        status.progress = 1.0f;
-        m_conversionHistory.prepend(status);
-
-        // Limit history to 100 items
-        if (m_conversionHistory.size() > 100) {
-            m_conversionHistory.removeLast();
-        }
-    }
-    saveHistory();
+    const QString trackTitle = recordFinishedConversion(
+            trackId, StemConverter::ConversionState::Completed, 1.0f);
 
     emit conversionCompleted(trackId, trackTitle);
 
@@ -214,30 +194,8 @@ void StemConversionManager::onConversionCompleted(TrackId trackId) {
 
 void StemConversionManager::onConversionFailed(TrackId trackId, const QString& errorMessage) {
     kLogger.warning() << "Conversion failed for track:" << trackId << "Error:" << errorMessage;
-    QString trackTitle = QStringLiteral("Unknown");
-    QString trackPath;
-
-    {
-        QMutexLocker locker(&m_statusMutex);
-        if (m_pCurrentConverter) {
-            trackTitle = m_pCurrentConverter->getTrackTitle();
-            trackPath = m_pCurrentConverter->getTrackPath();
-        }
-
-        ConversionStatus status;
-        status.trackId = trackId;
-        status.trackPath = trackPath;
-        status.trackTitle = trackTitle;
-        status.state = StemConverter::ConversionState::Failed;
-        status.progress = 0.0f;
-        m_conversionHistory.prepend(status);
-
-        // Limit history to 100 items
-        if (m_conversionHistory.size() > 100) {
-            m_conversionHistory.removeLast();
-        }
-    }
-    saveHistory();
+    const QString trackTitle = recordFinishedConversion(
+            trackId, StemConverter::ConversionState::Failed, 0.0f);
 
     emit conversionFailed(trackId, trackTitle, errorMessage);
 
@@ -278,6 +236,34 @@ void StemConversionManager::clearConversionHistory() {
         m_conversionHistory.clear();
     }
     saveHistory();
+}
+
+QString StemConversionManager::recordFinishedConversion(
+        TrackId trackId, StemConverter::ConversionState state, float progress) {
+    QString trackTitle = QStringLiteral("Unknown");
+    QString trackPath;
+
+    {
+        QMutexLocker locker(&m_statusMutex);
+        if (m_pCurrentConverter) {
+            trackTitle = m_pCurrentConverter->getTrackTitle();
+            trackPath = m_pCurrentConverter->getTrackPath();
+        }
+
+        ConversionStatus status;
+        status.trackId = trackId;
+        status.trackPath = trackPath;
+        status.trackTitle = trackTitle;
+        status.state = state;
+        status.progress = progress;
+        m_conversionHistory.prepend(status);
+
+        if (m_conversionHistory.size() > kMaxHistoryItems) {
+            m_conversionHistory.removeLast();
+        }
+    }
+    saveHistory();
+    return trackTitle;
 }
 
 void StemConversionManager::loadHistory() {
@@ -337,13 +323,20 @@ void StemConversionManager::saveHistory() {
         historyArray.append(obj);
     }
 
-    QJsonDocument doc(historyArray);
-    QFile historyFile(m_historyFilePath);
+    const QByteArray serializedHistory = QJsonDocument(historyArray).toJson();
+    QSaveFile historyFile(m_historyFilePath);
     if (!historyFile.open(QIODevice::WriteOnly)) {
         kLogger.warning() << "Could not write to conversion history file:" << m_historyFilePath;
         return;
     }
-    historyFile.write(doc.toJson());
+    if (historyFile.write(serializedHistory) != serializedHistory.size()) {
+        kLogger.warning() << "Could not write conversion history file:" << m_historyFilePath;
+        historyFile.cancelWriting();
+        return;
+    }
+    if (!historyFile.commit()) {
+        kLogger.warning() << "Could not commit conversion history file:" << m_historyFilePath;
+    }
 }
 
 #include "moc_stemconversionmanager.cpp"

@@ -608,16 +608,17 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
     }
 
     QStringList stemNames = {"drums", "bass", "other", "vocals"};
-    std::vector<std::vector<float>> outputStems(stemNames.size());
-    for (auto& outputStem : outputStems) {
-        outputStem.reserve(m_originalFrames * static_cast<std::size_t>(channels));
-    }
-
-    // HTDemucs accepts one fixed-size window. Process every window so short
-    // tracks are padded but long tracks are never silently truncated.
     const std::size_t samplesPerFrame = static_cast<std::size_t>(channels);
+    std::vector<std::vector<float>> outputStems(
+            stemNames.size(),
+            std::vector<float>(m_originalFrames * samplesPerFrame, 0.0f));
+    std::vector<float> outputWeights(m_originalFrames, 0.0f);
+
+    // HTDemucs accepts one fixed-size window. Process overlapping windows so
+    // boundaries are blended instead of concatenated, while short tracks are
+    // still padded and long tracks are never silently truncated.
     for (std::size_t frameOffset = 0; frameOffset < m_originalFrames;
-            frameOffset += kChunkFrames) {
+            frameOffset += kChunkStepFrames) {
         const std::size_t chunkFrames = std::min(
                 kChunkFrames, m_originalFrames - frameOffset);
         std::vector<float> inputChunk(kChunkFrames * samplesPerFrame, 0.0f);
@@ -633,19 +634,73 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
             return false;
         }
 
+        const bool hasPreviousChunk = frameOffset > 0;
+        const bool hasNextChunk = frameOffset + kChunkFrames < m_originalFrames;
+        const std::size_t fadeOutStart = chunkFrames > kChunkOverlapFrames
+                ? chunkFrames - kChunkOverlapFrames
+                : 0;
+
+        for (std::size_t frame = 0; frame < chunkFrames; ++frame) {
+            const std::size_t outputFrame = frameOffset + frame;
+            float weight = 1.0f;
+            if (hasPreviousChunk && frame < kChunkOverlapFrames) {
+                weight *= static_cast<float>(frame + 1) /
+                        static_cast<float>(kChunkOverlapFrames);
+            }
+            if (hasNextChunk && frame >= fadeOutStart) {
+                const std::size_t fadeOutFrame = frame - fadeOutStart;
+                weight *= static_cast<float>(kChunkOverlapFrames - fadeOutFrame - 1) /
+                        static_cast<float>(kChunkOverlapFrames);
+            }
+            outputWeights[outputFrame] += weight;
+        }
+
         for (std::size_t stem = 0; stem < chunkStems.size(); ++stem) {
             const std::size_t chunkSamples = chunkFrames * samplesPerFrame;
             if (chunkStems[stem].size() < chunkSamples) {
                 kLogger.warning() << "ONNX output is shorter than the input chunk";
                 return false;
             }
-            outputStems[stem].insert(outputStems[stem].end(),
-                    chunkStems[stem].begin(),
-                    chunkStems[stem].begin() + chunkSamples);
+            for (std::size_t frame = 0; frame < chunkFrames; ++frame) {
+                const std::size_t outputFrame = frameOffset + frame;
+                const float weight = (hasPreviousChunk && frame < kChunkOverlapFrames
+                                                     ? static_cast<float>(frame + 1) /
+                                                             static_cast<float>(kChunkOverlapFrames)
+                                                     : 1.0f) *
+                        (hasNextChunk && frame >= fadeOutStart
+                                        ? static_cast<float>(
+                                                  kChunkOverlapFrames -
+                                                  (frame - fadeOutStart) - 1) /
+                                                static_cast<float>(kChunkOverlapFrames)
+                                        : 1.0f);
+                for (std::size_t channel = 0; channel < samplesPerFrame; ++channel) {
+                    outputStems[stem][outputFrame * samplesPerFrame + channel] +=
+                            chunkStems[stem][frame * samplesPerFrame + channel] * weight;
+                }
+            }
+        }
+
+        if (!hasNextChunk) {
+            break;
         }
     }
 
-    QDir().mkpath(outputDir);
+    for (std::size_t frame = 0; frame < m_originalFrames; ++frame) {
+        if (outputWeights[frame] <= 0.0f) {
+            kLogger.warning() << "No inferred samples available at frame:" << frame;
+            return false;
+        }
+        for (auto& outputStem : outputStems) {
+            for (std::size_t channel = 0; channel < samplesPerFrame; ++channel) {
+                outputStem[frame * samplesPerFrame + channel] /= outputWeights[frame];
+            }
+        }
+    }
+
+    if (!QDir().mkpath(outputDir)) {
+        kLogger.warning() << "Failed to create stem output directory:" << outputDir;
+        return false;
+    }
 
     for (size_t i = 0; i < outputStems.size(); ++i) {
         QString stemPath = outputDir + "/" + stemNames[i] + ".wav";
@@ -718,8 +773,7 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
         QProcess ffmpegProcess;
         QStringList args;
         args << "-i" << wavPath
-             << "-c:a" << "aac"
-             << "-b:a" << "320k"
+             << "-c:a" << "alac"
              << "-y" << m4aPath;
 
         ffmpegProcess.start(ffmpegPath, args);
@@ -727,7 +781,8 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
             return false;
         }
 
-        if (ffmpegProcess.exitCode() != 0) {
+        if (ffmpegProcess.exitStatus() != QProcess::NormalExit ||
+                ffmpegProcess.exitCode() != 0) {
             kLogger.warning() << "ffmpeg failed for:" << stemName;
             return false;
         }
@@ -760,7 +815,7 @@ bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& o
         return false;
     }
 
-    if (process.exitCode() != 0) {
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         QString errorOutput = process.readAllStandardError();
         kLogger.warning() << "ffmpeg error:" << errorOutput;
         return false;
@@ -817,7 +872,7 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
     ffmpegArgs << "-map" << "3:a:0"; // other
     ffmpegArgs << "-map" << "4:a:0"; // vocals
 
-    ffmpegArgs << "-c:a" << "alac";
+    ffmpegArgs << "-c:a" << "copy";
     ffmpegArgs << "-movflags" << "+faststart";
     ffmpegArgs << "-fflags" << "+bitexact";
     ffmpegArgs << outputPath;
@@ -831,7 +886,8 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
         return false;
     }
 
-    if (ffmpegProcess.exitCode() != 0) {
+    if (ffmpegProcess.exitStatus() != QProcess::NormalExit ||
+            ffmpegProcess.exitCode() != 0) {
         QString errorOutput = ffmpegProcess.readAllStandardError();
         kLogger.warning() << "ffmpeg error:" << errorOutput;
         return false;

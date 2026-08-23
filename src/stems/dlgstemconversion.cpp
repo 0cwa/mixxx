@@ -1,12 +1,12 @@
 #include "stems/dlgstemconversion.h"
 
-#include <QApplication>
-#include <QColor>
+#include <QBrush>
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QPalette>
 #include <QStandardPaths>
 #include <QVBoxLayout>
 
@@ -18,7 +18,7 @@ DlgStemConversion::DlgStemConversion(
         QWidget* parent)
         : QDialog(parent),
           m_pConversionManager(pConversionManager) {
-    setWindowTitle("Stem Conversion Status");
+    setWindowTitle(tr("Stem Conversion Status"));
     setMinimumWidth(600);
     setMinimumHeight(400);
 
@@ -37,10 +37,10 @@ void DlgStemConversion::createUI() {
     QVBoxLayout* pMainLayout = new QVBoxLayout(this);
 
     // Current conversion section
-    QGroupBox* pCurrentGroup = new QGroupBox("Current Conversion", this);
+    QGroupBox* pCurrentGroup = new QGroupBox(tr("Current Conversion"), this);
     QVBoxLayout* pCurrentLayout = new QVBoxLayout(pCurrentGroup);
 
-    m_pCurrentTrackLabel = new QLabel("No conversion in progress", this);
+    m_pCurrentTrackLabel = new QLabel(tr("No conversion in progress"), this);
     pCurrentLayout->addWidget(m_pCurrentTrackLabel);
 
     m_pProgressBar = new QProgressBar(this);
@@ -49,7 +49,7 @@ void DlgStemConversion::createUI() {
     pCurrentLayout->addWidget(m_pProgressBar);
 
     // Phase/Status message label (NEW)
-    m_pStatusLabel = new QLabel("Waiting for conversion...", this);
+    m_pStatusLabel = new QLabel(tr("Waiting for conversion..."), this);
     // Blue, bold
     m_pStatusLabel->setStyleSheet("color: #0066CC; font-weight: bold;");
     pCurrentLayout->addWidget(m_pStatusLabel);
@@ -57,7 +57,7 @@ void DlgStemConversion::createUI() {
     pMainLayout->addWidget(pCurrentGroup);
 
     // Conversion history section
-    QGroupBox* pHistoryGroup = new QGroupBox("Conversion History", this);
+    QGroupBox* pHistoryGroup = new QGroupBox(tr("Conversion History"), this);
     QVBoxLayout* pHistoryLayout = new QVBoxLayout(pHistoryGroup);
 
     m_pConversionListWidget = new QListWidget(this);
@@ -67,20 +67,20 @@ void DlgStemConversion::createUI() {
 
     // Buttons
     QHBoxLayout* pButtonLayout = new QHBoxLayout();
-    m_pClearHistoryButton = new QPushButton("Clear History", this);
+    m_pClearHistoryButton = new QPushButton(tr("Clear History"), this);
     connect(m_pClearHistoryButton, &QPushButton::clicked, this, &DlgStemConversion::onClearHistory);
     pButtonLayout->addWidget(m_pClearHistoryButton);
 
     pButtonLayout->addStretch();
 
-    m_pConvertNewButton = new QPushButton("Convert New Track", this);
+    m_pConvertNewButton = new QPushButton(tr("Convert New Track"), this);
     connect(m_pConvertNewButton,
             &QPushButton::clicked,
             this,
             &DlgStemConversion::onConvertNewTrack);
     pButtonLayout->addWidget(m_pConvertNewButton);
 
-    m_pCloseButton = new QPushButton("Close", this);
+    m_pCloseButton = new QPushButton(tr("Close"), this);
     // Use reject() instead of accept() to close the dialog without blocking
     connect(m_pCloseButton, &QPushButton::clicked, this, &QDialog::reject);
     pButtonLayout->addWidget(m_pCloseButton);
@@ -116,10 +116,9 @@ void DlgStemConversion::connectSignals() {
 }
 
 void DlgStemConversion::onConversionStarted(TrackId, const QString& trackTitle) {
-    m_pCurrentTrackLabel->setText(QString("Converting: %1").arg(trackTitle));
+    m_pCurrentTrackLabel->setText(tr("Converting: %1").arg(trackTitle));
     m_pProgressBar->setValue(0);
-    m_pStatusLabel->setText("⏳ Initializing conversion...");
-    QApplication::processEvents(); // Update UI
+    m_pStatusLabel->setText(tr("⏳ Initializing conversion..."));
 }
 
 void DlgStemConversion::onConversionProgress(
@@ -130,48 +129,47 @@ void DlgStemConversion::onConversionProgress(
     QString displayMessage = message;
 
     // Add progress percentage
-    displayMessage += QString(" (%1%)").arg(static_cast<int>(progress * 100));
+    displayMessage = tr("%1 (%2%)")
+                             .arg(displayMessage)
+                             .arg(static_cast<int>(progress * 100));
 
     // Add phase emoji based on progress
     if (progress < 0.2f) {
-        displayMessage = "🔍 " + displayMessage; // Searching/Initializing
+        displayMessage = tr("🔍 %1").arg(displayMessage); // Searching/Initializing
     } else if (progress < 0.5f) {
-        displayMessage = "🎵 " + displayMessage; // Demucs separation
+        displayMessage = tr("🎵 %1").arg(displayMessage); // Demucs separation
     } else if (progress < 0.7f) {
-        displayMessage = "🔄 " + displayMessage; // Converting to M4A
+        displayMessage = tr("🔄 %1").arg(displayMessage); // Converting to M4A
     } else if (progress < 0.9f) {
-        displayMessage = "📦 " + displayMessage; // Creating container
+        displayMessage = tr("📦 %1").arg(displayMessage); // Creating container
     } else {
-        displayMessage = "✅ " + displayMessage; // Finalizing
+        displayMessage = tr("✅ %1").arg(displayMessage); // Finalizing
     }
 
     m_pStatusLabel->setText(displayMessage);
-    QApplication::processEvents(); // Update UI
 }
 
 void DlgStemConversion::onConversionCompleted(TrackId, const QString& trackTitle) {
     m_pProgressBar->setValue(100);
-    m_pStatusLabel->setText("✅ " + trackTitle + " - Conversion completed successfully! (100%)");
+    m_pStatusLabel->setText(
+            tr("✅ %1 - Conversion completed successfully! (100%)").arg(trackTitle));
     updateConversionList();
-    QApplication::processEvents(); // Update UI
 }
 
 void DlgStemConversion::onConversionFailed(TrackId,
         const QString& trackTitle,
         const QString& errorMessage) {
-    m_pStatusLabel->setText(QString("❌ Error converting %1: %2").arg(trackTitle, errorMessage));
+    m_pStatusLabel->setText(tr("❌ Error converting %1: %2").arg(trackTitle, errorMessage));
     m_pStatusLabel->setStyleSheet("color: #CC0000; font-weight: bold;"); // Red, bold
     updateConversionList();                                              // Update UI
-    QApplication::processEvents();
 }
 
 void DlgStemConversion::onQueueChanged(int pendingCount) {
     if (pendingCount == 0) {
-        m_pCurrentTrackLabel->setText("No conversion in progress");
+        m_pCurrentTrackLabel->setText(tr("No conversion in progress"));
         m_pStatusLabel->setStyleSheet("color: #0066CC; font-weight: bold;"); // Reset to blue
     }
     updateConversionList();
-    QApplication::processEvents(); // Update UI
 }
 
 void DlgStemConversion::onClearHistory() {
@@ -197,13 +195,14 @@ void DlgStemConversion::updateConversionList() {
 
         QListWidgetItem* pItem = new QListWidgetItem(itemText, m_pConversionListWidget);
 
-        // Color based on state
+        const QPalette palette = m_pConversionListWidget->palette();
         if (status.state == StemConverter::ConversionState::Completed) {
-            pItem->setBackground(QColor(144, 238, 144)); // Light green
+            pItem->setBackground(palette.brush(QPalette::Active, QPalette::AlternateBase));
         } else if (status.state == StemConverter::ConversionState::Failed) {
-            pItem->setBackground(QColor(255, 160, 160)); // Light red
+            pItem->setBackground(palette.brush(QPalette::Active, QPalette::Midlight));
         } else if (status.state == StemConverter::ConversionState::Processing) {
-            pItem->setBackground(QColor(173, 216, 230)); // Light blue
+            pItem->setBackground(palette.brush(QPalette::Active, QPalette::Highlight));
+            pItem->setForeground(palette.brush(QPalette::Active, QPalette::HighlightedText));
         }
     }
 }
@@ -211,24 +210,24 @@ void DlgStemConversion::updateConversionList() {
 QString DlgStemConversion::getStateDisplayText(StemConverter::ConversionState state) const {
     switch (state) {
     case StemConverter::ConversionState::Idle:
-        return "Idle";
+        return tr("Idle");
     case StemConverter::ConversionState::Processing:
-        return "Processing";
+        return tr("Processing");
     case StemConverter::ConversionState::Completed:
-        return "Completed";
+        return tr("Completed");
     case StemConverter::ConversionState::Failed:
-        return "Failed";
+        return tr("Failed");
     default:
-        return "Unknown";
+        return tr("Unknown");
     }
 }
 
 void DlgStemConversion::onConvertNewTrack() {
     QString filePath = QFileDialog::getOpenFileName(
             this,
-            "Select Audio File to Convert",
+            tr("Select Audio File to Convert"),
             QStandardPaths::writableLocation(QStandardPaths::MusicLocation),
-            "Audio Files (*.mp3 *.wav *.flac *.m4a *.ogg)");
+            tr("Audio Files (*.mp3 *.wav *.flac *.m4a *.ogg)"));
 
     if (filePath.isEmpty()) {
         return; // User canceled
@@ -237,13 +236,17 @@ void DlgStemConversion::onConvertNewTrack() {
     // Create a temporary track object
     TrackPointer pTrack = Track::newTemporary(filePath);
     if (!pTrack) {
-        QMessageBox::warning(this, "Error", "Could not load the selected track.");
+        QMessageBox::warning(
+                this, tr("Error"), tr("Could not load the selected track."));
         return;
     }
 
     // Open the options dialog
     DlgStemConversionOptions optionsDialog(pTrack->getLocation(), this);
     if (optionsDialog.exec() == QDialog::Accepted) {
+        if (!m_pConversionManager) {
+            return;
+        }
         StemConverter::Resolution resolution;
         if (optionsDialog.getSelectedResolution() == DlgStemConversionOptions::Resolution::High) {
             resolution = StemConverter::Resolution::High;

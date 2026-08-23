@@ -545,7 +545,7 @@ void WMainMenuBar::initialize() {
     pOptionsMenu->addSeparator();
 
 #ifdef __STEM_CONVERSION__
-    QString stemConversionTitle = tr("Stem Conversion...");
+    QString stemConversionTitle = tr("&Stem Conversion...");
     QString stemConversionText = tr("Open the Stem Conversion dialog.");
     auto* pOptionsStemConversion = new QAction(stemConversionTitle, this);
     pOptionsStemConversion->setStatusTip(stemConversionText);
