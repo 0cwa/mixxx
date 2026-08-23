@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
+#include <algorithm>
 #include <vector>
 
 #ifdef __STEM_CONVERSION__
@@ -153,6 +154,43 @@ TEST(StemConverterTest, BlendsAtNextWindowStartForShortWindow) {
     const float blendedOutput = (1.0f * firstWindowWeight + 3.0f * nextWindowWeight) /
             (firstWindowWeight + nextWindowWeight);
     EXPECT_FLOAT_EQ(blendedOutput, 2.0f);
+}
+
+TEST(StemConverterTest, KeepsConstantWaveContinuousAcrossPartialOverlap) {
+    constexpr std::size_t kChunkWindowFrames = 8;
+    constexpr std::size_t kChunkStepFrames = 6;
+    constexpr std::size_t kTotalFrames = 7;
+    constexpr float kWaveValue = 2.5f;
+
+    std::vector<float> output(kTotalFrames, 0.0f);
+    std::vector<float> outputWeights(kTotalFrames, 0.0f);
+
+    for (std::size_t frameOffset = 0; frameOffset < kTotalFrames;
+            frameOffset += kChunkStepFrames) {
+        const std::size_t chunkFrames = std::min(
+                kChunkWindowFrames, kTotalFrames - frameOffset);
+        for (std::size_t frame = 0; frame < chunkFrames; ++frame) {
+            const std::size_t outputFrame = frameOffset + frame;
+            const float weight = StemConverter::getChunkFrameWeight(
+                    frameOffset,
+                    frame,
+                    kChunkWindowFrames,
+                    kChunkStepFrames,
+                    kTotalFrames);
+            output[outputFrame] += kWaveValue * weight;
+            outputWeights[outputFrame] += weight;
+        }
+        if (!StemConverter::hasNextChunk(
+                    frameOffset, kChunkStepFrames, kTotalFrames)) {
+            break;
+        }
+    }
+
+    for (std::size_t frame = 0; frame < kTotalFrames; ++frame) {
+        ASSERT_GT(outputWeights[frame], 0.0f);
+        EXPECT_FLOAT_EQ(outputWeights[frame], 1.0f);
+        EXPECT_FLOAT_EQ(output[frame] / outputWeights[frame], kWaveValue);
+    }
 }
 
 TEST(StemConverterTest, PreservesFullWindowFadeRanges) {
