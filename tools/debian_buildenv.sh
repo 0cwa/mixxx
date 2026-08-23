@@ -79,26 +79,56 @@ download_verified_file() {
 
 find_mp4box() {
     local mp4box_path
-    local package_files
+    local dpkg_query_path
     local package_status
 
-    if ! command -v dpkg-query >/dev/null 2>&1; then
-        echo "Cannot verify signed '$GPAC_PACKAGE_NAME' ownership because dpkg-query is unavailable on" >&2
-        echo "${PRETTY_NAME:-this Debian-based distribution}; refusing to use an arbitrary PATH binary." >&2
-        echo "Use a Debian-based environment with signed '$GPAC_PACKAGE_NAME', or leave" >&2
-        echo "MIXXX_INSTALL_STEM_CONVERSION=false." >&2
+    if ! dpkg_query_path="$(find_dpkg_query)"; then
+        echo "Cannot verify signed '$GPAC_PACKAGE_NAME' ownership: the dpkg runtime" >&2
+        echo "does not provide /usr/bin/dpkg-query or /bin/dpkg-query on this system." >&2
+        echo "Use a Debian/Ubuntu environment with the dpkg runtime; this backend refuses" >&2
+        echo "to use an arbitrary PATH binary." >&2
         return 1
     fi
-    if ! package_status="$(dpkg-query -W -f='${Status}' "$GPAC_PACKAGE_NAME" 2>/dev/null)" ||
+
+    if ! package_status="$("$dpkg_query_path" -W -f="\${Status}" "$GPAC_PACKAGE_NAME" 2>/dev/null)" ||
             [[ "$package_status" != "install ok installed" ]]; then
-        print_gpac_unavailable_guidance
+        print_gpac_install_guidance
         echo "The signed distro package '$GPAC_PACKAGE_NAME' is not installed on" >&2
         echo "${PRETTY_NAME:-this Debian-based distribution}." >&2
         echo "Refusing to use an MP4Box binary found only through PATH." >&2
         return 1
     fi
 
-    if ! package_files="$(dpkg-query -L "$GPAC_PACKAGE_NAME" 2>/dev/null)"; then
+    if ! mp4box_path="$(find_dpkg_owned_mp4box "$dpkg_query_path")"; then
+        return 1
+    fi
+
+    printf '%s\n' "$mp4box_path"
+}
+
+find_dpkg_query() {
+    local dpkg_query_path
+
+    # Do not resolve this trust anchor through PATH: a caller-controlled
+    # dpkg-query must not be able to manufacture package ownership.
+    for dpkg_query_path in /usr/bin/dpkg-query /bin/dpkg-query; do
+        if [[ -x "$dpkg_query_path" ]]; then
+            printf '%s\n' "$dpkg_query_path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_dpkg_owned_mp4box() {
+    # Production callers pass only the absolute path returned by
+    # find_dpkg_query. The explicit parameter also makes the ownership logic
+    # testable with a deterministic package database fixture.
+    local dpkg_query_path="$1"
+    local mp4box_path
+    local package_files
+
+    if ! package_files="$("$dpkg_query_path" -L "$GPAC_PACKAGE_NAME" 2>/dev/null)"; then
         echo "Could not query the installed '$GPAC_PACKAGE_NAME' package contents." >&2
         echo "Verify the dpkg database and reinstall the signed package if necessary." >&2
         return 1
@@ -109,7 +139,7 @@ find_mp4box() {
                 ! -x "$mp4box_path" ]]; then
             continue
         fi
-        if dpkg-query -S "$mp4box_path" 2>/dev/null |
+        if "$dpkg_query_path" -S "$mp4box_path" 2>/dev/null |
                 awk -F': ' -v package="$GPAC_PACKAGE_NAME" '
                     { split($1, package_name, ":"); if (package_name[1] == package) found = 1 }
                     END { exit !found }'; then
@@ -124,8 +154,26 @@ find_mp4box() {
     return 1
 }
 
+print_gpac_install_guidance() {
+    if [[ "${ID:-}" == "ubuntu" ]]; then
+        echo "Ubuntu publishes the signed '$GPAC_PACKAGE_NAME' package in the universe component." >&2
+        echo "If APT cannot find it, enable universe, refresh metadata, and install it:" >&2
+        echo "  sudo add-apt-repository -y universe" >&2
+        echo "  sudo apt-get update --error-on=any" >&2
+        echo "  sudo apt-get install --no-install-recommends '$GPAC_PACKAGE_NAME'" >&2
+        echo "If add-apt-repository is unavailable, install software-properties-common first." >&2
+        echo "If the package remains unavailable, leave MIXXX_INSTALL_STEM_CONVERSION=false." >&2
+    else
+        echo "Install the signed distro package '$GPAC_PACKAGE_NAME' with APT, then retry." >&2
+        echo "If it is unavailable for this release, leave MIXXX_INSTALL_STEM_CONVERSION=false." >&2
+    fi
+}
+
 print_gpac_unavailable_guidance() {
-    if [[ "${ID:-}" == "debian" &&
+    if [[ "${ID:-}" == "ubuntu" ]]; then
+        echo "APT cannot find the signed '$GPAC_PACKAGE_NAME' package in the configured Ubuntu repositories." >&2
+        print_gpac_install_guidance
+    elif [[ "${ID:-}" == "debian" &&
             ("${VERSION_CODENAME:-}" == "bookworm" ||
                     "${VERSION_CODENAME:-}" == "trixie") ]]; then
         echo "Debian ${VERSION_CODENAME} may not publish '$GPAC_PACKAGE_NAME' in its configured repositories." >&2
@@ -145,8 +193,15 @@ run_self_tests() {
     local expected_sha256
     local expected_publisher_sha256
     local model_path
-    local empty_path
     local fake_path
+    local package_path
+    local fake_mp4box_path
+    local package_mp4box_path
+    local dpkg_query_path
+    local query_mode_path
+    local original_path
+    local mp4box_result
+    local selected_dpkg_query_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
     test_file="$test_dir/verified-artifact"
@@ -171,14 +226,77 @@ run_self_tests() {
         rm -rf -- "$test_dir"
         return 1
     fi
-    empty_path="$test_dir/empty-bin"
-    mkdir "$empty_path"
+    original_path="$PATH"
     fake_path="$test_dir/fake-bin"
     mkdir "$fake_path"
-    printf '#!/bin/sh\n' > "$fake_path/MP4Box"
-    chmod +x "$fake_path/MP4Box"
-    if PATH="$fake_path:$empty_path" find_mp4box >/dev/null 2>&1; then
-        echo "Self-test failed: failed GPAC package lookup was accepted" >&2
+    fake_mp4box_path="$fake_path/MP4Box"
+    printf '#!/bin/sh\nexit 0\n' > "$fake_mp4box_path"
+    chmod +x "$fake_mp4box_path"
+
+    package_path="$test_dir/package-root/usr/bin"
+    mkdir -p "$package_path"
+    package_mp4box_path="$package_path/MP4Box"
+    printf '#!/bin/sh\nexit 0\n' > "$package_mp4box_path"
+    chmod +x "$package_mp4box_path"
+
+    query_mode_path="$test_dir/dpkg-query-mode"
+    printf 'unowned\n' > "$query_mode_path"
+    dpkg_query_path="$fake_path/dpkg-query"
+    # The generated fixture intentionally contains literal shell variables.
+    # shellcheck disable=SC2016
+    printf '%s\n' \
+        '#!/bin/sh' \
+        "query_mode_path='$query_mode_path'" \
+        "fake_mp4box_path='$fake_mp4box_path'" \
+        "package_mp4box_path='$package_mp4box_path'" \
+        'case "$1" in' \
+        '    -W)' \
+        '        printf "%s\\n" "install ok installed"' \
+        '        ;;' \
+        '    -L)' \
+        '        if [ "$(cat "$query_mode_path")" = "unowned" ]; then' \
+        '            printf "%s\\n" "$fake_mp4box_path"' \
+        '        else' \
+        '            printf "%s\\n" "$package_mp4box_path"' \
+        '        fi' \
+        '        ;;' \
+        '    -S)' \
+        '        if [ "$2" = "$package_mp4box_path" ]; then' \
+        '            printf "gpac:amd64: %s\\n" "$2"' \
+        '        else' \
+        '            printf "untrusted: %s\\n" "$2"' \
+        '        fi' \
+        '        ;;' \
+        '    *)' \
+        '        exit 1' \
+        '        ;;' \
+        'esac' > "$dpkg_query_path"
+    chmod +x "$dpkg_query_path"
+
+    if ! selected_dpkg_query_path="$(PATH="$fake_path:$original_path" find_dpkg_query 2>/dev/null)"; then
+        selected_dpkg_query_path=""
+    fi
+    if [[ "$selected_dpkg_query_path" == "$dpkg_query_path" ]]; then
+        echo "Self-test failed: PATH-selected dpkg-query became a trust anchor" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if PATH="$fake_path:$original_path" find_dpkg_owned_mp4box "$dpkg_query_path" >/dev/null 2>&1; then
+        echo "Self-test failed: an unowned fake MP4Box was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    printf 'owned\n' > "$query_mode_path"
+    if ! mp4box_result="$(PATH="$fake_path:$original_path" \
+            find_dpkg_owned_mp4box "$dpkg_query_path")" ||
+            [[ "$mp4box_result" != "$package_mp4box_path" ]]; then
+        echo "Self-test failed: package-owned MP4Box layout was not accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if mp4box_result="$(PATH="$fake_path:$original_path" find_mp4box 2>/dev/null)" &&
+            [[ "$mp4box_result" == "$fake_mp4box_path" ]]; then
+        echo "Self-test failed: production MP4Box lookup trusted PATH" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -192,6 +310,8 @@ run_self_tests() {
         rm -rf -- "$test_dir"
         return 1
     fi
+    # Keep this independent from HTDEMUCS_MODEL_SHA256 so the self-test detects
+    # accidental changes to the production trust anchor.
     expected_publisher_sha256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
     if ! [[ "$expected_publisher_sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
         echo "Self-test failed: publisher model digest is not a SHA-256 value" >&2
@@ -245,7 +365,7 @@ case "$1" in
                 )
         esac
 
-        if ! sudo apt-get update; then
+        if ! sudo apt-get update --error-on=any; then
             echo "Failed to update signed APT repository metadata; aborting setup." >&2
             exit 1
         fi

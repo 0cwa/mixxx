@@ -244,6 +244,19 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
     setState(ConversionState::Processing);
     setProgress(0.0f);
 
+#ifdef __STEM_CONVERSION__
+    // Validate the verified model before announcing conversion progress. A missing
+    // or unloadable model is an early configuration failure, not a failed audio
+    // processing step.
+    if (!loadOnnxModel()) {
+        const QString errorMsg = QStringLiteral("Verified HTDemucs model unavailable");
+        kLogger.warning() << errorMsg;
+        emit conversionFailed(trackId, errorMsg);
+        setState(ConversionState::Failed);
+        return;
+    }
+#endif
+
     if (trackFilePath.isEmpty()) {
         qWarning() << "Track file path is empty";
         emit conversionFailed(trackId, QStringLiteral("Track file path is empty"));
@@ -1046,6 +1059,8 @@ QString StemConverter::createStemManifest() {
 
 QString StemConverter::findMP4Box() {
 #ifdef Q_OS_LINUX
+    // tools/debian_buildenv.sh provides this dpkg-backed backend on Debian and
+    // Ubuntu. Other Linux package managers intentionally fail closed.
     const QString mp4boxPath = findDpkgOwnedMp4Box();
     if (!mp4boxPath.isEmpty()) {
         kLogger.info() << "Found package-owned MP4Box:" << mp4boxPath;

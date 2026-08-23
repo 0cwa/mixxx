@@ -44,7 +44,8 @@ class StemConverter : public QObject {
     explicit StemConverter(QObject* parent = nullptr);
     ~StemConverter() override = default;
 
-    /// Convert a track to STEM format
+    /// Convert a track to STEM format. Model validation failures are reported
+    /// before conversion starts and leave progress at 0.0.
     /// @param pTrack Track to convert
     /// @param resolution Output resolution (only Low is currently supported)
     void convertTrack(const TrackPointer& pTrack,
@@ -158,7 +159,9 @@ class StemConverter : public QObject {
     /// Create STEM manifest JSON
     QString createStemManifest();
 
-    /// Find MP4Box executable in system
+    /// Find MP4Box executable in system. On Linux, only an executable owned by
+    /// the dpkg-managed gpac package is accepted; unsupported Linux package
+    /// managers fail closed, while other platforms use PATH lookup.
     QString findMP4Box();
 
     /// Add STEM metadata atom using MP4Box
