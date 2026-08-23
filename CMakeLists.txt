@@ -2328,6 +2328,17 @@ elseif(UNIX)
   set(MIXXX_INSTALL_LICENSEDIR "${CMAKE_INSTALL_DOCDIR}")
 endif()
 
+# Optional user-local Linux installs use CMake's runtime dependency scanner to
+# stage the small set of optional libraries that are commonly available in a
+# build toolbox but absent from the host. System libraries remain excluded.
+cmake_dependent_option(
+  MIXXX_INSTALL_RUNTIME_DEPENDENCIES
+  "Install selected non-system runtime dependencies for a user-local install"
+  OFF
+  "UNIX AND NOT APPLE"
+  OFF
+)
+
 if(WIN32)
   target_compile_definitions(mixxx-lib PUBLIC __WINDOWS__)
 
@@ -2551,11 +2562,40 @@ if(WIN32)
 endif()
 
 if(NOT ANDROID)
-  install(
-    TARGETS mixxx
-    RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
-    BUNDLE DESTINATION .
-  )
+  if(MIXXX_INSTALL_RUNTIME_DEPENDENCIES)
+    set(MIXXX_RUNTIME_DEPENDENCY_SET "mixxx-user-local-runtime")
+    install(
+      TARGETS mixxx
+      RUNTIME_DEPENDENCY_SET "${MIXXX_RUNTIME_DEPENDENCY_SET}"
+      RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
+      BUNDLE DESTINATION .
+    )
+    # These libraries are linked by optional Mixxx features and are known to
+    # be supplied by the build toolbox but not necessarily by the host. Keep
+    # this an allowlist so a user-local install never copies system libraries.
+    install(
+      RUNTIME_DEPENDENCY_SET
+      "${MIXXX_RUNTIME_DEPENDENCY_SET}"
+      POST_INCLUDE_REGEXES
+        ".*/libportmidi\\.so\\..*"
+        ".*/libprotobuf(-lite)?\\.so\\..*"
+        ".*/libmp4(v2)?\\.so\\..*"
+        ".*/libmad\\.so\\..*"
+        ".*/libid3tag\\.so\\..*"
+      # CMake applies post-includes before post-excludes, so this makes the
+      # list above an allowlist instead of copying every other dependency.
+      POST_EXCLUDE_REGEXES ".*"
+      LIBRARY
+      DESTINATION
+      "${CMAKE_INSTALL_LIBDIR}/mixxx"
+    )
+  else()
+    install(
+      TARGETS mixxx
+      RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
+      BUNDLE DESTINATION .
+    )
+  endif()
 
   # Skins
   install(

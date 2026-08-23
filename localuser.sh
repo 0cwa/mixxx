@@ -16,7 +16,19 @@ TOOLBOX_NAME=${MIXXX_TOOLBOX:-mixxx-build}
 BUILD_DIR=${MIXXX_BUILD_DIR:-$PROJECT_DIR/build}
 BUILD_TYPE=${MIXXX_BUILD_TYPE:-RelWithDebInfo}
 INSTALL_PREFIX=${MIXXX_INSTALL_PREFIX:-$HOME/.local}
+INSTALL_LIBDIR=${MIXXX_INSTALL_LIBDIR:-lib}
 SIGNALSMITH=${MIXXX_SIGNALSMITH:-ON}
+
+case "$INSTALL_LIBDIR" in
+    /*)
+        printf 'MIXXX_INSTALL_LIBDIR must be relative: %s\n' "$INSTALL_LIBDIR" >&2
+        exit 2
+        ;;
+esac
+
+# Keep user-local native installs relocatable. The second entry also lets
+# future installed shared libraries find sibling libraries in lib/mixxx.
+INSTALL_RPATH="\$ORIGIN/../${INSTALL_LIBDIR}/mixxx;\$ORIGIN"
 
 container_path() {
     case "$1" in
@@ -56,6 +68,7 @@ Defaults can be overridden with:
   MIXXX_BUILD_DIR=$BUILD_DIR
   MIXXX_BUILD_TYPE=$BUILD_TYPE
   MIXXX_INSTALL_PREFIX=$INSTALL_PREFIX
+  MIXXX_INSTALL_LIBDIR=$INSTALL_LIBDIR
   MIXXX_SIGNALSMITH=$SIGNALSMITH
   MIXXX_JOBS=<parallel build jobs>
   MIXXX_CONTAINER_PROJECT_DIR=$CONTAINER_PROJECT_DIR
@@ -95,6 +108,10 @@ configure() {
         cmake -S "$CONTAINER_PROJECT_DIR" -B "$CONTAINER_BUILD_DIR" \
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
         -DCMAKE_INSTALL_PREFIX="$CONTAINER_INSTALL_PREFIX" \
+        -DCMAKE_INSTALL_LIBDIR="$INSTALL_LIBDIR" \
+        -DCMAKE_INSTALL_RPATH="$INSTALL_RPATH" \
+        -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=FALSE \
+        -DMIXXX_INSTALL_RUNTIME_DEPENDENCIES=ON \
         -DSIGNALSMITH="$SIGNALSMITH" \
         "${args[@]}"
 }
