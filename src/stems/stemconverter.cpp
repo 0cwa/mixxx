@@ -50,6 +50,71 @@ bool waitForProcess(QProcess* pProcess, const QString& description) {
     }
     return false;
 }
+
+#ifdef Q_OS_LINUX
+bool runDpkgQuery(const QStringList& arguments, QString* pOutput) {
+    const QString dpkgQueryPath = QStandardPaths::findExecutable(
+            QStringLiteral("dpkg-query"),
+            {QStringLiteral("/usr/bin"), QStringLiteral("/bin")});
+    if (dpkgQueryPath.isEmpty()) {
+        return false;
+    }
+
+    QProcess dpkgQuery;
+    dpkgQuery.start(dpkgQueryPath, arguments);
+    if (!dpkgQuery.waitForStarted(5000) || !dpkgQuery.waitForFinished(5000) ||
+            dpkgQuery.exitStatus() != QProcess::NormalExit || dpkgQuery.exitCode() != 0) {
+        return false;
+    }
+
+    if (pOutput) {
+        *pOutput = QString::fromLocal8Bit(dpkgQuery.readAllStandardOutput());
+    }
+    return true;
+}
+
+QString findDpkgOwnedMp4Box() {
+    QString packageStatus;
+    if (!runDpkgQuery(
+                {QStringLiteral("-W"),
+                        QStringLiteral("-f=${Status}"),
+                        QStringLiteral("gpac")},
+                &packageStatus) ||
+            packageStatus.trimmed() != QStringLiteral("install ok installed")) {
+        return {};
+    }
+
+    QString packageFiles;
+    if (!runDpkgQuery(
+                {QStringLiteral("-L"), QStringLiteral("gpac")},
+                &packageFiles)) {
+        return {};
+    }
+
+    const QStringList packagePaths = packageFiles.split(QChar('\n'), Qt::SkipEmptyParts);
+    for (const QString& packagePath : packagePaths) {
+        const QFileInfo mp4boxInfo(packagePath.trimmed());
+        if (mp4boxInfo.fileName() != QStringLiteral("MP4Box") ||
+                !mp4boxInfo.isFile() || !mp4boxInfo.isExecutable()) {
+            continue;
+        }
+
+        QString packageOwners;
+        if (!runDpkgQuery(
+                    {QStringLiteral("-S"), mp4boxInfo.absoluteFilePath()},
+                    &packageOwners)) {
+            continue;
+        }
+        for (const QString& owner :
+                packageOwners.split(QChar('\n'), Qt::SkipEmptyParts)) {
+            if (owner.section(QChar(':'), 0, 0) == QStringLiteral("gpac")) {
+                return mp4boxInfo.absoluteFilePath();
+            }
+        }
+    }
+    return {};
+}
+#endif
 } // namespace
 
 bool StemConverter::interleavedToPlanar(const std::vector<float>& interleaved,
@@ -980,6 +1045,18 @@ QString StemConverter::createStemManifest() {
 }
 
 QString StemConverter::findMP4Box() {
+#ifdef Q_OS_LINUX
+    const QString mp4boxPath = findDpkgOwnedMp4Box();
+    if (!mp4boxPath.isEmpty()) {
+        kLogger.info() << "Found package-owned MP4Box:" << mp4boxPath;
+        return mp4boxPath;
+    }
+
+    kLogger.warning() << "Package-owned MP4Box from the signed gpac package was not found";
+    return {};
+#else
+    // The signed APT package contract applies only to the Debian/Linux setup.
+    // Keep the existing platform-specific lookup for non-Linux builds.
     const QString mp4boxPath = QStandardPaths::findExecutable(QStringLiteral("MP4Box"));
     if (!mp4boxPath.isEmpty()) {
         kLogger.info() << "Found MP4Box in PATH:" << mp4boxPath;
@@ -988,6 +1065,7 @@ QString StemConverter::findMP4Box() {
 
     kLogger.warning() << "MP4Box not found in system";
     return "";
+#endif
 }
 
 bool StemConverter::addStemMetadata(const QString& outputPath) {

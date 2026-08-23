@@ -8,6 +8,34 @@
 #include <QTemporaryFile>
 #include <vector>
 
+#ifdef __STEM_CONVERSION__
+TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
+    QTemporaryDir modelDir;
+    ASSERT_TRUE(modelDir.isValid());
+
+    QTemporaryFile inputFile;
+    ASSERT_TRUE(inputFile.open());
+    const auto pTrack = Track::newTemporary(inputFile.fileName());
+    ASSERT_TRUE(pTrack);
+
+    const bool hadModelDirectory = qEnvironmentVariableIsSet("MIXXX_STEM_MODEL_DIR");
+    const QByteArray previousModelDirectory = qgetenv("MIXXX_STEM_MODEL_DIR");
+    qputenv("MIXXX_STEM_MODEL_DIR", modelDir.path().toUtf8());
+
+    StemConverter converter;
+    converter.convertTrack(pTrack, StemConverter::Resolution::Low);
+
+    if (hadModelDirectory) {
+        qputenv("MIXXX_STEM_MODEL_DIR", previousModelDirectory);
+    } else {
+        qunsetenv("MIXXX_STEM_MODEL_DIR");
+    }
+
+    EXPECT_EQ(converter.getState(), StemConverter::ConversionState::Failed);
+    EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
+}
+#endif
+
 TEST(StemConverterTest, UsesOnlyTheVerifiedModelByDefault) {
     EXPECT_EQ(StemConverter::defaultResolution(), StemConverter::Resolution::Low);
     EXPECT_TRUE(StemConverter::isResolutionSupported(StemConverter::Resolution::Low));
@@ -25,6 +53,7 @@ TEST(StemConverterTest, RejectsUnsupportedFineTunedModel) {
     converter.convertTrack(pTrack, StemConverter::Resolution::High);
 
     EXPECT_EQ(converter.getState(), StemConverter::ConversionState::Failed);
+    EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
 }
 
 TEST(StemConverterTest, ConvertsStereoInterleavedAudioToPlanarAndBack) {

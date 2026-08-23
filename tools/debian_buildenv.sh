@@ -8,11 +8,11 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-set -o pipefail
+set -e -o pipefail
 
-HTDEMUCS_MODEL_NAME="htdemucs.onnx"
-HTDEMUCS_MODEL_SHA256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
-GPAC_PACKAGE_NAME="gpac"
+readonly HTDEMUCS_MODEL_NAME="htdemucs.onnx"
+readonly HTDEMUCS_MODEL_SHA256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
+readonly GPAC_PACKAGE_NAME="gpac"
 
 get_model_sha256() {
     local model_name="$1"
@@ -79,27 +79,77 @@ download_verified_file() {
 
 find_mp4box() {
     local mp4box_path
+    local package_files
+    local package_status
 
-    if ! mp4box_path="$(command -v MP4Box)"; then
-        echo "MP4Box is unavailable; install the signed distro package '$GPAC_PACKAGE_NAME' and retry." >&2
-        echo "Refusing to download, extract, compile, or sudo-install unverified GPAC source." >&2
-        echo "Maintainer action: provide an authoritative GPAC artifact checksum before adding a source fallback." >&2
+    if ! command -v dpkg-query >/dev/null 2>&1; then
+        echo "Cannot verify signed '$GPAC_PACKAGE_NAME' ownership because dpkg-query is unavailable on" >&2
+        echo "${PRETTY_NAME:-this Debian-based distribution}; refusing to use an arbitrary PATH binary." >&2
+        echo "Use a Debian-based environment with signed '$GPAC_PACKAGE_NAME', or leave" >&2
+        echo "MIXXX_INSTALL_STEM_CONVERSION=false." >&2
+        return 1
+    fi
+    if ! package_status="$(dpkg-query -W -f='${Status}' "$GPAC_PACKAGE_NAME" 2>/dev/null)" ||
+            [[ "$package_status" != "install ok installed" ]]; then
+        print_gpac_unavailable_guidance
+        echo "The signed distro package '$GPAC_PACKAGE_NAME' is not installed on" >&2
+        echo "${PRETTY_NAME:-this Debian-based distribution}." >&2
+        echo "Refusing to use an MP4Box binary found only through PATH." >&2
         return 1
     fi
 
-    printf '%s\n' "$mp4box_path"
+    if ! package_files="$(dpkg-query -L "$GPAC_PACKAGE_NAME" 2>/dev/null)"; then
+        echo "Could not query the installed '$GPAC_PACKAGE_NAME' package contents." >&2
+        echo "Verify the dpkg database and reinstall the signed package if necessary." >&2
+        return 1
+    fi
+
+    while IFS= read -r mp4box_path; do
+        if [[ "$mp4box_path" != */MP4Box || ! -f "$mp4box_path" ||
+                ! -x "$mp4box_path" ]]; then
+            continue
+        fi
+        if dpkg-query -S "$mp4box_path" 2>/dev/null |
+                awk -F': ' -v package="$GPAC_PACKAGE_NAME" '
+                    { split($1, package_name, ":"); if (package_name[1] == package) found = 1 }
+                    END { exit !found }'; then
+            printf '%s\n' "$mp4box_path"
+            return 0
+        fi
+    done <<< "$package_files"
+
+    echo "The installed signed '$GPAC_PACKAGE_NAME' package on" >&2
+    echo "${PRETTY_NAME:-this Debian-based distribution} does not provide an executable MP4Box." >&2
+    echo "Verify the package version and architecture; do not use an arbitrary PATH binary." >&2
+    return 1
+}
+
+print_gpac_unavailable_guidance() {
+    if [[ "${ID:-}" == "debian" &&
+            ("${VERSION_CODENAME:-}" == "bookworm" ||
+                    "${VERSION_CODENAME:-}" == "trixie") ]]; then
+        echo "Debian ${VERSION_CODENAME} may not publish '$GPAC_PACKAGE_NAME' in its configured repositories." >&2
+        echo "Stem conversion setup is unavailable on this release without a signed distro package." >&2
+        echo "Use a Debian/Ubuntu release that publishes signed '$GPAC_PACKAGE_NAME', or leave" >&2
+        echo "MIXXX_INSTALL_STEM_CONVERSION=false; this script will not build GPAC from source." >&2
+    else
+        echo "The signed distro package '$GPAC_PACKAGE_NAME' is unavailable in the configured APT repositories." >&2
+        echo "Enable a repository for this distribution that publishes it, or leave" >&2
+        echo "MIXXX_INSTALL_STEM_CONVERSION=false; this script will not build GPAC from source." >&2
+    fi
 }
 
 run_self_tests() {
     local test_dir
-    local gpac_archive
     local test_file
     local expected_sha256
+    local expected_publisher_sha256
+    local model_path
     local empty_path
+    local fake_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
-    gpac_archive="$test_dir/gpac-archive.tar.gz"
-    test_file="$gpac_archive"
+    test_file="$test_dir/verified-artifact"
     printf 'verified test artifact\n' > "$test_file"
     expected_sha256="$(sha256sum "$test_file")"
     expected_sha256="${expected_sha256%% *}"
@@ -111,19 +161,24 @@ run_self_tests() {
     if verify_sha256 \
             "0000000000000000000000000000000000000000000000000000000000000000" \
             "$test_file"; then
-        echo "Self-test failed: unverified GPAC archive was accepted" >&2
+        echo "Self-test failed: checksum mismatch was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
-    if verify_sha256 "$expected_sha256" "$test_dir/missing-gpac-archive.tar.gz"; then
-        echo "Self-test failed: missing GPAC archive was accepted" >&2
+    model_path="$test_dir/$HTDEMUCS_MODEL_NAME"
+    if verify_sha256 "$HTDEMUCS_MODEL_SHA256" "$model_path"; then
+        echo "Self-test failed: missing $HTDEMUCS_MODEL_NAME was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
     empty_path="$test_dir/empty-bin"
     mkdir "$empty_path"
-    if PATH="$empty_path" find_mp4box >/dev/null 2>&1; then
-        echo "Self-test failed: missing MP4Box was accepted" >&2
+    fake_path="$test_dir/fake-bin"
+    mkdir "$fake_path"
+    printf '#!/bin/sh\n' > "$fake_path/MP4Box"
+    chmod +x "$fake_path/MP4Box"
+    if PATH="$fake_path:$empty_path" find_mp4box >/dev/null 2>&1; then
+        echo "Self-test failed: failed GPAC package lookup was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -137,8 +192,19 @@ run_self_tests() {
         rm -rf -- "$test_dir"
         return 1
     fi
-    if [[ "$(get_model_sha256 "$HTDEMUCS_MODEL_NAME")" != "$HTDEMUCS_MODEL_SHA256" ]]; then
-        echo "Self-test failed: verified model digest changed" >&2
+    expected_publisher_sha256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
+    if ! [[ "$expected_publisher_sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
+        echo "Self-test failed: publisher model digest is not a SHA-256 value" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ "$(get_model_sha256 "$HTDEMUCS_MODEL_NAME")" != "$expected_publisher_sha256" ]]; then
+        echo "Self-test failed: model digest is not the publisher-authoritative value" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ "$HTDEMUCS_MODEL_SHA256" != "$expected_publisher_sha256" ]]; then
+        echo "Self-test failed: installer model digest differs from publisher value" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -179,7 +245,10 @@ case "$1" in
                 )
         esac
 
-        sudo apt-get update
+        if ! sudo apt-get update; then
+            echo "Failed to update signed APT repository metadata; aborting setup." >&2
+            exit 1
+        fi
 
         # If jackd2 is installed as per dpkg database, install libjack-jackd2-dev.
         # This avoids a package deadlock, resulting in jackd2 being removed, and jackd1 being installed,
@@ -187,7 +256,10 @@ case "$1" in
         # jackd dev library, so let's give it one..
         if [ "$(dpkg-query -W -f='${Status}' jackd2 2>/dev/null | grep -c "ok installed")" -eq 1 ];
         then
-            sudo apt-get install libjack-jackd2-dev;
+            if ! sudo apt-get install -y libjack-jackd2-dev; then
+                echo "Failed to install libjack-jackd2-dev; aborting setup." >&2
+                exit 1
+            fi
         fi
 
         # Stem conversion setup is opt-in through an environment variable so
@@ -198,17 +270,22 @@ case "$1" in
 
             if ! apt-cache show "$GPAC_PACKAGE_NAME" 2>/dev/null |
                     grep -q "^Package: $GPAC_PACKAGE_NAME$"; then
-                echo "The signed distro package '$GPAC_PACKAGE_NAME' is unavailable." >&2
-                echo "Refusing to install GPAC from source without an authoritative artifact checksum." >&2
-                echo "Maintainer action: add a verified GPAC artifact and checksum before enabling a source fallback." >&2
+                print_gpac_unavailable_guidance
                 exit 1
             fi
 
             # Install GPAC/MP4Box from the existing signed distro repositories.
             # There is intentionally no source-build fallback without an
             # authoritative GPAC artifact checksum.
+            if ! sudo apt-get install -y --no-install-recommends -- "$GPAC_PACKAGE_NAME"; then
+                echo "Failed to install signed '$GPAC_PACKAGE_NAME' from APT; aborting setup." >&2
+                exit 1
+            fi
+            if ! MP4BOX_PATH="$(find_mp4box)"; then
+                echo "GPAC installation did not provide a package-owned executable MP4Box." >&2
+                exit 1
+            fi
             PACKAGES_EXTRA+=(
-                "$GPAC_PACKAGE_NAME"
                 libonnxruntime-dev
                 libsndfile1-dev
                 ffmpeg
@@ -222,11 +299,17 @@ case "$1" in
         # Install a faster linker. Prefer mold, fall back to lld
         if apt-cache show mold 2>/dev/null >/dev/null;
         then
-            sudo apt-get install -y --no-install-recommends mold
+            if ! sudo apt-get install -y --no-install-recommends mold; then
+                echo "Failed to install mold; aborting setup." >&2
+                exit 1
+            fi
         else
             if apt-cache show lld 2>/dev/null >/dev/null;
             then
-                sudo apt-get install -y --no-install-recommends lld
+                if ! sudo apt-get install -y --no-install-recommends lld; then
+                    echo "Failed to install lld; aborting setup." >&2
+                    exit 1
+                fi
             fi
         fi
 
@@ -246,7 +329,7 @@ case "$1" in
             fi
         fi
 
-        sudo apt-get install -y --no-install-recommends -- \
+        if ! sudo apt-get install -y --no-install-recommends -- \
             ccache \
             cmake \
             clazy \
@@ -317,10 +400,16 @@ case "$1" in
             qml6-module-qtquick-dialogs \
             qml6-module-qt-labs-folderlistmodel \
             qml6-module-qtmultimedia \
-            "${PACKAGES_EXTRA[@]}"
+            "${PACKAGES_EXTRA[@]}"; then
+            echo "Failed to install the Debian build dependencies; aborting setup." >&2
+            exit 1
+        fi
 
         if [[ "${FONTS_UBUNTU_AVAILABLE:-false}" == true ]]; then
-            sudo apt-get install -y --no-install-recommends fonts-ubuntu
+            if ! sudo apt-get install -y --no-install-recommends fonts-ubuntu; then
+                echo "Failed to install fonts-ubuntu; aborting setup." >&2
+                exit 1
+            fi
         fi
 
         # Install demucs if user requested it
