@@ -10,6 +10,116 @@ fi
 
 set -o pipefail
 
+HTDEMUCS_MODEL_NAME="htdemucs.onnx"
+HTDEMUCS_MODEL_SHA256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
+GPAC_COMMIT="5d70253ac94e5840be7b86054131dd753af63cc7"
+GPAC_ARCHIVE_SHA256="7651bee9a94b241d0fe34301f385644ff23ba5ffb7020a9da2254337a1a7c9ed"
+
+get_model_sha256() {
+    local model_name="$1"
+
+    case "$model_name" in
+        "$HTDEMUCS_MODEL_NAME")
+            printf '%s\n' "$HTDEMUCS_MODEL_SHA256"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+verify_sha256() {
+    local expected_sha256="$1"
+    local artifact_path="$2"
+
+    if [[ ! "$expected_sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
+        echo "Invalid SHA-256 value for $artifact_path" >&2
+        return 1
+    fi
+    if [[ ! -f "$artifact_path" ]]; then
+        echo "Integrity check failed: artifact is missing: $artifact_path" >&2
+        return 1
+    fi
+    if ! printf '%s  %s\n' "$expected_sha256" "$artifact_path" |
+            sha256sum --check --status -; then
+        echo "Integrity check failed: SHA-256 mismatch: $artifact_path" >&2
+        return 1
+    fi
+}
+
+download_verified_file() {
+    local download_user="$1"
+    local url="$2"
+    local expected_sha256="$3"
+    local destination="$4"
+    local temporary_path
+
+    temporary_path="$(sudo -u "$download_user" mktemp "${destination}.tmp.XXXXXX")" || {
+        echo "Failed to create a temporary download for $destination" >&2
+        return 1
+    }
+
+    if ! sudo -u "$download_user" wget --quiet --output-document="$temporary_path" "$url";
+    then
+        echo "Failed to download $url" >&2
+        sudo -u "$download_user" rm -f -- "$temporary_path"
+        return 1
+    fi
+
+    if ! verify_sha256 "$expected_sha256" "$temporary_path"; then
+        sudo -u "$download_user" rm -f -- "$temporary_path"
+        return 1
+    fi
+
+    if ! sudo -u "$download_user" mv -- "$temporary_path" "$destination"; then
+        echo "Failed to install verified artifact at $destination" >&2
+        sudo -u "$download_user" rm -f -- "$temporary_path"
+        return 1
+    fi
+}
+
+run_self_tests() {
+    local test_dir
+    local test_file
+    local expected_sha256
+
+    test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
+    test_file="$test_dir/artifact"
+    printf 'verified test artifact\n' > "$test_file"
+    expected_sha256="$(sha256sum "$test_file")"
+    expected_sha256="${expected_sha256%% *}"
+
+    if ! verify_sha256 "$expected_sha256" "$test_file"; then
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if verify_sha256 \
+            "0000000000000000000000000000000000000000000000000000000000000000" \
+            "$test_file"; then
+        echo "Self-test failed: checksum mismatch was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if verify_sha256 "$expected_sha256" "$test_dir/missing"; then
+        echo "Self-test failed: missing artifact was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if get_model_sha256 "htdemucs_ft.onnx" >/dev/null; then
+        echo "Self-test failed: unsupported model has a trusted digest" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ "$(get_model_sha256 "$HTDEMUCS_MODEL_NAME")" != "$HTDEMUCS_MODEL_SHA256" ]]; then
+        echo "Self-test failed: verified model digest changed" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+
+    rm -rf -- "$test_dir"
+    echo "Debian build environment security self-tests passed."
+}
+
 case "$1" in
     name)
         echo "No build environment name required for Debian based distros." >&2
@@ -185,26 +295,38 @@ case "$1" in
                 exit 1
             fi
 
-            # Download every model selectable in the stem conversion UI.
+            # Download only models with an authoritative digest.
             echo ""
             echo "Downloading Mixxx HTDemucs ONNX models..."
             echo ""
 
             MODEL_PATH="${MIXXX_STEM_MODEL_DIR:-$ACTUAL_HOME/.local/mixxx_models}"
             MODEL_URL_BASE="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel"
-            MODEL_FILES=(htdemucs.onnx htdemucs_ft.onnx)
+            # htdemucs_ft.onnx is deliberately disabled. Its release URL is
+            # unavailable and no authoritative digest exists. Do not add it
+            # until a maintainer publishes a verifiable artifact and digest.
+            MODEL_FILES=("$HTDEMUCS_MODEL_NAME")
+
+            echo "The unsupported htdemucs_ft.onnx model is intentionally disabled."
+            echo "Maintainer action: publish a verifiable artifact and digest before re-enabling it."
 
             # Create directory with proper ownership
             if sudo -u "$ACTUAL_USER" mkdir -p "$MODEL_PATH"; then
                 for MODEL_NAME in "${MODEL_FILES[@]}"; do
                     MODEL_FILE="$MODEL_PATH/$MODEL_NAME"
-                    if sudo -u "$ACTUAL_USER" wget -c "$MODEL_URL_BASE/$MODEL_NAME" -O "$MODEL_FILE"; then
-                        echo "Model downloaded successfully to $MODEL_FILE"
-                        sudo chown "$ACTUAL_USER:$ACTUAL_USER" "$MODEL_FILE"
-                    else
+                    if ! MODEL_SHA256="$(get_model_sha256 "$MODEL_NAME")"; then
+                        echo "Unsupported model $MODEL_NAME has no trusted digest; aborting." >&2
+                        exit 1
+                    fi
+                    if ! download_verified_file \
+                            "$ACTUAL_USER" \
+                            "$MODEL_URL_BASE/$MODEL_NAME" \
+                            "$MODEL_SHA256" \
+                            "$MODEL_FILE"; then
                         echo "Failed to download Mixxx HTDemucs model $MODEL_NAME"
                         exit 1
                     fi
+                    echo "Verified model downloaded successfully to $MODEL_FILE"
                 done
             else
                 echo "Failed to create model path: $MODEL_PATH"
@@ -219,25 +341,41 @@ case "$1" in
             else
                 echo "MP4Box not found. Compiling GPAC v2.4.0 from source..."
 
-                GPAC_BUILD_DIR="/tmp/gpac_build"
+                # GitHub does not publish a checksum asset for this release.
+                # Pin the source to the full commit and verify the official
+                # archive bytes before extracting or compiling them.
+                GPAC_BUILD_DIR="$(mktemp -d /tmp/mixxx-gpac.XXXXXX)" || {
+                    echo "Failed to create GPAC build directory" >&2
+                    exit 1
+                }
+                GPAC_ARCHIVE="$GPAC_BUILD_DIR/gpac-$GPAC_COMMIT.tar.gz"
+                GPAC_SOURCE_DIR="$GPAC_BUILD_DIR/gpac-$GPAC_COMMIT"
 
-                # Create build directory
-                mkdir -p "$GPAC_BUILD_DIR"
                 cd "$GPAC_BUILD_DIR" || exit 1
 
-                # Download GPAC v2.4.0
-                echo "Downloading GPAC v2.4.0..."
-                wget -q https://github.com/gpac/gpac/archive/refs/tags/v2.4.0.tar.gz -O gpac-2.4.0.tar.gz
+                echo "Downloading GPAC commit $GPAC_COMMIT..."
+                if ! wget --quiet --output-document="$GPAC_ARCHIVE" \
+                        "https://github.com/gpac/gpac/archive/$GPAC_COMMIT.tar.gz"; then
+                    echo "Failed to download GPAC commit $GPAC_COMMIT" >&2
+                    exit 1
+                fi
 
-                if [ ! -f "gpac-2.4.0.tar.gz" ]; then
-                    echo "Failed to download GPAC"
+                if ! verify_sha256 "$GPAC_ARCHIVE_SHA256" "$GPAC_ARCHIVE"; then
+                    echo "Refusing to extract or compile unverified GPAC source." >&2
                     exit 1
                 fi
 
                 # Extract
                 echo "Extracting GPAC..."
-                tar -xzf gpac-2.4.0.tar.gz
-                cd gpac-2.4.0 || exit 1
+                if ! tar -xzf "$GPAC_ARCHIVE"; then
+                    echo "Failed to extract verified GPAC archive" >&2
+                    exit 1
+                fi
+                if [[ ! -d "$GPAC_SOURCE_DIR" ]]; then
+                    echo "Verified GPAC archive has an unexpected directory layout" >&2
+                    exit 1
+                fi
+                cd "$GPAC_SOURCE_DIR" || exit 1
 
                 # Configure and compile for system installation
                 echo "Configuring GPAC..."
@@ -271,9 +409,9 @@ case "$1" in
                     exit 1
                 fi
 
-                # Clean up build directory
+                # Clean up the verified source after installation.
                 cd /
-                rm -rf "$GPAC_BUILD_DIR"
+                rm -rf -- "$GPAC_BUILD_DIR"
             fi
 
             echo ""
@@ -283,6 +421,9 @@ case "$1" in
             echo "MP4Box: $MP4BOX_PATH"
         fi
         ;;
+    test)
+        run_self_tests
+        ;;
     *)
         echo "Usage: $0 [options]"
         echo ""
@@ -290,5 +431,6 @@ case "$1" in
         echo "   help       Displays this help."
         echo "   name       Displays the name of the required build environment."
         echo "   setup      Installs the build environment."
+        echo "   test       Runs download integrity self-tests without installing anything."
         ;;
 esac
