@@ -18,7 +18,7 @@
 namespace {
 const mixxx::Logger kLogger("StemConversionManager");
 constexpr int kMaxHistoryItems = 100;
-}
+} // namespace
 
 class StemConversionTask : public QRunnable {
   public:
