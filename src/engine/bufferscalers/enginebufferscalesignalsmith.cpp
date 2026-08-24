@@ -186,6 +186,9 @@ EngineBufferScaleSignalSmith::fetchAndDeinterleave(SINT sampleToRead, SINT frame
 double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iOutputBufferSize) {
     ScopedTimer t(QStringLiteral("EngineBufferScaleSignalsmith::scaleBuffer"));
 
+    SINT currentFrameOffset = m_currentFrameOffset;
+    double frameFractionalLeftover = m_frameFractionalLeftover;
+
     // Unlike RubberBand, SignalSmith Stretch always output as much audio as it
     // was given. However, it does introduce latency (documented at
     // https://signalsmith-audio.co.uk/code/stretch/#how-to-use-latency) which
@@ -193,8 +196,8 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
     // `.outputSeek` method, which allows to pre-roll samples a realign the actual
     // output to real time.
     // However, this method will reset the buffer so it can only be used right after a reset
-    if (m_currentFrameOffset == 0 &&
-            m_currentFrameOffset < m_expectedFrameLatency
+    if (currentFrameOffset == 0 &&
+            currentFrameOffset < m_expectedFrameLatency
             // If the track has a zero rate, we skip correction as this is
             // usually a sign that the track is not playing. This will likely
             // create undesired silence (as opposite to a "zero BPM" play affect
@@ -209,27 +212,30 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
             return 0.0;
         }
         m_stretch.outputSeek(m_bufferPtrs.data(), readResult.framesRead);
-        m_currentFrameOffset += readResult.framesRead;
+        currentFrameOffset += readResult.framesRead;
+        // outputSeek changes the stretcher immediately. Keep this successful
+        // preroll committed if a later input read needs to be retried.
+        m_currentFrameOffset = currentFrameOffset;
     }
 
     const SINT outputFrames = getOutputSignal().samples2frames(iOutputBufferSize);
     auto dFrameRequired =
             (m_dBaseRate * m_dTempoRatio * static_cast<double>(outputFrames)) +
-            m_frameFractionalLeftover;
+            frameFractionalLeftover;
 
     if (!std::isfinite(dFrameRequired) || dFrameRequired <= 0.0) {
         SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
         return 0.0;
     }
 
-    if (m_currentFrameOffset != m_expectedFrameLatency && dFrameRequired > 0) {
+    if (currentFrameOffset != m_expectedFrameLatency && dFrameRequired > 0) {
         // This happens when the rate changes because the rate scales the input
         // latency. We need more or less latency frames to keep the output steady.
         // Avoid applying the whole latency delta in one callback. That creates
         // a one-buffer input spike for Signalsmith and can sound like a
         // high-pitched chirp.
         const double latencyDelta =
-                static_cast<double>(m_expectedFrameLatency - m_currentFrameOffset);
+                static_cast<double>(m_expectedFrameLatency - currentFrameOffset);
         const double maxCorrection =
                 static_cast<double>(std::min<SINT>(outputFrames, MAX_BUFFER_LEN));
         double frameOffset = 0.0;
@@ -241,7 +247,7 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
             frameOffset = -std::min({-latencyDelta, maxCorrection, dFrameRequired});
         }
         dFrameRequired += frameOffset;
-        m_currentFrameOffset += static_cast<SINT>(frameOffset);
+        currentFrameOffset += static_cast<SINT>(frameOffset);
     }
 
     const SINT frameRequired = static_cast<SINT>(dFrameRequired);
@@ -250,8 +256,8 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
         return 0.0;
     }
 
-    m_frameFractionalLeftover = dFrameRequired - static_cast<double>(frameRequired);
-    DEBUG_ASSERT(0 <= m_frameFractionalLeftover && m_frameFractionalLeftover < 1);
+    frameFractionalLeftover = dFrameRequired - static_cast<double>(frameRequired);
+    DEBUG_ASSERT(0 <= frameFractionalLeftover && frameFractionalLeftover < 1);
 
     SINT frameRead = 0;
     while (frameRead < frameRequired) {
@@ -330,6 +336,9 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
         }
     } break;
     }
+
+    m_currentFrameOffset = currentFrameOffset;
+    m_frameFractionalLeftover = frameFractionalLeftover;
 
     // readFramesProcessed is interpreted as the total number of frames
     // consumed to produce the scaled buffer. Due to this, we do not take into
