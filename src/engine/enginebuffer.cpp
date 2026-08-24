@@ -334,6 +334,11 @@ EngineBuffer::EngineBuffer(const QString& group,
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
 #endif
+#ifdef __BUNGEE__
+    m_pSampleRate->connectValueChanged(this,
+            &EngineBuffer::slotSampleRateChanged,
+            Qt::DirectConnection);
+#endif
     if (m_pKeylockEngine) {
         m_pKeylockEngine->connectValueChanged(this,
                 &EngineBuffer::slotKeylockEngineChanged,
@@ -607,6 +612,22 @@ void EngineBuffer::slotTrackLoading() {
     setTrackEndPosition(mixxx::audio::kInvalidFramePos); // Stop renderer
 }
 
+#ifdef __BUNGEE__
+void EngineBuffer::slotSampleRateChanged(double sampleRate) {
+    const auto outputSampleRate = mixxx::audio::SampleRate::fromDouble(sampleRate);
+    if (!outputSampleRate.isValid()) {
+        return;
+    }
+
+    // Bungee signal changes allocate its stretcher and audio buffers. Keep
+    // that work outside EngineBuffer::process and serialize it with the
+    // existing pause gate used by track loading.
+    m_pause.lock();
+    updateBungeeSignal(outputSampleRate);
+    m_pause.unlock();
+}
+#endif
+
 void EngineBuffer::loadFakeTrack(TrackPointer pTrack, bool bPlay) {
     if (bPlay) {
         m_playButton->set((double)bPlay);
@@ -648,6 +669,10 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
         // CachingReaderChunk::bufferSampleFrames
         m_channelCount = mixxx::audio::ChannelCount::stereo();
     }
+
+#ifdef __BUNGEE__
+    updateBungeeSignal(mixxx::audio::SampleRate::fromDouble(m_pSampleRate->get()));
+#endif
 
     m_pTrackSamples->set(trackNumFrame.toEngineSamplePos());
     m_pTrackSampleRate->set(trackSampleRate.toDouble());
@@ -821,8 +846,8 @@ double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
         return 0.0;
     }
 
-    const double position = std::min(
-            absolutePlaypos, m_trackEndPositionOld.value());
+    const double position = std::clamp(
+            absolutePlaypos, 0.0, m_trackEndPositionOld.value());
     return position / m_trackEndPositionOld.value();
 }
 
@@ -1328,9 +1353,6 @@ void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
     m_pScaleST->setSignal(m_sampleRate, m_channelCount);
 #ifdef __RUBBERBAND__
     m_pScaleRB->setSignal(m_sampleRate, m_channelCount);
-#endif
-#ifdef __BUNGEE__
-    m_pScaleBungee->setSignal(m_sampleRate, m_channelCount);
 #endif
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith->setSignal(m_sampleRate, m_channelCount);

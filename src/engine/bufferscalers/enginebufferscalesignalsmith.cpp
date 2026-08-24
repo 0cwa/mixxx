@@ -115,20 +115,28 @@ void EngineBufferScaleSignalSmith::onSignalChanged() {
 }
 
 void EngineBufferScaleSignalSmith::clear() {
+    if (m_pReadAheadManager) {
+        m_pReadAheadManager->cancelPendingRetry();
+    }
     m_stretch.reset();
     m_currentFrameOffset = 0;
     m_frameFractionalLeftover = 0;
 }
 
-SINT EngineBufferScaleSignalSmith::fetchAndDeinterleave(SINT sampleToRead, SINT frameOffset) {
-    auto frameRead = getOutputSignal().samples2frames(
-            m_pReadAheadManager->getNextSamples(
-                    // The value doesn't matter here. All that matters is we
-                    // are going forward or backward.
-                    (m_bBackwards ? -1 : 1) * m_dBaseRate * m_dTempoRatio,
-                    m_interleavedBuffer.data(),
-                    sampleToRead,
-                    getOutputSignal().getChannelCount()));
+EngineBufferScaleSignalSmith::InputReadResult
+EngineBufferScaleSignalSmith::fetchAndDeinterleave(SINT sampleToRead, SINT frameOffset) {
+    const auto readResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            // The value doesn't matter here. All that matters is we
+            // are going forward or backward.
+            (m_bBackwards ? -1 : 1) * m_dBaseRate * m_dTempoRatio,
+            m_interleavedBuffer.data(),
+            sampleToRead,
+            getOutputSignal().getChannelCount());
+    const auto frameRead = getOutputSignal().samples2frames(readResult.samplesRead);
+
+    if (readResult.retryPending) {
+        return {0, true};
+    }
 
     switch (getOutputSignal().getChannelCount()) {
     case mixxx::audio::ChannelCount::stereo():
@@ -172,7 +180,7 @@ SINT EngineBufferScaleSignalSmith::fetchAndDeinterleave(SINT sampleToRead, SINT 
         }
     } break;
     }
-    return frameRead;
+    return {frameRead, false};
 }
 
 double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iOutputBufferSize) {
@@ -193,12 +201,15 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
             // if a track start playing with a zero BPM, but this is an
             // acceptable trade off for now)
             && m_dTempoRatio > 0) {
-        const SINT frameRead =
-                fetchAndDeinterleave(getOutputSignal().frames2samples(
-                        std::min(m_expectedFrameLatency - m_currentFrameOffset,
-                                SINT(MAX_BUFFER_LEN))));
-        m_stretch.outputSeek(m_bufferPtrs.data(), frameRead);
-        m_currentFrameOffset += frameRead;
+        const auto readResult = fetchAndDeinterleave(getOutputSignal().frames2samples(
+                std::min(m_expectedFrameLatency - m_currentFrameOffset,
+                        SINT(MAX_BUFFER_LEN))));
+        if (readResult.retryPending) {
+            SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
+            return 0.0;
+        }
+        m_stretch.outputSeek(m_bufferPtrs.data(), readResult.framesRead);
+        m_currentFrameOffset += readResult.framesRead;
     }
 
     const SINT outputFrames = getOutputSignal().samples2frames(iOutputBufferSize);
@@ -244,9 +255,15 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
 
     SINT frameRead = 0;
     while (frameRead < frameRequired) {
-        const SINT currentFrameRead = fetchAndDeinterleave(getOutputSignal().frames2samples(
-                                                                   frameRequired - frameRead),
-                frameRead);
+        const auto readResult = fetchAndDeinterleave(
+                getOutputSignal().frames2samples(frameRequired - frameRead), frameRead);
+
+        if (readResult.retryPending) {
+            SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
+            return 0.0;
+        }
+
+        const SINT currentFrameRead = readResult.framesRead;
 
         if (currentFrameRead <= 0) {
             // Do not leave stale planar samples in the unread tail. EOF or

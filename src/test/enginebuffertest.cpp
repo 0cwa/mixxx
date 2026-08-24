@@ -28,6 +28,16 @@ class EngineBufferTest : public MockedEngineBackendTest {};
 
 class EngineBufferE2ETest : public SignalPathTest {};
 
+TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
+    EngineBuffer* pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->m_trackEndPositionOld =
+            mixxx::audio::FramePos::fromEngineSamplePos(100.0);
+
+    EXPECT_DOUBLE_EQ(0.0, pEngineBuffer->fractionalPlayposFromAbsolute(-1.0));
+    EXPECT_DOUBLE_EQ(0.5, pEngineBuffer->fractionalPlayposFromAbsolute(50.0));
+    EXPECT_DOUBLE_EQ(1.0, pEngineBuffer->fractionalPlayposFromAbsolute(101.0));
+}
+
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,
     // KeyunlockMode::ResetLockedKey resets the musical pitch.

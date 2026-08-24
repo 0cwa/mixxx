@@ -87,6 +87,12 @@ class EngineBufferScaleBungeeBufferWindowTest;
 //
 // ## Thread safety
 //   Not thread-safe; intended for single-threaded engine use only.
+//
+// ## Stretcher lifetime
+//   A valid output signal owns a configured stretcher. The real-time grain
+//   recovery paths must preserve that invariant: a failed muted-grain
+//   recovery may discard the current grain, but must not destroy the only
+//   configured stretcher. Signal changes are the only path that replaces it.
 class EngineBufferScaleBungee final : public EngineBufferScale {
     Q_OBJECT
   public:

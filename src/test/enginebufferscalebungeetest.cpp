@@ -813,6 +813,16 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
         return static_cast<SINT>(m_pScaler->m_outputChunk.frameCount);
     }
 
+    void seedInvalidPendingGrain() {
+        m_pScaler->m_inputRetryPending = true;
+        m_pScaler->m_currentInputChunk.begin = 0;
+        m_pScaler->m_currentInputChunk.end = m_pScaler->m_channelStride + 1;
+    }
+
+    bool hasStretcher() const {
+        return m_pScaler->m_pStretcher != nullptr;
+    }
+
     double outputChunkRequestEndpointPosition(int endpoint) const {
         const Bungee::Request* pRequest = m_pScaler->m_outputChunk.request[endpoint];
         return pRequest ? pRequest->position
@@ -822,6 +832,21 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
     BufferWindowReadAheadManagerMock* m_pReadAhead = nullptr;
     EngineBufferScaleBungee* m_pScaler = nullptr;
 };
+
+TEST_F(EngineBufferScaleBungeeBufferWindowTest,
+        FailedPendingGrainRecoveryPreservesStretcher) {
+    seedInvalidPendingGrain();
+    m_pScaler->clear();
+
+    EXPECT_TRUE(hasStretcher());
+
+    double tempoRatio = 1.0;
+    double pitchRatio = 1.0;
+    m_pScaler->setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+    constexpr SINT kOutputSamples = 2048;
+    std::vector<CSAMPLE> output(kOutputSamples);
+    EXPECT_GT(m_pScaler->scaleBuffer(output.data(), output.size()), 0.0);
+}
 
 TEST(EngineBufferScaleBungeePlaypositionAccountingTest,
         LeftoverOutputUsesOriginalChunkPositionDeltaAfterTempoChange) {

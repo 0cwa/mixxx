@@ -43,6 +43,17 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
         return availableSamples;
     }
 
+    NextSamplesResult getNextSamplesWithRetry(double rate,
+            CSAMPLE* pBuffer,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount) override {
+        if (m_retryPendingCalls > 0) {
+            --m_retryPendingCalls;
+            return {0, true};
+        }
+        return {getNextSamples(rate, pBuffer, requestedSamples, channelCount), false};
+    }
+
     void setAvailableSamples(SINT samples) {
         m_availableSamples = samples;
     }
@@ -51,6 +62,10 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
         m_rates.clear();
         m_requestedSamples = 0;
         m_returnedSamples = 0;
+    }
+
+    void setRetryPendingCalls(SINT calls) {
+        m_retryPendingCalls = calls;
     }
 
     SINT requestedSamples() const {
@@ -70,6 +85,7 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
     SINT m_availableSamples = std::numeric_limits<SINT>::max();
     SINT m_requestedSamples = 0;
     SINT m_returnedSamples = 0;
+    SINT m_retryPendingCalls = 0;
 };
 
 struct ScaleRun {
@@ -104,6 +120,27 @@ bool allFinite(const std::vector<CSAMPLE>& samples) {
 }
 
 } // namespace
+
+TEST(EngineBufferScaleSignalSmithTest, RetriesTransientUnavailableInput) {
+    DeterministicReadAheadManager readAhead;
+    EngineBufferScaleSignalSmith scaler(&readAhead);
+    scaler.setSignal(mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::ChannelCount::stereo());
+    setRate(&scaler, 1.0);
+    readAhead.setRetryPendingCalls(1);
+
+    std::vector<CSAMPLE> output(kOutputSamples, 123.0f);
+    EXPECT_DOUBLE_EQ(0.0, scaler.scaleBuffer(output.data(), output.size()));
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
+    EXPECT_EQ(0, readAhead.requestedSamples());
+
+    const auto resumed = run(&scaler, &readAhead);
+    EXPECT_GT(resumed.returnedSourceFrames, 0.0);
+    EXPECT_EQ(resumed.requestedSamples, resumed.returnedSamples);
+    EXPECT_TRUE(allFinite(resumed.output));
+}
 
 TEST(EngineBufferScaleSignalSmithTest, PrerollRateChangeFractionalAndRepeatable) {
     DeterministicReadAheadManager firstReadAhead;
