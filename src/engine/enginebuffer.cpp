@@ -1399,6 +1399,15 @@ void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
     m_bCrossfadeReady = false;
 }
 
+#ifdef __BUNGEE__
+void EngineBuffer::updateBungeeSignal(mixxx::audio::SampleRate sampleRate) {
+    if (!sampleRate.isValid()) {
+        return;
+    }
+    m_pScaleBungee->setSignal(sampleRate, m_channelCount);
+}
+#endif
+
 void EngineBuffer::processSlip(std::size_t bufferSize) {
     // Do a single read from m_bSlipEnabled so we don't run in to race conditions.
     bool enabled = m_pSlipButton->toBool();
