@@ -14,6 +14,7 @@
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
 #include "track/cue.h"
+#include "util/compatibility/qmutex.h"
 
 // A very small control that seeks the deck to 30.0 seconds absolute
 // using EngineBuffer::seekAbs(...).
@@ -21,24 +22,17 @@
 // Exposes a trigger button "[<group>],seek_30s".
 // When pressed (value > 0), the deck seeks to 30s.
 //
-// NOTE: We capture the current sample rate via setFrameInfo(...)
-// that EngineBuffer calls on all EngineControl instances.
+// NOTE: EngineControl stores the current sample rate in its atomic FrameInfo.
 class Seek30Control final : public EngineControl {
     Q_OBJECT
   public:
     Seek30Control(const QString& group, UserSettingsPointer pConfig)
-            : EngineControl(group, pConfig) {
+            : EngineControl(group, pConfig),
+              m_trackMutex(QT_RECURSIVE_MUTEX_INIT) {
         createControls();
     }
 
     ~Seek30Control() override = default;
-
-    // EngineControl API
-    void setFrameInfo(mixxx::audio::FramePos /*position*/,
-            mixxx::audio::FramePos /*endPosition*/,
-            mixxx::audio::SampleRate sampleRate) override {
-        m_sampleRate = sampleRate;
-    }
 
     void trackLoaded(TrackPointer pNewTrack) override;
 
@@ -63,6 +57,10 @@ class Seek30Control final : public EngineControl {
 
     // Returns the smallest non-negative index not yet used by memory cues.
     int nextFreeMemoryCueIndex() const;
+
+    double sampleRate() const {
+        return frameInfo().sampleRate.toDouble();
+    }
 
     // Helper to create & register a new memory cue at a given position.
     // Returns the index that was assigned.
@@ -152,7 +150,9 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearPrev;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
-    mixxx::audio::SampleRate m_sampleRate;
 
-    TrackPointer m_pLoadedTrack{}; // is written from an engine worker thread
+    // EngineBuffer::trackLoaded runs on a worker thread while the direct
+    // control connections above can run on another thread.
+    mutable QT_RECURSIVE_MUTEX m_trackMutex;
+    TrackPointer m_pLoadedTrack{};
 };
