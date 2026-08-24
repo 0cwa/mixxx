@@ -14,7 +14,6 @@
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
 #include "track/cue.h"
-#include "util/compatibility/qmutex.h"
 
 // A very small control that seeks the deck to 30.0 seconds absolute
 // using EngineBuffer::seekAbs(...).
@@ -27,8 +26,7 @@ class Seek30Control final : public EngineControl {
     Q_OBJECT
   public:
     Seek30Control(const QString& group, UserSettingsPointer pConfig)
-            : EngineControl(group, pConfig),
-              m_trackMutex(QT_RECURSIVE_MUTEX_INIT) {
+            : EngineControl(group, pConfig) {
         createControls();
     }
 
@@ -76,7 +74,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::slotSeek30,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pSeek30Prev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30Prev"));
         m_pSeek30Prev->setButtonMode(mixxx::control::ButtonMode::Trigger);
@@ -84,7 +82,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::slotSeek30Prev,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(
                 ConfigKey(m_group, "memory_create_at_current"));
@@ -93,7 +91,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::createAtCurrent,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pMemoryClearAll = std::make_unique<ControlPushButton>(
                 ConfigKey(m_group, "memory_clear_all"));
@@ -102,7 +100,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::clearAll,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pMemoryClearCurrent = std::make_unique<ControlPushButton>(
                 ConfigKey(m_group, "memory_clear_current"));
@@ -111,7 +109,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::clearCurrent,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pMemoryClearPrev = std::make_unique<ControlPushButton>(
                 ConfigKey(m_group, "memory_clear_prev"));
@@ -120,7 +118,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::clearPrev,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pMemoryClearNext = std::make_unique<ControlPushButton>(
                 ConfigKey(m_group, "memory_clear_next"));
@@ -129,7 +127,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::clearNext,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
 
         m_pMemoryClearNearest = std::make_unique<ControlPushButton>(
                 ConfigKey(m_group, "memory_clear_nearest"));
@@ -138,7 +136,7 @@ class Seek30Control final : public EngineControl {
                 &ControlObject::valueChanged,
                 this,
                 &Seek30Control::clearNearest,
-                Qt::DirectConnection);
+                Qt::AutoConnection);
     }
 
     std::unique_ptr<ControlObject> m_pMemoryCue;
@@ -151,8 +149,9 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
 
-    // EngineBuffer::trackLoaded runs on a worker thread while the direct
-    // control connections above can run on another thread.
-    mutable QT_RECURSIVE_MUTEX m_trackMutex;
+    // EngineBuffer::trackLoaded is called from its worker pool. The control
+    // connections use AutoConnection, so all cue mutations are delivered to
+    // this object's affinity thread. Keep the loaded track and cue cache in
+    // that same thread instead of synchronizing them with a blocking mutex.
     TrackPointer m_pLoadedTrack{};
 };
