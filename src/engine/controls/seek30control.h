@@ -14,7 +14,6 @@
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
 #include "track/cue.h"
-#include "util/compatibility/qmutex.h"
 
 // A very small control that seeks the deck to 30.0 seconds absolute
 // using EngineBuffer::seekAbs(...).
@@ -27,8 +26,7 @@ class Seek30Control final : public EngineControl {
     Q_OBJECT
   public:
     Seek30Control(const QString& group, UserSettingsPointer pConfig)
-            : EngineControl(group, pConfig),
-              m_trackMutex(QT_RECURSIVE_MUTEX_INIT) {
+            : EngineControl(group, pConfig) {
         createControls();
     }
 
@@ -151,8 +149,5 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
 
-    // EngineBuffer::trackLoaded runs on a worker thread while the direct
-    // control connections above can run on another thread.
-    mutable QT_RECURSIVE_MUTEX m_trackMutex;
     TrackPointer m_pLoadedTrack{};
 };
