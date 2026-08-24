@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include <QDir>
+
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #include "engine/readaheadmanager.h"
 #include "test/mixxxtest.h"
@@ -1267,7 +1269,9 @@ bool oracleTraceIsValid(const std::vector<AlignmentOracleEntry>& trace,
 
 void writeOracleFailureTrace(const std::vector<AlignmentOracleEntry>& trace,
         const std::string& reason) {
-    std::ofstream output("/tmp/mixxx-audio-visual-alignment-oracle.trace");
+    const QString tracePath = QDir(QDir::tempPath()).filePath(
+            QStringLiteral("mixxx-audio-visual-alignment-oracle.trace"));
+    std::ofstream output(tracePath.toStdString());
     if (!output) {
         return;
     }

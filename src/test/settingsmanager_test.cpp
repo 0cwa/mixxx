@@ -120,6 +120,48 @@ TEST_F(SettingsManagerTest, PreservesExplicitPerDeckKeylockEnginesInExistingSett
     }
 }
 
+TEST_F(SettingsManagerTest, MigratesValidGlobalKeylockEngineToPerDeckSettings) {
+    QTemporaryDir settingsDir;
+    ASSERT_TRUE(settingsDir.isValid());
+
+    UserSettings existingSettings(QDir(settingsDir.path()).filePath(MIXXX_SETTINGS_FILE));
+    existingSettings.setValue(
+            kKeylockEngineKey,
+            EngineBuffer::KeylockEngine::SoundTouch);
+    ASSERT_TRUE(existingSettings.save());
+
+    SettingsManager manager(settingsDir.path());
+
+    for (const char* group : kDeckGroups) {
+        const ConfigKey key = deckKeylockEngineKey(group);
+        ASSERT_TRUE(manager.settings()->exists(key));
+        EXPECT_EQ(static_cast<int>(EngineBuffer::KeylockEngine::SoundTouch),
+                manager.settings()->getValue(key, -1))
+                << group;
+    }
+}
+
+TEST_F(SettingsManagerTest, RejectsInvalidGlobalKeylockEngineDuringMigration) {
+    QTemporaryDir settingsDir;
+    ASSERT_TRUE(settingsDir.isValid());
+
+    UserSettings existingSettings(QDir(settingsDir.path()).filePath(MIXXX_SETTINGS_FILE));
+    existingSettings.setValue(
+            kKeylockEngineKey,
+            static_cast<EngineBuffer::KeylockEngine>(-1));
+    ASSERT_TRUE(existingSettings.save());
+
+    SettingsManager manager(settingsDir.path());
+
+    for (const char* group : kDeckGroups) {
+        const ConfigKey key = deckKeylockEngineKey(group);
+        ASSERT_TRUE(manager.settings()->exists(key));
+        EXPECT_EQ(static_cast<int>(defaultStableKeylockEngine()),
+                manager.settings()->getValue(key, -1))
+                << group;
+    }
+}
+
 #ifdef __BUNGEE__
 TEST_F(SettingsManagerTest, PreservesBungeePerDeckKeylockEngineDuringMigration) {
     QTemporaryDir settingsDir;

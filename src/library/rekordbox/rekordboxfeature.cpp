@@ -88,6 +88,11 @@ const QString kPLaylistPathDelimiter = QStringLiteral("-->");
 
 class TreeItemChildrenGuard final {
   public:
+    TreeItemChildrenGuard(const TreeItemChildrenGuard&) = delete;
+    TreeItemChildrenGuard& operator=(const TreeItemChildrenGuard&) = delete;
+    TreeItemChildrenGuard(TreeItemChildrenGuard&&) = delete;
+    TreeItemChildrenGuard& operator=(TreeItemChildrenGuard&&) = delete;
+
     explicit TreeItemChildrenGuard(TreeItem* parent)
             : m_parent(parent),
               m_initialChildRows(parent->childRows()) {

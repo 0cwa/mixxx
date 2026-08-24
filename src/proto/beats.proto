@@ -23,6 +23,7 @@ message Bpm {
 
 message BeatMap {
   repeated Beat beat = 1;
+  optional int32 downbeats_offset = 2;
 }
 
 message BeatGrid {

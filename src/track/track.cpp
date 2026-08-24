@@ -525,10 +525,13 @@ void Track::afterBeatsAndBpmUpdated(
 }
 
 void Track::setDownbeatOffset(int offset) {
-    m_downbeat_offset = offset;
+    auto locked = lockMutex(&m_qMutex);
+    if (!m_pBeats) {
+        return;
+    }
     const auto newBeats = m_pBeats->trySetDownbeatsOffset(offset);
     if (newBeats) {
-        trySetBeats(*newBeats);
+        trySetBeatsMarkDirtyAndUnlock(&locked, *newBeats, false);
     }
 }
 
