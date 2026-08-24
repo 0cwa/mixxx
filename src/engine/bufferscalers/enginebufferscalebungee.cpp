@@ -53,6 +53,8 @@ void EngineBufferScaleBungee::onSignalChanged() {
         m_channelBufferPtrs.resize(channelCount);
     }
 
+    // Signal changes are prepared while EngineBuffer is paused. This is the
+    // only path that replaces the configured stretcher.
     m_pStretcher.reset();
     m_channelStride = 0;
     m_outputLatencyFrames = 0;
@@ -449,7 +451,9 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     if (framesNeeded <= 0) {
         Bungee::OutputChunk discardedOutput{};
         if (!synthesiseMutedGrain(m_currentInputChunk, &discardedOutput)) {
-            m_pStretcher.reset();
+            // Keep the configured stretcher alive. Resetting it here would
+            // leave a valid signal without a real-time-safe recovery path.
+            DEBUG_ASSERT(m_pStretcher);
         }
         m_bResetNeeded = true;
         return 0;
@@ -483,7 +487,9 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
             dataOffset + grainSize > m_channelStride) {
         Bungee::OutputChunk discardedOutput{};
         if (!synthesiseMutedGrain(m_currentInputChunk, &discardedOutput)) {
-            m_pStretcher.reset();
+            // Preserve the configured stretcher; reinitializing it would
+            // require allocation on the audio path.
+            DEBUG_ASSERT(m_pStretcher);
         }
         m_bResetNeeded = true;
         return 0;
@@ -519,6 +525,7 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
 
 double EngineBufferScaleBungee::scaleBuffer(CSAMPLE* pOutputBuffer,
         SINT iOutputBufferSize) {
+    DEBUG_ASSERT(!getOutputSignal().isValid() || m_pStretcher);
     if (!m_pStretcher || m_dBaseRate == 0.0 || m_dTempoRatio == 0.0 ||
             !getOutputSignal().isValid()) {
         SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
@@ -601,7 +608,11 @@ void EngineBufferScaleBungee::completePendingGrainForReset() {
     if (m_pStretcher) {
         Bungee::OutputChunk discardedOutput{};
         if (!synthesiseMutedGrain(m_currentInputChunk, &discardedOutput)) {
-            m_pStretcher.reset();
+            // The stretcher remains valid for the next retry. Replacing it
+            // here would make recovery depend on an unsafe real-time
+            // allocation/reconfiguration.
+            DEBUG_ASSERT(m_pStretcher);
+            m_bResetNeeded = true;
         }
     }
     m_inputRetryPending = false;
