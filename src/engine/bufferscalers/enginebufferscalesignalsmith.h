@@ -1,9 +1,16 @@
 #pragma once
 
+// Signalsmith's FFT header uses std::memcpy without including <cstring>.
+// Keep this include before the third-party header until that is fixed upstream.
+// clang-format off
+#include <cstring>
 #include <qtmetamacros.h>
+#include <signalsmith-stretch.h>
+// clang-format on
+
+#include <vector>
 
 #include "engine/bufferscalers/enginebufferscale.h"
-#include "signalsmith-stretch.h"
 #include "util/samplebuffer.h"
 
 class ReadAheadManager;
@@ -49,7 +56,6 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
     /// to be deinterleaved before they can be passed to Rubber Band.
     mixxx::SampleBuffer m_interleavedBuffer;
 
-    mixxx::SampleBuffer m_buffer;
     // This stores the fractional part of the sample count that should have been
     // inputted to perfectly match the requested the rates. However, since there
     // is no such a thing as fractional sample, we keep memory of it till it
