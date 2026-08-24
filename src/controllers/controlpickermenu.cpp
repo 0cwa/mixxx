@@ -1052,6 +1052,7 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
 #endif
     }
 
+#ifdef __STEM__
     // Stem Controls
     QMenu* pStemsMenu = addSubmenu(tr("Stems"));
     for (int i = 1; i <= iNumDecks; ++i) {
@@ -1117,6 +1118,7 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
                 tr("Stems"));
     }
     pStemsMenu->addSeparator();
+#endif
 
     // Memory Cue Controls
     QMenu* pMemoryCueMenu = addSubmenu(tr("Memory Cues"));

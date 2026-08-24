@@ -235,8 +235,8 @@ To build without it: `cmake -DBUNGEE=OFF …`.
 
 The keylock engine is selected at runtime from
 **Preferences → Sound → Keylock engine → Bungee (high quality)**.
-When built with `-DBUNGEE=ON`, Bungee is the compile-time default engine
-(`defaultKeylockEngine()` in `enginebuffer.h`).
+When built with `-DBUNGEE=ON`, Bungee is available as a runtime-selectable
+keylock engine.
 
 ---
 

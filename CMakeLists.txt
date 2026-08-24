@@ -5202,7 +5202,7 @@ Or skip the source-fetch path: cmake -DBUNGEE_FETCH_FALLBACK=OFF (requires syste
     # include directory must exist before the imported target consumes it.
     file(MAKE_DIRECTORY "${BUNGEE_FETCH_INSTALL_DIR}/include")
 
-    if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
+    if(NOT CMAKE_GENERATOR MATCHES "^Ninja")
       # BUILD_BYPRODUCTS only forces a re-link with the Ninja generator;
       # for Make/Xcode mirror the libdjinterop/libkeyfinder pattern so that
       # mixxx-lib's autogen pipeline also depends on bungee_external.

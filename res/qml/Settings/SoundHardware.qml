@@ -327,7 +327,7 @@ Category {
                                     Layout.fillWidth: true
                                     color: Theme.white
                                     font.pixelSize: 14
-                                    text: "Keylock engine"
+                                    text: "Keylock engine (all decks)"
                                 }
                                 RatioChoice {
                                     id: keylock
@@ -392,7 +392,7 @@ Category {
                                     }
 
                                     Mixxx.SettingParameter {
-                                        label: "Keylock engine"
+                                        label: "Keylock engine (all decks)"
                                     }
                                 }
                             }
