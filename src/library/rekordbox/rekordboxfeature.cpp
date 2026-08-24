@@ -512,7 +512,7 @@ bool buildPlaylistTree(
 
 RekordboxDeviceImportResult parseDeviceDB(
         mixxx::DbConnectionPoolPtr dbConnectionPool,
-        RekordboxDeviceInfo deviceInfo) {
+        const RekordboxDeviceInfo& deviceInfo) {
     RekordboxDeviceImportResult result;
     result.device = deviceInfo;
 
@@ -1920,7 +1920,7 @@ void RekordboxFeature::onRekordboxDevicesFound() {
             TreeItem* child = root->child(deviceIndex);
             bool removeChild = true;
 
-            for (const auto& deviceFound : foundDevices) {
+            for (const auto& deviceFound : std::as_const(foundDevices)) {
                 if (deviceFound.label == child->getLabel()) {
                     removeChild = false;
                     break;
@@ -1937,7 +1937,7 @@ void RekordboxFeature::onRekordboxDevicesFound() {
 
         std::vector<std::unique_ptr<TreeItem>> childrenToAdd;
 
-        for (const auto& deviceFound : foundDevices) {
+        for (const auto& deviceFound : std::as_const(foundDevices)) {
             bool addNewChild = true;
             for (int deviceIndex = 0; deviceIndex < root->childRows(); deviceIndex++) {
                 TreeItem* child = root->child(deviceIndex);
@@ -2028,7 +2028,7 @@ void RekordboxFeature::onTracksFound() {
     if (TreeItem* item = findDeviceItem(result.device)) {
         std::vector<std::unique_ptr<TreeItem>> children;
         children.reserve(result.playlistNodes.size());
-        for (const auto& node : result.playlistNodes) {
+        for (const auto& node : std::as_const(result.playlistNodes)) {
             children.push_back(createPlaylistTreeItem(node));
         }
         if (!children.empty()) {
