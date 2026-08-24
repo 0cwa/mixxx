@@ -512,7 +512,7 @@ bool buildPlaylistTree(
 
 RekordboxDeviceImportResult parseDeviceDB(
         mixxx::DbConnectionPoolPtr dbConnectionPool,
-        RekordboxDeviceInfo deviceInfo) {
+        const RekordboxDeviceInfo& deviceInfo) {
     RekordboxDeviceImportResult result;
     result.device = deviceInfo;
 
@@ -1017,7 +1017,7 @@ void setMemoryCue(TrackPointer track,
         type = mixxx::CueType::Loop;
         // Only looping cues go to hot cues
         const QList<CuePointer> cuePoints = track->getCuePoints();
-        for (const CuePointer& trackCue : cuePoints) {
+        for (const CuePointer& trackCue : std::as_const(cuePoints)) {
             if (trackCue->getHotCue() == id) {
                 pCue = trackCue;
                 break;
@@ -1048,7 +1048,7 @@ void setHotCue(TrackPointer track,
         mixxx::RgbColor::optional_t color) {
     CuePointer pCue;
     const QList<CuePointer> cuePoints = track->getCuePoints();
-    for (const CuePointer& trackCue : cuePoints) {
+    for (const CuePointer& trackCue : std::as_const(cuePoints)) {
         if (trackCue->getHotCue() == id) {
             pCue = trackCue;
             break;
@@ -1060,7 +1060,7 @@ void setHotCue(TrackPointer track,
         type = mixxx::CueType::Loop;
         // Only looping cues go to hot cues
         const QList<CuePointer> cuePoints = track->getCuePoints();
-        for (const CuePointer& trackCue : cuePoints) {
+        for (const CuePointer& trackCue : std::as_const(cuePoints)) {
             if (trackCue->getHotCue() == id) {
                 pCue = trackCue;
                 break;
