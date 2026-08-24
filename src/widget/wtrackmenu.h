@@ -19,7 +19,6 @@
 #ifdef __STEM_CONVERSION__
 #include "stems/dlgstemconversion.h"
 #include "stems/stemconversionmanager.h"
-#include "widget/dlgstemconversionoptions.h"
 #endif
 
 class DlgTagFetcher;
