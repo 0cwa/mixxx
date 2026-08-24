@@ -3,6 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -11,8 +12,6 @@
 #include <limits>
 #include <string>
 #include <vector>
-
-#include <QDir>
 
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #include "engine/readaheadmanager.h"
@@ -1294,8 +1293,10 @@ bool oracleTraceIsValid(const std::vector<AlignmentOracleEntry>& trace,
 
 void writeOracleFailureTrace(const std::vector<AlignmentOracleEntry>& trace,
         const std::string& reason) {
-    const QString tracePath = QDir(QDir::tempPath()).filePath(
-            QStringLiteral("mixxx-audio-visual-alignment-oracle.trace"));
+    const QString tracePath =
+            QDir(QDir::tempPath())
+                    .filePath(QStringLiteral(
+                            "mixxx-audio-visual-alignment-oracle.trace"));
     std::ofstream output(tracePath.toStdString());
     if (!output) {
         return;
