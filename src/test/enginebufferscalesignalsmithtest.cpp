@@ -20,7 +20,7 @@ constexpr SINT kChannels = 2;
 constexpr SINT kOutputFrames = 960;
 constexpr SINT kOutputSamples = kOutputFrames * kChannels;
 
-class DeterministicReadAheadManager final : public ReadAheadManager {
+class DeterministicReadAheadManager : public ReadAheadManager {
   public:
     SINT getNextSamples(double rate,
             CSAMPLE* pBuffer,
@@ -70,6 +70,23 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
     SINT m_availableSamples = std::numeric_limits<SINT>::max();
     SINT m_requestedSamples = 0;
     SINT m_returnedSamples = 0;
+};
+
+class TransientEmptyReadAheadManager final : public DeterministicReadAheadManager {
+  public:
+    SINT getNextSamples(double rate,
+            CSAMPLE* pBuffer,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount) override {
+        if (m_emptyReads++ == 0) {
+            return 0;
+        }
+        return DeterministicReadAheadManager::getNextSamples(
+                rate, pBuffer, requestedSamples, channelCount);
+    }
+
+  private:
+    int m_emptyReads = 0;
 };
 
 struct ScaleRun {
@@ -198,6 +215,19 @@ TEST(EngineBufferScaleSignalSmithTest, ResetReversePauseAndEofRemainFinite) {
     EXPECT_TRUE(allFinite(output));
     EXPECT_LE(readAhead.returnedSamples(), readAhead.requestedSamples());
     EXPECT_EQ(readAhead.returnedSamples(), kOutputSamples / 2);
+}
+
+TEST(EngineBufferScaleSignalSmithTest, TransientEmptyReadIsRetried) {
+    TransientEmptyReadAheadManager readAhead;
+    EngineBufferScaleSignalSmith scaler(&readAhead);
+    scaler.setSignal(mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::ChannelCount::stereo());
+    setRate(&scaler, 1.0);
+
+    std::vector<CSAMPLE> output(kOutputSamples, 123.0f);
+    EXPECT_GT(scaler.scaleBuffer(output.data(), output.size()), 0.0);
+    EXPECT_GT(readAhead.returnedSamples(), 0);
+    EXPECT_TRUE(allFinite(output));
 }
 
 #endif // __SIGNALSMITH__

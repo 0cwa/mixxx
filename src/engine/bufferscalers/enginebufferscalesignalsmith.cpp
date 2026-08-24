@@ -243,15 +243,20 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
     DEBUG_ASSERT(0 <= m_frameFractionalLeftover && m_frameFractionalLeftover < 1);
 
     SINT frameRead = 0;
+    SINT emptyReads = 0;
     while (frameRead < frameRequired) {
         const SINT currentFrameRead = fetchAndDeinterleave(getOutputSignal().frames2samples(
                                                                    frameRequired - frameRead),
                 frameRead);
 
         if (currentFrameRead <= 0) {
-            // Do not leave stale planar samples in the unread tail. EOF or
-            // starvation can occur after a partial read, and retrying forever
-            // would spin if the read-ahead manager keeps returning nothing.
+            // A zero-length read can be transient. Retry once, but keep the
+            // engine callback bounded when the read-ahead source is terminal
+            // or continuously unavailable.
+            if (++emptyReads < 2) {
+                continue;
+            }
+            // Do not leave stale planar samples in the unread tail.
             for (int ch = 0; ch < getOutputSignal().getChannelCount(); ch++) {
                 SampleUtil::clear(m_buffers[ch].data(frameRead), frameRequired - frameRead);
             }
@@ -259,6 +264,7 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
             break;
         }
 
+        emptyReads = 0;
         frameRead += currentFrameRead;
     }
 
