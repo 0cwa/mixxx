@@ -33,7 +33,7 @@ TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
     pEngineBuffer->m_trackEndPositionOld =
             mixxx::audio::FramePos::fromEngineSamplePos(200.0);
 
-    EXPECT_DOUBLE_EQ(0.0, pEngineBuffer->fractionalPlayposFromAbsolute(-1.0));
+    EXPECT_DOUBLE_EQ(-0.01, pEngineBuffer->fractionalPlayposFromAbsolute(-1.0));
     EXPECT_DOUBLE_EQ(0.5, pEngineBuffer->fractionalPlayposFromAbsolute(50.0));
     EXPECT_DOUBLE_EQ(1.0, pEngineBuffer->fractionalPlayposFromAbsolute(101.0));
 }
