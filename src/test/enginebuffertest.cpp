@@ -31,7 +31,7 @@ class EngineBufferE2ETest : public SignalPathTest {};
 TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
     EngineBuffer* pEngineBuffer = m_pChannel1->getEngineBuffer();
     pEngineBuffer->m_trackEndPositionOld =
-            mixxx::audio::FramePos::fromEngineSamplePos(100.0);
+            mixxx::audio::FramePos::fromEngineSamplePos(200.0);
 
     EXPECT_DOUBLE_EQ(0.0, pEngineBuffer->fractionalPlayposFromAbsolute(-1.0));
     EXPECT_DOUBLE_EQ(0.5, pEngineBuffer->fractionalPlayposFromAbsolute(50.0));
