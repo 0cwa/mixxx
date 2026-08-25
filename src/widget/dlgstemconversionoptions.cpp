@@ -4,6 +4,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 DlgStemConversionOptions::DlgStemConversionOptions(const QString& trackPath, QWidget* parent)
