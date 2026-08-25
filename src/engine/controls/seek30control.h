@@ -88,7 +88,8 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::slotSeek30Prev,
                 Qt::DirectConnection);
 
-        m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_create_at_current"));
+        m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_create_at_current"));
         m_pMemoryCreateAtCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryCreateAtCurrent.get(),
                 &ControlObject::valueChanged,
@@ -96,7 +97,8 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::createAtCurrent,
                 Qt::DirectConnection);
 
-        m_pMemoryClearAll = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_all"));
+        m_pMemoryClearAll = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_clear_all"));
         m_pMemoryClearAll->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryClearAll.get(),
                 &ControlObject::valueChanged,
@@ -104,7 +106,8 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearAll,
                 Qt::DirectConnection);
 
-        m_pMemoryClearCurrent = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_current"));
+        m_pMemoryClearCurrent = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_clear_current"));
         m_pMemoryClearCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryClearCurrent.get(),
                 &ControlObject::valueChanged,
@@ -112,7 +115,8 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearCurrent,
                 Qt::DirectConnection);
 
-        m_pMemoryClearPrev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_prev"));
+        m_pMemoryClearPrev = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_clear_prev"));
         m_pMemoryClearPrev->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryClearPrev.get(),
                 &ControlObject::valueChanged,
@@ -120,7 +124,8 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearPrev,
                 Qt::DirectConnection);
 
-        m_pMemoryClearNext = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_next"));
+        m_pMemoryClearNext = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_clear_next"));
         m_pMemoryClearNext->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryClearNext.get(),
                 &ControlObject::valueChanged,
@@ -128,7 +133,8 @@ class Seek30Control final : public EngineControl {
                 &Seek30Control::clearNext,
                 Qt::DirectConnection);
 
-        m_pMemoryClearNearest = std::make_unique<ControlPushButton>(ConfigKey(m_group, "memory_clear_nearest"));
+        m_pMemoryClearNearest = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_clear_nearest"));
         m_pMemoryClearNearest->setButtonMode(mixxx::control::ButtonMode::Trigger);
         connect(m_pMemoryClearNearest.get(),
                 &ControlObject::valueChanged,
