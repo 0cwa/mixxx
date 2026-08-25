@@ -65,6 +65,7 @@ modules:
       - -DINSTALL_USER_UDEV_RULES=OFF
       - -DBUILD_BENCH=OFF
       - -DBUILD_TESTING=OFF
+      - -DSIGNALSMITH=ON
     sources:
       - type: dir
         path: ../../
