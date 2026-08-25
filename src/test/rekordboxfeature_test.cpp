@@ -2,7 +2,9 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QMap>
 #include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 #include "library/rekordbox/rekordboximport.h"
@@ -46,6 +48,47 @@ TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
     if (permissionCheckSkipped) {
         GTEST_SKIP() << "The test runner can write files without write permission bits";
     }
+}
+
+TEST(RekordboxImportTest, SkipsDanglingPlaylistTrackReferences) {
+    const QString connectionName = QStringLiteral("rekordbox-playlist-import-test");
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
+        database.setDatabaseName(QStringLiteral(":memory:"));
+        ASSERT_TRUE(database.open());
+
+        QSqlQuery setupQuery(database);
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_library (id INTEGER, rb_id INTEGER, device TEXT)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_playlist_tracks "
+                "(playlist_id INTEGER, track_id INTEGER, position INTEGER)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "INSERT INTO rekordbox_library (id, rb_id, device) "
+                "VALUES (7, 100, 'USB'), (0, 101, 'USB')"));
+
+        ASSERT_TRUE(database.transaction());
+        const QMap<uint32_t, uint32_t> playlistTracks{
+                {1, 100},
+                {2, 999},
+                {3, 101}};
+        ASSERT_TRUE(mixxx::rekordbox::importPlaylistTracks(
+                database, 42, playlistTracks, QStringLiteral("USB")));
+
+        QSqlQuery resultQuery(database);
+        ASSERT_TRUE(resultQuery.exec(
+                "SELECT playlist_id, track_id, position "
+                "FROM rekordbox_playlist_tracks ORDER BY position"));
+        ASSERT_TRUE(resultQuery.next());
+        EXPECT_EQ(42, resultQuery.value(0).toInt());
+        EXPECT_EQ(7, resultQuery.value(1).toInt());
+        EXPECT_EQ(1, resultQuery.value(2).toInt());
+        EXPECT_FALSE(resultQuery.next());
+        ASSERT_TRUE(database.commit());
+
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connectionName);
 }
 
 TEST(RekordboxImportTest, PreservesMemoryLoopBoundsAndCueOrder) {

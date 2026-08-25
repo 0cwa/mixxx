@@ -888,70 +888,11 @@ bool buildPlaylistTree(
         TreeItem* child = parent->appendChild(playlistItemName,
                 QVariant(QList<QString>{currentPath, IS_NOT_RECORDBOX_DEVICE}));
 
-        QSqlQuery queryInsertIntoPlaylistTracks(database);
-        if (!queryInsertIntoPlaylistTracks.prepare(
-                    "INSERT INTO " + kRekordboxPlaylistTracksTable +
-                    " (playlist_id, track_id, position) "
-                    "VALUES (:playlist_id, :track_id, :position)")) {
-            LOG_FAILED_QUERY(queryInsertIntoPlaylistTracks)
-                    << "playlistID:" << playlistID;
-            return false;
-        }
-
         const auto playlistTracksIt = playlistTrackMap.constFind(childID);
         if (playlistTracksIt != playlistTrackMap.constEnd()) {
-            // Add playlist tracks for children
-            const auto& playlistTracks = playlistTracksIt.value();
-            QSqlQuery finderQuery(database);
-            if (!finderQuery.prepare("select id from " + kRekordboxLibraryTable +
-                        " where rb_id=:rb_id and device=:device")) {
-                LOG_FAILED_QUERY(finderQuery)
-                        << "playlistID:" << playlistID
-                        << "device:" << device;
+            if (!mixxx::rekordbox::importPlaylistTracks(
+                        database, playlistID, playlistTracksIt.value(), device)) {
                 return false;
-            }
-            int position = 1;
-            for (auto trackIt = playlistTracks.cbegin(); trackIt != playlistTracks.cend();
-                    ++trackIt) {
-                uint32_t rbTrackID = trackIt.value();
-
-                int trackID = -1;
-                finderQuery.bindValue(":rb_id", rbTrackID);
-                finderQuery.bindValue(":device", device);
-
-                if (!finderQuery.exec()) {
-                    LOG_FAILED_QUERY(finderQuery)
-                            << "rbTrackID:" << rbTrackID
-                            << "device:" << device;
-                    return false;
-                }
-
-                if (!finderQuery.next()) {
-                    qWarning() << "Rekordbox playlist track was not found"
-                               << "rbTrackID:" << rbTrackID
-                               << "device:" << device;
-                    return false;
-                }
-                trackID = finderQuery.value(finderQuery.record().indexOf("id")).toInt();
-                if (!mixxx::rekordbox::isValidDatabaseId(trackID)) {
-                    qWarning() << "Rekordbox playlist track has an invalid ID"
-                               << trackID << "rbTrackID:" << rbTrackID
-                               << "device:" << device;
-                    return false;
-                }
-
-                queryInsertIntoPlaylistTracks.bindValue(":playlist_id", playlistID);
-                queryInsertIntoPlaylistTracks.bindValue(":track_id", trackID);
-                queryInsertIntoPlaylistTracks.bindValue(":position", position++);
-
-                if (!queryInsertIntoPlaylistTracks.exec()) {
-                    LOG_FAILED_QUERY(queryInsertIntoPlaylistTracks)
-                            << "playlistID:" << playlistID
-                            << "trackID:" << trackID
-                            << "trackIndex:" << position - 1;
-
-                    return false;
-                }
             }
         }
 
@@ -1045,6 +986,84 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
 } // anonymous namespace
 
 namespace mixxx::rekordbox {
+
+bool importPlaylistTracks(QSqlDatabase& database,
+        int playlistID,
+        const QMap<uint32_t, uint32_t>& playlistTracks,
+        const QString& device) {
+    if (playlistTracks.isEmpty()) {
+        return true;
+    }
+
+    QSqlQuery finderQuery(database);
+    if (!finderQuery.prepare(
+                "select id from rekordbox_library where rb_id=:rb_id and device=:device")) {
+        LOG_FAILED_QUERY(finderQuery)
+                << "playlistID:" << playlistID
+                << "device:" << device;
+        return false;
+    }
+
+    QSqlQuery insertQuery(database);
+    if (!insertQuery.prepare(
+                "INSERT INTO rekordbox_playlist_tracks "
+                "(playlist_id, track_id, position) "
+                "VALUES (:playlist_id, :track_id, :position)")) {
+        LOG_FAILED_QUERY(insertQuery)
+                << "playlistID:" << playlistID;
+        return false;
+    }
+
+    int position = 1;
+    for (auto trackIt = playlistTracks.cbegin(); trackIt != playlistTracks.cend();
+            ++trackIt) {
+        const uint32_t rbTrackID = trackIt.value();
+        finderQuery.bindValue(":rb_id", rbTrackID);
+        finderQuery.bindValue(":device", device);
+
+        if (!finderQuery.exec()) {
+            LOG_FAILED_QUERY(finderQuery)
+                    << "rbTrackID:" << rbTrackID
+                    << "device:" << device;
+            return false;
+        }
+
+        if (!finderQuery.next()) {
+            if (finderQuery.lastError().isValid()) {
+                LOG_FAILED_QUERY(finderQuery)
+                        << "rbTrackID:" << rbTrackID
+                        << "device:" << device;
+                return false;
+            }
+            qWarning() << "Rekordbox playlist track was not found"
+                       << "rbTrackID:" << rbTrackID
+                       << "device:" << device;
+            continue;
+        }
+
+        const int trackID = finderQuery.value(finderQuery.record().indexOf("id")).toInt();
+        if (!isValidDatabaseId(trackID)) {
+            qWarning() << "Rekordbox playlist track has an invalid ID"
+                       << trackID << "rbTrackID:" << rbTrackID
+                       << "device:" << device;
+            continue;
+        }
+
+        insertQuery.bindValue(":playlist_id", playlistID);
+        insertQuery.bindValue(":track_id", trackID);
+        insertQuery.bindValue(":position", position);
+
+        if (!insertQuery.exec()) {
+            LOG_FAILED_QUERY(insertQuery)
+                    << "playlistID:" << playlistID
+                    << "trackID:" << trackID
+                    << "trackIndex:" << position;
+            return false;
+        }
+        ++position;
+    }
+    return true;
+}
 
 void importMemoryCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
