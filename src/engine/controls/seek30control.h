@@ -1,19 +1,17 @@
 #pragma once
 
-#include <memory>
-#include <algorithm>
-
-#include <QObject>
 #include <QList>
+#include <QObject>
 #include <QSet>
+#include <algorithm>
+#include <memory>
 
 #include "audio/frame.h"
 #include "audio/types.h"
 #include "control/controlobject.h"
-#include "engine/engine.h"
-#include "engine/controls/enginecontrol.h"
 #include "control/controlpushbutton.h"
-#include "control/controlobject.h"
+#include "engine/controls/enginecontrol.h"
+#include "engine/engine.h"
 #include "engine/enginebuffer.h"
 #include "track/cue.h"
 
@@ -37,8 +35,8 @@ class Seek30Control final : public EngineControl {
 
     // EngineControl API
     void setFrameInfo(mixxx::audio::FramePos /*position*/,
-                      mixxx::audio::FramePos /*endPosition*/,
-                      mixxx::audio::SampleRate sampleRate) override {
+            mixxx::audio::FramePos /*endPosition*/,
+            mixxx::audio::SampleRate sampleRate) override {
         m_sampleRate = sampleRate;
     }
 
@@ -55,7 +53,6 @@ class Seek30Control final : public EngineControl {
     void slotSeek30Prev(double v);
 
   private:
-
     // Cache only the memory cues that belong to the currently loaded track.
     QList<CuePointer> m_memoryCues;
 
@@ -138,7 +135,6 @@ class Seek30Control final : public EngineControl {
                 this,
                 &Seek30Control::clearNearest,
                 Qt::DirectConnection);
-
     }
 
     std::unique_ptr<ControlObject> m_pMemoryCue;
