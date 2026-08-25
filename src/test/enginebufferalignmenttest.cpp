@@ -659,6 +659,7 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
         EngineBuffer* pEngineBuffer,
         const QString& group,
         const TrackPointer& track,
+        double sourceRate,
         double markerThreshold) {
     pEngineBuffer->loadFakeTrack(track, false);
     pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
@@ -703,7 +704,7 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
 
     StretchedMarkerProbeResult result;
     result.similarity = findEngineMarkerOnset(
-            emitted, 1.25, markerThreshold);
+            emitted, sourceRate, markerThreshold);
     result.callbackIndex = result.similarity.outputFrame >= 0
             ? result.similarity.outputFrame / kBufferFrames
             : -1;
@@ -1529,7 +1530,11 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
             kRateRatio);
     EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
     const StretchedMarkerProbeResult probe = runStretchedMarkerProbe(
-            pEngineBuffer, m_sGroup1, track, kSignalSmithMarkerOnsetThreshold);
+            pEngineBuffer,
+            m_sGroup1,
+            track,
+            kRateRatio,
+            kSignalSmithMarkerOnsetThreshold);
     if (probe.callbackIndex < 0 || probe.similarity.correlation < 0.3) {
         writeEngineMarkerFailureTrace(
                 "SignalSmith",
@@ -1888,7 +1893,11 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
             kRateRatio);
     EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
     const StretchedMarkerProbeResult probe = runStretchedMarkerProbe(
-            pEngineBuffer, m_sGroup1, track, kBungeeMarkerOnsetThreshold);
+            pEngineBuffer,
+            m_sGroup1,
+            track,
+            kRateRatio,
+            kBungeeMarkerOnsetThreshold);
     if (probe.callbackIndex < 0 || probe.similarity.correlation < 0.3) {
         writeEngineMarkerFailureTrace(
                 "Bungee",

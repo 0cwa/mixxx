@@ -230,6 +230,8 @@ void Seek30Control::clearNearest(double v) {
     const double curPos = currentPos.toEngineSamplePos();
 
     // Find the memory cue with the smallest distance to the playhead.
+    constexpr double kCueToleranceSeconds = 1.0;
+    const double cueTolerance = m_sampleRate.toDouble() * kCueToleranceSeconds;
     CuePointer bestCue;
     double bestDiff = std::numeric_limits<double>::max();
 
@@ -239,6 +241,9 @@ void Seek30Control::clearNearest(double v) {
         }
         const double cuePos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
         const double diff = std::abs(cuePos - curPos);
+        if (diff >= cueTolerance) {
+            continue;
+        }
 
         // Prefer smaller diff; on ties, prefer the cue at or behind the playhead.
         if (diff < bestDiff - 1e-9 ||

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <qtmetamacros.h>
+#include <QObject>
 
 #include "engine/bufferscalers/enginebufferscale.h"
 #include "signalsmith-stretch.h"
@@ -29,13 +29,18 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
 
   private:
     void onSignalChanged() override;
-    SINT fetchAndDeinterleave(SINT sampleToRead, SINT frameOffset = 0);
+    struct InputReadResult {
+        SINT framesRead;
+        bool retryPending;
+    };
+
+    InputReadResult fetchAndDeinterleave(SINT sampleToRead, SINT frameOffset = 0);
 
     ReadAheadManager* m_pReadAheadManager;
     signalsmith::stretch::SignalsmithStretch<float> m_stretch;
 
-    /// The audio buffers samples used to send audio to Rubber Band and to
-    /// receive processed audio from Rubber Band. This is needed because Mixxx
+    /// The audio buffers samples used to send audio to Signalsmith and to
+    /// receive processed audio from Signalsmith. This is needed because Mixxx
     /// uses interleaved buffers in most other places.
     std::vector<mixxx::SampleBuffer> m_buffers;
     /// These point to the buffers in `m_buffers`. They can be defined here
@@ -46,10 +51,9 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
     std::vector<float*> m_outputBufferPtrs;
 
     /// Contains interleaved samples read from `m_pReadAheadManager`. These need
-    /// to be deinterleaved before they can be passed to Rubber Band.
+    /// to be deinterleaved before they can be passed to Signalsmith.
     mixxx::SampleBuffer m_interleavedBuffer;
 
-    mixxx::SampleBuffer m_buffer;
     // This stores the fractional part of the sample count that should have been
     // inputted to perfectly match the requested the rates. However, since there
     // is no such a thing as fractional sample, we keep memory of it till it

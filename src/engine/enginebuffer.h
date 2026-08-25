@@ -332,6 +332,9 @@ class EngineBuffer : public EngineObject {
             mixxx::audio::FramePos trackNumFrame);
     void slotTrackLoadFailed(TrackPointer pTrack,
             const QString& reason);
+#ifdef __BUNGEE__
+    void slotSampleRateChanged(double sampleRate);
+#endif
     // Fired when passthrough mode is enabled or disabled.
     void slotPassthroughChanged(double v);
     void slotUpdatedTrackBeats();
@@ -375,6 +378,10 @@ class EngineBuffer : public EngineObject {
     }
     bool updateIndicatorsAndModifyPlay(bool newPlay, bool oldPlay);
     void notifyTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
+#ifdef __BUNGEE__
+    // The caller must hold m_pause while updating Bungee's signal.
+    void updateBungeeSignal(mixxx::audio::SampleRate sampleRate);
+#endif
     void processTrackLocked(CSAMPLE* pOutput,
             const std::size_t bufferSize,
             mixxx::audio::SampleRate sampleRate);
@@ -399,6 +406,7 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInLeaderChange);
     FRIEND_TEST(EngineSyncTest, BeatMapQuantizePlay);
     FRIEND_TEST(EngineBufferTest, ScalerNoTransport);
+    FRIEND_TEST(EngineBufferTest, FractionalPlayposClampsToTrackBounds);
     EngineSync* m_pEngineSync;
     SyncControl* m_pSyncControl;
     VinylControlControl* m_pVinylControlControl;

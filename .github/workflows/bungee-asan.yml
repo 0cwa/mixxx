@@ -172,7 +172,7 @@ jobs:
 
       - name: "Build mixxx-test"
         working-directory: build
-        run: cmake --build . --target mixxx-test -j$(nproc)
+        run: cmake --build . --target mixxx-test -j"$(nproc)"
 
       - name: "Print ccache stats"
         run: ccache --show-stats
@@ -186,4 +186,13 @@ jobs:
         working-directory: build
         env:
           GTEST_COLOR: "1"
-        run: ./mixxx-test --gtest_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
+        run: |
+          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
+          listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
+          test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
+          if [ "$test_count" -eq 0 ]; then
+            echo "No tests matched GTest filter: $test_filter" >&2
+            exit 1
+          fi
+          echo "Running $test_count tests matching GTest filter: $test_filter"
+          ./mixxx-test --gtest_filter="$test_filter"

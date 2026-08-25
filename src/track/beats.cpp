@@ -351,7 +351,10 @@ BeatsPointer Beats::fromBeatMapByteArray(
         return nullptr;
     }
 
-    return fromBeatPositions(sampleRate, beatPositions, subVersion);
+    const int downbeatsOffset = map.has_downbeats_offset()
+            ? map.downbeats_offset()
+            : 0;
+    return fromBeatPositions(sampleRate, beatPositions, subVersion, downbeatsOffset);
 }
 
 QByteArray Beats::toByteArray() const {
@@ -384,6 +387,7 @@ QByteArray Beats::toBeatMapByteArray() const {
         beat.set_frame_position(static_cast<google::protobuf::int32>(position.value()));
         map.add_beat()->CopyFrom(beat);
     }
+    map.set_downbeats_offset(m_downbeatsOffset);
 
     std::string output;
     map.SerializeToString(&output);

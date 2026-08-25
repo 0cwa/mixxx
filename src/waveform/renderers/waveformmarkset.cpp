@@ -1,6 +1,7 @@
 #include "waveformmarkset.h"
 
 #include <QtDebug>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -201,7 +202,7 @@ void WaveformMarkSet::setBreadth(float breadth) {
 }
 
 void WaveformMarkSet::update() {
-    std::map<WaveformMarkSortKey, WaveformMarkPointer> map;
+    std::multimap<WaveformMarkSortKey, WaveformMarkPointer> map;
     for (const auto& pMark : std::as_const(m_marks)) {
         if (pMark->isValid() && pMark->isVisible()) {
             double samplePosition = pMark->getSamplePosition();

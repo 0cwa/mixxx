@@ -265,4 +265,27 @@ TEST(BeatGridTest, BpmLockRejectsBeatsForTrackWithoutBeats) {
     EXPECT_TRUE(pTrack->isBpmLocked());
 }
 
+TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+
+    pTrack->setDownbeatOffset(1);
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0));
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+
+    pTrack->setDownbeatOffset(2);
+    ASSERT_TRUE(pTrack->getBeats());
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
+
+    pTrack->setBpmLocked(true);
+    pTrack->setDownbeatOffset(3);
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
+}
+
 }  // namespace

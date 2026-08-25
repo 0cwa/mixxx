@@ -13,6 +13,7 @@
 #include <QTextCodec>
 #include <QUrl>
 #include <QtDebug>
+#include <algorithm>
 
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
@@ -839,71 +840,15 @@ bool buildPlaylistTree(
             return false;
         }
 
-        QSqlQuery queryInsertIntoPlaylistTracks(database);
-        if (!queryInsertIntoPlaylistTracks.prepare(
-                    "INSERT INTO " + kRekordboxPlaylistTracksTable +
-                    " (playlist_id, track_id, position) "
-                    "VALUES (:playlist_id, :track_id, :position)")) {
-            LOG_FAILED_QUERY(queryInsertIntoPlaylistTracks)
-                    << "playlistID:" << playlistID;
-            return false;
-        }
 
         const auto playlistTracksIt = playlistTrackMap.constFind(childID);
-        if (playlistTracksIt != playlistTrackMap.constEnd()) {
-            // Add playlist tracks for children
-            const auto& playlistTracks = playlistTracksIt.value();
-            int position = 1;
-            for (auto trackIt = playlistTracks.cbegin(); trackIt != playlistTracks.cend();
-                    ++trackIt) {
-                uint32_t rbTrackID = trackIt.value();
-
-                int trackID = -1;
-                QSqlQuery finderQuery(database);
-                if (!finderQuery.prepare("select id from " + kRekordboxLibraryTable +
-                            " where rb_id=:rb_id and device=:device")) {
-                    LOG_FAILED_QUERY(finderQuery)
-                            << "rbTrackID:" << rbTrackID
-                            << "device:" << device;
-                    return false;
-                }
-                finderQuery.bindValue(":rb_id", rbTrackID);
-                finderQuery.bindValue(":device", device);
-
-                if (!finderQuery.exec()) {
-                    LOG_FAILED_QUERY(finderQuery)
-                            << "rbTrackID:" << rbTrackID
-                            << "device:" << device;
-                    return false;
-                }
-
-                if (!finderQuery.next()) {
-                    qWarning() << "Rekordbox playlist track was not found"
-                               << "rbTrackID:" << rbTrackID
-                               << "device:" << device;
-                    return false;
-                }
-                trackID = finderQuery.value(finderQuery.record().indexOf("id")).toInt();
-                if (!mixxx::rekordbox::isValidDatabaseId(trackID)) {
-                    qWarning() << "Rekordbox playlist track has an invalid ID"
-                               << trackID << "rbTrackID:" << rbTrackID
-                               << "device:" << device;
-                    return false;
-                }
-
-                queryInsertIntoPlaylistTracks.bindValue(":playlist_id", playlistID);
-                queryInsertIntoPlaylistTracks.bindValue(":track_id", trackID);
-                queryInsertIntoPlaylistTracks.bindValue(":position", position++);
-
-                if (!queryInsertIntoPlaylistTracks.exec()) {
-                    LOG_FAILED_QUERY(queryInsertIntoPlaylistTracks)
-                            << "playlistID:" << playlistID
-                            << "trackID:" << trackID
-                            << "trackIndex:" << position - 1;
-
-                    return false;
-                }
-            }
+        const QMap<uint32_t, uint32_t> emptyPlaylistTracks;
+        const auto& playlistTracks = playlistTracksIt != playlistTrackMap.constEnd()
+                ? playlistTracksIt.value()
+                : emptyPlaylistTracks;
+        if (!mixxx::rekordbox::importPlaylistTracks(
+                    database, playlistID, playlistTracks, device)) {
+            return false;
         }
 
         if (playlistFolderIt.value()) {
@@ -1004,69 +949,113 @@ void clearDeviceTables(QSqlDatabase& database, const QString& device) {
     transaction.commit();
 }
 
-void setMemoryCue(TrackPointer track,
+} // anonymous namespace
+
+namespace mixxx::rekordbox {
+
+bool importPlaylistTracks(QSqlDatabase& database,
+        int playlistID,
+        const QMap<uint32_t, uint32_t>& playlistTracks,
+        const QString& device) {
+    QSqlQuery finderQuery(database);
+    if (!finderQuery.prepare(
+                "select id from rekordbox_library where rb_id=:rb_id and device=:device")) {
+        LOG_FAILED_QUERY(finderQuery)
+                << "playlistID:" << playlistID
+                << "device:" << device;
+        return false;
+    }
+
+    QSqlQuery insertQuery(database);
+    if (!insertQuery.prepare(
+                "INSERT INTO rekordbox_playlist_tracks "
+                "(playlist_id, track_id, position) "
+                "VALUES (:playlist_id, :track_id, :position)")) {
+        LOG_FAILED_QUERY(insertQuery)
+                << "playlistID:" << playlistID;
+        return false;
+    }
+
+    int position = 1;
+    for (auto trackIt = playlistTracks.cbegin(); trackIt != playlistTracks.cend();
+            ++trackIt) {
+        const uint32_t rbTrackID = trackIt.value();
+        finderQuery.bindValue(":rb_id", rbTrackID);
+        finderQuery.bindValue(":device", device);
+
+        if (!finderQuery.exec()) {
+            LOG_FAILED_QUERY(finderQuery)
+                    << "rbTrackID:" << rbTrackID
+                    << "device:" << device;
+            return false;
+        }
+
+        if (!finderQuery.next()) {
+            if (finderQuery.lastError().isValid()) {
+                LOG_FAILED_QUERY(finderQuery)
+                        << "rbTrackID:" << rbTrackID
+                        << "device:" << device;
+                return false;
+            }
+            qWarning() << "Rekordbox playlist track was not found"
+                       << "rbTrackID:" << rbTrackID
+                       << "device:" << device;
+            continue;
+        }
+
+        const int trackID = finderQuery.value(finderQuery.record().indexOf("id")).toInt();
+        if (!isValidDatabaseId(trackID)) {
+            qWarning() << "Rekordbox playlist track has an invalid ID"
+                       << trackID << "rbTrackID:" << rbTrackID
+                       << "device:" << device;
+            continue;
+        }
+
+        insertQuery.bindValue(":playlist_id", playlistID);
+        insertQuery.bindValue(":track_id", trackID);
+        insertQuery.bindValue(":position", position);
+
+        if (!insertQuery.exec()) {
+            LOG_FAILED_QUERY(insertQuery)
+                    << "playlistID:" << playlistID
+                    << "trackID:" << trackID
+                    << "trackIndex:" << position;
+            return false;
+        }
+        ++position;
+    }
+    return true;
+}
+
+void importMemoryCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
-        int id,
         const QString& label,
         mixxx::RgbColor::optional_t color) {
-    CuePointer pCue;
-
-    mixxx::CueType type = mixxx::CueType::Memory;
-    if (endPosition.isValid()) {
-        type = mixxx::CueType::Loop;
-        // Only looping cues go to hot cues
-        const QList<CuePointer> cuePoints = track->getCuePoints();
-        for (const CuePointer& trackCue : cuePoints) {
-            if (trackCue->getHotCue() == id) {
-                pCue = trackCue;
-                break;
-            }
-        }
-    }
-
-    if (pCue) {
-        pCue->setStartAndEndPosition(startPosition, endPosition);
-    } else {
-        pCue = track->createAndAddCue(
-                type,
-                Cue::kNoHotCue,
-                startPosition,
-                startPosition);
-    }
+    const mixxx::CueType type = endPosition.isValid()
+            ? mixxx::CueType::Loop
+            : mixxx::CueType::Memory;
+    CuePointer pCue = track->createAndAddCue(
+            type,
+            Cue::kNoHotCue,
+            startPosition,
+            endPosition);
     pCue->setLabel(label);
     if (color) {
         pCue->setColor(*color);
     }
 }
 
-void setHotCue(TrackPointer track,
+void importHotCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
         int id,
         const QString& label,
         mixxx::RgbColor::optional_t color) {
-    CuePointer pCue;
-    const QList<CuePointer> cuePoints = track->getCuePoints();
-    for (const CuePointer& trackCue : cuePoints) {
-        if (trackCue->getHotCue() == id) {
-            pCue = trackCue;
-            break;
-        }
-    }
-
-    mixxx::CueType type = mixxx::CueType::HotCue;
-    if (endPosition.isValid()) {
-        type = mixxx::CueType::Loop;
-        // Only looping cues go to hot cues
-        const QList<CuePointer> cuePoints = track->getCuePoints();
-        for (const CuePointer& trackCue : cuePoints) {
-            if (trackCue->getHotCue() == id) {
-                pCue = trackCue;
-                break;
-            }
-        }
-    }
+    CuePointer pCue = track->findHotcueByIndex(id);
+    const mixxx::CueType type = endPosition.isValid()
+            ? mixxx::CueType::Loop
+            : mixxx::CueType::HotCue;
 
     if (pCue) {
         pCue->setStartAndEndPosition(startPosition, endPosition);
@@ -1082,6 +1071,10 @@ void setHotCue(TrackPointer track,
         pCue->setColor(*color);
     }
 }
+
+} // namespace mixxx::rekordbox
+
+namespace {
 
 void readAnalyze(TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
@@ -1109,8 +1102,6 @@ void readAnalyze(TrackPointer track,
         const double sampleRateKhz = sampleRate / 1000.0;
 
         QList<memory_cue_loop_t> memoryCuesAndLoops;
-        int lastHotCueIndex = 0;
-
         for (const auto& section : *anlz.sections()) {
             if (!section || !section->body()) {
                 continue;
@@ -1194,10 +1185,7 @@ void readAnalyze(TrackPointer track,
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
                         int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
-                        if (hotCueIndex > lastHotCueIndex) {
-                            lastHotCueIndex = hotCueIndex;
-                        }
-                        setHotCue(
+                        mixxx::rekordbox::importHotCue(
                                 track,
                                 position,
                                 mixxx::audio::kInvalidFramePos,
@@ -1264,10 +1252,7 @@ void readAnalyze(TrackPointer track,
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
                         int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
-                        if (hotCueIndex > lastHotCueIndex) {
-                            lastHotCueIndex = hotCueIndex;
-                        }
-                        setHotCue(track,
+                        mixxx::rekordbox::importHotCue(track,
                                 position,
                                 mixxx::audio::kInvalidFramePos,
                                 hotCueIndex,
@@ -1289,7 +1274,7 @@ void readAnalyze(TrackPointer track,
         }
 
         if (memoryCuesAndLoops.size() > 0) {
-            std::sort(memoryCuesAndLoops.begin(),
+            std::stable_sort(memoryCuesAndLoops.begin(),
                     memoryCuesAndLoops.end(),
                     [](const memory_cue_loop_t& a, const memory_cue_loop_t& b)
                             -> bool { return a.startPosition < b.startPosition; });
@@ -1319,12 +1304,10 @@ void readAnalyze(TrackPointer track,
                     // here will be usable For 2.3, Mixxx treats them as hotcues
                     // and the first one will be loaded as the single loop Mixxx
                     // supports
-                    lastHotCueIndex++;
-                    setMemoryCue(
+                    mixxx::rekordbox::importMemoryCue(
                             track,
                             memoryCueOrLoop.startPosition,
                             memoryCueOrLoop.endPosition,
-                            lastHotCueIndex,
                             memoryCueOrLoop.comment,
                             memoryCueOrLoop.color);
                 }

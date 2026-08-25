@@ -46,6 +46,22 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
         return availableSamples;
     }
 
+    NextSamplesResult getNextSamplesWithRetry(double rate,
+            CSAMPLE* pBuffer,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount) override {
+        m_retryRequestedSamples.push_back(requestedSamples);
+        const int retryCall = m_retryReadCallCount++;
+        if (retryCall == m_retryPendingCall) {
+            return {0, true};
+        }
+        if (m_retryPendingCalls > 0) {
+            --m_retryPendingCalls;
+            return {0, true};
+        }
+        return {getNextSamples(rate, pBuffer, requestedSamples, channelCount), false};
+    }
+
     void setAvailableSamples(SINT samples) {
         m_availableSamples = samples;
     }
@@ -59,6 +75,17 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
         m_rates.clear();
         m_requestedSamples = 0;
         m_returnedSamples = 0;
+        m_retryReadCallCount = 0;
+        m_retryRequestedSamples.clear();
+        m_retryPendingCall = -1;
+    }
+
+    void setRetryPendingCalls(SINT calls) {
+        m_retryPendingCalls = calls;
+    }
+
+    void setRetryPendingCall(int call) {
+        m_retryPendingCall = call;
     }
 
     SINT requestedSamples() const {
@@ -73,6 +100,10 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
         return m_rates;
     }
 
+    const std::vector<SINT>& retryRequestedSamples() const {
+        return m_retryRequestedSamples;
+    }
+
   private:
     std::vector<double> m_rates;
     SINT m_availableSamples = std::numeric_limits<SINT>::max();
@@ -80,6 +111,10 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
     SINT m_returnedSamples = 0;
     double m_toneFrequencyHz = 440.0;
     double m_toneSampleRate = kSampleRate;
+    SINT m_retryPendingCalls = 0;
+    int m_retryReadCallCount = 0;
+    int m_retryPendingCall = -1;
+    std::vector<SINT> m_retryRequestedSamples;
 };
 
 struct ScaleRun {
@@ -169,6 +204,71 @@ std::vector<CSAMPLE> collectTone(EngineBufferScaleSignalSmith* pScaler,
 }
 
 } // namespace
+
+TEST(EngineBufferScaleSignalSmithTest, RetriesTransientUnavailableInput) {
+    DeterministicReadAheadManager readAhead;
+    EngineBufferScaleSignalSmith scaler(&readAhead);
+    scaler.setSignal(mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::ChannelCount::stereo());
+    setRate(&scaler, 1.0);
+    readAhead.setRetryPendingCalls(1);
+
+    std::vector<CSAMPLE> output(kOutputSamples, 123.0f);
+    EXPECT_DOUBLE_EQ(0.0, scaler.scaleBuffer(output.data(), output.size()));
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
+    EXPECT_EQ(0, readAhead.requestedSamples());
+
+    const auto resumed = run(&scaler, &readAhead);
+    EXPECT_GT(resumed.returnedSourceFrames, 0.0);
+    EXPECT_EQ(resumed.requestedSamples, resumed.returnedSamples);
+    EXPECT_TRUE(allFinite(resumed.output));
+}
+
+TEST(EngineBufferScaleSignalSmithTest, RetryReusesPendingFractionalInputRequest) {
+    DeterministicReadAheadManager readAhead;
+    EngineBufferScaleSignalSmith scaler(&readAhead);
+    scaler.setSignal(mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::ChannelCount::stereo());
+    setRate(&scaler, 1.003);
+    readAhead.setRetryPendingCall(1);
+
+    std::vector<CSAMPLE> output(kOutputSamples, 123.0f);
+    EXPECT_DOUBLE_EQ(0.0, scaler.scaleBuffer(output.data(), output.size()));
+    ASSERT_EQ(2u, readAhead.retryRequestedSamples().size());
+    const SINT pendingRequest = readAhead.retryRequestedSamples().back();
+
+    const auto resumed = run(&scaler, &readAhead);
+    ASSERT_EQ(3u, readAhead.retryRequestedSamples().size());
+    EXPECT_EQ(pendingRequest, readAhead.retryRequestedSamples().back());
+    EXPECT_GT(resumed.returnedSourceFrames, 0.0);
+    EXPECT_TRUE(allFinite(resumed.output));
+}
+
+TEST(EngineBufferScaleSignalSmithTest, RetryReusesPendingLatencyCorrectionRequest) {
+    DeterministicReadAheadManager readAhead;
+    EngineBufferScaleSignalSmith scaler(&readAhead);
+    scaler.setSignal(mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::ChannelCount::stereo());
+    setRate(&scaler, 1.0);
+    ASSERT_GT(run(&scaler, &readAhead).returnedSourceFrames, 0.0);
+
+    readAhead.resetStats();
+    setRate(&scaler, 3.0);
+    readAhead.setRetryPendingCall(0);
+
+    std::vector<CSAMPLE> output(kOutputSamples, 123.0f);
+    EXPECT_DOUBLE_EQ(0.0, scaler.scaleBuffer(output.data(), output.size()));
+    ASSERT_EQ(1u, readAhead.retryRequestedSamples().size());
+    const SINT pendingRequest = readAhead.retryRequestedSamples().back();
+
+    const auto resumed = run(&scaler, &readAhead);
+    ASSERT_EQ(2u, readAhead.retryRequestedSamples().size());
+    EXPECT_EQ(pendingRequest, readAhead.retryRequestedSamples().back());
+    EXPECT_GT(resumed.returnedSourceFrames, 0.0);
+    EXPECT_TRUE(allFinite(resumed.output));
+}
 
 TEST(EngineBufferScaleSignalSmithTest, PrerollRateChangeFractionalAndRepeatable) {
     DeterministicReadAheadManager firstReadAhead;
