@@ -2968,7 +2968,7 @@ if(STEM)
   if(STEM_CONVERSION)
     target_compile_definitions(mixxx-lib PUBLIC __STEM_CONVERSION__)
 
-    target_link_libraries(mixxx-lib PRIVATE ${MIXXX_ONNX_RUNTIME_TARGET})
+    target_link_libraries(mixxx-lib PUBLIC ${MIXXX_ONNX_RUNTIME_TARGET})
 
     target_sources(
       mixxx-lib
