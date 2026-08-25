@@ -22,6 +22,8 @@ constexpr SINT kOutputSamples = kOutputFrames * kChannels;
 
 class DeterministicReadAheadManager final : public ReadAheadManager {
   public:
+    using ReadAheadManager::getNextSamplesWithRetry;
+
     SINT getNextSamples(double rate,
             CSAMPLE* pBuffer,
             SINT requestedSamples,
