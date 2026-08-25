@@ -3631,6 +3631,28 @@ if(KEYFINDER)
   target_compile_definitions(mixxx-lib PUBLIC __KEYFINDER__)
 endif()
 
+# SignalSmith
+option(
+  SIGNALSMITH
+  "Enable the SignalSmith Stretch engine for pitch-bending (experimental)"
+  ON
+)
+if(SIGNALSMITH)
+  add_subdirectory(lib/signalsmith)
+  target_link_libraries(mixxx-lib PUBLIC signalsmith-stretch)
+  target_sources(
+    mixxx-lib
+    PRIVATE src/engine/bufferscalers/enginebufferscalesignalsmith.cpp
+  )
+  target_compile_definitions(mixxx-lib PUBLIC __SIGNALSMITH__)
+  if(BUILD_TESTING)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/enginebufferscalesignalsmithtest.cpp
+    )
+  endif()
+endif()
+
 # FLAC
 find_package(FLAC REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE FLAC::FLAC)
