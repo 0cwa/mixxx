@@ -2356,6 +2356,30 @@ cmake_dependent_option(
   OFF
 )
 
+if(MIXXX_INSTALL_RUNTIME_DEPENDENCIES)
+  # CMake's runtime dependency scanner does not use CMAKE_PREFIX_PATH when
+  # resolving ELF dependencies. Pass the library directories from custom
+  # prefixes so user-local installs can stage optional libraries such as
+  # ONNX Runtime.
+  set(MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES "")
+  foreach(MIXXX_RUNTIME_PREFIX IN LISTS CMAKE_PREFIX_PATH)
+    foreach(
+      MIXXX_RUNTIME_LIBDIR
+      "${MIXXX_RUNTIME_PREFIX}/lib"
+      "${MIXXX_RUNTIME_PREFIX}/lib64"
+    )
+      if(IS_DIRECTORY "${MIXXX_RUNTIME_LIBDIR}")
+        list(
+          APPEND
+          MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES
+          "${MIXXX_RUNTIME_LIBDIR}"
+        )
+      endif()
+    endforeach()
+  endforeach()
+  list(REMOVE_DUPLICATES MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES)
+endif()
+
 if(WIN32)
   target_compile_definitions(mixxx-lib PUBLIC __WINDOWS__)
 
