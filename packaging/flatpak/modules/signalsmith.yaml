@@ -1,0 +1,23 @@
+name: signalsmith
+buildsystem: simple
+build-commands:
+  - install -Dm644 signalsmith-stretch/signalsmith-stretch.h ${FLATPAK_DEST}/lib/signalsmith-stretch/signalsmith-stretch.h
+  - install -Dm644 signalsmith-stretch/include/signalsmith-stretch/signalsmith-stretch.h ${FLATPAK_DEST}/lib/signalsmith-stretch/include/signalsmith-stretch/signalsmith-stretch.h
+  - install -Dm644 signalsmith-linear/fft.h signalsmith-linear/linear.h signalsmith-linear/stft.h -t ${FLATPAK_DEST}/lib/signalsmith-linear
+  - install -Dm644 signalsmith-linear/platform/*.h -t ${FLATPAK_DEST}/lib/signalsmith-linear/platform
+  - install -Dm644 signalsmith-linear/include/signalsmith-linear/fft.h signalsmith-linear/include/signalsmith-linear/linear.h signalsmith-linear/include/signalsmith-linear/stft.h -t ${FLATPAK_DEST}/lib/signalsmith-linear/include/signalsmith-linear
+  - install -Dm644 signalsmith-stretch/LICENSE.txt ${FLATPAK_DEST}/share/licenses/signalsmith-stretch/LICENSE.txt
+  - install -Dm644 signalsmith-linear/LICENSE.txt ${FLATPAK_DEST}/share/licenses/signalsmith-linear/LICENSE.txt
+  - install -Dm644 SignalsmithConfig.cmake ${FLATPAK_DEST}/lib/cmake/signalsmith/SignalsmithConfig.cmake
+sources:
+  - type: archive
+    url: https://github.com/Signalsmith-Audio/signalsmith-stretch/archive/57b93f4e9206a089a45387eaa39bdc9f310d3308.tar.gz
+    sha256: ad02e24334438b203e81d44f6c9906f3c6773e90a4ea923bb3e73d15697187d6
+    dest: signalsmith-stretch
+  - type: archive
+    url: https://github.com/Signalsmith-Audio/linear/archive/5668673560146a9cfe38c25315071e3fd68c8317.tar.gz
+    sha256: 91d09ff4924c6958c70b2d182ec2553526fc301176652111b27cb08fc03f532e
+    dest: signalsmith-linear
+  - type: file
+    path: ../../../cmake/patches/signalsmith/SignalsmithConfig.cmake
+    dest-filename: SignalsmithConfig.cmake

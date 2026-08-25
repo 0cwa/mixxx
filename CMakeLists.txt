@@ -3619,46 +3619,108 @@ option(
   "Enable the SignalSmith Stretch engine for pitch-bending (experimental)"
   ON
 )
+option(
+  SIGNALSMITH_FETCH_FALLBACK
+  "Fetch Signalsmith Stretch from pinned archives when no package is found"
+  ON
+)
 if(SIGNALSMITH)
-  set(
-    SIGNALSMITH_INSTALL_DIR
-    "${CMAKE_CURRENT_BINARY_DIR}/lib/signalsmith-install"
-  )
-  set(
-    SIGNALSMITH_INCLUDE_DIRS
-    "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-    "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
-  )
-  ExternalProject_Add(
-    signalsmith-stretch
-    GIT_REPOSITORY
-      "https://github.com/Signalsmith-Audio/signalsmith-stretch.git"
-    GIT_TAG "57b93f4e9206a089a45387eaa39bdc9f310d3308"
-    PREFIX "signalsmith-stretch"
-    INSTALL_DIR "${SIGNALSMITH_INSTALL_DIR}"
-    LIST_SEPARATOR "|"
-    CMAKE_ARGS
-      -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
-      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-      -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-      -DCMAKE_PREFIX_PATH=${PIPE_DELIMITED_CMAKE_PREFIX_PATH}
-      -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
-      -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-      -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -$<IF:$<BOOL:${CMAKE_ANDROID_NDK}>,D,U>CMAKE_ANDROID_NDK=${CMAKE_ANDROID_NDK}
-      -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
-      -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
-    BUILD_COMMAND ${CMAKE_COMMAND} --build .
-    INSTALL_COMMAND ${CMAKE_COMMAND} -E true
-    EXCLUDE_FROM_ALL TRUE
-  )
+  set(SIGNALSMITH_TARGET "")
+  set(SIGNALSMITH_FETCH_TARGET "")
 
-  add_dependencies(mixxx-lib signalsmith-stretch)
-  target_include_directories(
-    mixxx-lib
-    SYSTEM
-    PUBLIC ${SIGNALSMITH_INCLUDE_DIRS}
-  )
+  find_package(Signalsmith CONFIG QUIET)
+  if(Signalsmith_FOUND)
+    if(NOT TARGET Signalsmith::Stretch)
+      message(
+        FATAL_ERROR
+        "The Signalsmith package was found but does not provide Signalsmith::Stretch."
+      )
+    endif()
+    set(SIGNALSMITH_TARGET Signalsmith::Stretch)
+    message(STATUS "Found Signalsmith Stretch package")
+  elseif(SIGNALSMITH_FETCH_FALLBACK)
+    set(SIGNALSMITH_STRETCH_COMMIT "57b93f4e9206a089a45387eaa39bdc9f310d3308")
+    set(
+      SIGNALSMITH_STRETCH_URL_HASH
+      "ad02e24334438b203e81d44f6c9906f3c6773e90a4ea923bb3e73d15697187d6"
+    )
+    set(SIGNALSMITH_LINEAR_COMMIT "5668673560146a9cfe38c25315071e3fd68c8317")
+    set(
+      SIGNALSMITH_LINEAR_URL_HASH
+      "91d09ff4924c6958c70b2d182ec2553526fc301176652111b27cb08fc03f532e"
+    )
+    set(
+      SIGNALSMITH_STRETCH_SOURCE_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch"
+    )
+    set(
+      SIGNALSMITH_STRETCH_BINARY_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build"
+    )
+    set(
+      SIGNALSMITH_LINEAR_INCLUDE_DIR
+      "${SIGNALSMITH_STRETCH_BINARY_DIR}/_deps/signalsmith-linear-src/include"
+    )
+    ExternalProject_Add(
+      signalsmith-stretch-fetch
+      URL
+        "https://github.com/Signalsmith-Audio/signalsmith-stretch/archive/${SIGNALSMITH_STRETCH_COMMIT}.tar.gz"
+      URL_HASH SHA256=${SIGNALSMITH_STRETCH_URL_HASH}
+      DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/downloads"
+      DOWNLOAD_NAME "signalsmith-stretch-${SIGNALSMITH_STRETCH_COMMIT}.tar.gz"
+      PREFIX "signalsmith-stretch"
+      SOURCE_DIR "${SIGNALSMITH_STRETCH_SOURCE_DIR}"
+      BINARY_DIR "${SIGNALSMITH_STRETCH_BINARY_DIR}"
+      LIST_SEPARATOR "|"
+      PATCH_COMMAND
+        ${CMAKE_COMMAND}
+        -DMIXXX_SIGNALSMITH_STRETCH_CMAKE=<SOURCE_DIR>/CMakeLists.txt
+        -DMIXXX_SIGNALSMITH_LINEAR_COMMIT=${SIGNALSMITH_LINEAR_COMMIT}
+        -DMIXXX_SIGNALSMITH_LINEAR_URL_HASH=${SIGNALSMITH_LINEAR_URL_HASH} -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/signalsmith/patch-stretch-linear.cmake
+      CMAKE_ARGS
+        -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DCMAKE_PREFIX_PATH=${PIPE_DELIMITED_CMAKE_PREFIX_PATH}
+        -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
+        -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+        -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+        -$<IF:$<BOOL:${CMAKE_ANDROID_NDK}>,D,U>CMAKE_ANDROID_NDK=${CMAKE_ANDROID_NDK}
+        -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
+        -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+      BUILD_COMMAND ${CMAKE_COMMAND} --build .
+      INSTALL_COMMAND ${CMAKE_COMMAND} -E true
+      EXCLUDE_FROM_ALL TRUE
+    )
+
+    add_library(signalsmith-stretch INTERFACE)
+    target_include_directories(
+      signalsmith-stretch
+      SYSTEM
+      INTERFACE
+        "${SIGNALSMITH_LINEAR_INCLUDE_DIR}"
+        "${SIGNALSMITH_STRETCH_SOURCE_DIR}"
+    )
+    add_dependencies(signalsmith-stretch signalsmith-stretch-fetch)
+    set(SIGNALSMITH_TARGET signalsmith-stretch)
+    set(SIGNALSMITH_FETCH_TARGET signalsmith-stretch-fetch)
+    message(
+      STATUS
+      "Signalsmith: using pinned Stretch archive ${SIGNALSMITH_STRETCH_COMMIT}"
+    )
+  else()
+    message(
+      FATAL_ERROR
+      "SIGNALSMITH is ON but no Signalsmith package was found and "
+      "SIGNALSMITH_FETCH_FALLBACK is OFF. Install a Signalsmith package or "
+      "enable the pinned archive fallback."
+    )
+  endif()
+
+  target_link_libraries(mixxx-lib PRIVATE ${SIGNALSMITH_TARGET})
+  if(SIGNALSMITH_FETCH_TARGET)
+    add_dependencies(mixxx-lib ${SIGNALSMITH_FETCH_TARGET})
+  endif()
   target_sources(
     mixxx-lib
     PRIVATE src/engine/bufferscalers/enginebufferscalesignalsmith.cpp
@@ -4125,12 +4187,10 @@ if(QML)
   )
 
   if(SIGNALSMITH)
-    add_dependencies(mixxx-qml-lib signalsmith-stretch)
-    target_include_directories(
-      mixxx-qml-lib
-      SYSTEM
-      PUBLIC ${SIGNALSMITH_INCLUDE_DIRS}
-    )
+    target_link_libraries(mixxx-qml-lib PRIVATE ${SIGNALSMITH_TARGET})
+    if(SIGNALSMITH_FETCH_TARGET)
+      add_dependencies(mixxx-qml-lib ${SIGNALSMITH_FETCH_TARGET})
+    endif()
     target_compile_definitions(mixxx-qml-lib PUBLIC __SIGNALSMITH__)
   endif()
 endif()

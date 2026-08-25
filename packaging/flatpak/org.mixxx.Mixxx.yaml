@@ -61,6 +61,7 @@ modules:
   - modules/eigen3.yaml
   - modules/pffft.yaml
   - modules/bungee.yaml
+  - modules/signalsmith.yaml
   - name: mixxx
     buildsystem: cmake-ninja
     run-tests: true
@@ -75,7 +76,8 @@ modules:
       - -DBUILD_BENCH=OFF
       - -DBUILD_TESTING=ON
       - -DBUNGEE=ON
-      - -DSIGNALSMITH=OFF
+      - -DSIGNALSMITH=ON
+      - -DSIGNALSMITH_FETCH_FALLBACK=OFF
     sources:
       - type: dir
         path: ../../
