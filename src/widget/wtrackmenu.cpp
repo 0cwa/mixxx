@@ -59,7 +59,6 @@
 #include "stems/dlgstemconversion.h"
 #include "stems/stemconversionmanager.h"
 #include "widget/dlgstemconversionoptions.h"
-#include "widget/wstemconversionbutton.h"
 #endif
 
 #ifdef __STEM_CONVERSION__

@@ -2993,7 +2993,6 @@ if(STEM)
         src/stems/stemconverter.cpp
         src/stems/stemconversionmanager.cpp
         src/stems/dlgstemconversion.cpp
-        src/widget/wstemconversionbutton.cpp
         src/widget/dlgstemconversionoptions.cpp
     )
   endif()
