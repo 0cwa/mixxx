@@ -34,7 +34,8 @@ TrackPointer trackWithMemoryCues(std::initializer_list<double> cueSeconds) {
 
 int memoryCueCount(const TrackPointer& pTrack) {
     int count = 0;
-    for (const auto& pCue : pTrack->getCuePoints()) {
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const auto& pCue : cuePoints) {
         if (pCue && pCue->getType() == mixxx::CueType::Memory) {
             ++count;
         }
@@ -43,7 +44,8 @@ int memoryCueCount(const TrackPointer& pTrack) {
 }
 
 bool hasMemoryCueAt(const TrackPointer& pTrack, const mixxx::audio::FramePos& position) {
-    for (const auto& pCue : pTrack->getCuePoints()) {
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const auto& pCue : cuePoints) {
         if (pCue && pCue->getType() == mixxx::CueType::Memory &&
                 pCue->getStartAndEndPosition().startPosition == position) {
             return true;
@@ -192,7 +194,7 @@ TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
 
 TEST(Seek30WorkerStateTest, ClearNearestPrefersCueAtOrBeforeOnTie) {
     Seek30WorkerState state;
-    const auto pTrack = trackWithMemoryCues({9.0, 11.0});
+    const auto pTrack = trackWithMemoryCues({9.5, 10.5});
     state.trackLoaded(pTrack);
     const auto generation = state.generation();
 
@@ -200,8 +202,8 @@ TEST(Seek30WorkerStateTest, ClearNearestPrefersCueAtOrBeforeOnTie) {
             {Seek30Operation::ClearNearest, generation}, inputsAt(10.0));
 
     EXPECT_EQ(1, memoryCueCount(pTrack));
-    EXPECT_FALSE(hasMemoryCueAt(pTrack, frameAtSeconds(9.0)));
-    EXPECT_TRUE(hasMemoryCueAt(pTrack, frameAtSeconds(11.0)));
+    EXPECT_FALSE(hasMemoryCueAt(pTrack, frameAtSeconds(9.5)));
+    EXPECT_TRUE(hasMemoryCueAt(pTrack, frameAtSeconds(10.5)));
 }
 
 TEST(Seek30WorkerStateTest, SeekPreviousUsesOnePointFiveSecondGate) {
