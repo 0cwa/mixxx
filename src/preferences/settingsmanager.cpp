@@ -1,75 +1,14 @@
 #include "preferences/settingsmanager.h"
 
 #include <QDir>
-#include <array>
 
 #include "control/control.h"
-#include "engine/enginebuffer.h"
 #include "preferences/upgrade.h"
 #include "util/assert.h"
 
-namespace {
-
-const ConfigKey kGlobalKeylockEngineKey(
-        QStringLiteral("[App]"),
-        QStringLiteral("keylock_engine"));
-
-constexpr std::array<const char*, 4> kDeckGroups = {
-        "[Channel1]",
-        "[Channel2]",
-        "[Channel3]",
-        "[Channel4]",
-};
-
-EngineBuffer::KeylockEngine defaultStableKeylockEngine() {
-#ifdef __RUBBERBAND__
-    return EngineBuffer::KeylockEngine::RubberBandFaster;
-#else
-    return EngineBuffer::KeylockEngine::SoundTouch;
+#ifdef __BUNGEE__
+#include "engine/enginebuffer.h"
 #endif
-}
-
-bool isStableKeylockEngine(EngineBuffer::KeylockEngine engine) {
-    switch (engine) {
-    case EngineBuffer::KeylockEngine::SoundTouch:
-        return true;
-#ifdef __RUBBERBAND__
-    case EngineBuffer::KeylockEngine::RubberBandFaster:
-    case EngineBuffer::KeylockEngine::RubberBandFiner:
-        return true;
-#endif
-    default:
-        return false;
-    }
-}
-
-EngineBuffer::KeylockEngine defaultKeylockEngineForMigration(
-        const UserSettingsPointer& pSettings) {
-    if (pSettings->exists(kGlobalKeylockEngineKey)) {
-        const auto globalKeylockEngine =
-                pSettings->getValue<EngineBuffer::KeylockEngine>(
-                        kGlobalKeylockEngineKey,
-                        defaultStableKeylockEngine());
-        if (isStableKeylockEngine(globalKeylockEngine)) {
-            return globalKeylockEngine;
-        }
-    }
-    return defaultStableKeylockEngine();
-}
-
-void initializePerDeckKeylockEngines(const UserSettingsPointer& pSettings) {
-    const auto keylockEngine = defaultKeylockEngineForMigration(pSettings);
-    for (const char* group : kDeckGroups) {
-        const ConfigKey keylockEngineKey(
-                QString::fromLatin1(group),
-                QStringLiteral("keylock_engine"));
-        if (!pSettings->exists(keylockEngineKey)) {
-            pSettings->setValue(keylockEngineKey, keylockEngine);
-        }
-    }
-}
-
-} // namespace
 
 SettingsManager::SettingsManager(const QString& settingsPath)
         : m_bShouldRescanLibrary(false) {
@@ -88,7 +27,18 @@ SettingsManager::SettingsManager(const QString& settingsPath)
         m_pSettings = UserSettingsPointer(new UserSettings(""));
     }
 
-    initializePerDeckKeylockEngines(m_pSettings);
+#ifdef __BUNGEE__
+    if (!settingsDirectoryExistedBeforeStartup) {
+        const ConfigKey keylockEngineKey(
+                QStringLiteral("[App]"),
+                QStringLiteral("keylock_engine"));
+        if (!m_pSettings->exists(keylockEngineKey)) {
+            m_pSettings->setValue(
+                    keylockEngineKey,
+                    EngineBuffer::KeylockEngine::Bungee);
+        }
+    }
+#endif
 
     m_bShouldRescanLibrary = upgrader.rescanLibrary();
 

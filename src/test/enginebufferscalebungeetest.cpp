@@ -961,58 +961,6 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
                "discardBufferedInputBefore(framePosition).";
 }
 
-TEST_F(EngineBufferScaleBungeeBufferWindowTest,
-        DiscardWithGapBeyondEndConsumesSkippedReadAheadFrames) {
-    seedBufferWindow(/*begin=*/100, /*end=*/200);
-
-    constexpr SINT kFramePosition = 10000;
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
-
-    EXPECT_EQ((kFramePosition - 200) * 2, m_pReadAhead->samplesRead())
-            << "Full discard must drain only the skipped gap after the old "
-               "buffer tail from ReadAheadManager before the local window is "
-               "advanced to the future frame.";
-    EXPECT_GT(m_pReadAhead->readCallCount(), 0);
-    EXPECT_EQ(kFramePosition, bufferBegin());
-    EXPECT_EQ(kFramePosition, bufferEnd());
-}
-
-TEST_F(EngineBufferScaleBungeeBufferWindowTest,
-        DiscardWithGapBeyondEndRetriesAfterTransientZeroRead) {
-    seedBufferWindow(/*begin=*/100, /*end=*/200);
-
-    constexpr SINT kFramePosition = 1000;
-    constexpr SINT kGapFrames = kFramePosition - 200;
-    constexpr SINT kGapSamples = kGapFrames * 2;
-    m_pReadAhead->setReadSampleCounts({0, kGapSamples});
-
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
-
-    EXPECT_EQ(kGapSamples, m_pReadAhead->samplesRead())
-            << "A single zero-frame read at a trigger must be retried before "
-               "the discarded gap is considered incomplete.";
-    EXPECT_EQ(2, m_pReadAhead->readCallCount());
-    EXPECT_EQ(kFramePosition, bufferBegin());
-    EXPECT_EQ(kFramePosition, bufferEnd());
-}
-
-TEST_F(EngineBufferScaleBungeeBufferWindowTest,
-        DiscardWithGapBeyondEndConsumesPartialReadsBeforeCompleting) {
-    seedBufferWindow(/*begin=*/100, /*end=*/200);
-
-    constexpr SINT kFramePosition = 1000;
-    constexpr SINT kGapFrames = kFramePosition - 200;
-    constexpr SINT kGapSamples = kGapFrames * 2;
-    m_pReadAhead->setReadSampleCounts({200, 600, 800});
-
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
-
-    EXPECT_EQ(kGapSamples, m_pReadAhead->samplesRead());
-    EXPECT_EQ(3, m_pReadAhead->readCallCount());
-    EXPECT_EQ(kFramePosition, bufferBegin());
-    EXPECT_EQ(kFramePosition, bufferEnd());
-}
-
 // sanity baseline: framePosition still inside buffer must NOT
 // over-jump.  Guards against an accidental "always set begin = framePosition"
 // regression of the in-window case.

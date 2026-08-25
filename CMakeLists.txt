@@ -2925,7 +2925,6 @@ if(BUILD_TESTING)
     src/test/enginebufferscalelineartest.cpp
     $<$<BOOL:${BUNGEE}>:src/test/enginebufferscalebungeetest.cpp>
     $<$<BOOL:${BUNGEE}>:src/test/enginebufferbungeetest.cpp>
-    $<$<BOOL:${SIGNALSMITH}>:src/test/enginebufferscalesignalsmithtest.cpp>
     src/test/enginebufferalignmenttest.cpp
     src/test/visualplaypositiontest.cpp
     src/test/enginebuffertest.cpp
@@ -3046,6 +3045,7 @@ if(BUILD_TESTING)
         src/test/controller_mapping_file_handler_test.cpp
         src/test/controllerrenderingengine_test.cpp
         src/test/qmlcontrolproxytest.cpp
+        src/test/qmleffectsproxytest.cpp
         src/test/qmlkeyutilstest.cpp
         src/test/qmlskincontrolcreatortest.cpp
         src/test/themeqml_test.cpp
@@ -3613,59 +3613,6 @@ if(KEYFINDER)
   target_compile_definitions(mixxx-lib PUBLIC __KEYFINDER__)
 endif()
 
-# SignalSmith
-option(
-  SIGNALSMITH
-  "Enable the SignalSmith Stretch engine for pitch-bending (experimental)"
-  ON
-)
-if(SIGNALSMITH)
-  set(
-    SIGNALSMITH_INSTALL_DIR
-    "${CMAKE_CURRENT_BINARY_DIR}/lib/signalsmith-install"
-  )
-  set(
-    SIGNALSMITH_INCLUDE_DIRS
-    "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-    "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
-  )
-  ExternalProject_Add(
-    signalsmith-stretch
-    GIT_REPOSITORY
-      "https://github.com/Signalsmith-Audio/signalsmith-stretch.git"
-    GIT_TAG "57b93f4e9206a089a45387eaa39bdc9f310d3308"
-    PREFIX "signalsmith-stretch"
-    INSTALL_DIR "${SIGNALSMITH_INSTALL_DIR}"
-    LIST_SEPARATOR "|"
-    CMAKE_ARGS
-      -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
-      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-      -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-      -DCMAKE_PREFIX_PATH=${PIPE_DELIMITED_CMAKE_PREFIX_PATH}
-      -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
-      -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-      -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -$<IF:$<BOOL:${CMAKE_ANDROID_NDK}>,D,U>CMAKE_ANDROID_NDK=${CMAKE_ANDROID_NDK}
-      -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
-      -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
-    BUILD_COMMAND ${CMAKE_COMMAND} --build .
-    INSTALL_COMMAND ${CMAKE_COMMAND} -E true
-    EXCLUDE_FROM_ALL TRUE
-  )
-
-  add_dependencies(mixxx-lib signalsmith-stretch)
-  target_include_directories(
-    mixxx-lib
-    SYSTEM
-    PUBLIC ${SIGNALSMITH_INCLUDE_DIRS}
-  )
-  target_sources(
-    mixxx-lib
-    PRIVATE src/engine/bufferscalers/enginebufferscalesignalsmith.cpp
-  )
-  target_compile_definitions(mixxx-lib PUBLIC __SIGNALSMITH__)
-endif()
-
 # FLAC
 find_package(FLAC REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE FLAC::FLAC)
@@ -4057,8 +4004,9 @@ if(QML)
       src/qml/qmlcontrolproxy.cpp
       src/qml/qmlcuesmodel.cpp
       src/qml/qmldlgpreferencesproxy.cpp
-      src/qml/qmleffectmanifestparametersmodel.cpp
+      src/qml/qmleffectslotparametersmodel.cpp
       src/qml/qmleffectslotproxy.cpp
+      src/qml/qmleffectunitproxy.cpp
       src/qml/qmleffectsmanagerproxy.cpp
       src/qml/qmlkeyutils.cpp
       src/qml/qmllegacylibraryitem.cpp
@@ -4124,15 +4072,6 @@ if(QML)
     DESTINATION "${MIXXX_INSTALL_DATADIR}"
   )
 
-  if(SIGNALSMITH)
-    add_dependencies(mixxx-qml-lib signalsmith-stretch)
-    target_include_directories(
-      mixxx-qml-lib
-      SYSTEM
-      PUBLIC ${SIGNALSMITH_INCLUDE_DIRS}
-    )
-    target_compile_definitions(mixxx-qml-lib PUBLIC __SIGNALSMITH__)
-  endif()
 endif()
 
 option(DEBUG_ASSERTIONS_FATAL "Fail if debug become true assertions" OFF)
@@ -4879,370 +4818,127 @@ endif()
 # Bungee
 option(BUNGEE "Enable the Bungee engine for pitch-bending" ON)
 option(
-  BUNGEE_FETCH_FALLBACK
-  "Fetch and build Bungee via ExternalProject_Add when no system or vcpkg package is found"
-  ON
-)
-# Bungee version pinned for the ExternalProject_Add source-fetch path.
-# Match the official vcpkg Bungee port version so a future Bungee bump can be
-# coordinated across packaged and source-fetch providers in a single PR.
-set(BUNGEE_FETCH_VERSION "2.4.15")
-set(
-  BUNGEE_FETCH_URL_HASH
-  "aa94ffe8ba49bcb916f454c5221d3480ae880f199e1516de31585924398ca67a"
+  BUNGEE_PETRIFY_DEBUG
+  "Freeze Bungee on fatal signals in Debug builds so a debugger can attach (non-Windows only)"
+  OFF
 )
 if(BUNGEE)
-  # Bungee upstream pins cmake_minimum_required(VERSION 3.30...3.31)
-  # as a policy choice (the actual CMake commands work in 3.21+).  The
-  # ExternalProject_Add fallback patches that minimum down so older host
-  # CMake can build it, but the build is unsupported by Bungee maintainers.
-  if(CMAKE_VERSION VERSION_LESS 3.30)
-    message(
-      WARNING
-      "Bungee upstream declares cmake_minimum_required(VERSION 3.30...3.31). "
-      "You are running CMake ${CMAKE_VERSION}. Mixxx will patch the Bungee "
-      "build to allow this older CMake when using the source fallback, but "
-      "the build is unsupported by the Bungee maintainers. If the Bungee "
-      "build fails, install CMake 3.30 or newer (Kitware PPA on Linux, "
-      "Homebrew on macOS) or use a system/vcpkg Bungee package instead."
+  # pffft library (dependency of bungee)
+  add_library(
+    bungee-pffft
+    STATIC
+    EXCLUDE_FROM_ALL
+    lib/bungee/submodules/pffft/pffft.c
+    lib/bungee/submodules/pffft/fftpack.c
+  )
+  if(NOT MSVC)
+    target_compile_options(
+      bungee-pffft
+      PRIVATE -ffast-math -fno-finite-math-only -fno-exceptions
     )
   endif()
+  if(MSVC)
+    target_compile_definitions(bungee-pffft PRIVATE _USE_MATH_DEFINES)
+  endif()
 
-  # ── Dependency discovery ───────────────────────────────────────────────────
-  # All discovery paths normalize to an imported target named Bungee::Bungee so
-  # the rest of the build is provider-agnostic.  Discovery order:
-  #   1. Upstream Bungee CONFIG package
-  #   2. vcpkg unofficial-bungee (microsoft/vcpkg PR #50120, merged 2026-03-19)
-  #   3. Module discovery via cmake/modules/FindBungee.cmake (pkg-config etc.)
-  #   4. ExternalProject_Add source-fetch fallback (opt-out via
-  #      -DBUNGEE_FETCH_FALLBACK=OFF; fetches Eigen3 + pffft dependencies)
-
-  # 1. Upstream Bungee CONFIG package (preferred; available once Bungee ships
-  #    a proper BungeeConfig.cmake upstream).
-  find_package(Bungee CONFIG QUIET)
-
-  # 2. vcpkg unofficial-bungee exposes unofficial::bungee::bungee; wrap it in
-  #    Bungee::Bungee so downstream code stays provider-agnostic.
-  if(NOT Bungee_FOUND)
-    find_package(unofficial-bungee CONFIG QUIET)
-    if(unofficial-bungee_FOUND AND TARGET unofficial::bungee::bungee)
-      if(NOT TARGET Bungee::Bungee)
-        add_library(Bungee::Bungee INTERFACE IMPORTED)
-        target_link_libraries(
-          Bungee::Bungee
-          INTERFACE unofficial::bungee::bungee
-        )
-      endif()
-      set(Bungee_FOUND TRUE)
-      message(STATUS "Found Bungee via vcpkg unofficial-bungee")
+  # Apply Mixxx-specific patches to bungee.
+  # The MSVC-compatibility patch is Windows-only (removes <unistd.h>, adds
+  # Platform.h).  Do NOT apply it on other platforms: the patch path uses
+  # Mixxx-root-relative paths (lib/bungee/src/…) so it must be run from the
+  # Mixxx source root, not from inside lib/bungee.
+  if(MSVC)
+    find_package(Git)
+    if(Git_FOUND)
+      execute_process(
+        COMMAND
+          ${GIT_EXECUTABLE} apply --ignore-whitespace
+          ${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/0001-MSVC-compatibility.patch
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ERROR_QUIET
+        OUTPUT_QUIET
+      )
     endif()
   endif()
 
-  # 3. Module discovery: pkg-config and system include/library paths.
-  #    FindBungee.cmake creates Bungee::Bungee if successful.
-  if(NOT Bungee_FOUND)
-    find_package(Bungee MODULE QUIET)
-  endif()
+  # Bungee library - built from source files in lib/bungee
+  # This allows easy updates: just cd lib/bungee && git pull
+  add_library(
+    bungee
+    STATIC
+    EXCLUDE_FROM_ALL
+    lib/bungee/src/Assert.cpp
+    lib/bungee/src/Fourier.cpp
+    lib/bungee/src/Grain.cpp
+    lib/bungee/src/Grains.cpp
+    lib/bungee/src/Input.cpp
+    lib/bungee/src/Instrumentation.cpp
+    lib/bungee/src/Output.cpp
+    lib/bungee/src/Partials.cpp
+    lib/bungee/src/Stretch.cpp
+    lib/bungee/src/Stretcher.cpp
+    lib/bungee/src/Synthesis.cpp
+    lib/bungee/src/Timing.cpp
+    lib/bungee/src/version.cpp
+    lib/bungee/src/Window.cpp
+  )
 
-  # 4. ExternalProject_Add source-fetch fallback.
-  #    Opt-out via -DBUNGEE_FETCH_FALLBACK=OFF.  Requires the `patch` tool
-  #    and builds Eigen3 + pffft as ExternalProjects (the permanent patch set
-  #    under cmake/patches/bungee replaces Bungee's bundled submodule includes
-  #    with proper find_package() lookups).  Missing `patch` is a hard
-  #    configure error.
-  if(NOT Bungee_FOUND AND BUNGEE_FETCH_FALLBACK)
-    # Define Eigen3 and pffft ExternalProjects so the BUNGEE=ON
-    # fallback can be self-contained on every networked builder (a stock
-    # Linux dev box without libeigen3-dev / libpffft-dev still works).
-    # Wire these targets into bungee_external and publish
-    # deterministic imported targets for the parent Mixxx build.
-    #
-    set(EIGEN3_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/eigen3-install")
-    set(EIGEN3_CONFIG_DIR "${EIGEN3_INSTALL_DIR}/share/eigen3/cmake")
-    set(PFFFT_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/pffft-install")
-    set(PFFFT_CONFIG_DIR "${PFFFT_INSTALL_DIR}/lib/cmake/pffft")
+  target_compile_features(bungee PUBLIC cxx_std_20)
 
-    # Eigen 3.4.0 stable: pinned to release tarball rather than the
-    # c29c8001 commit Bungee v2.4.15's submodule points at — Bungee has
-    # zero Eigen version constraint and Mixxx convention prefers stable
-    # releases.  If a future Bungee bump makes 3.4.0 incompatible the
-    # documented fallback is the c29c8001 commit pin (gitlab.com/
-    # libeigen/eigen archive).
-    ExternalProject_Add(
-      eigen3_external
-      URL "https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz"
-      URL_HASH
-        SHA256=8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72
-      DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/downloads"
-      DOWNLOAD_NAME "eigen-3.4.0.tar.gz"
-      PREFIX "eigen3-3.4.0"
-      INSTALL_DIR "${EIGEN3_INSTALL_DIR}"
-      # Eigen is header-only for Bungee.  Do not run Eigen's own CMake
-      # configure step here: it always descends into optional blas/lapack
-      # subdirectories and enables Fortran, which breaks MSVC and cross
-      # toolchain CI when no matching Fortran compiler is available.
-      CONFIGURE_COMMAND ""
-      BUILD_COMMAND ""
-      INSTALL_COMMAND
-        ${CMAKE_COMMAND} -DSOURCE_DIR=<SOURCE_DIR> -DINSTALL_DIR=<INSTALL_DIR>
-        -P
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/eigen3/install-header-only.cmake
-      EXCLUDE_FROM_ALL TRUE
-    )
+  target_include_directories(
+    bungee
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/bungee>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/submodules/eigen
+  )
 
-    # pffft commit 02fe7715 (jpommier upstream from bitbucket.org/jpommier/
-    # pffft.git) — exact submodule pin shipped by Bungee v2.4.15.  pffft has
-    # no upstream CMake; PATCH_COMMAND drops in the verbatim recipe Mixxx
-    # already uses for the vendored copy (and which Bungee upstream uses in
-    # its own CMakeLists for the same purpose).  No -march= flags here:
-    # Mixxx's top-level CMake injects -march=native (gcc/clang) or
-    # /arch:SSE2 (MSVC) and pffft.c picks up __SSE__ / __ARM_NEON__
-    # automatically.
-    ExternalProject_Add(
-      pffft_external
-      URL
-        "https://bitbucket.org/jpommier/pffft/get/02fe7715a5bf8bfd914681c53429600f94e0f536.tar.gz"
-      URL_HASH
-        SHA256=9adeb18ac7bb52e9fb921c31c0c6a4e9ae150cc6fcb20a899d4b3a2275176ded
-      DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/downloads"
-      DOWNLOAD_NAME "pffft-02fe7715.tar.gz"
-      PREFIX "pffft-02fe7715"
-      INSTALL_DIR "${PFFFT_INSTALL_DIR}"
-      PATCH_COMMAND
-        ${CMAKE_COMMAND} -E copy
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/pffft/CMakeLists.txt.in
-        <SOURCE_DIR>/CMakeLists.txt
-      CMAKE_ARGS
-        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-        -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-        -DCMAKE_INSTALL_LIBDIR:PATH=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-        -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
-        -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-        -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-        # Forward target-architecture identification so cross-builds (Android,
-        # Windows ARM64, macOS arm64) compile pffft for the correct target
-        # rather than falling back to the host compiler / host triplet.  Bungee
-        # mirrors the same forwarding below; without it the vcpkg toolchain
-        # auto-selects the host triplet and pffft.c.o lands in libpffft.a as
-        # host-arch (observed in CI as `libpffft.a is incompatible with
-        # aarch64linux` at final Android link).
-        #
-        # CMAKE_SYSTEM_NAME / CMAKE_SYSTEM_PROCESSOR are always set in the
-        # parent build (CMake initializes them from the host or toolchain).
-        # Android-specific cache variables are conditional: empty on non-
-        # Android hosts (the `$<IF:$<BOOL:...>,D,U>` form unsets them in
-        # that case), so this block is a no-op for Linux/macOS/Windows.
-        -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
-        -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
-        -$<IF:$<BOOL:${CMAKE_SYSTEM_VERSION}>,D,U>CMAKE_SYSTEM_VERSION=${CMAKE_SYSTEM_VERSION}
-        -$<IF:$<BOOL:${VCPKG_TARGET_TRIPLET}>,D,U>VCPKG_TARGET_TRIPLET=${VCPKG_TARGET_TRIPLET}
-        -$<IF:$<BOOL:${VCPKG_DEFAULT_HOST_TRIPLET}>,D,U>VCPKG_DEFAULT_HOST_TRIPLET=${VCPKG_DEFAULT_HOST_TRIPLET}
-        -$<IF:$<BOOL:${CMAKE_ANDROID_NDK}>,D,U>CMAKE_ANDROID_NDK=${CMAKE_ANDROID_NDK}
-        -$<IF:$<BOOL:${CMAKE_ANDROID_ARCH_ABI}>,D,U>CMAKE_ANDROID_ARCH_ABI=${CMAKE_ANDROID_ARCH_ABI}
-        -$<IF:$<BOOL:${ANDROID_ABI}>,D,U>ANDROID_ABI=${ANDROID_ABI}
-        -$<IF:$<BOOL:${ANDROID_PLATFORM}>,D,U>ANDROID_PLATFORM=${ANDROID_PLATFORM}
-        -$<IF:$<BOOL:${CMAKE_ANDROID_STL_TYPE}>,D,U>CMAKE_ANDROID_STL_TYPE=${CMAKE_ANDROID_STL_TYPE}
-        -$<IF:$<BOOL:${ANDROID_STL}>,D,U>ANDROID_STL=${ANDROID_STL}
-      BUILD_BYPRODUCTS
-        "${PFFFT_INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}pffft${CMAKE_STATIC_LIBRARY_SUFFIX}"
-      EXCLUDE_FROM_ALL TRUE
-    )
+  target_compile_definitions(
+    bungee
+    PRIVATE
+      BUNGEE_SELF_TEST=0
+      eigen_assert=BUNGEE_ASSERT1
+      EIGEN_DONT_PARALLELIZE=1
+      $<$<CONFIG:Debug>:EIGEN_RUNTIME_NO_MALLOC=1>
+  )
 
-    find_program(BUNGEE_PATCH_EXECUTABLE NAMES patch gpatch)
-    if(NOT BUNGEE_PATCH_EXECUTABLE)
+  if(BUNGEE_PETRIFY_DEBUG)
+    if(WIN32)
       message(
-        FATAL_ERROR
-        [=[Bungee build requires GNU patch but none was found.
-Install with:
-  Debian/Ubuntu:  apt install patch
-  macOS:           brew install gpatch  (the system /usr/bin/patch may also work)
-  Windows MSVC:    vcpkg install patch  (or use Git-for-Windows' /usr/bin/patch)
-Or disable Bungee: cmake -DBUNGEE=OFF
-Or skip the source-fetch path: cmake -DBUNGEE_FETCH_FALLBACK=OFF (requires system Bungee install)]=]
+        WARNING
+        "BUNGEE_PETRIFY_DEBUG was requested, but BUNGEE_PETRIFY uses POSIX "
+        "signal APIs and is disabled on Windows."
       )
-    endif()
-
-    # CMake checks INTERFACE_INCLUDE_DIRECTORIES at configure time, so the
-    # predicted ExternalProject install include directories must exist before
-    # the imported dependency targets consume them.
-    file(
-      MAKE_DIRECTORY
-        "${EIGEN3_INSTALL_DIR}/include/eigen3"
-        "${PFFFT_INSTALL_DIR}/include"
-    )
-
-    if(NOT TARGET Eigen3::Eigen)
-      add_library(Eigen3::Eigen INTERFACE IMPORTED GLOBAL)
-      set_target_properties(
-        Eigen3::Eigen
-        PROPERTIES
-          INTERFACE_INCLUDE_DIRECTORIES "${EIGEN3_INSTALL_DIR}/include/eigen3"
-      )
-      add_dependencies(Eigen3::Eigen eigen3_external)
-    endif()
-
-    if(NOT TARGET pffft::pffft)
-      add_library(pffft::pffft STATIC IMPORTED GLOBAL)
-      set_target_properties(
-        pffft::pffft
-        PROPERTIES
-          IMPORTED_LOCATION
-            "${PFFFT_INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}pffft${CMAKE_STATIC_LIBRARY_SUFFIX}"
-          INTERFACE_INCLUDE_DIRECTORIES "${PFFFT_INSTALL_DIR}/include"
-      )
-      add_dependencies(pffft::pffft pffft_external)
-    endif()
-
-    message(
-      STATUS
-      "Bungee: building from upstream tarball v${BUNGEE_FETCH_VERSION} via "
-      "ExternalProject_Add."
-    )
-
-    set(
-      BUNGEE_FETCH_INSTALL_DIR
-      "${CMAKE_CURRENT_BINARY_DIR}/lib/bungee-install"
-    )
-    set(
-      BUNGEE_FETCH_LIBRARY_RELATIVE
-      "lib/${CMAKE_STATIC_LIBRARY_PREFIX}bungee${CMAKE_STATIC_LIBRARY_SUFFIX}"
-    )
-    set(
-      BUNGEE_FETCH_LIBRARY
-      "${BUNGEE_FETCH_INSTALL_DIR}/${BUNGEE_FETCH_LIBRARY_RELATIVE}"
-    )
-
-    # CMake does not pass list-of-paths variables properly to external
-    # projects; pipe-delimit them to survive the boundary.  Include the
-    # ExternalProject dependency install prefixes so Bungee's patched
-    # find_package(Eigen3/pffft CONFIG) calls resolve after those projects
-    # have installed.
-    set(
-      BUNGEE_FETCH_PREFIX_PATH
-      ${CMAKE_PREFIX_PATH}
-      "${EIGEN3_INSTALL_DIR}"
-      "${PFFFT_INSTALL_DIR}"
-    )
-    set(
-      BUNGEE_FETCH_FIND_ROOT_PATH
-      ${CMAKE_FIND_ROOT_PATH}
-      "${EIGEN3_INSTALL_DIR}"
-      "${PFFFT_INSTALL_DIR}"
-    )
-    string(
-      REPLACE
-      ";"
-      "|"
-      BUNGEE_FETCH_PIPE_PREFIX_PATH
-      "${BUNGEE_FETCH_PREFIX_PATH}"
-    )
-    string(
-      REPLACE
-      ";"
-      "|"
-      BUNGEE_FETCH_PIPE_FIND_ROOT_PATH
-      "${BUNGEE_FETCH_FIND_ROOT_PATH}"
-    )
-    string(REPLACE ";" "|" BUNGEE_FETCH_PIPE_MODULE_PATH "${CMAKE_MODULE_PATH}")
-
-    if(MSVC)
-      set(BUNGEE_FETCH_APPLY_MSVC_PATCHES TRUE)
     else()
-      set(BUNGEE_FETCH_APPLY_MSVC_PATCHES FALSE)
-    endif()
-
-    ExternalProject_Add(
-      bungee_external
-      URL
-        "https://github.com/bungee-audio-stretch/bungee/archive/refs/tags/v${BUNGEE_FETCH_VERSION}.tar.gz"
-      URL_HASH SHA256=${BUNGEE_FETCH_URL_HASH}
-      DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/downloads"
-      DOWNLOAD_NAME "bungee-${BUNGEE_FETCH_VERSION}.tar.gz"
-      PREFIX "bungee-${BUNGEE_FETCH_VERSION}"
-      INSTALL_DIR "${BUNGEE_FETCH_INSTALL_DIR}"
-      LIST_SEPARATOR "|"
-      PATCH_COMMAND
-        ${CMAKE_COMMAND}
-        -DMIXXX_BUNGEE_PATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/bungee
-        -DMIXXX_BUNGEE_PATCH_EXECUTABLE=${BUNGEE_PATCH_EXECUTABLE}
-        -DMIXXX_BUNGEE_APPLY_MSVC_PATCHES=${BUNGEE_FETCH_APPLY_MSVC_PATCHES} -P
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/bungee/apply-patches.cmake
-      CMAKE_ARGS
-        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-        -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-        -DCMAKE_INSTALL_LIBDIR:PATH=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-        -DCMAKE_PREFIX_PATH=${BUNGEE_FETCH_PIPE_PREFIX_PATH}
-        -DCMAKE_FIND_ROOT_PATH=${BUNGEE_FETCH_PIPE_FIND_ROOT_PATH}
-        -DCMAKE_MODULE_PATH=${BUNGEE_FETCH_PIPE_MODULE_PATH}
-        -DEigen3_DIR=${EIGEN3_CONFIG_DIR} -Dpffft_DIR=${PFFFT_CONFIG_DIR}
-        -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
-        -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-        -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-        -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
-        -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
-        -$<IF:$<BOOL:${CMAKE_SYSTEM_VERSION}>,D,U>CMAKE_SYSTEM_VERSION=${CMAKE_SYSTEM_VERSION}
-        -$<IF:$<BOOL:${VCPKG_TARGET_TRIPLET}>,D,U>VCPKG_TARGET_TRIPLET=${VCPKG_TARGET_TRIPLET}
-        -$<IF:$<BOOL:${VCPKG_DEFAULT_HOST_TRIPLET}>,D,U>VCPKG_DEFAULT_HOST_TRIPLET=${VCPKG_DEFAULT_HOST_TRIPLET}
-        # Android-specific cache variables (mirrors pffft_external above).
-        # Conditional: no-op on non-Android hosts.
-        -$<IF:$<BOOL:${CMAKE_ANDROID_NDK}>,D,U>CMAKE_ANDROID_NDK=${CMAKE_ANDROID_NDK}
-        -$<IF:$<BOOL:${CMAKE_ANDROID_ARCH_ABI}>,D,U>CMAKE_ANDROID_ARCH_ABI=${CMAKE_ANDROID_ARCH_ABI}
-        -$<IF:$<BOOL:${ANDROID_ABI}>,D,U>ANDROID_ABI=${ANDROID_ABI}
-        -$<IF:$<BOOL:${ANDROID_PLATFORM}>,D,U>ANDROID_PLATFORM=${ANDROID_PLATFORM}
-        -$<IF:$<BOOL:${CMAKE_ANDROID_STL_TYPE}>,D,U>CMAKE_ANDROID_STL_TYPE=${CMAKE_ANDROID_STL_TYPE}
-        -$<IF:$<BOOL:${ANDROID_STL}>,D,U>ANDROID_STL=${ANDROID_STL}
-        -DBUNGEE_BUILD_SHARED_LIBRARY=OFF -DBUNGEE_INSTALL_FRAMEWORK=OFF
-        -DBUNGEE_VERSION=${BUNGEE_FETCH_VERSION} -DBUNGEE_PRESET=
-      BUILD_BYPRODUCTS "${BUNGEE_FETCH_LIBRARY}"
-      EXCLUDE_FROM_ALL TRUE
-    )
-    add_dependencies(bungee_external eigen3_external pffft_external)
-
-    # CMake checks INTERFACE_INCLUDE_DIRECTORIES at configure time, so the
-    # include directory must exist before the imported target consumes it.
-    file(MAKE_DIRECTORY "${BUNGEE_FETCH_INSTALL_DIR}/include")
-
-    if(NOT CMAKE_GENERATOR MATCHES "^Ninja")
-      # BUILD_BYPRODUCTS only forces a re-link with the Ninja generator;
-      # for Make/Xcode mirror the libdjinterop/libkeyfinder pattern so that
-      # mixxx-lib's autogen pipeline also depends on bungee_external.
-      add_custom_command(
-        OUTPUT "${BUNGEE_FETCH_LIBRARY}"
-        DEPENDS bungee_external
-        COMMAND ${CMAKE_COMMAND} -E echo "bungee_external installed"
-        COMMENT
-          "Tell 'make' that bungee_external is required for the bungee target"
+      target_compile_definitions(
+        bungee
+        PRIVATE $<$<CONFIG:Debug>:BUNGEE_PETRIFY>
       )
     endif()
-
-    add_library(Bungee::Bungee STATIC IMPORTED)
-    set_target_properties(
-      Bungee::Bungee
-      PROPERTIES
-        IMPORTED_LOCATION "${BUNGEE_FETCH_LIBRARY}"
-        INTERFACE_INCLUDE_DIRECTORIES "${BUNGEE_FETCH_INSTALL_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "pffft::pffft;Eigen3::Eigen"
-    )
-    add_dependencies(Bungee::Bungee bungee_external)
-    set(Bungee_FOUND TRUE)
   endif()
 
-  if(NOT Bungee_FOUND)
-    message(
-      FATAL_ERROR
-      "Bungee was requested but no Bungee package was found. Install Bungee, "
-      "enable the source-fetch fallback with -DBUNGEE_FETCH_FALLBACK=ON, or "
-      "disable Bungee with -DBUNGEE=OFF."
+  # BUNGEE_VISIBILITY needs special handling due to parentheses
+  if(NOT MSVC)
+    target_compile_options(
+      bungee
+      PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>
+        "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
     )
   endif()
 
-  # ── Link Bungee into Mixxx ─────────────────────────────────────────────────
-  target_link_libraries(mixxx-lib PUBLIC Bungee::Bungee)
+  set_source_files_properties(
+    lib/bungee/src/version.cpp
+    PROPERTIES COMPILE_DEFINITIONS BUNGEE_VERSION=\"0.0.0\"
+  )
+
+  target_link_libraries(bungee PRIVATE bungee-pffft)
+
+  target_link_libraries(mixxx-lib PUBLIC bungee)
   target_compile_definitions(mixxx-lib PUBLIC __BUNGEE__)
 
   if(QML)
-    target_link_libraries(mixxx-qml-lib PRIVATE Bungee::Bungee)
-    target_compile_definitions(mixxx-qml-lib PRIVATE __BUNGEE__)
+    target_link_libraries(mixxx-qml-lib PRIVATE bungee)
+    target_compile_definitions(mixxx-qml-lib PUBLIC __BUNGEE__)
   endif()
 
   target_sources(
@@ -5251,6 +4947,7 @@ Or skip the source-fetch path: cmake -DBUNGEE_FETCH_FALLBACK=OFF (requires syste
   )
 endif()
 
+# SndFile
 # SndFile
 find_package(SndFile REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE SndFile::sndfile)

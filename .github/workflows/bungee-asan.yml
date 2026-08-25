@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow
 #
-# AddressSanitizer build that runs the Bungee scaler tests so any future
+# BNG-13: AddressSanitizer build that runs the Bungee scaler tests so any future
 # overflow of m_contiguousChannelBuffer is caught at test time rather than in
 # production.
 #
@@ -29,32 +29,31 @@ on:
     branches:
       - main
       - "2.6"
+      - feature/bungee
       - bungee-engine-full
     paths:
-      - "cmake/patches/bungee/**"
-      - "cmake/patches/pffft/**"
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/preferences/settingsmanager.cpp"
-      - "src/test/enginebufferscalebungeetest.cpp"
-      - "src/test/enginebufferbungeetest.cpp"
+      - "src/test/enginebufferscalebungee*"
+      - "src/test/enginebufferbungee*"
       - "src/test/settingsmanager_test.cpp"
+      - "lib/bungee/**"
       - "CMakeLists.txt"
       - ".github/workflows/bungee-asan.yml"
   pull_request:
     paths:
-      - "cmake/patches/bungee/**"
-      - "cmake/patches/pffft/**"
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/preferences/settingsmanager.cpp"
-      - "src/test/enginebufferscalebungeetest.cpp"
-      - "src/test/enginebufferbungeetest.cpp"
+      - "src/test/enginebufferscalebungee*"
+      - "src/test/enginebufferbungee*"
       - "src/test/settingsmanager_test.cpp"
+      - "lib/bungee/**"
       - "CMakeLists.txt"
       - ".github/workflows/bungee-asan.yml"
   workflow_dispatch:
@@ -79,14 +78,10 @@ jobs:
       # abort_on_error=1: produce a coredump-style backtrace via SIGABRT.
       # strict_string_checks=1: catch off-by-one in string ops too.
       ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1"
-      # Keep ExternalProject_Add dependencies (bungee_external/eigen3_external/
-      # pffft_external) instrumented too: their configure/build steps run under
-      # `cmake --build`; child CMake processes inherit the runner environment
-      # and initialize CMAKE_C_FLAGS/CMAKE_CXX_FLAGS from CFLAGS/CXXFLAGS.
+      # Instrument the vendored Bungee target and its Mixxx test binary.
       CFLAGS: "-fsanitize=address -fno-omit-frame-pointer"
       CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer"
-      # Harmless for static-only ExternalProject deps; retained as a guard if
-      # a future dependency target links a shared library or test executable.
+      # Retain an explicit sanitizer link flag for the static vendor target.
       LDFLAGS: "-fsanitize=address"
       # ASAN_OPTIONS already disables leak detection. Keep exitcode=0 as a
       # belt-and-suspenders guard so leak noise cannot mask heap-overflow
@@ -145,7 +140,6 @@ jobs:
           cmake -S .. -B .
           -DCMAKE_BUILD_TYPE=Debug
           -DBUNGEE=ON
-          -DSIGNALSMITH=OFF
           -DSANITIZE_ADDRESS=ON
           -DBUILD_TESTING=ON
           -DBUILD_BENCH=OFF

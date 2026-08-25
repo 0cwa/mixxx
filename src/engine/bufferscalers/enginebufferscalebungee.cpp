@@ -186,70 +186,21 @@ void EngineBufferScaleBungee::deinterleaveInput(
     }
 }
 
-EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAheadGap(
-        double signedEffectiveRate,
-        SINT framesToConsume) {
-    if (framesToConsume <= 0) {
-        return {0, false};
-    }
-    if (!m_pReadAheadManager || !getOutputSignal().isValid()) {
-        return {framesToConsume, false};
-    }
-
-    SINT consumedFrames = 0;
-    int readFailedCount = 0;
-    while (consumedFrames < framesToConsume) {
-        const SINT framesRequested = std::min<SINT>(
-                framesToConsume - consumedFrames,
-                kMaxGrainFrames);
-        const SINT samplesRequested = getOutputSignal().frames2samples(framesRequested);
-        const auto readResult = m_pReadAheadManager->getNextSamplesWithRetry(
-                signedEffectiveRate,
-                m_interleavedReadBuffer.data(),
-                samplesRequested,
-                getOutputSignal().getChannelCount(),
-                m_retryState);
-        if (readResult.retryPending) {
-            return {consumedFrames, true};
-        }
-        const SINT availableFrames =
-                getOutputSignal().samples2frames(readResult.samplesRead);
-        if (availableFrames <= 0) {
-            if (++readFailedCount > 1) {
-                break;
-            }
-            continue;
-        }
-        readFailedCount = 0;
-        consumedFrames += std::min(availableFrames, framesRequested);
-    }
-
-    // Two consecutive empty reads exhaust the retry budget. At end-of-track
-    // this can return fewer frames than requested; the caller records only the
-    // consumed prefix, and processGrain() handles the incomplete window on its
-    // next invariant check.
-    return {consumedFrames, false};
-}
-
 bool EngineBufferScaleBungee::discardBufferedInputBefore(
         SINT framePosition,
         double signedEffectiveRate) {
+    Q_UNUSED(signedEffectiveRate);
     if (framePosition <= m_bufferedInputBeginFrame) {
         return false;
     }
 
     const SINT bufferedFrames = m_bufferedInputEndFrame - m_bufferedInputBeginFrame;
     if (bufferedFrames <= 0) {
-        const auto readResult = consumeReadAheadGap(
-                signedEffectiveRate,
-                framePosition - m_bufferedInputEndFrame);
-        m_bufferedInputBeginFrame =
-                m_bufferedInputEndFrame + readResult.framesRead;
-        m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
-        return readResult.retryPending;
+        m_bufferedInputBeginFrame = framePosition;
+        m_bufferedInputEndFrame = framePosition;
+        return false;
     }
 
-    const SINT oldBufferedInputEndFrame = m_bufferedInputEndFrame;
     const SINT discardFrames = std::min(framePosition - m_bufferedInputBeginFrame,
             bufferedFrames);
     const SINT remainingFrames = bufferedFrames - discardFrames;
@@ -261,17 +212,11 @@ bool EngineBufferScaleBungee::discardBufferedInputBefore(
 
     m_bufferedInputBeginFrame += discardFrames;
     if (remainingFrames <= 0) {
-        const auto readResult = consumeReadAheadGap(
-                signedEffectiveRate,
-                framePosition - oldBufferedInputEndFrame);
-        // Advance beyond the old m_bufferedInputEndFrame only after consuming
-        // the skipped source gap from ReadAheadManager. This keeps future
-        // appendInputFrames() calls from labeling old sequential samples with
-        // this future absolute frame.
-        m_bufferedInputBeginFrame =
-                oldBufferedInputEndFrame + readResult.framesRead;
-        m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
-        return readResult.retryPending;
+        // BNG-13: jump the empty window to the requested frame. The skipped
+        // read-ahead range is not consumed here; the next append starts at the
+        // same source cursor and therefore does not advance it speculatively.
+        m_bufferedInputBeginFrame = framePosition;
+        m_bufferedInputEndFrame = framePosition;
     }
     return false;
 }
