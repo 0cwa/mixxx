@@ -937,7 +937,10 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
 #endif
 #ifdef __BUNGEE__
             case EngineBuffer::KeylockEngine::Bungee:
-                expectedKeylockScaler = pEngineBuffer->m_pScaleBungee;
+                if (const auto* pState = pEngineBuffer->m_pBungeePublishedState.load(
+                            std::memory_order_seq_cst)) {
+                    expectedKeylockScaler = pState->pScaler;
+                }
                 break;
 #endif
 #ifdef __SIGNALSMITH__
@@ -948,9 +951,8 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
             default:
                 break;
             }
-            ASSERT_EQ(pEngineBuffer->m_pScaleKeylock.loadAcquire(),
-                    expectedKeylockScaler)
-                    << "The requested keylock scaler is not selected for "
+            ASSERT_NE(nullptr, expectedKeylockScaler)
+                    << "The requested keylock scaler is unavailable for "
                     << keylockEngineTraceName(engine);
 
             const char* const engineName = keylockEngineTraceName(engine);

@@ -2,8 +2,11 @@
 
 #include <QAtomicInt>
 #include <QtDebug>
+#include <limits>
+#include <utility>
 
 #include "analyzer/analyzersilence.h"
+#include "engine/controls/seek30control.h"
 #include "moc_cachingreaderworker.cpp"
 #include "sources/soundsourceproxy.h"
 #include "track/track.h"
@@ -113,6 +116,67 @@ void CachingReaderWorker::newTrack(TrackPointer pTrack) {
     workReady();
 }
 
+void CachingReaderWorker::setSeek30Control(Seek30Control* pControl) {
+    m_pSeek30Control.store(pControl, std::memory_order_release);
+}
+
+void CachingReaderWorker::updateSeek30Track(TrackPointer pNewTrack) {
+    m_seek30State.trackLoaded(std::move(pNewTrack));
+    m_seek30Generation.store(
+            m_seek30State.generation(), std::memory_order_release);
+}
+
+bool CachingReaderWorker::enqueueSeek30Command(Seek30Operation operation) {
+    const Seek30Command command{
+            operation,
+            m_seek30Generation.load(std::memory_order_acquire)};
+    if (!m_seek30CommandMailbox.tryPush(command)) {
+        recordSeek30CommandOverflow();
+        return false;
+    }
+    workReady();
+    return true;
+}
+
+void CachingReaderWorker::recordSeek30CommandOverflow() {
+    auto count = m_seek30CommandOverflowCount.load(std::memory_order_relaxed);
+    while (count != std::numeric_limits<std::uint64_t>::max() &&
+            !m_seek30CommandOverflowCount.compare_exchange_weak(
+                    count,
+                    count + 1,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+    }
+}
+
+void CachingReaderWorker::processSeek30Commands() {
+    Seek30Control* const pControl =
+            m_pSeek30Control.load(std::memory_order_acquire);
+    if (!pControl) {
+        return;
+    }
+
+    Seek30Command command;
+    if (!m_seek30CommandMailbox.tryPop(&command)) {
+        return;
+    }
+
+    auto inputs = pControl->seek30WorkerInputs();
+    do {
+        if (command.generation != m_seek30State.generation()) {
+            continue;
+        }
+
+        const auto target = m_seek30State.process(command, inputs);
+        if (target.position.isValid()) {
+            inputs.currentPosition = target.position;
+            auto publishedTarget = target;
+            publishedTarget.sequence = ++m_seek30TargetSequence;
+            pControl->publishSeekTarget(publishedTarget);
+        }
+    } while (m_seek30CommandMailbox.tryPop(&command));
+}
+
 void CachingReaderWorker::run() {
     // the id of this thread, for debugging purposes
     static auto lastId = QAtomicInt(0);
@@ -148,14 +212,18 @@ void CachingReaderWorker::run() {
                 // here, the engine is already stopped
                 unloadTrack();
             }
-        } else if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
-            // Read the requested chunk and send the result
-            const ReaderStatusUpdate update = processReadRequest(request);
-            m_pReaderStatusFIFO->writeBlocking(&update, 1);
+            processSeek30Commands();
         } else {
-            Event::end(m_tag);
-            m_semaRun.acquire();
-            Event::start(m_tag);
+            processSeek30Commands();
+            if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
+                // Read the requested chunk and send the result
+                const ReaderStatusUpdate update = processReadRequest(request);
+                m_pReaderStatusFIFO->writeBlocking(&update, 1);
+            } else {
+                Event::end(m_tag);
+                m_semaRun.acquire();
+                Event::start(m_tag);
+            }
         }
     }
 }
@@ -184,6 +252,7 @@ void CachingReaderWorker::closeAudioSource() {
 
 void CachingReaderWorker::unloadTrack() {
     closeAudioSource();
+    updateSeek30Track(TrackPointer());
 
     const auto update = ReaderStatusUpdate::trackUnloaded();
     m_pReaderStatusFIFO->writeBlocking(&update, 1);
@@ -198,6 +267,10 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
     // This emit is directly connected and returns synchronized
     // after the engine has been stopped.
     emit trackLoading();
+
+    // Keep TrackPointer and cue ownership on this worker even when the
+    // EngineBuffer's unload notification originates from another thread.
+    updateSeek30Track(TrackPointer());
 
     closeAudioSource();
 
@@ -268,6 +341,8 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
         return;
     }
+
+    updateSeek30Track(pTrack);
 
     // Adjust the internal buffer
     const SINT tempReadBufferSize =

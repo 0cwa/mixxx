@@ -72,9 +72,24 @@ class ReadAheadManagerMock : public ReadAheadManager {
         return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
     }
 
+    NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount,
+            RetryState& retryState) override {
+        Q_UNUSED(retryState);
+        return getNextSamplesWithRetry(
+                dRate, buffer, requested_samples, channelCount);
+    }
+
     void cancelPendingRetry() override {
         ++m_cancelPendingRetryCallCount;
         ReadAheadManager::cancelPendingRetry();
+    }
+
+    void cancelPendingRetry(RetryState& retryState) override {
+        ++m_cancelPendingRetryCallCount;
+        ReadAheadManager::cancelPendingRetry(retryState);
     }
 
     void setReadBuffer(CSAMPLE* pBuffer, SINT iBufferSize) {
@@ -706,6 +721,16 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount) override {
         return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
+    }
+
+    NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount,
+            RetryState& retryState) override {
+        Q_UNUSED(retryState);
+        return getNextSamplesWithRetry(
+                dRate, buffer, requested_samples, channelCount);
     }
 
     void setReadBuffer(std::vector<CSAMPLE> buffer) {

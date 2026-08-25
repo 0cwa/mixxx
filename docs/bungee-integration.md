@@ -48,8 +48,7 @@ Bungee Basic's lapped output is two synthesis hops behind that source cursor.
 through `getVisualPlayPositionOffset()`. `EngineBuffer` applies that offset only
 when publishing `VisualPlayPosition`, then clamps the result to the track
 boundaries. This keeps the transport cursor, audible output, and waveform/VSync
-clock explicit and separately testable. SignalSmith uses `outputSeek()` during
-startup, so its default visual offset remains zero.
+clock explicit and separately testable.
 
 ---
 
@@ -101,7 +100,7 @@ Before each `analyseGrain()` call (`ensureInputForCurrentChunk`):
 This mirrors the pattern in Bungee's upstream `bungee/Stream.h` helper
 class (lines 89–95 in the upstream source used by the current Bungee pin).
 
-### The buffer-window invariant
+### The buffer-window invariant (the BNG-13 contract)
 
 On every grain boundary, `EngineBufferScaleBungee` must satisfy:
 
@@ -201,25 +200,32 @@ A ring-buffer would eliminate the move but is not currently warranted.
 
 ---
 
-## Bungee dependency source-fetch patches
+## Immutable publication, acknowledgement, and retry
 
-When no packaged Bungee provider is found and `BUNGEE_FETCH_FALLBACK=ON`,
-Mixxx builds the pinned upstream Bungee release with `ExternalProject_Add`.
-The source-fetch path applies Mixxx-owned patches from `cmake/patches/bungee/`
-so Bungee uses normal Eigen3 and pffft dependency packages instead of bundled
-submodules. These patches mirror the official vcpkg Bungee port where possible.
-Patching happens in the build tree and must not dirty the Mixxx source checkout.
+Sample-rate and channel-count changes are prepared outside the audio callback.
+The preparation worker owns each Bungee scaler and publishes an immutable state
+record containing the scaler and its signal format. The callback reads one
+published state for the duration of a callback; it never allocates, locks, or
+destroys a scaler while rendering.
 
-The source-fetch path requires a `patch` executable at configure time. Install
-GNU patch (for example `apt install patch`, `brew install gpatch`, or a Windows
-MSVC-compatible patch executable) or configure with `-DBUNGEE=OFF` / use a
-packaged Bungee provider.
+When a replacement is published, the worker retains the previous state until
+the callback has acknowledged the state epoch it used. This acknowledgement
+keeps the old scaler alive across the callback boundary and makes replacement
+safe even when a callback observes a configuration change at the same time as
+the worker publishes it. A generation counter causes a stale in-flight
+configuration to be discarded before publication.
+
+Read-ahead misses use a scaler-local retry state. A retryable read keeps the
+pending input range and returns muted output for that callback without calling
+`next()` or advancing the Bungee request cursor. The same request is retried on
+the next callback; reset and teardown acknowledge or cancel the pending retry
+off the audio path before releasing its state.
 
 ## What not to change casually
 
 | Boundary | Reason |
 | --- | --- |
-| Bungee dependency pins and patches | Keep CMake/vcpkg/Flatpak pins in sync and apply Mixxx-owned patches only in dependency build trees, not to checked-in upstream source. |
+| `lib/bungee/` source files | Treat as a maintained vendor library. The only Mixxx-owned modification is the Windows compatibility patch. |
 | `muteHead` / `muteTail` computation | Any incorrect value here violates the `analyseGrain()` contract and causes audio corruption. |
 | `appendInputFrames()` call sites | All `ReadAheadManager` reads must be consumed by Bungee. Discarding reads silently advances the reader's position and causes playback drift. |
 | `discardBufferedInputBefore()` full-discard branch | When `framePosition >= m_bufferedInputEndFrame`, both buffer-window pointers must be set to `framePosition`. Any other value reintroduces the high-speed grain-outrun heap-overflow class. Pinned by `EngineBufferScaleBungeeBufferWindowTest`. |

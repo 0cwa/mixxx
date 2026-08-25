@@ -46,11 +46,25 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesWithRetry(
         SINT requested_samples,
         mixxx::audio::ChannelCount channelCount) {
     return getNextSamplesInternal(
-            dRate, pOutput, requested_samples, channelCount, true);
+            dRate, pOutput, requested_samples, channelCount, true, &m_pendingRetry);
+}
+
+ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesWithRetry(
+        double dRate,
+        CSAMPLE* pOutput,
+        SINT requested_samples,
+        mixxx::audio::ChannelCount channelCount,
+        RetryState& retryState) {
+    return getNextSamplesInternal(
+            dRate, pOutput, requested_samples, channelCount, true, &retryState);
 }
 
 void ReadAheadManager::cancelPendingRetry() {
     m_pendingRetry.active = false;
+}
+
+void ReadAheadManager::cancelPendingRetry(RetryState& retryState) {
+    retryState.active = false;
 }
 
 SINT ReadAheadManager::getNextSamples(double dRate,
@@ -58,15 +72,15 @@ SINT ReadAheadManager::getNextSamples(double dRate,
         SINT requested_samples,
         mixxx::audio::ChannelCount channelCount) {
     return getNextSamplesInternal(
-            dRate, pOutput, requested_samples, channelCount, false)
+            dRate, pOutput, requested_samples, channelCount, false, nullptr)
             .samplesRead;
 }
 
-ReadAheadManager::ReadPlan ReadAheadManager::makeReadPlan(bool inReverse,
+ReadAheadManager::RetryState ReadAheadManager::makeReadPlan(bool inReverse,
         SINT requestSamples,
         SINT requestedSamples,
         mixxx::audio::ChannelCount channelCount) {
-    ReadPlan plan;
+    RetryState plan;
     plan.active = true;
     plan.inReverse = inReverse;
     plan.requestPosition = m_currentPosition;
@@ -187,7 +201,8 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         CSAMPLE* pOutput,
         SINT requested_samples,
         mixxx::audio::ChannelCount channelCount,
-        bool retryOnCacheMiss) {
+        bool retryOnCacheMiss,
+        RetryState* pRetryState) {
     // qDebug() << "getNextSamples:" << m_currentPosition << requested_samples;
 
     const SINT requestSamples = requested_samples;
@@ -197,17 +212,17 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         requested_samples -= modSamples;
     }
     const bool inReverse = dRate < 0;
-    const bool reusePendingRetry = retryOnCacheMiss &&
-            m_pendingRetry.matches(m_currentPosition,
+    const bool reusePendingRetry = retryOnCacheMiss && pRetryState &&
+            pRetryState->matches(m_currentPosition,
                     inReverse,
                     requestSamples,
                     channelCount);
-    if (m_pendingRetry.active && !reusePendingRetry) {
-        cancelPendingRetry();
+    if (pRetryState && pRetryState->active && !reusePendingRetry) {
+        pRetryState->active = false;
     }
 
-    ReadPlan plan = reusePendingRetry
-            ? m_pendingRetry
+    RetryState plan = reusePendingRetry
+            ? *pRetryState
             : makeReadPlan(
                       inReverse, requestSamples, requested_samples, channelCount);
 
@@ -217,8 +232,8 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         return {0, false};
     }
 
-    if (retryOnCacheMiss && !reusePendingRetry) {
-        m_pendingRetry = plan;
+    if (retryOnCacheMiss && pRetryState && !reusePendingRetry) {
+        *pRetryState = plan;
     }
 
     const auto readResult = retryOnCacheMiss
@@ -326,7 +341,8 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
     }
 
     if (retryOnCacheMiss) {
-        cancelPendingRetry();
+        DEBUG_ASSERT(pRetryState);
+        pRetryState->active = false;
     }
 
     // qDebug() << "read" << m_currentPosition << plan.samplesFromReader;

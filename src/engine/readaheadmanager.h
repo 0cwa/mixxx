@@ -28,67 +28,11 @@ class ReadAheadManager {
         bool retryPending;
     };
 
-    ReadAheadManager(); // Only for testing: ReadAheadManagerMock
-    ReadAheadManager(CachingReader* reader,
-            LoopingControl* pLoopingControl,
-            CueControl* pCueControl);
-    virtual ~ReadAheadManager();
-
-    /// Call this method to fill buffer with requested_samples out of the
-    /// lookahead buffer. Provide rate as dRate so that the manager knows the
-    /// direction the audio is progressing in. Returns the total number of
-    /// samples read into buffer. Note that it is very common that the total
-    /// samples read is less than the requested number of samples.
-    virtual SINT getNextSamples(double dRate,
-            CSAMPLE* buffer,
-            SINT requested_samples,
-            mixxx::audio::ChannelCount channelCount);
-
-    /// Like getNextSamples(), but leave the read-ahead position unchanged when
-    /// the reader reports a cache miss. This is used by grain-based scalers
-    /// that must retry the exact same input range instead of analysing silence
-    /// as real input.
-    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
-            CSAMPLE* buffer,
-            SINT requested_samples,
-            mixxx::audio::ChannelCount channelCount);
-
-    /// Discard a retryable read plan that can no longer be completed by the
-    /// caller. The next retryable request will query the loop and cue controls
-    /// again and create a new plan.
-    virtual void cancelPendingRetry();
-
-    /// Used to add a new EngineControls that ReadAheadManager will use to decide
-    /// which samples to return.
-    void addLoopingControl();
-    void addRateControl(RateControl* pRateControl);
-
-    /// Get the current read-ahead position in samples.
-    /// unused in Mixxx, but needed for testing
-    virtual inline double getPlaypos() const {
-        return m_currentPosition;
-    }
-
-    virtual void notifySeek(double seekPosition);
-
-    /// hintReader allows the ReadAheadManager to provide hints to the reader to
-    /// indicate that the given portion of a song is about to be read.
-    virtual void hintReader(double dRate,
-            gsl::not_null<HintVector*> pHintList,
-            mixxx::audio::ChannelCount channelCount);
-
-    /// Return the position in sample
-    virtual double getFilePlaypositionFromLog(
-            double currentFilePlayposition,
-            double numConsumedSamples);
-    /// Return the position in frame
-    mixxx::audio::FramePos getFilePlaypositionFromLog(
-            mixxx::audio::FramePos currentPosition,
-            mixxx::audio::FrameDiff_t numConsumedFrames,
-            mixxx::audio::ChannelCount channelCount);
-
-  private:
-    struct ReadPlan {
+    // Retry plans contain the complete state needed to repeat one exact
+    // read-ahead request after a cache miss. A grain scaler owns its RetryState
+    // so resetting one scaler cannot cancel a retry that belongs to another
+    // scaler sharing this ReadAheadManager.
+    struct RetryState {
         bool active{false};
         bool inReverse{false};
         bool reachedTrigger{false};
@@ -122,7 +66,78 @@ class ReadAheadManager {
         }
     };
 
-    ReadPlan makeReadPlan(bool inReverse,
+    ReadAheadManager(); // Only for testing: ReadAheadManagerMock
+    ReadAheadManager(CachingReader* reader,
+            LoopingControl* pLoopingControl,
+            CueControl* pCueControl);
+    virtual ~ReadAheadManager();
+
+    /// Call this method to fill buffer with requested_samples out of the
+    /// lookahead buffer. Provide rate as dRate so that the manager knows the
+    /// direction the audio is progressing in. Returns the total number of
+    /// samples read into buffer. Note that it is very common that the total
+    /// samples read is less than the requested number of samples.
+    virtual SINT getNextSamples(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount);
+
+    /// Like getNextSamples(), but leave the read-ahead position unchanged when
+    /// the reader reports a cache miss. This is used by grain-based scalers
+    /// that must retry the exact same input range instead of analysing silence
+    /// as real input.
+    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount);
+
+    /// Retry-aware overload using caller-owned state. This is the overload
+    /// used by concurrently prepared grain scalers.
+    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount,
+            RetryState& retryState);
+
+    /// Discard a retryable read plan that can no longer be completed by the
+    /// caller. The next retryable request will query the loop and cue controls
+    /// again and create a new plan.
+    virtual void cancelPendingRetry();
+
+    /// Cancel only the caller-owned retry plan.
+    virtual void cancelPendingRetry(RetryState& retryState);
+
+    /// Used to add a new EngineControls that ReadAheadManager will use to decide
+    /// which samples to return.
+    void addLoopingControl();
+    void addRateControl(RateControl* pRateControl);
+
+    /// Get the current read-ahead position in samples.
+    /// unused in Mixxx, but needed for testing
+    virtual inline double getPlaypos() const {
+        return m_currentPosition;
+    }
+
+    virtual void notifySeek(double seekPosition);
+
+    /// hintReader allows the ReadAheadManager to provide hints to the reader to
+    /// indicate that the given portion of a song is about to be read.
+    virtual void hintReader(double dRate,
+            gsl::not_null<HintVector*> pHintList,
+            mixxx::audio::ChannelCount channelCount);
+
+    /// Return the position in sample
+    virtual double getFilePlaypositionFromLog(
+            double currentFilePlayposition,
+            double numConsumedSamples);
+    /// Return the position in frame
+    mixxx::audio::FramePos getFilePlaypositionFromLog(
+            mixxx::audio::FramePos currentPosition,
+            mixxx::audio::FrameDiff_t numConsumedFrames,
+            mixxx::audio::ChannelCount channelCount);
+
+  private:
+    RetryState makeReadPlan(bool inReverse,
             SINT requestSamples,
             SINT requestedSamples,
             mixxx::audio::ChannelCount channelCount);
@@ -131,7 +146,8 @@ class ReadAheadManager {
             CSAMPLE* buffer,
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount,
-            bool retryOnCacheMiss);
+            bool retryOnCacheMiss,
+            RetryState* pRetryState);
 
     /// An entry in the read log indicates the virtual playposition the read
     /// began at and the virtual playposition it ended at.
@@ -197,5 +213,5 @@ class ReadAheadManager {
     CSAMPLE* m_pCrossFadeBuffer;
     int m_cacheMissCount;
     bool m_cacheMissExpected;
-    ReadPlan m_pendingRetry;
+    RetryState m_pendingRetry;
 };

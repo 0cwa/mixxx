@@ -207,7 +207,8 @@ EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAhe
                 signedEffectiveRate,
                 m_interleavedReadBuffer.data(),
                 samplesRequested,
-                getOutputSignal().getChannelCount());
+                getOutputSignal().getChannelCount(),
+                m_retryState);
         if (readResult.retryPending) {
             return {consumedFrames, true};
         }
@@ -224,9 +225,8 @@ EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAhe
     }
 
     // Two consecutive empty reads exhaust the retry budget. At end-of-track
-    // this can return fewer frames than requested; the caller records only the
-    // consumed prefix, and processGrain() handles the incomplete window on its
-    // next invariant check.
+    // this can return fewer frames than requested; the caller still collapses
+    // the empty window to the requested frame so the BNG-13 invariant holds.
     return {consumedFrames, false};
 }
 
@@ -238,17 +238,21 @@ bool EngineBufferScaleBungee::discardBufferedInputBefore(
     }
 
     const SINT bufferedFrames = m_bufferedInputEndFrame - m_bufferedInputBeginFrame;
+    const SINT oldBufferedInputEndFrame = m_bufferedInputEndFrame;
     if (bufferedFrames <= 0) {
         const auto readResult = consumeReadAheadGap(
                 signedEffectiveRate,
-                framePosition - m_bufferedInputEndFrame);
-        m_bufferedInputBeginFrame =
-                m_bufferedInputEndFrame + readResult.framesRead;
-        m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
+                framePosition - oldBufferedInputEndFrame);
+        const SINT skippedFrames = framePosition - oldBufferedInputEndFrame;
+        const SINT consumedEndFrame =
+                !readResult.retryPending && readResult.framesRead < skippedFrames
+                ? framePosition
+                : oldBufferedInputEndFrame + readResult.framesRead;
+        m_bufferedInputBeginFrame = consumedEndFrame;
+        m_bufferedInputEndFrame = consumedEndFrame;
         return readResult.retryPending;
     }
 
-    const SINT oldBufferedInputEndFrame = m_bufferedInputEndFrame;
     const SINT discardFrames = std::min(framePosition - m_bufferedInputBeginFrame,
             bufferedFrames);
     const SINT remainingFrames = bufferedFrames - discardFrames;
@@ -263,12 +267,14 @@ bool EngineBufferScaleBungee::discardBufferedInputBefore(
         const auto readResult = consumeReadAheadGap(
                 signedEffectiveRate,
                 framePosition - oldBufferedInputEndFrame);
-        // Advance beyond the old m_bufferedInputEndFrame only after consuming
-        // the skipped source gap from ReadAheadManager. This keeps future
-        // appendInputFrames() calls from labeling old sequential samples with
-        // this future absolute frame.
+        const SINT skippedFrames = framePosition - oldBufferedInputEndFrame;
+        // Advance beyond the old buffer tail only after consuming the skipped
+        // source gap. If no retry remains, collapse an incomplete end-of-track
+        // window to framePosition to preserve the BNG-13 invariant.
         m_bufferedInputBeginFrame =
-                oldBufferedInputEndFrame + readResult.framesRead;
+                !readResult.retryPending && readResult.framesRead < skippedFrames
+                ? framePosition
+                : oldBufferedInputEndFrame + readResult.framesRead;
         m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
         return readResult.retryPending;
     }
@@ -295,7 +301,8 @@ EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::appendInputFra
             signedEffectiveRate,
             m_interleavedReadBuffer.data(),
             samplesRequested,
-            getOutputSignal().getChannelCount());
+            getOutputSignal().getChannelCount(),
+            m_retryState);
     if (readResult.retryPending) {
         return {0, true};
     }
@@ -603,7 +610,7 @@ void EngineBufferScaleBungee::completePendingGrainForReset() {
     }
 
     if (m_pReadAheadManager) {
-        m_pReadAheadManager->cancelPendingRetry();
+        m_pReadAheadManager->cancelPendingRetry(m_retryState);
     }
     if (m_pStretcher) {
         Bungee::OutputChunk discardedOutput{};

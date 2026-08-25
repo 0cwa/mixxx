@@ -7,6 +7,7 @@
 #include <QSqlQuery>
 #include <QTemporaryDir>
 
+#include "library/queryutil.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "track/cue.h"
 #include "track/track.h"
@@ -97,6 +98,44 @@ TEST(RekordboxImportTest, SkipsDanglingPlaylistTrackReferences) {
         ASSERT_TRUE(invalidRelationQuery.next());
         EXPECT_EQ(0, invalidRelationQuery.value(0).toInt());
         ASSERT_TRUE(database.commit());
+
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+}
+
+TEST(RekordboxImportTest, RollsBackFatalPlaylistInsertErrors) {
+    const QString connectionName = QStringLiteral("rekordbox-playlist-rollback-test");
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
+        database.setDatabaseName(QStringLiteral(":memory:"));
+        ASSERT_TRUE(database.open());
+
+        QSqlQuery setupQuery(database);
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_library (id INTEGER, rb_id INTEGER, device TEXT)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_playlist_tracks "
+                "(playlist_id INTEGER, track_id INTEGER CHECK(track_id <> 8), position INTEGER)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "INSERT INTO rekordbox_library (id, rb_id, device) "
+                "VALUES (7, 100, 'USB'), (8, 102, 'USB')"));
+
+        {
+            ScopedTransaction transaction(database);
+            ASSERT_TRUE(transaction.active());
+            const QMap<uint32_t, uint32_t> playlistTracks{
+                    {1, 100},
+                    {2, 102}};
+            EXPECT_FALSE(mixxx::rekordbox::importPlaylistTracks(
+                    database, 42, playlistTracks, QStringLiteral("USB")));
+        }
+
+        QSqlQuery resultQuery(database);
+        ASSERT_TRUE(resultQuery.exec(
+                "SELECT COUNT(*) FROM rekordbox_playlist_tracks"));
+        ASSERT_TRUE(resultQuery.next());
+        EXPECT_EQ(0, resultQuery.value(0).toInt());
 
         database.close();
     }
