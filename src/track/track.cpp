@@ -459,7 +459,7 @@ bool Track::setBeatsWhileLocked(mixxx::BeatsPointer pBeats) {
 
     m_pBeats = std::move(pBeats);
     if (m_pBeats) {
-        m_downbeat_offset = m_pBeats->getDownbeatsOffset();
+        m_downbeat_offset.storeRelease(m_pBeats->getDownbeatsOffset());
     }
     m_record.refMetadata().refTrackInfo().setBpm(getBeatsPointerBpm(m_pBeats, getDuration()));
     return true;
