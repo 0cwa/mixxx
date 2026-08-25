@@ -3717,7 +3717,7 @@ if(SIGNALSMITH)
     )
   endif()
 
-  target_link_libraries(mixxx-lib PRIVATE ${SIGNALSMITH_TARGET})
+  target_link_libraries(mixxx-lib PUBLIC ${SIGNALSMITH_TARGET})
   if(SIGNALSMITH_FETCH_TARGET)
     add_dependencies(mixxx-lib ${SIGNALSMITH_FETCH_TARGET})
   endif()
