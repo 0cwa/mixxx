@@ -889,11 +889,13 @@ bool buildPlaylistTree(
                 QVariant(QList<QString>{currentPath, IS_NOT_RECORDBOX_DEVICE}));
 
         const auto playlistTracksIt = playlistTrackMap.constFind(childID);
-        if (playlistTracksIt != playlistTrackMap.constEnd()) {
-            if (!mixxx::rekordbox::importPlaylistTracks(
-                        database, playlistID, playlistTracksIt.value(), device)) {
-                return false;
-            }
+        const QMap<uint32_t, uint32_t> emptyPlaylistTracks;
+        const auto& playlistTracks = playlistTracksIt != playlistTrackMap.constEnd()
+                ? playlistTracksIt.value()
+                : emptyPlaylistTracks;
+        if (!mixxx::rekordbox::importPlaylistTracks(
+                    database, playlistID, playlistTracks, device)) {
+            return false;
         }
 
         if (playlistFolderIt.value()) {
@@ -991,10 +993,6 @@ bool importPlaylistTracks(QSqlDatabase& database,
         int playlistID,
         const QMap<uint32_t, uint32_t>& playlistTracks,
         const QString& device) {
-    if (playlistTracks.isEmpty()) {
-        return true;
-    }
-
     QSqlQuery finderQuery(database);
     if (!finderQuery.prepare(
                 "select id from rekordbox_library where rb_id=:rb_id and device=:device")) {
