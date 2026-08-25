@@ -72,10 +72,11 @@ class EngineBufferScaleBungeeBufferWindowTest;
 //       is unchanged.
 //     - Full discard (framePosition >= m_bufferedInputEndFrame, which
 //       happens when grain hops outrun the input window at very high
-//       playback rates): both pointers jump to framePosition. Any other choice
-//       (e.g. leaving begin at the OLD end, as an earlier implementation did)
-//       produces a gap that violates the dataOffset invariant on the next
-//       grain.
+//       playback rates): consume the skipped source range before both pointers
+//       jump to framePosition. A pending retry leaves the pointers at the
+//       consumed prefix so the next callback retries without relabelling input;
+//       an exhausted read collapses the empty window to framePosition to retain
+//       the BNG-13 invariant.
 //
 //   processGrain() additionally enforces the invariant defensively: if it
 //   ever computes dataOffset + grainSize > m_channelStride, it sets
@@ -135,6 +136,9 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
 
     // Discard buffered input that is no longer needed by future overlapping grains.
     bool discardBufferedInputBefore(SINT framePosition, double signedEffectiveRate = 1.0);
+
+    // Consume skipped source frames from ReadAheadManager without storing them.
+    InputReadResult consumeReadAheadGap(double signedEffectiveRate, SINT framesToConsume);
 
     // Read more input from ReadAheadManager into the buffered planar window.
     InputReadResult appendInputFrames(double signedEffectiveRate, SINT framesToRead);
@@ -223,6 +227,12 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     friend class ::EngineBufferScaleBungeeBufferWindowTest;
     FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
             DiscardWithGapBeyondEndJumpsBothPointersToFramePosition);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndConsumesSkippedReadAheadFrames);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndRetriesAfterTransientZeroRead);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndConsumesPartialReadsBeforeCompleting);
     FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
             DiscardWhenFramePositionInsideBufferDoesNotOverJump);
     FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,

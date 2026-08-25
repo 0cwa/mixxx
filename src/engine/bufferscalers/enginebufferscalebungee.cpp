@@ -186,19 +186,71 @@ void EngineBufferScaleBungee::deinterleaveInput(
     }
 }
 
+EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAheadGap(
+        double signedEffectiveRate,
+        SINT framesToConsume) {
+    if (framesToConsume <= 0) {
+        return {0, false};
+    }
+    if (!m_pReadAheadManager || !getOutputSignal().isValid()) {
+        return {framesToConsume, false};
+    }
+
+    SINT consumedFrames = 0;
+    int readFailedCount = 0;
+    while (consumedFrames < framesToConsume) {
+        const SINT framesRequested = std::min<SINT>(
+                framesToConsume - consumedFrames,
+                kMaxGrainFrames);
+        const SINT samplesRequested = getOutputSignal().frames2samples(framesRequested);
+        const auto readResult = m_pReadAheadManager->getNextSamplesWithRetry(
+                signedEffectiveRate,
+                m_interleavedReadBuffer.data(),
+                samplesRequested,
+                getOutputSignal().getChannelCount(),
+                m_retryState);
+        if (readResult.retryPending) {
+            return {consumedFrames, true};
+        }
+        const SINT availableFrames =
+                getOutputSignal().samples2frames(readResult.samplesRead);
+        if (availableFrames <= 0) {
+            if (++readFailedCount > 1) {
+                break;
+            }
+            continue;
+        }
+        readFailedCount = 0;
+        consumedFrames += std::min(availableFrames, framesRequested);
+    }
+
+    // Two consecutive empty reads exhaust the retry budget. At end-of-track
+    // this can return fewer frames than requested; the caller still collapses
+    // the empty window to the requested frame so the BNG-13 invariant holds.
+    return {consumedFrames, false};
+}
+
 bool EngineBufferScaleBungee::discardBufferedInputBefore(
         SINT framePosition,
         double signedEffectiveRate) {
-    Q_UNUSED(signedEffectiveRate);
     if (framePosition <= m_bufferedInputBeginFrame) {
         return false;
     }
 
     const SINT bufferedFrames = m_bufferedInputEndFrame - m_bufferedInputBeginFrame;
+    const SINT oldBufferedInputEndFrame = m_bufferedInputEndFrame;
     if (bufferedFrames <= 0) {
-        m_bufferedInputBeginFrame = framePosition;
-        m_bufferedInputEndFrame = framePosition;
-        return false;
+        const auto readResult = consumeReadAheadGap(
+                signedEffectiveRate,
+                framePosition - oldBufferedInputEndFrame);
+        const SINT skippedFrames = framePosition - oldBufferedInputEndFrame;
+        const SINT consumedEndFrame =
+                !readResult.retryPending && readResult.framesRead < skippedFrames
+                ? framePosition
+                : oldBufferedInputEndFrame + readResult.framesRead;
+        m_bufferedInputBeginFrame = consumedEndFrame;
+        m_bufferedInputEndFrame = consumedEndFrame;
+        return readResult.retryPending;
     }
 
     const SINT discardFrames = std::min(framePosition - m_bufferedInputBeginFrame,
@@ -212,11 +264,19 @@ bool EngineBufferScaleBungee::discardBufferedInputBefore(
 
     m_bufferedInputBeginFrame += discardFrames;
     if (remainingFrames <= 0) {
-        // BNG-13: jump the empty window to the requested frame. The skipped
-        // read-ahead range is not consumed here; the next append starts at the
-        // same source cursor and therefore does not advance it speculatively.
-        m_bufferedInputBeginFrame = framePosition;
-        m_bufferedInputEndFrame = framePosition;
+        const auto readResult = consumeReadAheadGap(
+                signedEffectiveRate,
+                framePosition - oldBufferedInputEndFrame);
+        const SINT skippedFrames = framePosition - oldBufferedInputEndFrame;
+        // Advance beyond the old buffer tail only after consuming the skipped
+        // source gap. If no retry remains, collapse an incomplete end-of-track
+        // window to framePosition to preserve the BNG-13 invariant.
+        m_bufferedInputBeginFrame =
+                !readResult.retryPending && readResult.framesRead < skippedFrames
+                ? framePosition
+                : oldBufferedInputEndFrame + readResult.framesRead;
+        m_bufferedInputEndFrame = m_bufferedInputBeginFrame;
+        return readResult.retryPending;
     }
     return false;
 }

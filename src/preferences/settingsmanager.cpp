@@ -33,9 +33,11 @@ SettingsManager::SettingsManager(const QString& settingsPath)
                 QStringLiteral("[App]"),
                 QStringLiteral("keylock_engine"));
         if (!m_pSettings->exists(keylockEngineKey)) {
+            // Match Sound Preferences' Reset to Defaults. Enabling Bungee in
+            // CMake does not change the runtime keylock-engine policy.
             m_pSettings->setValue(
                     keylockEngineKey,
-                    EngineBuffer::KeylockEngine::Bungee);
+                    EngineBuffer::defaultKeylockEngine());
         }
     }
 #endif

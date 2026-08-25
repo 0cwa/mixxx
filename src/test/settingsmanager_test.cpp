@@ -18,7 +18,7 @@ const ConfigKey kKeylockEngineKey(
 
 class SettingsManagerTest : public MixxxTest {};
 
-TEST_F(SettingsManagerTest, SeedsBungeeKeylockEngineForFreshSettingsDirectory) {
+TEST_F(SettingsManagerTest, SeedsDefaultKeylockEngineForFreshSettingsDirectory) {
     QTemporaryDir profileParent;
     ASSERT_TRUE(profileParent.isValid());
 
@@ -29,7 +29,7 @@ TEST_F(SettingsManagerTest, SeedsBungeeKeylockEngineForFreshSettingsDirectory) {
 
     EXPECT_TRUE(QDir(settingsPath).exists());
     ASSERT_TRUE(manager.settings()->exists(kKeylockEngineKey));
-    EXPECT_EQ(static_cast<int>(EngineBuffer::KeylockEngine::Bungee),
+    EXPECT_EQ(static_cast<int>(EngineBuffer::defaultKeylockEngine()),
             manager.settings()->getValue(kKeylockEngineKey, -1));
 }
 
