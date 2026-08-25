@@ -3658,8 +3658,26 @@ if(SIGNALSMITH)
       "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build"
     )
     set(
+      SIGNALSMITH_LINEAR_SOURCE_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-linear/src/signalsmith-linear"
+    )
+    set(
       SIGNALSMITH_LINEAR_INCLUDE_DIR
-      "${SIGNALSMITH_STRETCH_BINARY_DIR}/_deps/signalsmith-linear-src/include"
+      "${SIGNALSMITH_LINEAR_SOURCE_DIR}/include"
+    )
+    ExternalProject_Add(
+      signalsmith-linear-fetch
+      URL
+        "https://github.com/Signalsmith-Audio/linear/archive/${SIGNALSMITH_LINEAR_COMMIT}.tar.gz"
+      URL_HASH SHA256=${SIGNALSMITH_LINEAR_URL_HASH}
+      DOWNLOAD_DIR "${CMAKE_CURRENT_BINARY_DIR}/downloads"
+      DOWNLOAD_NAME "signalsmith-linear-${SIGNALSMITH_LINEAR_COMMIT}.tar.gz"
+      PREFIX "signalsmith-linear"
+      SOURCE_DIR "${SIGNALSMITH_LINEAR_SOURCE_DIR}"
+      CONFIGURE_COMMAND ""
+      BUILD_COMMAND ""
+      INSTALL_COMMAND ""
+      EXCLUDE_FROM_ALL TRUE
     )
     ExternalProject_Add(
       signalsmith-stretch-fetch
@@ -3671,6 +3689,7 @@ if(SIGNALSMITH)
       PREFIX "signalsmith-stretch"
       SOURCE_DIR "${SIGNALSMITH_STRETCH_SOURCE_DIR}"
       BINARY_DIR "${SIGNALSMITH_STRETCH_BINARY_DIR}"
+      DEPENDS signalsmith-linear-fetch
       LIST_SEPARATOR "|"
       PATCH_COMMAND
         ${CMAKE_COMMAND}
@@ -3682,6 +3701,8 @@ if(SIGNALSMITH)
         -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DCMAKE_PREFIX_PATH=${PIPE_DELIMITED_CMAKE_PREFIX_PATH}
+        -DFETCHCONTENT_SOURCE_DIR_SIGNALSMITH-LINEAR:PATH=${SIGNALSMITH_LINEAR_SOURCE_DIR}
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON
         -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
         -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
         -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}

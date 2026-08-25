@@ -20,7 +20,7 @@ if(NOT TARGET signalsmith-stretch)
     signalsmith-stretch
     PROPERTIES
       INTERFACE_INCLUDE_DIRECTORIES
-        "${_signalsmith_prefix}/lib/signalsmith-stretch/include"
+        "${_signalsmith_prefix}/lib/signalsmith-stretch/include;${_signalsmith_prefix}/lib/signalsmith-stretch"
       INTERFACE_LINK_LIBRARIES signalsmith-linear
   )
 endif()
