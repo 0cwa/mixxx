@@ -2,6 +2,7 @@
 
 #include <QBrush>
 #include <QFileDialog>
+#include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QListWidgetItem>
@@ -9,9 +10,73 @@
 #include <QPalette>
 #include <QStandardPaths>
 #include <QVBoxLayout>
+#include <algorithm>
+#include <cmath>
 
 #include "track/track.h"
+#include "util/color/color.h"
 #include "widget/dlgstemconversionoptions.h"
+
+namespace {
+
+constexpr double kMinimumStatusContrast = 4.5;
+
+double relativeLuminance(const QColor& color) {
+    const auto linearize = [](double channel) {
+        return channel <= 0.03928
+                ? channel / 12.92
+                : std::pow((channel + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * linearize(color.redF()) +
+            0.7152 * linearize(color.greenF()) +
+            0.0722 * linearize(color.blueF());
+}
+
+double contrastRatio(const QColor& foreground, const QColor& background) {
+    const double foregroundLuminance = relativeLuminance(foreground);
+    const double backgroundLuminance = relativeLuminance(background);
+    return (std::max(foregroundLuminance, backgroundLuminance) + 0.05) /
+            (std::min(foregroundLuminance, backgroundLuminance) + 0.05);
+}
+
+QColor contrastSafeColor(QColor foreground, const QColor& background) {
+    if (contrastRatio(foreground, background) >= kMinimumStatusContrast) {
+        return foreground;
+    }
+
+    const QColor black = QColor(Qt::black);
+    const QColor white = QColor(Qt::white);
+    return contrastRatio(black, background) >= contrastRatio(white, background)
+            ? black
+            : white;
+}
+
+QColor paletteStatusColor(const QPalette& palette,
+        QPalette::ColorGroup colorGroup,
+        QPalette::ColorRole accentRole) {
+    const QColor foreground = Color::blendColors(
+            palette.color(colorGroup, accentRole),
+            palette.color(colorGroup, QPalette::Text));
+    return contrastSafeColor(foreground,
+            palette.color(colorGroup, QPalette::Window));
+}
+
+void setStatusColor(QLabel* pStatusLabel, QPalette::ColorRole accentRole) {
+    QPalette palette = pStatusLabel->palette();
+
+    const QPalette::ColorGroup currentGroup = palette.currentColorGroup();
+    const QPalette::ColorGroup otherGroup =
+            currentGroup == QPalette::Inactive ? QPalette::Active : QPalette::Inactive;
+    for (const QPalette::ColorGroup colorGroup : {currentGroup, otherGroup}) {
+        palette.setColor(colorGroup,
+                QPalette::WindowText,
+                paletteStatusColor(palette, colorGroup, accentRole));
+    }
+
+    pStatusLabel->setPalette(palette);
+}
+
+} // namespace
 
 DlgStemConversion::DlgStemConversion(
         StemConversionManager* pConversionManager,
@@ -50,8 +115,10 @@ void DlgStemConversion::createUI() {
 
     // Phase/Status message label (NEW)
     m_pStatusLabel = new QLabel(tr("Waiting for conversion..."), this);
-    // Blue, bold
-    m_pStatusLabel->setStyleSheet("color: #0066CC; font-weight: bold;");
+    QFont statusFont = m_pStatusLabel->font();
+    statusFont.setBold(true);
+    m_pStatusLabel->setFont(statusFont);
+    setStatusColor(m_pStatusLabel, QPalette::Link);
     pCurrentLayout->addWidget(m_pStatusLabel);
 
     pMainLayout->addWidget(pCurrentGroup);
@@ -160,14 +227,14 @@ void DlgStemConversion::onConversionFailed(TrackId,
         const QString& trackTitle,
         const QString& errorMessage) {
     m_pStatusLabel->setText(tr("❌ Error converting %1: %2").arg(trackTitle, errorMessage));
-    m_pStatusLabel->setStyleSheet("color: #CC0000; font-weight: bold;"); // Red, bold
-    updateConversionList();                                              // Update UI
+    setStatusColor(m_pStatusLabel, QPalette::LinkVisited);
+    updateConversionList();
 }
 
 void DlgStemConversion::onQueueChanged(int pendingCount) {
     if (pendingCount == 0) {
         m_pCurrentTrackLabel->setText(tr("No conversion in progress"));
-        m_pStatusLabel->setStyleSheet("color: #0066CC; font-weight: bold;"); // Reset to blue
+        setStatusColor(m_pStatusLabel, QPalette::Link);
     }
     updateConversionList();
 }
