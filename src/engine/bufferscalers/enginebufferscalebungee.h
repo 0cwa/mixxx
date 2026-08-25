@@ -8,9 +8,9 @@
 #include <vector>
 
 #include "engine/bufferscalers/enginebufferscale.h"
+#include "engine/readaheadmanager.h"
 #include "util/samplebuffer.h"
 
-class ReadAheadManager;
 class EngineBufferScaleBungeeBufferWindowTest;
 
 // Uses Bungee's low-level grain API to perform time-stretching and pitch-shifting.
@@ -155,6 +155,11 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
 
     // The read-ahead manager that we use to fetch samples
     ReadAheadManager* m_pReadAheadManager;
+
+    // Retry state belongs to this scaler. ReadAheadManager itself is shared by
+    // the scaler graph, so a reset of an inactive scaler must not cancel the
+    // active scaler's pending cache-miss retry.
+    ReadAheadManager::RetryState m_retryState;
 
     // Bungee stretcher instance (using Basic edition)
     std::unique_ptr<Bungee::Stretcher<Bungee::Basic>> m_pStretcher;

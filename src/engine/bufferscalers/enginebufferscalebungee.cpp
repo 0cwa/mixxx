@@ -207,7 +207,8 @@ EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAhe
                 signedEffectiveRate,
                 m_interleavedReadBuffer.data(),
                 samplesRequested,
-                getOutputSignal().getChannelCount());
+                getOutputSignal().getChannelCount(),
+                m_retryState);
         if (readResult.retryPending) {
             return {consumedFrames, true};
         }
@@ -295,7 +296,8 @@ EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::appendInputFra
             signedEffectiveRate,
             m_interleavedReadBuffer.data(),
             samplesRequested,
-            getOutputSignal().getChannelCount());
+            getOutputSignal().getChannelCount(),
+            m_retryState);
     if (readResult.retryPending) {
         return {0, true};
     }
@@ -603,7 +605,7 @@ void EngineBufferScaleBungee::completePendingGrainForReset() {
     }
 
     if (m_pReadAheadManager) {
-        m_pReadAheadManager->cancelPendingRetry();
+        m_pReadAheadManager->cancelPendingRetry(m_retryState);
     }
     if (m_pStretcher) {
         Bungee::OutputChunk discardedOutput{};

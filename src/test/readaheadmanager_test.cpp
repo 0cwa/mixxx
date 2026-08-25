@@ -397,20 +397,38 @@ TEST_F(ReadAheadManagerTest, RetryableCacheMissRetainsStatefulTriggerPlan) {
     m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
     std::array<CSAMPLE, 10> output;
     output.fill(1.0f);
+    ReadAheadManager::RetryState scalerRetryState;
+    ReadAheadManager::RetryState inactiveScalerRetryState;
 
     const auto unavailableResult = m_pReadAheadManager->getNextSamplesWithRetry(
-            1.0, output.data(), output.size(), mixxx::audio::ChannelCount::stereo());
+            1.0,
+            output.data(),
+            output.size(),
+            mixxx::audio::ChannelCount::stereo(),
+            scalerRetryState);
     EXPECT_EQ(0, unavailableResult.samplesRead);
     EXPECT_TRUE(unavailableResult.retryPending);
+    EXPECT_TRUE(scalerRetryState.active);
     EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
         return sample == 0.0f;
     }));
     EXPECT_EQ(1, m_pLoopControl->queryCount());
     EXPECT_EQ(1, m_pCueControl->queryCount());
 
+    // Resetting an inactive scaler must not cancel the active scaler's
+    // stateful retry plan when both scalers share this manager.
+    inactiveScalerRetryState.active = true;
+    m_pReadAheadManager->cancelPendingRetry(inactiveScalerRetryState);
+    EXPECT_FALSE(inactiveScalerRetryState.active);
+    EXPECT_TRUE(scalerRetryState.active);
+
     m_pReader->setReadAvailable(true);
     const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
-            1.0, output.data(), output.size(), mixxx::audio::ChannelCount::stereo());
+            1.0,
+            output.data(),
+            output.size(),
+            mixxx::audio::ChannelCount::stereo(),
+            scalerRetryState);
 
     EXPECT_EQ(6, availableResult.samplesRead);
     EXPECT_FALSE(availableResult.retryPending);
