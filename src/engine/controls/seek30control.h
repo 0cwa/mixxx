@@ -2,14 +2,14 @@
 
 #include <QList>
 #include <QObject>
-#include <QSet>
-#include <algorithm>
+#include <atomic>
 #include <memory>
 
 #include "audio/frame.h"
 #include "audio/types.h"
 #include "control/controlobject.h"
 #include "control/controlpushbutton.h"
+#include "control/controlvalue.h"
 #include "engine/controls/enginecontrol.h"
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
@@ -21,8 +21,7 @@
 // Exposes a trigger button "[<group>],seek_30s".
 // When pressed (value > 0), the deck seeks to 30s.
 //
-// NOTE: We capture the current sample rate via setFrameInfo(...)
-// that EngineBuffer calls on all EngineControl instances.
+// The current sample rate is read from EngineControl's atomic FrameInfo.
 class Seek30Control final : public EngineControl {
     Q_OBJECT
   public:
@@ -32,13 +31,6 @@ class Seek30Control final : public EngineControl {
     }
 
     ~Seek30Control() override = default;
-
-    // EngineControl API
-    void setFrameInfo(mixxx::audio::FramePos /*position*/,
-            mixxx::audio::FramePos /*endPosition*/,
-            mixxx::audio::SampleRate sampleRate) override {
-        m_sampleRate = sampleRate;
-    }
 
     void trackLoaded(TrackPointer pNewTrack) override;
 
@@ -53,20 +45,74 @@ class Seek30Control final : public EngineControl {
     void slotSeek30Prev(double v);
 
   private:
-    // Cache only the memory cues that belong to the currently loaded track.
-    QList<CuePointer> m_memoryCues;
+    struct TrackState {
+        TrackPointer pLoadedTrack;
+        QList<CuePointer> memoryCues;
+    };
+
+    // TrackState is non-trivial, so use the non-atomic ring implementation
+    // directly. It provides lock-free snapshots while preserving ownership of
+    // the track and cue pointers in each snapshot.
+    class TrackStateValue final
+            : public ControlValueAtomicBase<TrackState, 8, false> {
+      public:
+        TrackStateValue() = default;
+    };
+
+    class StateUpdateGuard final {
+      public:
+        StateUpdateGuard() = default;
+        explicit StateUpdateGuard(Seek30Control* pControl)
+                : m_pControl(pControl) {
+        }
+        ~StateUpdateGuard();
+
+        StateUpdateGuard(const StateUpdateGuard&) = delete;
+        StateUpdateGuard& operator=(const StateUpdateGuard&) = delete;
+
+        StateUpdateGuard(StateUpdateGuard&& other) noexcept
+                : m_pControl(other.m_pControl) {
+            other.m_pControl = nullptr;
+        }
+        StateUpdateGuard& operator=(StateUpdateGuard&& other) noexcept {
+            if (this != &other) {
+                if (m_pControl) {
+                    m_pControl->finishStateUpdate();
+                }
+                m_pControl = other.m_pControl;
+                other.m_pControl = nullptr;
+            }
+            return *this;
+        }
+
+        explicit operator bool() const {
+            return m_pControl != nullptr;
+        }
+
+      private:
+        Seek30Control* m_pControl{nullptr};
+    };
+
+    StateUpdateGuard tryBeginStateUpdate();
+    StateUpdateGuard beginStateUpdate();
+    void finishStateUpdate();
+    bool tryGetTrackState(TrackState* pState) const;
 
     // Rebuilds the cache from the track's cue list.
-    void rebuildMemoryCueCache();
+    QList<CuePointer> rebuildMemoryCueCache(const TrackPointer& pTrack) const;
 
-    void sortCueCache();
+    static void sortCueCache(QList<CuePointer>* pMemoryCues);
 
     // Returns the smallest non-negative index not yet used by memory cues.
-    int nextFreeMemoryCueIndex() const;
+    static int nextFreeMemoryCueIndex(const QList<CuePointer>& memoryCues);
+
+    double sampleRate() const {
+        return frameInfo().sampleRate.toDouble();
+    }
 
     // Helper to create & register a new memory cue at a given position.
     // Returns the index that was assigned.
-    int createMemoryCueAt(const mixxx::audio::FramePos& pos);
+    int createMemoryCueAt(TrackState* pState, const mixxx::audio::FramePos& pos);
 
     void createControls() {
         m_pMemoryCue = std::make_unique<ControlObject>(ConfigKey(m_group, "memory_cue"));
@@ -152,7 +198,8 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearPrev;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
-    mixxx::audio::SampleRate m_sampleRate;
-
-    TrackPointer m_pLoadedTrack{}; // is written from an engine worker thread
+    TrackStateValue m_trackState;
+    // Direct control callbacks never wait for a track-state writer. A flag is
+    // used instead of a mutex so these callbacks remain nonblocking.
+    std::atomic_flag m_trackStateUpdateInProgress = ATOMIC_FLAG_INIT;
 };
