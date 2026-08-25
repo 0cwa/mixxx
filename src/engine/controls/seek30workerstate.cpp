@@ -182,7 +182,7 @@ void Seek30WorkerState::clearNearest(const Seek30WorkerInputs& inputs) {
         return;
     }
 
-    const double current = inputs.currentPosition.toEngineSamplePos();
+    const double current = inputs.currentPosition.value();
     const double tolerance = inputs.sampleRate.toDouble();
     CuePointer pNearestCue;
     double nearestDistance = std::numeric_limits<double>::max() / 2.0;
@@ -193,7 +193,7 @@ void Seek30WorkerState::clearNearest(const Seek30WorkerInputs& inputs) {
 
         const double cuePosition = pCue->getStartAndEndPosition()
                                            .startPosition
-                                           .toEngineSamplePos();
+                                           .value();
         const double distance = std::abs(cuePosition - current);
         if (distance >= tolerance) {
             continue;
@@ -229,7 +229,7 @@ Seek30SeekTarget Seek30WorkerState::seekNext(
 
 Seek30SeekTarget Seek30WorkerState::seekPrevious(
         const Seek30WorkerInputs& inputs) {
-    const double current = inputs.currentPosition.toEngineSamplePos();
+    const double current = inputs.currentPosition.value();
     constexpr double kEpsilon = 0.5;
     for (int index = m_memoryCues.size() - 1; index >= 0; --index) {
         const auto pCue = m_memoryCues.at(index);
@@ -238,7 +238,7 @@ Seek30SeekTarget Seek30WorkerState::seekPrevious(
         }
 
         const auto cuePosition = pCue->getStartAndEndPosition().startPosition;
-        const double distance = current - cuePosition.toEngineSamplePos();
+        const double distance = current - cuePosition.value();
         if (distance <= kEpsilon) {
             continue;
         }

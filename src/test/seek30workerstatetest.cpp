@@ -15,6 +15,10 @@ mixxx::audio::FramePos frameAtSeconds(double seconds) {
     return mixxx::audio::FramePos(seconds * kSampleRate);
 }
 
+mixxx::audio::FramePos frameAtFrames(double frames) {
+    return mixxx::audio::FramePos(frames);
+}
+
 TrackPointer trackWithMemoryCues(std::initializer_list<double> cueSeconds) {
     TrackPointer pTrack = Track::newTemporary();
     for (const double cueSecond : cueSeconds) {
@@ -36,6 +40,16 @@ int memoryCueCount(const TrackPointer& pTrack) {
         }
     }
     return count;
+}
+
+bool hasMemoryCueAt(const TrackPointer& pTrack, const mixxx::audio::FramePos& position) {
+    for (const auto& pCue : pTrack->getCuePoints()) {
+        if (pCue && pCue->getType() == mixxx::CueType::Memory &&
+                pCue->getStartAndEndPosition().startPosition == position) {
+            return true;
+        }
+    }
+    return false;
 }
 
 Seek30WorkerInputs inputsAt(double seconds) {
@@ -163,15 +177,82 @@ TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
     state.process({Seek30Operation::ClearAll, oldGeneration}, inputs);
     EXPECT_EQ(1, memoryCueCount(pNewTrack));
 
-    inputs.currentPosition = frameAtSeconds(4.6);
+    inputs.currentPosition = frameAtSeconds(4.0);
     state.process({Seek30Operation::ClearNearest, newGeneration}, inputs);
     EXPECT_EQ(1, memoryCueCount(pNewTrack));
 
-    inputs.currentPosition = frameAtSeconds(3.25);
+    inputs.currentPosition = frameAtFrames(3.0 * kSampleRate + kSampleRate - 1.0);
     state.process({Seek30Operation::ClearNearest, newGeneration}, inputs);
     EXPECT_EQ(0, memoryCueCount(pNewTrack));
 
     state.trackLoaded(TrackPointer());
     state.process({Seek30Operation::CreateAtCurrent, newGeneration}, inputs);
     EXPECT_EQ(0, memoryCueCount(pNewTrack));
+}
+
+TEST(Seek30WorkerStateTest, ClearNearestPrefersCueAtOrBeforeOnTie) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({9.0, 11.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    state.process(
+            {Seek30Operation::ClearNearest, generation}, inputsAt(10.0));
+
+    EXPECT_EQ(1, memoryCueCount(pTrack));
+    EXPECT_FALSE(hasMemoryCueAt(pTrack, frameAtSeconds(9.0)));
+    EXPECT_TRUE(hasMemoryCueAt(pTrack, frameAtSeconds(11.0)));
+}
+
+TEST(Seek30WorkerStateTest, SeekPreviousUsesOnePointFiveSecondGate) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({0.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    auto inputs = inputsAt(1.5);
+    inputs.playing = true;
+    const auto boundaryTarget = state.process(
+            {Seek30Operation::SeekPrevious, generation}, inputs);
+    ASSERT_TRUE(boundaryTarget.position.isValid());
+    EXPECT_EQ(frameAtSeconds(0.0), boundaryTarget.position);
+
+    inputs.currentPosition =
+            frameAtFrames(1.5 * kSampleRate - 1.0);
+    const auto insideWindowTarget = state.process(
+            {Seek30Operation::SeekPrevious, generation}, inputs);
+    EXPECT_FALSE(insideWindowTarget.position.isValid());
+}
+
+TEST(Seek30WorkerStateTest, ClearCurrentClearNextAndSeekPreviousBehavior) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0, 5.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    auto inputs = inputsAt(3.0);
+    state.process({Seek30Operation::ClearCurrent, generation}, inputs);
+    EXPECT_EQ(2, memoryCueCount(pTrack));
+
+    state.process({Seek30Operation::ClearCurrent, generation}, inputs);
+    EXPECT_EQ(2, memoryCueCount(pTrack));
+
+    inputs.currentPosition = frameAtSeconds(1.5);
+    state.process({Seek30Operation::ClearNext, generation}, inputs);
+    EXPECT_EQ(1, memoryCueCount(pTrack));
+
+    inputs.currentPosition = frameAtSeconds(4.0);
+    const auto target = state.process(
+            {Seek30Operation::SeekPrevious, generation}, inputs);
+    ASSERT_TRUE(target.position.isValid());
+    EXPECT_EQ(frameAtSeconds(1.0), target.position);
+
+    inputs.currentPosition = frameAtSeconds(0.5);
+    const auto noTarget = state.process(
+            {Seek30Operation::SeekPrevious, generation}, inputs);
+    EXPECT_FALSE(noTarget.position.isValid());
+
+    inputs.currentPosition = frameAtSeconds(6.0);
+    state.process({Seek30Operation::ClearNext, generation}, inputs);
+    EXPECT_EQ(1, memoryCueCount(pTrack));
 }
