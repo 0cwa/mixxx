@@ -432,6 +432,7 @@ EngineBuffer::EngineBuffer(const QString& group,
     // Create the 30s seek control
     m_pSeek30Control = new Seek30Control(group, pConfig);
     addControl(m_pSeek30Control);
+    m_pReader->setSeek30Control(m_pSeek30Control);
 
     connect(m_pLoopingControl,
             &LoopingControl::loopReset,

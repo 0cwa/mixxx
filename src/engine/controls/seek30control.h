@@ -1,46 +1,33 @@
 #pragma once
 
-#include <QList>
 #include <QObject>
-#include <QSet>
-#include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 
 #include "audio/frame.h"
-#include "audio/types.h"
 #include "control/controlobject.h"
 #include "control/controlpushbutton.h"
+#include "control/controlvalue.h"
 #include "engine/controls/enginecontrol.h"
-#include "engine/engine.h"
-#include "engine/enginebuffer.h"
-#include "track/cue.h"
+#include "engine/controls/seek30workerstate.h"
 
-// A very small control that seeks the deck to 30.0 seconds absolute
-// using EngineBuffer::seekAbs(...).
-//
-// Exposes a trigger button "[<group>],seek_30s".
-// When pressed (value > 0), the deck seeks to 30s.
-//
-// NOTE: We capture the current sample rate via setFrameInfo(...)
-// that EngineBuffer calls on all EngineControl instances.
+class CachingReaderWorker;
+
+// Adapter for the Seek30 controls. DirectConnection callbacks only enqueue
+// scalar commands for CachingReaderWorker. Track and cue ownership remains in
+// that worker; process() only forwards a scalar target to EngineBuffer.
 class Seek30Control final : public EngineControl {
     Q_OBJECT
   public:
-    Seek30Control(const QString& group, UserSettingsPointer pConfig)
-            : EngineControl(group, pConfig) {
-        createControls();
-    }
-
+    Seek30Control(const QString& group, UserSettingsPointer pConfig);
     ~Seek30Control() override = default;
 
-    // EngineControl API
-    void setFrameInfo(mixxx::audio::FramePos /*position*/,
-            mixxx::audio::FramePos /*endPosition*/,
-            mixxx::audio::SampleRate sampleRate) override {
-        m_sampleRate = sampleRate;
-    }
+    void process(const double rate,
+            mixxx::audio::FramePos currentPosition,
+            const std::size_t bufferSize) override;
 
-    void trackLoaded(TrackPointer pNewTrack) override;
+    void setWorker(CachingReaderWorker* pWorker);
 
   private slots:
     void createAtCurrent(double v);
@@ -53,95 +40,14 @@ class Seek30Control final : public EngineControl {
     void slotSeek30Prev(double v);
 
   private:
-    // Cache only the memory cues that belong to the currently loaded track.
-    QList<CuePointer> m_memoryCues;
+    void createControls();
+    void enqueue(Seek30Operation operation);
 
-    // Rebuilds the cache from the track's cue list.
-    void rebuildMemoryCueCache();
-
-    void sortCueCache();
-
-    // Returns the smallest non-negative index not yet used by memory cues.
-    int nextFreeMemoryCueIndex() const;
-
-    // Helper to create & register a new memory cue at a given position.
-    // Returns the index that was assigned.
-    int createMemoryCueAt(const mixxx::audio::FramePos& pos);
-
-    void createControls() {
-        m_pMemoryCue = std::make_unique<ControlObject>(ConfigKey(m_group, "memory_cue"));
-        m_pMemoryCue->set(0.f);
-
-        m_pSeek30 = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30s"));
-        m_pSeek30->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pSeek30.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::slotSeek30,
-                Qt::DirectConnection);
-
-        m_pSeek30Prev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30Prev"));
-        m_pSeek30Prev->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pSeek30Prev.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::slotSeek30Prev,
-                Qt::DirectConnection);
-
-        m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(
-                ConfigKey(m_group, "memory_create_at_current"));
-        m_pMemoryCreateAtCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pMemoryCreateAtCurrent.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::createAtCurrent,
-                Qt::DirectConnection);
-
-        m_pMemoryClearAll = std::make_unique<ControlPushButton>(
-                ConfigKey(m_group, "memory_clear_all"));
-        m_pMemoryClearAll->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pMemoryClearAll.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::clearAll,
-                Qt::DirectConnection);
-
-        m_pMemoryClearCurrent = std::make_unique<ControlPushButton>(
-                ConfigKey(m_group, "memory_clear_current"));
-        m_pMemoryClearCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pMemoryClearCurrent.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::clearCurrent,
-                Qt::DirectConnection);
-
-        m_pMemoryClearPrev = std::make_unique<ControlPushButton>(
-                ConfigKey(m_group, "memory_clear_prev"));
-        m_pMemoryClearPrev->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pMemoryClearPrev.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::clearPrev,
-                Qt::DirectConnection);
-
-        m_pMemoryClearNext = std::make_unique<ControlPushButton>(
-                ConfigKey(m_group, "memory_clear_next"));
-        m_pMemoryClearNext->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pMemoryClearNext.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::clearNext,
-                Qt::DirectConnection);
-
-        m_pMemoryClearNearest = std::make_unique<ControlPushButton>(
-                ConfigKey(m_group, "memory_clear_nearest"));
-        m_pMemoryClearNearest->setButtonMode(mixxx::control::ButtonMode::Trigger);
-        connect(m_pMemoryClearNearest.get(),
-                &ControlObject::valueChanged,
-                this,
-                &Seek30Control::clearNearest,
-                Qt::DirectConnection);
-    }
+    // Called by CachingReaderWorker only after it has removed a command from
+    // the mailbox. It reads only scalar ControlObject values and EngineControl
+    // frameInfo(); it never accesses worker-owned track or cue state.
+    Seek30WorkerInputs seek30WorkerInputs() const;
+    void publishSeekTarget(const Seek30SeekTarget& target);
 
     std::unique_ptr<ControlObject> m_pMemoryCue;
     std::unique_ptr<ControlPushButton> m_pSeek30;
@@ -152,7 +58,10 @@ class Seek30Control final : public EngineControl {
     std::unique_ptr<ControlPushButton> m_pMemoryClearPrev;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNext;
     std::unique_ptr<ControlPushButton> m_pMemoryClearNearest;
-    mixxx::audio::SampleRate m_sampleRate;
 
-    TrackPointer m_pLoadedTrack; // is written from an engine worker thread
+    std::atomic<CachingReaderWorker*> m_pWorker{nullptr};
+    ControlValueAtomic<Seek30SeekTarget> m_seekTarget;
+    std::uint64_t m_consumedSeekSequence{0};
+
+    friend class CachingReaderWorker;
 };

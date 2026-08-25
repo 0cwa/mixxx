@@ -2,6 +2,7 @@
 
 #include <QtDebug>
 
+#include "engine/controls/seek30control.h"
 #include "moc_cachingreader.cpp"
 #include "util/assert.h"
 #include "util/compatibility/qatomic.h"
@@ -98,6 +99,13 @@ CachingReader::CachingReader(const QString& group,
 CachingReader::~CachingReader() {
     m_worker.quitWait();
     qDeleteAll(m_chunks);
+}
+
+void CachingReader::setSeek30Control(Seek30Control* pControl) {
+    m_worker.setSeek30Control(pControl);
+    if (pControl) {
+        pControl->setWorker(&m_worker);
+    }
 }
 
 void CachingReader::freeChunkFromList(CachingReaderChunkForOwner* pChunk) {

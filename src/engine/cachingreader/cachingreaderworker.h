@@ -2,16 +2,21 @@
 
 #include <QMutex>
 #include <QString>
+#include <atomic>
+#include <cstdint>
 
 #include "audio/frame.h"
 #include "audio/types.h"
 #include "engine/cachingreader/cachingreaderchunk.h"
+#include "engine/controls/seek30workerstate.h"
 #include "engine/engineworker.h"
 #include "sources/audiosource.h"
 #include "track/track_decl.h"
 
 template<class DataType>
 class FIFO;
+
+class Seek30Control;
 
 // POD with trivial ctor/dtor/copy for passing through FIFO
 typedef struct CachingReaderChunkReadRequest {
@@ -116,6 +121,22 @@ class CachingReaderWorker : public EngineWorker {
 
     void quitWait();
 
+    // Configure the worker-side Seek30 owner. The pointer is published before
+    // any track-loaded callback or command can use it.
+    void setSeek30Control(Seek30Control* pControl);
+
+    // Called by DirectConnection callbacks. The newest command is dropped when
+    // the fixed mailbox is full; the overflow count is saturating.
+    bool enqueueSeek30Command(Seek30Operation operation);
+
+    std::uint64_t seek30Generation() const {
+        return m_seek30Generation.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t seek30CommandOverflowCount() const {
+        return m_seek30CommandOverflowCount.load(std::memory_order_relaxed);
+    }
+
   signals:
     // Emitted once a new track is loaded and ready to be read from.
     void trackLoading();
@@ -173,6 +194,11 @@ class CachingReaderWorker : public EngineWorker {
     void verifyFirstSound(const CachingReaderChunk* pChunk,
             mixxx::audio::ChannelCount channelCount);
 
+    // Track and cue ownership is updated only from run()'s worker thread.
+    void updateSeek30Track(TrackPointer pNewTrack);
+    void processSeek30Commands();
+    void recordSeek30CommandOverflow();
+
     // The current audio source of the track loaded
     mixxx::AudioSourcePointer m_pAudioSource;
 
@@ -186,4 +212,11 @@ class CachingReaderWorker : public EngineWorker {
     mixxx::audio::ChannelCount m_maxSupportedChannel;
 
     QAtomicInt m_stop;
+
+    std::atomic<Seek30Control*> m_pSeek30Control{nullptr};
+    Seek30CommandMailbox m_seek30CommandMailbox;
+    Seek30WorkerState m_seek30State;
+    std::atomic<std::uint64_t> m_seek30Generation{0};
+    std::atomic<std::uint64_t> m_seek30CommandOverflowCount{0};
+    std::uint64_t m_seek30TargetSequence{0};
 };
