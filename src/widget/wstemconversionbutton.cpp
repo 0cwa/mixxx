@@ -138,6 +138,7 @@ void WStemConversionButton::onButtonClicked() {
 
     // Show the existing window if it is already open.
     if (m_pDialog) {
+        m_pDialog->show();
         m_pDialog->raise();
         m_pDialog->activateWindow();
         return;
