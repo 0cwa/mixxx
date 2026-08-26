@@ -135,7 +135,7 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     void deinterleaveInput(const CSAMPLE* pBuffer, SINT destOffsetFrames, SINT frames);
 
     // Discard buffered input that is no longer needed by future overlapping grains.
-    bool discardBufferedInputBefore(SINT framePosition, double signedEffectiveRate = 1.0);
+    bool discardBufferedInputBefore(SINT framePosition, double signedEffectiveRate);
 
     // Consume skipped source frames from ReadAheadManager without storing them.
     InputReadResult consumeReadAheadGap(double signedEffectiveRate, SINT framesToConsume);
@@ -164,10 +164,10 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     std::unique_ptr<Bungee::Stretcher<Bungee::Basic>> m_pStretcher;
 
     // Current Bungee request for grain processing.
-    Bungee::Request m_request;
+    Bungee::Request m_request{};
 
     // Output chunk for synthesiseGrain.
-    Bungee::OutputChunk m_outputChunk;
+    Bungee::OutputChunk m_outputChunk{};
 
     // Deinterleaved channel pointers into the contiguous buffered input window.
     std::vector<float*> m_channelBufferPtrs;
@@ -185,7 +185,7 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     SINT m_channelStride;
 
     // Current grain's input chunk.
-    Bungee::InputChunk m_currentInputChunk;
+    Bungee::InputChunk m_currentInputChunk{};
 
     // Absolute frame range currently buffered in m_contiguousChannelBuffer.
     SINT m_bufferedInputBeginFrame;

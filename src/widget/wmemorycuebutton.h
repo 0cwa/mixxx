@@ -1,5 +1,8 @@
 #pragma once
 
+#include <gtest/gtest_prod.h>
+
+#include <QList>
 #include <QString>
 
 #include "util/parented_ptr.h"
@@ -18,6 +21,11 @@ class WMemoryCueButton : public WPushButton {
     void mousePressEvent(QMouseEvent* pEvent) override;
 
   private:
+    static CuePointer findNearestMemoryCue(
+            const QList<CuePointer>& cues, double currentPosition);
+
     const QString m_group;
     parented_ptr<WCueMenuPopup> m_pCueMenuPopup;
+
+    FRIEND_TEST(WMemoryCueButtonTest, FindsNearestMemoryCueWithinWindow);
 };

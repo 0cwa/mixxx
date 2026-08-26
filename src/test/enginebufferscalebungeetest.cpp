@@ -945,7 +945,7 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     seedBufferWindow(/*begin=*/100, /*end=*/200);
 
     constexpr SINT kFramePosition = 10000;
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
+    m_pScaler->discardBufferedInputBefore(kFramePosition, 1.0);
 
     EXPECT_EQ(kFramePosition, bufferBegin())
             << "discardBufferedInputBefore must advance begin all the way to "
@@ -966,7 +966,7 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     seedBufferWindow(/*begin=*/100, /*end=*/200);
 
     constexpr SINT kFramePosition = 10000;
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
+    m_pScaler->discardBufferedInputBefore(kFramePosition, 1.0);
 
     EXPECT_EQ((kFramePosition - 200) * 2, m_pReadAhead->samplesRead())
             << "Full discard must drain only the skipped gap after the old "
@@ -986,7 +986,7 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     constexpr SINT kGapSamples = kGapFrames * 2;
     m_pReadAhead->setReadSampleCounts({0, kGapSamples});
 
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
+    m_pScaler->discardBufferedInputBefore(kFramePosition, 1.0);
 
     EXPECT_EQ(kGapSamples, m_pReadAhead->samplesRead())
             << "A single zero-frame read at a trigger must be retried before "
@@ -1005,7 +1005,7 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     constexpr SINT kGapSamples = kGapFrames * 2;
     m_pReadAhead->setReadSampleCounts({200, 600, 800});
 
-    m_pScaler->discardBufferedInputBefore(kFramePosition);
+    m_pScaler->discardBufferedInputBefore(kFramePosition, 1.0);
 
     EXPECT_EQ(kGapSamples, m_pReadAhead->samplesRead());
     EXPECT_EQ(3, m_pReadAhead->readCallCount());
@@ -1020,7 +1020,7 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
         DiscardWhenFramePositionInsideBufferDoesNotOverJump) {
     seedBufferWindow(/*begin=*/100, /*end=*/500);
 
-    m_pScaler->discardBufferedInputBefore(/*framePosition=*/250);
+    m_pScaler->discardBufferedInputBefore(/*framePosition=*/250, 1.0);
 
     EXPECT_EQ(250, bufferBegin())
             << "In-window discard must advance begin exactly to framePosition.";
@@ -1034,7 +1034,7 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
         DiscardWhenBufferEmptyJumpsToFramePosition) {
     seedBufferWindow(/*begin=*/0, /*end=*/0);
 
-    m_pScaler->discardBufferedInputBefore(/*framePosition=*/4096);
+    m_pScaler->discardBufferedInputBefore(/*framePosition=*/4096, 1.0);
 
     EXPECT_EQ(4096, bufferBegin());
     EXPECT_EQ(4096, bufferEnd());

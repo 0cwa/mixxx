@@ -790,7 +790,7 @@ bool buildPlaylistTree(
                 playlistFolderIt == playlistIsFolderMap.constEnd()) {
             qWarning() << "Rekordbox playlist has incomplete metadata"
                        << "childID:" << childID;
-            return false;
+            continue;
         }
         const QString& playlistItemName = playlistNameIt.value();
 
