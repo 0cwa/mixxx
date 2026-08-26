@@ -11,7 +11,7 @@ namespace {
 TrackPointer trackWithMemoryCues(std::initializer_list<SINT> positions) {
     TrackPointer pTrack = Track::newTemporary();
     for (const SINT position : positions) {
-        const auto cuePosition = mixxx::audio::FramePos(position);
+        const auto cuePosition = mixxx::audio::FramePos::fromEngineSamplePos(position);
         pTrack->createAndAddCue(
                 mixxx::CueType::Memory,
                 Cue::kNoHotCue,
@@ -31,5 +31,5 @@ TEST(WMemoryCueButtonTest, FindsNearestMemoryCueWithinWindow) {
 
     ASSERT_TRUE(pNearestCue);
     EXPECT_EQ(95000,
-            pNearestCue->getStartAndEndPosition().startPosition.value());
+            pNearestCue->getStartAndEndPosition().startPosition.toEngineSamplePos());
 }
