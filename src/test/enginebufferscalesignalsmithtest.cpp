@@ -371,7 +371,7 @@ TEST(EngineBufferScaleSignalSmithTest, TonePitchAndLatencyWindows) {
     constexpr double kToneHz = 440.0;
     constexpr double kToneAmplitude = 0.15;
     constexpr double kSourceSampleRate = 44100.0;
-    constexpr double kOutputSampleRate = 48000.0;
+    constexpr SINT kOutputSampleRate = 48000;
     constexpr double kBaseRate = kSourceSampleRate / kOutputSampleRate;
     constexpr double kTempoRatio = 0.73;
     const double kSemitoneRatio = std::pow(2.0, 1.0 / 12.0);
