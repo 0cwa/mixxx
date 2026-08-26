@@ -1,6 +1,7 @@
 #include "widget/wmemorycuebutton.h"
 
 #include <QMouseEvent>
+#include <cmath>
 
 #include "control/controlobject.h"
 #include "mixer/playerinfo.h"
@@ -9,6 +10,27 @@
 #include "skin/legacy/skincontext.h"
 #include "track/cue.h"
 #include "track/track.h"
+
+CuePointer WMemoryCueButton::findNearestMemoryCue(
+        const QList<CuePointer>& cues, double currentPosition) {
+    constexpr double kEpsilon = 50000.0;
+    CuePointer pMemoryCue;
+    double shortestDistance = kEpsilon;
+    for (const auto& pCue : cues) {
+        if (!pCue || pCue->getType() != mixxx::CueType::Memory) {
+            continue;
+        }
+        const double cueStart = pCue->getStartAndEndPosition()
+                                        .startPosition
+                                        .toEngineSamplePos();
+        const double distance = std::abs(currentPosition - cueStart);
+        if (distance < shortestDistance) {
+            shortestDistance = distance;
+            pMemoryCue = pCue;
+        }
+    }
+    return pMemoryCue;
+}
 
 WMemoryCueButton::WMemoryCueButton(QWidget* pParent, const QString& group)
         : WPushButton(pParent),
@@ -55,25 +77,9 @@ void WMemoryCueButton::mousePressEvent(QMouseEvent* pEvent) {
     // Current engine-sample position.
     const double curPos = playpos * trackSamples;
 
-    // Find the memory cue whose start position matches the current position
-    constexpr double kEps = 50000.0; // within about a second with 44khz
-    CuePointer pMemoryCue;
-    const QList<CuePointer> cues = pTrack->getCuePoints();
-    for (const auto& pCue : cues) {
-        if (!pCue) {
-            continue;
-        }
-        if (pCue->getType() != mixxx::CueType::Memory) {
-            continue;
-        }
-        const double cueStart = pCue->getStartAndEndPosition()
-                                        .startPosition
-                                        .toEngineSamplePos();
-        if (std::abs(curPos - cueStart) < kEps) {
-            pMemoryCue = pCue;
-            break;
-        }
-    }
+    // Find the nearest memory cue whose start position matches the current
+    // position within about a second at 44 kHz.
+    const CuePointer pMemoryCue = findNearestMemoryCue(pTrack->getCuePoints(), curPos);
 
     if (!pMemoryCue) {
         // No memory cue at the current position; nothing to show.
