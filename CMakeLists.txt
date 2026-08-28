@@ -3173,14 +3173,11 @@ if(MIXXX_STEM_MODEL_FILE)
       "MIXXX_STEM_MODEL_FILE is an unmaterialized Git LFS pointer, not a model file: ${MIXXX_STEM_MODEL_FILE}. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
     )
   endif()
-  if(NOT MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST)
-    mixxx_stem_model_matches_manifest(
-      "${MIXXX_STEM_MODEL_FILE}"
-      MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST
-    )
-  else()
-    set(MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST TRUE)
-  endif()
+  set(MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST FALSE)
+  mixxx_stem_model_matches_manifest(
+    "${MIXXX_STEM_MODEL_FILE}"
+    MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST
+  )
   if(NOT MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST)
     message(
       FATAL_ERROR
