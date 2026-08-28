@@ -218,6 +218,12 @@ jobs:
         with:
           # This is necessary for making `git describe` work.
           fetch-depth: 0
+          lfs: true
+
+      - name: "Verify Stemgen model"
+        if: hashFiles('models/htdemucs.onnx') != ''
+        shell: pwsh
+        run: .github/scripts/verify-stemgen-model.ps1
 
       - name: "[Arch Linux] Workaround for the 'unsafe repository' issue caused by CVE-2022-24765"
         if: matrix.container != null
@@ -694,6 +700,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          lfs: true
+
+      - name: "Verify Stemgen model"
+        if: hashFiles('models/htdemucs.onnx') != ''
+        shell: pwsh
+        run: .github/scripts/verify-stemgen-model.ps1
 
       - name: "Store Git version"
         run: |
