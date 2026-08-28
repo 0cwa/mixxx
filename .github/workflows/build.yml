@@ -221,7 +221,6 @@ jobs:
           lfs: true
 
       - name: "Verify Stemgen model"
-        if: hashFiles('models/htdemucs.onnx') != ''
         shell: pwsh
         run: .github/scripts/verify-stemgen-model.ps1
 
@@ -703,7 +702,6 @@ jobs:
           lfs: true
 
       - name: "Verify Stemgen model"
-        if: hashFiles('models/htdemucs.onnx') != ''
         shell: pwsh
         run: .github/scripts/verify-stemgen-model.ps1
 
