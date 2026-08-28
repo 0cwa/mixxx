@@ -3022,6 +3022,64 @@ if(STEM)
   endif()
 endif()
 
+set(MIXXX_STEM_MODEL_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/models/htdemucs.onnx")
+if(NOT DEFINED MIXXX_STEM_MODEL_FILE)
+  set(MIXXX_STEM_MODEL_FILE "")
+  if(
+    STEM_CONVERSION
+    AND EXISTS "${MIXXX_STEM_MODEL_DEFAULT}"
+    AND NOT IS_DIRECTORY "${MIXXX_STEM_MODEL_DEFAULT}"
+  )
+    set(MIXXX_STEM_MODEL_FILE "${MIXXX_STEM_MODEL_DEFAULT}")
+  endif()
+endif()
+set(
+  MIXXX_STEM_MODEL_FILE
+  "${MIXXX_STEM_MODEL_FILE}"
+  CACHE FILEPATH
+  "Path to a package-owned htdemucs.onnx model to install"
+)
+if(MIXXX_STEM_MODEL_FILE)
+  if(ANDROID OR IOS)
+    message(
+      FATAL_ERROR
+      "Package-owned STEM models are only supported on desktop platforms"
+    )
+  endif()
+  if(NOT STEM_CONVERSION)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE requires STEM conversion support"
+    )
+  endif()
+  if(
+    NOT EXISTS "${MIXXX_STEM_MODEL_FILE}"
+    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_FILE}"
+  )
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE is not a regular file: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
+
+  install(
+    FILES "${MIXXX_STEM_MODEL_FILE}"
+    DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
+    RENAME "htdemucs.onnx"
+  )
+elseif(STEM_CONVERSION)
+  set(
+    MIXXX_STEM_MODEL_DIAGNOSTIC
+    "STEM conversion support is enabled, but no package model will be installed. "
+    "Materialize models/htdemucs.onnx or set MIXXX_STEM_MODEL_FILE to a model file."
+  )
+  message(WARNING "${MIXXX_STEM_MODEL_DIAGNOSTIC}")
+  install(
+    CODE
+      "message(WARNING [==[${MIXXX_STEM_MODEL_DIAGNOSTIC}]==])"
+  )
+endif()
+
 if(BUILD_TESTING)
   set(
     src-mixxx-test

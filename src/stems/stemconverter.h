@@ -81,6 +81,14 @@ class StemConverter : public QObject {
     /// Return whether decoded audio must be converted for HTDemucs.
     static bool requiresAudioFormatConversion(int sampleRate, int channels);
 
+#ifdef __STEM_CONVERSION__
+    /// Find a model in an explicit override, the installed resources, or the user model directory.
+    static QString findModelPath(const QString& modelFileName,
+            const QString& modelDirectoryOverride,
+            const QString& resourcePath,
+            const QString& userModelDirectory);
+#endif
+
     /// Return whether an overlapping inference window starts after this one.
     static bool hasNextChunk(
             std::size_t frameOffset,
