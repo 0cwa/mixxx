@@ -21,6 +21,7 @@
 #include <sndfile.h>
 #endif
 
+#include "preferences/configobject.h"
 #include "sources/soundsourceproxy.h"
 #include "util/logger.h"
 
@@ -28,6 +29,8 @@ namespace {
 const mixxx::Logger kLogger("StemConverter");
 constexpr int kStemModelSampleRate = 44100;
 constexpr int kStemModelChannels = 2;
+constexpr auto kStemModelResourceDirectory = "models";
+constexpr auto kStemModelDirectoryEnvironmentVariable = "MIXXX_STEM_MODEL_DIR";
 constexpr int kExternalProcessTimeoutMs = 10 * 60 * 1000;
 constexpr int kProcessTerminateGracePeriodMs = 1000;
 
@@ -412,6 +415,34 @@ StemConverter::ModelConfig StemConverter::getModelConfig(Resolution resolution) 
     return {"htdemucs.onnx", kStemModelSampleRate};
 }
 
+QString StemConverter::findModelPath(const QString& modelFileName,
+        const QString& modelDirectoryOverride,
+        const QString& resourcePath,
+        const QString& userModelDirectory) {
+    const auto findInDirectory = [&modelFileName](const QString& directory) {
+        if (directory.isEmpty()) {
+            return QString();
+        }
+
+        const QFileInfo modelFile(QDir(directory).filePath(modelFileName));
+        return modelFile.isFile() ? modelFile.absoluteFilePath() : QString();
+    };
+
+    // Preserve the environment variable as an explicit override. In particular,
+    // do not silently fall back to a package model when the override is missing.
+    if (!modelDirectoryOverride.isEmpty()) {
+        return findInDirectory(modelDirectoryOverride);
+    }
+
+    const QString packagedModelPath = findInDirectory(
+            QDir(resourcePath).filePath(QString::fromLatin1(kStemModelResourceDirectory)));
+    if (!packagedModelPath.isEmpty()) {
+        return packagedModelPath;
+    }
+
+    return findInDirectory(userModelDirectory);
+}
+
 bool StemConverter::loadOnnxModel() {
     if (m_pOrtSession && m_loadedResolution && *m_loadedResolution == m_resolution) {
         return true; // Already loaded
@@ -428,18 +459,16 @@ bool StemConverter::loadOnnxModel() {
             kLogger.warning() << "Selected HTDemucs model is not supported";
             return false;
         }
-        QString modelDirectory = qEnvironmentVariable("MIXXX_STEM_MODEL_DIR");
-        if (modelDirectory.isEmpty()) {
-            modelDirectory = QDir(
-                    QStandardPaths::writableLocation(QStandardPaths::HomeLocation))
-                                     .filePath(QStringLiteral(".local/mixxx_models"));
-        }
-        const QString modelPath =
-                QDir(modelDirectory)
-                        .filePath(QString::fromLatin1(modelConfig.fileName));
+        const QString modelPath = findModelPath(
+                QString::fromLatin1(modelConfig.fileName),
+                qEnvironmentVariable(kStemModelDirectoryEnvironmentVariable),
+                ConfigObject<ConfigValue>::computeResourcePath(),
+                QDir(QStandardPaths::writableLocation(QStandardPaths::HomeLocation))
+                        .filePath(QStringLiteral(".local/mixxx_models")));
 
-        if (!QFile::exists(modelPath)) {
-            kLogger.warning() << "ONNX model not found at:" << modelPath;
+        if (modelPath.isEmpty()) {
+            kLogger.warning() << "ONNX model not found in the configured, "
+                                 "installed, or user model directories";
             return false;
         }
 

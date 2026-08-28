@@ -10,6 +10,66 @@
 #include <vector>
 
 #ifdef __STEM_CONVERSION__
+TEST(StemConverterTest, FindsModelInInstalledResourceDirectory) {
+    QTemporaryDir resourceDir;
+    ASSERT_TRUE(resourceDir.isValid());
+    QTemporaryDir userModelDir;
+    ASSERT_TRUE(userModelDir.isValid());
+
+    const QString modelsDir = QDir(resourceDir.path()).filePath("models");
+    ASSERT_TRUE(QDir().mkpath(modelsDir));
+    const QString modelPath = QDir(modelsDir).filePath("htdemucs.onnx");
+    QFile modelFile(modelPath);
+    ASSERT_TRUE(modelFile.open(QIODevice::WriteOnly));
+    modelFile.close();
+
+    EXPECT_EQ(StemConverter::findModelPath(
+                      QStringLiteral("htdemucs.onnx"),
+                      QString(),
+                      resourceDir.path(),
+                      userModelDir.path()),
+            modelPath);
+}
+
+TEST(StemConverterTest, ExplicitModelDirectoryDoesNotFallBack) {
+    QTemporaryDir resourceDir;
+    ASSERT_TRUE(resourceDir.isValid());
+    QTemporaryDir overrideDir;
+    ASSERT_TRUE(overrideDir.isValid());
+
+    const QString modelsDir = QDir(resourceDir.path()).filePath("models");
+    ASSERT_TRUE(QDir().mkpath(modelsDir));
+    QFile modelFile(QDir(modelsDir).filePath("htdemucs.onnx"));
+    ASSERT_TRUE(modelFile.open(QIODevice::WriteOnly));
+    modelFile.close();
+
+    EXPECT_TRUE(StemConverter::findModelPath(
+            QStringLiteral("htdemucs.onnx"),
+            overrideDir.path(),
+            resourceDir.path(),
+            QString())
+                    .isEmpty());
+}
+
+TEST(StemConverterTest, FallsBackToUserModelDirectory) {
+    QTemporaryDir resourceDir;
+    ASSERT_TRUE(resourceDir.isValid());
+    QTemporaryDir userModelDir;
+    ASSERT_TRUE(userModelDir.isValid());
+
+    const QString modelPath = QDir(userModelDir.path()).filePath("htdemucs.onnx");
+    QFile modelFile(modelPath);
+    ASSERT_TRUE(modelFile.open(QIODevice::WriteOnly));
+    modelFile.close();
+
+    EXPECT_EQ(StemConverter::findModelPath(
+                      QStringLiteral("htdemucs.onnx"),
+                      QString(),
+                      resourceDir.path(),
+                      userModelDir.path()),
+            modelPath);
+}
+
 TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     QTemporaryDir modelDir;
     ASSERT_TRUE(modelDir.isValid());
