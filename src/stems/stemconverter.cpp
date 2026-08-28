@@ -41,7 +41,7 @@ bool isGitLfsPointer(const QFileInfo& modelFile) {
         return false;
     }
 
-    return file.readLine().trimmed() == QByteArrayLiteral(kStemModelLfsPointerHeader);
+    return file.readLine().trimmed() == QByteArray(kStemModelLfsPointerHeader);
 }
 
 bool waitForProcess(QProcess* pProcess, const QString& description) {
