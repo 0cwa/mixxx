@@ -3022,13 +3022,114 @@ if(STEM)
   endif()
 endif()
 
-set(MIXXX_STEM_MODEL_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/models/htdemucs.onnx")
+set(
+  MIXXX_STEM_MODEL_MANIFEST
+  "${CMAKE_CURRENT_SOURCE_DIR}/models/htdemucs.onnx.manifest.json"
+)
+if(NOT EXISTS "${MIXXX_STEM_MODEL_MANIFEST}")
+  message(
+    FATAL_ERROR
+    "Stem model manifest is missing: ${MIXXX_STEM_MODEL_MANIFEST}"
+  )
+endif()
+file(READ "${MIXXX_STEM_MODEL_MANIFEST}" MIXXX_STEM_MODEL_MANIFEST_JSON)
+string(
+  JSON
+  MIXXX_STEM_MODEL_NAME
+  ERROR_VARIABLE
+  MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET
+  "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  filename
+)
+if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
+  message(
+    FATAL_ERROR
+    "Could not read the filename from the Stem model manifest: ${MIXXX_STEM_MODEL_MANIFEST_ERROR}"
+  )
+endif()
+string(
+  JSON
+  MIXXX_STEM_MODEL_SIZE
+  ERROR_VARIABLE
+  MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET
+  "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  size_bytes
+)
+if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
+  message(
+    FATAL_ERROR
+    "Could not read the size from the Stem model manifest: ${MIXXX_STEM_MODEL_MANIFEST_ERROR}"
+  )
+endif()
+string(
+  JSON
+  MIXXX_STEM_MODEL_SHA256
+  ERROR_VARIABLE
+  MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET
+  "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  sha256
+)
+if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
+  message(
+    FATAL_ERROR
+    "Could not read the SHA-256 from the Stem model manifest: ${MIXXX_STEM_MODEL_MANIFEST_ERROR}"
+  )
+endif()
+
+set(MIXXX_STEM_MODEL_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/models/${MIXXX_STEM_MODEL_NAME}")
+set(MIXXX_STEM_LFS_POINTER_HEADER "version https://git-lfs.github.com/spec/v1")
+function(mixxx_stem_model_is_lfs_pointer model_file result_variable)
+  set(${result_variable} FALSE PARENT_SCOPE)
+  if(NOT EXISTS "${model_file}" OR IS_DIRECTORY "${model_file}")
+    return()
+  endif()
+
+  file(READ "${model_file}" model_prefix LIMIT 64)
+  string(FIND "${model_prefix}" "${MIXXX_STEM_LFS_POINTER_HEADER}" header_offset)
+  if(header_offset EQUAL 0)
+    set(${result_variable} TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(mixxx_stem_model_matches_manifest model_file result_variable)
+  set(${result_variable} FALSE PARENT_SCOPE)
+  if(NOT EXISTS "${model_file}" OR IS_DIRECTORY "${model_file}")
+    return()
+  endif()
+
+  file(SIZE "${model_file}" model_size)
+  if(NOT model_size EQUAL MIXXX_STEM_MODEL_SIZE)
+    return()
+  endif()
+
+  file(SHA256 "${model_file}" model_sha256)
+  if(NOT model_sha256 STREQUAL MIXXX_STEM_MODEL_SHA256)
+    return()
+  endif()
+
+  set(${result_variable} TRUE PARENT_SCOPE)
+endfunction()
+
+set(MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER FALSE)
+mixxx_stem_model_is_lfs_pointer(
+  "${MIXXX_STEM_MODEL_DEFAULT}"
+  MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER
+)
+set(MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST FALSE)
+if(NOT MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
+  mixxx_stem_model_matches_manifest(
+    "${MIXXX_STEM_MODEL_DEFAULT}"
+    MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
+  )
+endif()
 if(NOT DEFINED MIXXX_STEM_MODEL_FILE)
   set(MIXXX_STEM_MODEL_FILE "")
   if(
     STEM_CONVERSION
-    AND EXISTS "${MIXXX_STEM_MODEL_DEFAULT}"
-    AND NOT IS_DIRECTORY "${MIXXX_STEM_MODEL_DEFAULT}"
+    AND MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
   )
     set(MIXXX_STEM_MODEL_FILE "${MIXXX_STEM_MODEL_DEFAULT}")
   endif()
@@ -3061,18 +3162,54 @@ if(MIXXX_STEM_MODEL_FILE)
       "MIXXX_STEM_MODEL_FILE is not a regular file: ${MIXXX_STEM_MODEL_FILE}"
     )
   endif()
+  set(MIXXX_STEM_MODEL_FILE_IS_LFS_POINTER FALSE)
+  mixxx_stem_model_is_lfs_pointer(
+    "${MIXXX_STEM_MODEL_FILE}"
+    MIXXX_STEM_MODEL_FILE_IS_LFS_POINTER
+  )
+  if(MIXXX_STEM_MODEL_FILE_IS_LFS_POINTER)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE is an unmaterialized Git LFS pointer, not a model file: ${MIXXX_STEM_MODEL_FILE}. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
+    )
+  endif()
+  if(NOT MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST)
+    mixxx_stem_model_matches_manifest(
+      "${MIXXX_STEM_MODEL_FILE}"
+      MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST
+    )
+  else()
+    set(MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST TRUE)
+  endif()
+  if(NOT MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE does not match the verified Stem model in ${MIXXX_STEM_MODEL_MANIFEST}: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
 
   install(
     FILES "${MIXXX_STEM_MODEL_FILE}"
     DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
-    RENAME "htdemucs.onnx"
+    RENAME "${MIXXX_STEM_MODEL_NAME}"
   )
 elseif(STEM_CONVERSION)
-  set(
-    MIXXX_STEM_MODEL_DIAGNOSTIC
-    "STEM conversion support is enabled, but no package model will be installed. "
-    "Materialize models/htdemucs.onnx or set MIXXX_STEM_MODEL_FILE to a model file."
-  )
+  if(MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed: ${MIXXX_STEM_MODEL_DEFAULT} is an unmaterialized Git LFS pointer. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
+    )
+  elseif(EXISTS "${MIXXX_STEM_MODEL_DEFAULT}" AND NOT IS_DIRECTORY "${MIXXX_STEM_MODEL_DEFAULT}")
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed: ${MIXXX_STEM_MODEL_DEFAULT} does not match the verified Stem model in ${MIXXX_STEM_MODEL_MANIFEST}. Set MIXXX_STEM_MODEL_FILE to a matching materialized model file."
+    )
+  else()
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed. Materialize ${MIXXX_STEM_MODEL_DEFAULT} or set MIXXX_STEM_MODEL_FILE to a matching materialized model file."
+    )
+  endif()
   message(WARNING "${MIXXX_STEM_MODEL_DIAGNOSTIC}")
   install(
     CODE
