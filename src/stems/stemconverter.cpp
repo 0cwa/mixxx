@@ -31,8 +31,18 @@ constexpr int kStemModelSampleRate = 44100;
 constexpr int kStemModelChannels = 2;
 constexpr auto kStemModelResourceDirectory = "models";
 constexpr auto kStemModelDirectoryEnvironmentVariable = "MIXXX_STEM_MODEL_DIR";
+constexpr auto kStemModelLfsPointerHeader = "version https://git-lfs.github.com/spec/v1";
 constexpr int kExternalProcessTimeoutMs = 10 * 60 * 1000;
 constexpr int kProcessTerminateGracePeriodMs = 1000;
+
+bool isGitLfsPointer(const QFileInfo& modelFile) {
+    QFile file(modelFile.absoluteFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    return file.readLine().trimmed() == QByteArrayLiteral(kStemModelLfsPointerHeader);
+}
 
 bool waitForProcess(QProcess* pProcess, const QString& description) {
     if (!pProcess->waitForStarted(5000)) {
@@ -425,7 +435,16 @@ QString StemConverter::findModelPath(const QString& modelFileName,
         }
 
         const QFileInfo modelFile(QDir(directory).filePath(modelFileName));
-        return modelFile.isFile() ? modelFile.absoluteFilePath() : QString();
+        if (!modelFile.isFile()) {
+            return QString();
+        }
+        if (isGitLfsPointer(modelFile)) {
+            kLogger.warning()
+                    << "Ignoring unmaterialized Git LFS pointer instead of an ONNX model:"
+                    << modelFile.absoluteFilePath();
+            return QString();
+        }
+        return modelFile.absoluteFilePath();
     };
 
     // Preserve the environment variable as an explicit override. In particular,

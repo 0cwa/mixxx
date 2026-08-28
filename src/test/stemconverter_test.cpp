@@ -31,6 +31,65 @@ TEST(StemConverterTest, FindsModelInInstalledResourceDirectory) {
             modelPath);
 }
 
+TEST(StemConverterTest, SkipsUnmaterializedGitLfsPointerInResourceDirectory) {
+    QTemporaryDir resourceDir;
+    ASSERT_TRUE(resourceDir.isValid());
+    QTemporaryDir userModelDir;
+    ASSERT_TRUE(userModelDir.isValid());
+
+    const QString modelsDir = QDir(resourceDir.path()).filePath("models");
+    ASSERT_TRUE(QDir().mkpath(modelsDir));
+    QFile pointerFile(QDir(modelsDir).filePath("htdemucs.onnx"));
+    ASSERT_TRUE(pointerFile.open(QIODevice::WriteOnly));
+    ASSERT_EQ(pointerFile.write(
+                      "version https://git-lfs.github.com/spec/v1\n"
+                      "oid sha256:0123456789abcdef\n"
+                      "size 123\n"),
+            80);
+    pointerFile.close();
+
+    const QString userModelPath = QDir(userModelDir.path()).filePath("htdemucs.onnx");
+    QFile userModelFile(userModelPath);
+    ASSERT_TRUE(userModelFile.open(QIODevice::WriteOnly));
+    userModelFile.close();
+
+    EXPECT_EQ(StemConverter::findModelPath(
+                      QStringLiteral("htdemucs.onnx"),
+                      QString(),
+                      resourceDir.path(),
+                      userModelDir.path()),
+            userModelPath);
+}
+
+TEST(StemConverterTest, ExplicitGitLfsPointerDoesNotFallBack) {
+    QTemporaryDir resourceDir;
+    ASSERT_TRUE(resourceDir.isValid());
+    QTemporaryDir overrideDir;
+    ASSERT_TRUE(overrideDir.isValid());
+
+    const QString modelsDir = QDir(resourceDir.path()).filePath("models");
+    ASSERT_TRUE(QDir().mkpath(modelsDir));
+    QFile resourceModelFile(QDir(modelsDir).filePath("htdemucs.onnx"));
+    ASSERT_TRUE(resourceModelFile.open(QIODevice::WriteOnly));
+    resourceModelFile.close();
+
+    QFile pointerFile(QDir(overrideDir.path()).filePath("htdemucs.onnx"));
+    ASSERT_TRUE(pointerFile.open(QIODevice::WriteOnly));
+    ASSERT_EQ(pointerFile.write(
+                      "version https://git-lfs.github.com/spec/v1\n"
+                      "oid sha256:0123456789abcdef\n"
+                      "size 123\n"),
+            80);
+    pointerFile.close();
+
+    EXPECT_TRUE(StemConverter::findModelPath(
+            QStringLiteral("htdemucs.onnx"),
+            overrideDir.path(),
+            resourceDir.path(),
+            QString())
+                    .isEmpty());
+}
+
 TEST(StemConverterTest, ExplicitModelDirectoryDoesNotFallBack) {
     QTemporaryDir resourceDir;
     ASSERT_TRUE(resourceDir.isValid());
