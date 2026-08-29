@@ -106,20 +106,26 @@ TEST(StemConverterTest, DoesNotFindModelInUnrelatedSourceShapedDirectory) {
             userModelPath);
 }
 
-TEST(StemConverterTest, FindsModelInUninstalledSourceTree) {
+TEST(StemConverterTest, FindsModelInConfiguredOrUninstalledSourceTree) {
     QTemporaryDir userModelDir;
     ASSERT_TRUE(userModelDir.isValid());
 
     const QString resourceDir =
             QStringLiteral(MIXXX_STEM_MODEL_SOURCE_RESOURCE_PATH);
-    const QString modelPath = QFileInfo(
+    const QString sourceTreeModelPath = QFileInfo(
             QDir(resourceDir).filePath("../models/htdemucs.onnx"))
-                                      .absoluteFilePath();
+                                                .absoluteFilePath();
+    const QString modelDirectoryOverride =
+            qEnvironmentVariable("MIXXX_STEM_MODEL_DIR");
+    const QString modelPath = modelDirectoryOverride.isEmpty()
+            ? sourceTreeModelPath
+            : QFileInfo(QDir(modelDirectoryOverride).filePath("htdemucs.onnx"))
+                      .absoluteFilePath();
     ASSERT_TRUE(QFileInfo(modelPath).isFile());
 
     EXPECT_EQ(StemConverter::findModelPath(
                       QStringLiteral("htdemucs.onnx"),
-                      QString(),
+                      modelDirectoryOverride,
                       resourceDir,
                       userModelDir.path()),
             QFileInfo(modelPath).absoluteFilePath());

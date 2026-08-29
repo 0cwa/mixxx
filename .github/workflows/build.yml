@@ -349,6 +349,7 @@ jobs:
           .github/scripts/verify-stemgen-model.sh
           printf 'CMAKE_ARGS_EXTRA=%s -DMIXXX_STEM_MODEL_FILE=%s/htdemucs.onnx\n' \
             "${CMAKE_ARGS_EXTRA:-}" "$MIXXX_STEM_MODEL_DIR" >> "$GITHUB_ENV"
+          printf 'MIXXX_STEM_MODEL_DIR=%s\n' "$MIXXX_STEM_MODEL_DIR" >> "$GITHUB_ENV"
 
       - name: "[Ubuntu] Confirm clean checkout before configure"
         if: matrix.stem_conversion == true
