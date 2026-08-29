@@ -109,7 +109,7 @@ void WaveformMarkSet::syncMemoryCueMarks(const QString& group,
                 : QStringLiteral("#ffffff");
         auto mark = WaveformMark::create(
                 group,
-                QString(),
+                QStringLiteral("memory_cue"),
                 QString(),
                 textColor,
                 QString("AlignBottom"),
