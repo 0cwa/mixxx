@@ -69,7 +69,11 @@ jobs:
             cpack_generator: DEB
             buildenv_basepath: /home/runner/buildenv
             buildenv_script: tools/debian_buildenv.sh
-            stem_conversion: true
+            # Ubuntu 24.04 does not publish the libonnxruntime-dev package
+            # required by the optional model-enabled CI path. Keep the
+            # conditional model staging below for a future job with a
+            # supported ONNX Runtime dependency.
+            stem_conversion: false
             artifacts_name: Ubuntu 24.04 Qt6 DEB
             artifacts_path: build/*.deb
             artifacts_slug: ubuntu-jammy
@@ -219,15 +223,10 @@ jobs:
         with:
           # This is necessary for making `git describe` work.
           fetch-depth: 0
-          # The Ubuntu desktop job downloads the model through the verified
-          # Debian build-environment path below. Other matrix entries keep
-          # using Git LFS checkout as before.
-          lfs: ${{ matrix.stem_conversion != true }}
-
-      - name: "Verify Stemgen model"
-        if: matrix.stem_conversion != true
-        shell: pwsh
-        run: .github/scripts/verify-stemgen-model.ps1
+          # Regular jobs do not stage the optional Stemgen model. Keep this
+          # checkout independent of Git LFS; the Flatpak job has its own
+          # model-enabled checkout below.
+          lfs: false
 
       - name: "[Arch Linux] Workaround for the 'unsafe repository' issue caused by CVE-2022-24765"
         if: matrix.container != null
