@@ -219,9 +219,13 @@ jobs:
         with:
           # This is necessary for making `git describe` work.
           fetch-depth: 0
-          lfs: true
+          # The Ubuntu desktop job downloads the model through the verified
+          # Debian build-environment path below. Other matrix entries keep
+          # using Git LFS checkout as before.
+          lfs: ${{ matrix.stem_conversion != true }}
 
       - name: "Verify Stemgen model"
+        if: matrix.stem_conversion != true
         shell: pwsh
         run: .github/scripts/verify-stemgen-model.ps1
 
@@ -334,6 +338,12 @@ jobs:
         env:
           BUILDENV_BASEPATH: ${{ matrix.buildenv_basepath }}
           MIXXX_INSTALL_STEM_CONVERSION: ${{ matrix.stem_conversion || false }}
+          MIXXX_STEM_MODEL_DIR: ${{ github.workspace }}/models
+
+      - name: "[Ubuntu] Verify downloaded Stemgen model"
+        if: matrix.stem_conversion == true
+        shell: bash
+        run: .github/scripts/verify-stemgen-model.sh
 
       - name: "[Windows] Set up build environment"
         if: matrix.buildenv_script != null && runner.os == 'Windows'
