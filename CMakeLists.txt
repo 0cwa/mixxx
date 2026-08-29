@@ -3125,21 +3125,25 @@ if(NOT MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
     MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
   )
 endif()
-if(NOT DEFINED MIXXX_STEM_MODEL_FILE)
-  set(MIXXX_STEM_MODEL_FILE "")
-  if(
-    STEM_CONVERSION
-    AND MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
-  )
-    set(MIXXX_STEM_MODEL_FILE "${MIXXX_STEM_MODEL_DEFAULT}")
-  endif()
-endif()
 set(
   MIXXX_STEM_MODEL_FILE
   "${MIXXX_STEM_MODEL_FILE}"
   CACHE FILEPATH
   "Path to a package-owned htdemucs.onnx model to install"
 )
+if(
+  NOT MIXXX_STEM_MODEL_FILE
+  AND STEM_CONVERSION
+  AND MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
+)
+  set(
+    MIXXX_STEM_MODEL_FILE
+    "${MIXXX_STEM_MODEL_DEFAULT}"
+    CACHE FILEPATH
+    "Path to a package-owned htdemucs.onnx model to install"
+    FORCE
+  )
+endif()
 if(MIXXX_STEM_MODEL_FILE)
   if(ANDROID OR IOS)
     message(
@@ -3189,6 +3193,14 @@ if(MIXXX_STEM_MODEL_FILE)
     FILES "${MIXXX_STEM_MODEL_FILE}"
     DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
     RENAME "${MIXXX_STEM_MODEL_NAME}"
+  )
+  # Keep the model's provenance and rights documentation alongside it.
+  install(
+    FILES
+      "${MIXXX_STEM_MODEL_MANIFEST}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/models/NOTICE.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/models/README.md"
+    DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
   )
 elseif(STEM_CONVERSION)
   if(MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
