@@ -31,6 +31,34 @@ TEST(StemConverterTest, FindsModelInInstalledResourceDirectory) {
             modelPath);
 }
 
+TEST(StemConverterTest, FindsModelInUninstalledSourceTree) {
+    QTemporaryDir sourceDir;
+    ASSERT_TRUE(sourceDir.isValid());
+    QTemporaryDir userModelDir;
+    ASSERT_TRUE(userModelDir.isValid());
+
+    const QString resourceDir = QDir(sourceDir.path()).filePath("res");
+    ASSERT_TRUE(QDir().mkpath(resourceDir));
+
+    QFile sourceMarker(QDir(sourceDir.path()).filePath("CMakeLists.txt"));
+    ASSERT_TRUE(sourceMarker.open(QIODevice::WriteOnly));
+    sourceMarker.close();
+
+    const QString modelsDir = QDir(sourceDir.path()).filePath("models");
+    ASSERT_TRUE(QDir().mkpath(modelsDir));
+    const QString modelPath = QDir(modelsDir).filePath("htdemucs.onnx");
+    QFile modelFile(modelPath);
+    ASSERT_TRUE(modelFile.open(QIODevice::WriteOnly));
+    modelFile.close();
+
+    EXPECT_EQ(StemConverter::findModelPath(
+                      QStringLiteral("htdemucs.onnx"),
+                      QString(),
+                      resourceDir,
+                      userModelDir.path()),
+            QFileInfo(modelPath).absoluteFilePath());
+}
+
 TEST(StemConverterTest, SkipsUnmaterializedGitLfsPointerInResourceDirectory) {
     QTemporaryDir resourceDir;
     ASSERT_TRUE(resourceDir.isValid());

@@ -459,6 +459,20 @@ QString StemConverter::findModelPath(const QString& modelFileName,
         return packagedModelPath;
     }
 
+    // An uninstalled development build resolves resources to <source>/res,
+    // while the package-owned model remains in <source>/models. Restrict this
+    // sibling lookup to a recognizable source tree so installed resource
+    // lookup does not gain an unrelated parent-directory fallback.
+    const QDir resourceDirectory(resourcePath);
+    if (QFileInfo(resourceDirectory.filePath(QStringLiteral("../CMakeLists.txt")))
+                    .isFile()) {
+        const QString sourceTreeModelPath = findInDirectory(
+                resourceDirectory.filePath(QStringLiteral("../models")));
+        if (!sourceTreeModelPath.isEmpty()) {
+            return sourceTreeModelPath;
+        }
+    }
+
     return findInDirectory(userModelDirectory);
 }
 
