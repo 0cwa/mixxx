@@ -3007,7 +3007,12 @@ if(STEM)
   endif()
 
   if(STEM_CONVERSION)
-    target_compile_definitions(mixxx-lib PUBLIC __STEM_CONVERSION__)
+    target_compile_definitions(
+      mixxx-lib
+      PUBLIC
+        __STEM_CONVERSION__
+        MIXXX_STEM_MODEL_SOURCE_RESOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/res"
+    )
 
     target_link_libraries(mixxx-lib PUBLIC ${MIXXX_ONNX_RUNTIME_TARGET})
 
@@ -3036,10 +3041,8 @@ file(READ "${MIXXX_STEM_MODEL_MANIFEST}" MIXXX_STEM_MODEL_MANIFEST_JSON)
 string(
   JSON
   MIXXX_STEM_MODEL_NAME
-  ERROR_VARIABLE
-  MIXXX_STEM_MODEL_MANIFEST_ERROR
-  GET
-  "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  ERROR_VARIABLE MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
   filename
 )
 if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
@@ -3051,10 +3054,8 @@ endif()
 string(
   JSON
   MIXXX_STEM_MODEL_SIZE
-  ERROR_VARIABLE
-  MIXXX_STEM_MODEL_MANIFEST_ERROR
-  GET
-  "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  ERROR_VARIABLE MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
   size_bytes
 )
 if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
@@ -3066,10 +3067,8 @@ endif()
 string(
   JSON
   MIXXX_STEM_MODEL_SHA256
-  ERROR_VARIABLE
-  MIXXX_STEM_MODEL_MANIFEST_ERROR
-  GET
-  "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  ERROR_VARIABLE MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
   sha256
 )
 if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
@@ -3079,7 +3078,10 @@ if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
   )
 endif()
 
-set(MIXXX_STEM_MODEL_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/models/${MIXXX_STEM_MODEL_NAME}")
+set(
+  MIXXX_STEM_MODEL_DEFAULT
+  "${CMAKE_CURRENT_SOURCE_DIR}/models/${MIXXX_STEM_MODEL_NAME}"
+)
 set(MIXXX_STEM_LFS_POINTER_HEADER "version https://git-lfs.github.com/spec/v1")
 function(mixxx_stem_model_is_lfs_pointer model_file result_variable)
   set(${result_variable} FALSE PARENT_SCOPE)
@@ -3088,7 +3090,12 @@ function(mixxx_stem_model_is_lfs_pointer model_file result_variable)
   endif()
 
   file(READ "${model_file}" model_prefix LIMIT 64)
-  string(FIND "${model_prefix}" "${MIXXX_STEM_LFS_POINTER_HEADER}" header_offset)
+  string(
+    FIND
+    "${model_prefix}"
+    "${MIXXX_STEM_LFS_POINTER_HEADER}"
+    header_offset
+  )
   if(header_offset EQUAL 0)
     set(${result_variable} TRUE PARENT_SCOPE)
   endif()
@@ -3125,24 +3132,22 @@ if(NOT MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
     MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
   )
 endif()
-set(
-  MIXXX_STEM_MODEL_FILE
-  "${MIXXX_STEM_MODEL_FILE}"
-  CACHE FILEPATH
-  "Path to a package-owned htdemucs.onnx model to install"
-)
-if(
-  NOT MIXXX_STEM_MODEL_FILE
-  AND STEM_CONVERSION
-  AND MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
-)
+if(NOT DEFINED MIXXX_STEM_MODEL_FILE)
   set(
     MIXXX_STEM_MODEL_FILE
-    "${MIXXX_STEM_MODEL_DEFAULT}"
+    ""
     CACHE FILEPATH
     "Path to a package-owned htdemucs.onnx model to install"
-    FORCE
   )
+  if(STEM_CONVERSION AND MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST)
+    set(
+      MIXXX_STEM_MODEL_FILE
+      "${MIXXX_STEM_MODEL_DEFAULT}"
+      CACHE FILEPATH
+      "Path to a package-owned htdemucs.onnx model to install"
+      FORCE
+    )
+  endif()
 endif()
 if(MIXXX_STEM_MODEL_FILE)
   if(ANDROID OR IOS)
@@ -3208,7 +3213,15 @@ elseif(STEM_CONVERSION)
       MIXXX_STEM_MODEL_DIAGNOSTIC
       "STEM conversion support is enabled, but no package model will be installed: ${MIXXX_STEM_MODEL_DEFAULT} is an unmaterialized Git LFS pointer. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
     )
-  elseif(EXISTS "${MIXXX_STEM_MODEL_DEFAULT}" AND NOT IS_DIRECTORY "${MIXXX_STEM_MODEL_DEFAULT}")
+  elseif(MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST)
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed because MIXXX_STEM_MODEL_FILE is empty."
+    )
+  elseif(
+    EXISTS "${MIXXX_STEM_MODEL_DEFAULT}"
+    AND NOT IS_DIRECTORY "${MIXXX_STEM_MODEL_DEFAULT}"
+  )
     set(
       MIXXX_STEM_MODEL_DIAGNOSTIC
       "STEM conversion support is enabled, but no package model will be installed: ${MIXXX_STEM_MODEL_DEFAULT} does not match the verified Stem model in ${MIXXX_STEM_MODEL_MANIFEST}. Set MIXXX_STEM_MODEL_FILE to a matching materialized model file."
@@ -3220,10 +3233,7 @@ elseif(STEM_CONVERSION)
     )
   endif()
   message(WARNING "${MIXXX_STEM_MODEL_DIAGNOSTIC}")
-  install(
-    CODE
-      "message(WARNING [==[${MIXXX_STEM_MODEL_DIAGNOSTIC}]==])"
-  )
+  install(CODE "message(WARNING [==[${MIXXX_STEM_MODEL_DIAGNOSTIC}]==])")
 endif()
 
 if(BUILD_TESTING)

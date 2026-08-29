@@ -459,22 +459,16 @@ QString StemConverter::findModelPath(const QString& modelFileName,
         return packagedModelPath;
     }
 
-    // An uninstalled development build resolves resources to <source>/res,
-    // while the package-owned model remains in <source>/models. Require the
-    // model manifest and this source file so an unrelated parent directory
-    // cannot enable a source-tree fallback for an installed resource path.
-    const QDir resourceDirectory(resourcePath);
-    const QDir sourceTreeDirectory(resourceDirectory.filePath(QStringLiteral("..")));
-    const bool isMixxxSourceTree =
-            QFileInfo(sourceTreeDirectory.filePath(
-                              QStringLiteral("models/htdemucs.onnx.manifest.json")))
-                    .isFile() &&
-            QFileInfo(sourceTreeDirectory.filePath(
-                              QStringLiteral("src/stems/stemconverter.cpp")))
-                    .isFile();
-    if (isMixxxSourceTree) {
+    // CMake embeds the source resource directory for development builds. Only
+    // use its sibling model directory when the active resource path is that
+    // exact directory; an installed resource path must not infer a source tree
+    // from an unrelated parent directory.
+    const QString sourceResourcePath =
+            QStringLiteral(MIXXX_STEM_MODEL_SOURCE_RESOURCE_PATH);
+    if (QDir::cleanPath(QFileInfo(resourcePath).absoluteFilePath()) ==
+            QDir::cleanPath(QFileInfo(sourceResourcePath).absoluteFilePath())) {
         const QString sourceTreeModelPath = findInDirectory(
-                sourceTreeDirectory.filePath(QStringLiteral("models")));
+                QDir(sourceResourcePath).filePath(QStringLiteral("../models")));
         if (!sourceTreeModelPath.isEmpty()) {
             return sourceTreeModelPath;
         }
