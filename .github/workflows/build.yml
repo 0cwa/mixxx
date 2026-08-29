@@ -327,6 +327,10 @@ jobs:
             echo "QT_ANDROID_KEYSTORE_PATH=${{ github.workspace }}/mixxx.keystore" >> $GITHUB_ENV
           fi
 
+      - name: "[Ubuntu] Enable Stemgen model support"
+        if: matrix.name == 'Ubuntu 24.04'
+        run: echo "MIXXX_INSTALL_STEM_CONVERSION=true" >> "$GITHUB_ENV"
+
       - name: "[macOS/Linux] Set up build environment"
         if: matrix.buildenv_script != null && runner.os != 'Windows'
         run: ${{ matrix.buildenv_script }} setup
