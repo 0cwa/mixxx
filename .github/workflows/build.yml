@@ -702,8 +702,8 @@ jobs:
           lfs: true
 
       - name: "Verify Stemgen model"
-        shell: pwsh
-        run: .github/scripts/verify-stemgen-model.ps1
+        shell: bash
+        run: .github/scripts/verify-stemgen-model.sh
 
       - name: "Store Git version"
         run: |
