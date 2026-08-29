@@ -11,6 +11,8 @@ fi
 set -e -o pipefail
 
 readonly HTDEMUCS_MODEL_NAME="htdemucs.onnx"
+readonly HTDEMUCS_MODEL_URL="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx"
+readonly HTDEMUCS_MODEL_SIZE=304413278
 readonly HTDEMUCS_MODEL_SHA256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
 readonly GPAC_PACKAGE_NAME="gpac"
 
@@ -46,11 +48,35 @@ verify_sha256() {
     fi
 }
 
+verify_file_size() {
+    local expected_size="$1"
+    local artifact_path="$2"
+    local actual_size
+
+    if [[ ! "$expected_size" =~ ^[0-9]+$ ]]; then
+        echo "Invalid expected size for $artifact_path" >&2
+        return 1
+    fi
+    if [[ ! -f "$artifact_path" ]]; then
+        echo "Integrity check failed: artifact is missing: $artifact_path" >&2
+        return 1
+    fi
+    if ! actual_size="$(stat -c '%s' -- "$artifact_path")"; then
+        echo "Integrity check failed: could not determine size: $artifact_path" >&2
+        return 1
+    fi
+    if [[ "$actual_size" != "$expected_size" ]]; then
+        echo "Integrity check failed: expected $expected_size bytes, got $actual_size: $artifact_path" >&2
+        return 1
+    fi
+}
+
 download_verified_file() {
     local download_user="$1"
     local url="$2"
-    local expected_sha256="$3"
-    local destination="$4"
+    local expected_size="$3"
+    local expected_sha256="$4"
+    local destination="$5"
     local temporary_path
 
     temporary_path="$(sudo -u "$download_user" mktemp "${destination}.tmp.XXXXXX")" || {
@@ -61,6 +87,11 @@ download_verified_file() {
     if ! sudo -u "$download_user" wget --quiet --output-document="$temporary_path" "$url";
     then
         echo "Failed to download $url" >&2
+        sudo -u "$download_user" rm -f -- "$temporary_path"
+        return 1
+    fi
+
+    if ! verify_file_size "$expected_size" "$temporary_path"; then
         sudo -u "$download_user" rm -f -- "$temporary_path"
         return 1
     fi
@@ -208,6 +239,7 @@ run_self_tests() {
     local selected_dpkg_query_path
     local trusted_dpkg_query_path
     local poison_marker_path
+    local actual_test_size
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
     test_file="$test_dir/verified-artifact"
@@ -216,6 +248,17 @@ run_self_tests() {
     expected_sha256="${expected_sha256%% *}"
 
     if ! verify_sha256 "$expected_sha256" "$test_file"; then
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    actual_test_size="$(stat -c '%s' -- "$test_file")"
+    if ! verify_file_size "$actual_test_size" "$test_file"; then
+        echo "Self-test failed: matching size was rejected" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if verify_file_size "$((actual_test_size + 1))" "$test_file"; then
+        echo "Self-test failed: size mismatch was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -577,7 +620,6 @@ case "$1" in
             echo ""
 
             MODEL_PATH="${MIXXX_STEM_MODEL_DIR:-$ACTUAL_HOME/.local/mixxx_models}"
-            MODEL_URL_BASE="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel"
             # htdemucs_ft.onnx is deliberately disabled. Its release URL is
             # unavailable and no authoritative digest exists. Do not add it
             # until a maintainer publishes a verifiable artifact and digest.
@@ -596,7 +638,8 @@ case "$1" in
                     fi
                     if ! download_verified_file \
                             "$ACTUAL_USER" \
-                            "$MODEL_URL_BASE/$MODEL_NAME" \
+                            "$HTDEMUCS_MODEL_URL" \
+                            "$HTDEMUCS_MODEL_SIZE" \
                             "$MODEL_SHA256" \
                             "$MODEL_FILE"; then
                         echo "Failed to download Mixxx HTDemucs model $MODEL_NAME"
