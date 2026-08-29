@@ -53,6 +53,8 @@ MIXXX_ROOT="$(realpath "$(dirname "$THIS_SCRIPT_NAME")/..")"
 ANDROID_API=35
 ANDROID_VERSION=35.0.0
 ANDROID_NDK=27.2.12479018
+ANDROID_SDK=/usr/lib/android-sdk
+ANDROID_NDK_HOME=${ANDROID_SDK}/ndk/${ANDROID_NDK}
 
 [ -z "$BUILDENV_BASEPATH" ] && BUILDENV_BASEPATH="${MIXXX_ROOT}/buildenv"
 
@@ -91,12 +93,15 @@ case "$1" in
             openjdk-17-jdk \
             pkg-config \
             python3-jinja2
-        (yes | sudo sdkmanager --licenses) || true
-        sudo sdkmanager "platforms;android-${ANDROID_API}" "platform-tools" "build-tools;${ANDROID_VERSION}" "ndk;${ANDROID_NDK}"
-        ANDROID_SDK=/usr/lib/android-sdk
-        ANDROID_NDK_HOME=/usr/lib/android-sdk/ndk/${ANDROID_NDK}
+        if ! (set +o pipefail; yes | sudo sdkmanager --sdk_root="${ANDROID_SDK}" --licenses); then
+            echo "ERROR: Failed to accept Android SDK licenses." >&2
+            exit 1
+        fi
+        sudo sdkmanager --sdk_root="${ANDROID_SDK}" "platforms;android-${ANDROID_API}" "platform-tools" "build-tools;${ANDROID_VERSION}" "ndk;${ANDROID_NDK}"
         JAVA_HOME=$(find /usr/lib/jvm -maxdepth 1 -name 'java-17-openjdk*')
         export ANDROID_SDK
+        export ANDROID_HOME="${ANDROID_SDK}"
+        export ANDROID_SDK_ROOT="${ANDROID_SDK}"
         export ANDROID_NDK_HOME
         export JAVA_HOME
         BUILDENV_PATH="${BUILDENV_BASEPATH}/${BUILDENV_NAME}"
@@ -110,6 +115,8 @@ case "$1" in
 
         echo_exported_variables() {
             echo "ANDROID_SDK=${ANDROID_SDK}"
+            echo "ANDROID_HOME=${ANDROID_HOME}"
+            echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
             echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"
             echo "JAVA_HOME=${JAVA_HOME}"
             echo "BUILDENV_NAME=${BUILDENV_NAME}"
