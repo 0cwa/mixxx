@@ -63,33 +63,59 @@ TEST(StemConverterTest, DoesNotFindModelInGenericParentDirectory) {
             userModelPath);
 }
 
-TEST(StemConverterTest, FindsModelInUninstalledSourceTree) {
-    QTemporaryDir sourceDir;
-    ASSERT_TRUE(sourceDir.isValid());
+TEST(StemConverterTest, DoesNotFindModelInUnrelatedSourceShapedDirectory) {
+    QTemporaryDir parentDir;
+    ASSERT_TRUE(parentDir.isValid());
     QTemporaryDir userModelDir;
     ASSERT_TRUE(userModelDir.isValid());
 
-    const QString resourceDir = QDir(sourceDir.path()).filePath("res");
+    const QString resourceDir = QDir(parentDir.path()).filePath("res");
     ASSERT_TRUE(QDir().mkpath(resourceDir));
 
-    const QString modelsDir = QDir(sourceDir.path()).filePath("models");
-    ASSERT_TRUE(QDir().mkpath(modelsDir));
-    QFile modelManifest(
-            QDir(modelsDir).filePath("htdemucs.onnx.manifest.json"));
+    const QString manifestPath =
+            QDir(parentDir.path())
+                    .filePath("models/htdemucs.onnx.manifest.json");
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(manifestPath).path()));
+    QFile modelManifest(manifestPath);
     ASSERT_TRUE(modelManifest.open(QIODevice::WriteOnly));
     modelManifest.close();
 
     const QString stemSourcePath =
-            QDir(sourceDir.path()).filePath("src/stems/stemconverter.cpp");
+            QDir(parentDir.path()).filePath("src/stems/stemconverter.cpp");
     ASSERT_TRUE(QDir().mkpath(QFileInfo(stemSourcePath).path()));
     QFile stemSource(stemSourcePath);
     ASSERT_TRUE(stemSource.open(QIODevice::WriteOnly));
     stemSource.close();
 
-    const QString modelPath = QDir(modelsDir).filePath("htdemucs.onnx");
-    QFile modelFile(modelPath);
-    ASSERT_TRUE(modelFile.open(QIODevice::WriteOnly));
-    modelFile.close();
+    const QString siblingModelPath =
+            QDir(parentDir.path()).filePath("models/htdemucs.onnx");
+    QFile siblingModel(siblingModelPath);
+    ASSERT_TRUE(siblingModel.open(QIODevice::WriteOnly));
+    siblingModel.close();
+
+    const QString userModelPath = QDir(userModelDir.path()).filePath("htdemucs.onnx");
+    QFile userModel(userModelPath);
+    ASSERT_TRUE(userModel.open(QIODevice::WriteOnly));
+    userModel.close();
+
+    EXPECT_EQ(StemConverter::findModelPath(
+                      QStringLiteral("htdemucs.onnx"),
+                      QString(),
+                      resourceDir,
+                      userModelDir.path()),
+            userModelPath);
+}
+
+TEST(StemConverterTest, FindsModelInUninstalledSourceTree) {
+    QTemporaryDir userModelDir;
+    ASSERT_TRUE(userModelDir.isValid());
+
+    const QString resourceDir =
+            QStringLiteral(MIXXX_STEM_MODEL_SOURCE_RESOURCE_PATH);
+    const QString modelPath = QFileInfo(
+            QDir(resourceDir).filePath("../models/htdemucs.onnx"))
+                                      .absoluteFilePath();
+    ASSERT_TRUE(QFileInfo(modelPath).isFile());
 
     EXPECT_EQ(StemConverter::findModelPath(
                       QStringLiteral("htdemucs.onnx"),
