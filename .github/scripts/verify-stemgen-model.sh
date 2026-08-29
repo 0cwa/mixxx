@@ -2,8 +2,9 @@
 
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-model_path="$script_dir/../../models/htdemucs.onnx"
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+model_dir=${MIXXX_STEM_MODEL_DIR:-"$script_dir/../../models"}
+model_path="$model_dir/htdemucs.onnx"
 expected_size=304413278
 expected_sha256=db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d
 lfs_pointer_header='version https://git-lfs.github.com/spec/v1'

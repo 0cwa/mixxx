@@ -338,12 +338,24 @@ jobs:
         env:
           BUILDENV_BASEPATH: ${{ matrix.buildenv_basepath }}
           MIXXX_INSTALL_STEM_CONVERSION: ${{ matrix.stem_conversion || false }}
-          MIXXX_STEM_MODEL_DIR: ${{ github.workspace }}/models
+          MIXXX_STEM_MODEL_DIR: ${{ matrix.stem_conversion == true && format('{0}/mixxx-stemgen-model', runner.temp) || '' }}
 
       - name: "[Ubuntu] Verify downloaded Stemgen model"
         if: matrix.stem_conversion == true
         shell: bash
-        run: .github/scripts/verify-stemgen-model.sh
+        env:
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
+        run: |
+          .github/scripts/verify-stemgen-model.sh
+          printf 'CMAKE_ARGS_EXTRA=%s -DMIXXX_STEM_MODEL_FILE=%s/htdemucs.onnx\n' \
+            "${CMAKE_ARGS_EXTRA:-}" "$MIXXX_STEM_MODEL_DIR" >> "$GITHUB_ENV"
+
+      - name: "[Ubuntu] Confirm clean checkout before configure"
+        if: matrix.stem_conversion == true
+        shell: bash
+        run: |
+          test -z "$(git status --porcelain)"
+          git describe --dirty=-modified
 
       - name: "[Windows] Set up build environment"
         if: matrix.buildenv_script != null && runner.os == 'Windows'
