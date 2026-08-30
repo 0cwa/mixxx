@@ -34,7 +34,26 @@ CachingReaderWorker::CachingReaderWorker(
           m_tag(QString("CachingReaderWorker %1").arg(m_group)),
           m_pChunkReadRequestFIFO(pChunkReadRequestFIFO),
           m_pReaderStatusFIFO(pReaderStatusFIFO),
-          m_maxSupportedChannel(maxSupportedChannel) {
+          m_maxSupportedChannel(maxSupportedChannel),
+          m_diagnosticState(static_cast<int>(DiagnosticState::Waiting)),
+          m_diagnosticActiveChunk(-1),
+          m_diagnosticLastCompletedChunk(-1),
+          m_diagnosticCompletedRequests(0),
+          m_diagnosticDequeuedRequests(0),
+          m_diagnosticPublishedStatuses(0) {
+}
+
+int CachingReaderWorker::diagnosticStatusCapacity() const {
+    return m_pReaderStatusFIFO->capacity();
+}
+
+void CachingReaderWorker::publishStatus(const ReaderStatusUpdate& update) {
+    const int previousState = m_diagnosticState.loadAcquire();
+    m_diagnosticState.storeRelease(
+            static_cast<int>(DiagnosticState::PublishingStatus));
+    m_pReaderStatusFIFO->writeBlocking(&update, 1);
+    m_diagnosticPublishedStatuses.fetchAndAddRelaxed(1);
+    m_diagnosticState.storeRelease(previousState);
 }
 
 ReaderStatusUpdate CachingReaderWorker::processReadRequest(
@@ -189,6 +208,9 @@ void CachingReaderWorker::run() {
         // Request is initialized by reading from FIFO
         CachingReaderChunkReadRequest request;
         if (m_newTrackAvailable.loadAcquire()) {
+            m_diagnosticState.storeRelease(
+                    static_cast<int>(DiagnosticState::LoadingTrack));
+            m_diagnosticActiveChunk.storeRelease(-1);
 #ifdef __STEM__
             NewTrackRequest pLoadTrack;
 #else
@@ -216,10 +238,22 @@ void CachingReaderWorker::run() {
         } else {
             processSeek30Commands();
             if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
-                // Read the requested chunk and send the result
+                m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
+                // Read the requested chunk and send the result. Publish only
+                // primitive progress snapshots for off-thread diagnostics.
+                const int chunkIndex = request.chunk->getIndex();
+                m_diagnosticActiveChunk.storeRelease(chunkIndex);
+                m_diagnosticState.storeRelease(
+                        static_cast<int>(DiagnosticState::Decoding));
                 const ReaderStatusUpdate update = processReadRequest(request);
-                m_pReaderStatusFIFO->writeBlocking(&update, 1);
+                m_diagnosticLastCompletedChunk.storeRelease(chunkIndex);
+                m_diagnosticCompletedRequests.fetchAndAddRelaxed(1);
+                publishStatus(update);
+                m_diagnosticActiveChunk.storeRelease(-1);
             } else {
+                m_diagnosticActiveChunk.storeRelease(-1);
+                m_diagnosticState.storeRelease(
+                        static_cast<int>(DiagnosticState::Waiting));
                 Event::end(m_tag);
                 m_semaRun.acquire();
                 Event::start(m_tag);
@@ -231,8 +265,9 @@ void CachingReaderWorker::run() {
 void CachingReaderWorker::discardAllPendingRequests() {
     CachingReaderChunkReadRequest request;
     while (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
+        m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
         const auto update = ReaderStatusUpdate::readDiscarded(request.chunk);
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        publishStatus(update);
     }
 }
 
@@ -255,7 +290,7 @@ void CachingReaderWorker::unloadTrack() {
     updateSeek30Track(TrackPointer());
 
     const auto update = ReaderStatusUpdate::trackUnloaded();
-    m_pReaderStatusFIFO->writeBlocking(&update, 1);
+    publishStatus(update);
 }
 
 #ifdef __STEM__
@@ -280,7 +315,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                 << "File not found"
                 << pTrack->getFileInfo();
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        publishStatus(update);
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be found.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
@@ -299,7 +334,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                 << "Failed to open file"
                 << pTrack->getFileInfo();
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        publishStatus(update);
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be loaded.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
@@ -314,7 +349,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                     m_maxSupportedChannel) {
         m_pAudioSource.reset(); // Close open file handles
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        publishStatus(update);
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be loaded because it contains %2 "
                    "channels, and only 1 to %3 are supported.")
@@ -335,7 +370,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                 << "Failed to open empty file"
                 << pTrack->getFileInfo();
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        publishStatus(update);
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' is empty and could not be loaded.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
@@ -355,7 +390,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
     const auto update =
             ReaderStatusUpdate::trackLoaded(
                     m_pAudioSource->frameIndexRange());
-    m_pReaderStatusFIFO->writeBlocking(&update, 1);
+    publishStatus(update);
 
     // Emit that the track is loaded.
 

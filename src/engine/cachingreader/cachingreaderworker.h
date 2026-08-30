@@ -137,6 +137,33 @@ class CachingReaderWorker : public EngineWorker {
         return m_seek30CommandOverflowCount.load(std::memory_order_relaxed);
     }
 
+    enum class DiagnosticState {
+        Waiting,
+        LoadingTrack,
+        Decoding,
+        PublishingStatus,
+    };
+
+    DiagnosticState diagnosticState() const {
+        return static_cast<DiagnosticState>(m_diagnosticState.loadAcquire());
+    }
+    int diagnosticActiveChunk() const {
+        return m_diagnosticActiveChunk.loadAcquire();
+    }
+    int diagnosticLastCompletedChunk() const {
+        return m_diagnosticLastCompletedChunk.loadAcquire();
+    }
+    int diagnosticCompletedRequests() const {
+        return m_diagnosticCompletedRequests.loadAcquire();
+    }
+    int diagnosticDequeuedRequests() const {
+        return m_diagnosticDequeuedRequests.loadAcquire();
+    }
+    int diagnosticPublishedStatuses() const {
+        return m_diagnosticPublishedStatuses.loadAcquire();
+    }
+    int diagnosticStatusCapacity() const;
+
   signals:
     // Emitted once a new track is loaded and ready to be read from.
     void trackLoading();
@@ -172,6 +199,7 @@ class CachingReaderWorker : public EngineWorker {
 #endif
 
     void discardAllPendingRequests();
+    void publishStatus(const ReaderStatusUpdate& update);
 
     /// call to be prepare for new tracks
     /// Make sure engine has been stopped before
@@ -219,4 +247,13 @@ class CachingReaderWorker : public EngineWorker {
     std::atomic<std::uint64_t> m_seek30Generation{0};
     std::atomic<std::uint64_t> m_seek30CommandOverflowCount{0};
     std::uint64_t m_seek30TargetSequence{0};
+
+    // Lock-free snapshots written by the reader thread and sampled by the
+    // CachingReader's diagnostics timer. They never affect worker behavior.
+    QAtomicInt m_diagnosticState;
+    QAtomicInt m_diagnosticActiveChunk;
+    QAtomicInt m_diagnosticLastCompletedChunk;
+    QAtomicInt m_diagnosticCompletedRequests;
+    QAtomicInt m_diagnosticDequeuedRequests;
+    QAtomicInt m_diagnosticPublishedStatuses;
 };
