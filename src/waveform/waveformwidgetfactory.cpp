@@ -87,6 +87,14 @@ const ConfigKey kDefaultZoomKey =
 const ConfigKey kFrameRateKey =
         ConfigKey(kWaveformGroup, QStringLiteral("FrameRate"));
 const ConfigKey kVSyncKey = ConfigKey(kWaveformGroup, QStringLiteral("VSync"));
+const ConfigKey kUntilMarkShowHotCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_hot_cues"));
+const ConfigKey kUntilMarkShowMemoryCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_memory_cues"));
+const ConfigKey kUntilMarkShowIntroCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_intro_cues"));
+const ConfigKey kUntilMarkShowOutroCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_outro_cues"));
 
 ConfigKey visualGainKey(int index) {
     return ConfigKey(kWaveformGroup, QStringLiteral("VisualGain_") + QString::number(index));
@@ -135,6 +143,10 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_overviewNormalized(kOverviewNormalizedDefault),
           m_untilMarkShowBeats(false),
           m_untilMarkShowTime(false),
+          m_untilMarkShowHotCues(false),
+          m_untilMarkShowMemoryCues(true),
+          m_untilMarkShowIntroCues(false),
+          m_untilMarkShowOutroCues(false),
           m_untilMarkAlign(Qt::AlignVCenter),
           m_untilMarkTextPointSize(24),
           m_untilMarkTextHeightLimit(toUntilMarkTextHeightLimit(0)),
@@ -460,6 +472,39 @@ bool WaveformWidgetFactory::setConfig(UserSettingsPointer config) {
         m_config->setValue(ConfigKey(kWaveformGroup, QStringLiteral("UntilMarkShowTime")),
                 m_untilMarkShowTime);
     }
+
+    const auto loadCueCountdownPreference = [this](
+                                                    const ConfigKey& key,
+                                                    bool defaultValue,
+                                                    bool& value,
+                                                    auto signal) {
+        const bool exists = m_config->exists(key);
+        value = m_config->getValue(key, defaultValue);
+        if (!exists) {
+            m_config->setValue(key, value);
+        }
+        emit(this->*signal)(value);
+    };
+    loadCueCountdownPreference(
+            kUntilMarkShowHotCuesKey,
+            false,
+            m_untilMarkShowHotCues,
+            &WaveformWidgetFactory::untilMarkShowHotCuesChanged);
+    loadCueCountdownPreference(
+            kUntilMarkShowMemoryCuesKey,
+            true,
+            m_untilMarkShowMemoryCues,
+            &WaveformWidgetFactory::untilMarkShowMemoryCuesChanged);
+    loadCueCountdownPreference(
+            kUntilMarkShowIntroCuesKey,
+            false,
+            m_untilMarkShowIntroCues,
+            &WaveformWidgetFactory::untilMarkShowIntroCuesChanged);
+    loadCueCountdownPreference(
+            kUntilMarkShowOutroCuesKey,
+            false,
+            m_untilMarkShowOutroCues,
+            &WaveformWidgetFactory::untilMarkShowOutroCuesChanged);
 
     setUntilMarkAlign(toUntilMarkAlign(
             m_config->getValue(ConfigKey(kWaveformGroup, QStringLiteral("UntilMarkAlign")),
@@ -1461,6 +1506,38 @@ void WaveformWidgetFactory::setUntilMarkShowTime(bool value) {
                 m_untilMarkShowTime);
     }
     emit untilMarkShowTimeChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowHotCues(bool value) {
+    m_untilMarkShowHotCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowHotCuesKey, value);
+    }
+    emit untilMarkShowHotCuesChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowMemoryCues(bool value) {
+    m_untilMarkShowMemoryCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowMemoryCuesKey, value);
+    }
+    emit untilMarkShowMemoryCuesChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowIntroCues(bool value) {
+    m_untilMarkShowIntroCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowIntroCuesKey, value);
+    }
+    emit untilMarkShowIntroCuesChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowOutroCues(bool value) {
+    m_untilMarkShowOutroCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowOutroCuesKey, value);
+    }
+    emit untilMarkShowOutroCuesChanged(value);
 }
 
 void WaveformWidgetFactory::setUntilMarkAlign(Qt::Alignment align) {

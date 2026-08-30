@@ -495,7 +495,59 @@ Select from different types of displays for the waveform, which differ primarily
      </item>
 
      <item row="12" column="1" colspan="4">
-      <layout class="QHBoxLayout" name="marker_option_layout">
+      <layout class="QVBoxLayout" name="untilMarkOptionsLayout">
+       <item>
+        <widget class="QGroupBox" name="untilMarkCueTypesGroupBox">
+         <property name="title">
+          <string>Count down to</string>
+         </property>
+         <layout class="QGridLayout" name="untilMarkCueTypesLayout">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="untilMarkShowHotCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Hot Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Hot Cue markers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QCheckBox" name="untilMarkShowMemoryCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Memory Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Memory Cue markers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="untilMarkShowIntroCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Intro Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Intro Cue markers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QCheckBox" name="untilMarkShowOutroCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Outro Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Outro Cue markers</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="marker_option_layout">
        <item>
         <layout class="QVBoxLayout" name="marker_options_placement_layout">
          <item>
@@ -575,7 +627,9 @@ Select from different types of displays for the waveform, which differ primarily
         </layout>
        </item>
 
-      </layout><!-- marker_option_layout -->
+        </layout><!-- marker_option_layout -->
+       </item>
+      </layout><!-- untilMarkOptionsLayout -->
      </item>
 
      <item row="13" column="1" colspan="4">
@@ -923,6 +977,10 @@ Select from different types of displays for the waveform overview, which differ 
   <tabstop>highVisualGain</tabstop>
   <tabstop>untilMarkShowBeatsCheckBox</tabstop>
   <tabstop>untilMarkShowTimeCheckBox</tabstop>
+  <tabstop>untilMarkShowHotCuesCheckBox</tabstop>
+  <tabstop>untilMarkShowMemoryCuesCheckBox</tabstop>
+  <tabstop>untilMarkShowIntroCuesCheckBox</tabstop>
+  <tabstop>untilMarkShowOutroCuesCheckBox</tabstop>
   <tabstop>untilMarkAlignComboBox</tabstop>
   <tabstop>untilMarkTextPointSizeSpinBox</tabstop>
   <tabstop>untilMarkTextHeightLimitComboBox</tabstop>

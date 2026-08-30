@@ -238,6 +238,49 @@ void WaveformMarkSet::update() {
     }
 }
 
+double WaveformMarkSet::findNextCountdownMarkPosition(
+        double playPosition,
+        double defaultNextMarkPosition,
+        bool showHotCues,
+        bool showMemoryCues,
+        bool showIntroCues,
+        bool showOutroCues) const {
+    double nextMarkPosition = defaultNextMarkPosition;
+    for (const auto& pMark : std::as_const(m_marksToRender)) {
+        if (!pMark->isValid() || !pMark->isVisible()) {
+            continue;
+        }
+
+        const double samplePosition = pMark->getSamplePosition();
+        if (samplePosition == Cue::kNoPosition || samplePosition < playPosition + 1.0 ||
+                samplePosition >= nextMarkPosition) {
+            continue;
+        }
+
+        bool enabled = false;
+        switch (pMark->getCountdownCategory()) {
+        case WaveformMark::CountdownCategory::HotCue:
+            enabled = showHotCues;
+            break;
+        case WaveformMark::CountdownCategory::MemoryCue:
+            enabled = showMemoryCues;
+            break;
+        case WaveformMark::CountdownCategory::IntroCue:
+            enabled = showIntroCues;
+            break;
+        case WaveformMark::CountdownCategory::OutroCue:
+            enabled = showOutroCues;
+            break;
+        case WaveformMark::CountdownCategory::None:
+            break;
+        }
+        if (enabled) {
+            nextMarkPosition = samplePosition;
+        }
+    }
+    return nextMarkPosition;
+}
+
 WaveformMarkPointer WaveformMarkSet::findHoveredMark(
         QPoint pos, Qt::Orientation orientation) const {
     // Non-hotcue marks (intro/outro cues, main cue, loop in/out) are sorted

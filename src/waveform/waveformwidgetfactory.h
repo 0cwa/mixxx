@@ -171,6 +171,10 @@ class WaveformWidgetFactory : public QObject,
 
     void setUntilMarkShowBeats(bool value);
     void setUntilMarkShowTime(bool value);
+    void setUntilMarkShowHotCues(bool value);
+    void setUntilMarkShowMemoryCues(bool value);
+    void setUntilMarkShowIntroCues(bool value);
+    void setUntilMarkShowOutroCues(bool value);
     void setUntilMarkAlign(Qt::Alignment align);
     void setUntilMarkTextPointSize(int value);
     void setUntilMarkTextHeightLimit(float value);
@@ -185,6 +189,18 @@ class WaveformWidgetFactory : public QObject,
     }
     bool getUntilMarkShowTime() const {
         return m_untilMarkShowTime;
+    }
+    bool getUntilMarkShowHotCues() const {
+        return m_untilMarkShowHotCues;
+    }
+    bool getUntilMarkShowMemoryCues() const {
+        return m_untilMarkShowMemoryCues;
+    }
+    bool getUntilMarkShowIntroCues() const {
+        return m_untilMarkShowIntroCues;
+    }
+    bool getUntilMarkShowOutroCues() const {
+        return m_untilMarkShowOutroCues;
     }
     Qt::Alignment getUntilMarkAlign() const {
         return m_untilMarkAlign;
@@ -269,6 +285,10 @@ class WaveformWidgetFactory : public QObject,
 
     void untilMarkShowBeatsChanged(bool value);
     void untilMarkShowTimeChanged(bool value);
+    void untilMarkShowHotCuesChanged(bool value);
+    void untilMarkShowMemoryCuesChanged(bool value);
+    void untilMarkShowIntroCuesChanged(bool value);
+    void untilMarkShowOutroCuesChanged(bool value);
     void untilMarkAlignChanged(Qt::Alignment align);
     void untilMarkTextPointSizeChanged(int value);
     void untilMarkTextHeightLimitChanged(float value);
@@ -337,6 +357,10 @@ class WaveformWidgetFactory : public QObject,
 
     bool m_untilMarkShowBeats;
     bool m_untilMarkShowTime;
+    bool m_untilMarkShowHotCues;
+    bool m_untilMarkShowMemoryCues;
+    bool m_untilMarkShowIntroCues;
+    bool m_untilMarkShowOutroCues;
     Qt::Alignment m_untilMarkAlign;
     int m_untilMarkTextPointSize;
     float m_untilMarkTextHeightLimit;
