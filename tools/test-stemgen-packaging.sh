@@ -11,8 +11,177 @@ fail() {
     exit 1
 }
 
+test_download_staging_safety() {
+    local checkout_root
+    local script_dir
+    local fake_bin
+    local curl_log
+    local inside_destination
+    local inside_symlink_destination
+    local external_destination
+    local checkout_symlink_destination
+    local pointer_path
+    local failure_destination
+    local output
+    local status
+    local inside_pointer_before
+
+    test_download_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-model-test.XXXXXX")
+    cleanup_download_test() {
+        rm -rf -- "$test_download_root"
+    }
+    trap cleanup_download_test EXIT
+
+    checkout_root="$test_download_root/checkout"
+    script_dir="$checkout_root/.github/scripts"
+    fake_bin="$test_download_root/bin"
+    curl_log="$test_download_root/curl.log"
+    mkdir -p -- "$script_dir" "$checkout_root/models" "$fake_bin"
+    cp -- "$download_script" "$script_dir/download-stemgen-model.sh"
+    chmod +x -- "$script_dir/download-stemgen-model.sh"
+
+    cat >"$script_dir/verify-stemgen-model.sh" <<'EOF'
+#!/bin/sh
+
+set -eu
+
+model_path="${MIXXX_STEM_MODEL_DIR:?}/htdemucs.onnx"
+if [ ! -f "$model_path" ]; then
+    exit 1
+fi
+grep -Fqx 'materialized-model' "$model_path"
+EOF
+    chmod +x -- "$script_dir/verify-stemgen-model.sh"
+
+    cat >"$fake_bin/curl" <<'EOF'
+#!/bin/sh
+
+set -eu
+
+output=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output)
+            output=$2
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+: "${output:?curl output path was not provided}"
+printf '%s\n' "$output" >>"${FAKE_CURL_LOG:?}"
+if [ "${FAKE_CURL_FAIL:-0}" -eq 1 ]; then
+    printf '%s\n' 'partial-model' >"$output"
+    exit 17
+fi
+printf '%s\n' 'materialized-model' >"$output"
+EOF
+    chmod +x -- "$fake_bin/curl"
+
+    inside_destination="$checkout_root/models"
+    printf '%s\n' 'checkout-pointer' >"$inside_destination/htdemucs.onnx"
+    inside_pointer_before=$(sha256sum "$inside_destination/htdemucs.onnx")
+    output="$test_download_root/inside.out"
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$inside_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || fail 'checkout destination was not rejected'
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'checkout model was replaced'
+    test ! -s "$curl_log" || fail 'curl ran for a rejected checkout destination'
+    grep -Fq 'outside the source checkout' "$output" || \
+        fail 'checkout rejection did not identify the containment contract'
+
+    inside_symlink_destination="$test_download_root/checkout-models-link"
+    ln -s -- "$checkout_root/models" "$inside_symlink_destination"
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$inside_symlink_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || fail 'symlinked checkout destination was not rejected'
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'symlinked checkout model was replaced'
+    test ! -s "$curl_log" || fail 'curl ran for a rejected symlinked destination'
+
+    external_destination="$test_download_root/external-models"
+    : >"$curl_log"
+    MIXXX_STEM_MODEL_DIR="$external_destination" \
+        PATH="$fake_bin:$PATH" \
+        FAKE_CURL_LOG="$curl_log" \
+        "$script_dir/download-stemgen-model.sh" >/dev/null
+    test -f "$external_destination/htdemucs.onnx" || \
+        fail 'valid external destination did not receive a model'
+    grep -Fq "$external_destination/.stemgen-model." "$curl_log" || \
+        fail 'valid external destination did not use a temporary download path'
+    test -z "$(find "$external_destination" -mindepth 1 -maxdepth 1 \
+        -name '.stemgen-model.*' -print -quit)" || \
+        fail 'temporary download directory was not cleaned after success'
+
+    checkout_symlink_destination="$checkout_root/external-models-link"
+    ln -s -- "$external_destination" "$checkout_symlink_destination"
+    : >"$curl_log"
+    MIXXX_STEM_MODEL_DIR="$checkout_symlink_destination" \
+        PATH="$fake_bin:$PATH" \
+        FAKE_CURL_LOG="$curl_log" \
+        "$script_dir/download-stemgen-model.sh" >/dev/null
+    test -f "$external_destination/htdemucs.onnx" || \
+        fail 'external symlink destination was not allowed'
+    test ! -s "$curl_log" || \
+        fail 'verified model was not reused through an external symlink'
+
+    pointer_path="$external_destination/htdemucs.onnx"
+    printf '%s\n' \
+        'version https://git-lfs.github.com/spec/v1' \
+        'oid sha256:0123456789abcdef' \
+        'size 123' >"$pointer_path"
+    : >"$curl_log"
+    MIXXX_STEM_MODEL_DIR="$external_destination" \
+        PATH="$fake_bin:$PATH" \
+        FAKE_CURL_LOG="$curl_log" \
+        "$script_dir/download-stemgen-model.sh" >/dev/null
+    grep -Fqx 'materialized-model' "$pointer_path" || \
+        fail 'existing LFS pointer was not replaced with downloaded content'
+    test -s "$curl_log" || fail 'existing LFS pointer was incorrectly reused'
+
+    failure_destination="$test_download_root/failed-models"
+    : >"$curl_log"
+    status=0
+    if FAKE_CURL_FAIL=1 \
+            MIXXX_STEM_MODEL_DIR="$failure_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 17 || fail 'download failure did not propagate its status'
+    test ! -e "$failure_destination/htdemucs.onnx" || \
+        fail 'failed download left a final model behind'
+    test -z "$(find "$failure_destination" -mindepth 1 -maxdepth 1 \
+        -name '.stemgen-model.*' -print -quit)" || \
+        fail 'temporary download directory was not cleaned after failure'
+}
+
 download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
 model_pointer="$repository_root/models/htdemucs.onnx"
+test_download_staging_safety
 pointer_before=$(sha256sum "$model_pointer")
 if env -u MIXXX_STEM_MODEL_DIR "$download_script" >/dev/null 2>&1; then
     fail 'unparameterized model download unexpectedly succeeded'
