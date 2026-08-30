@@ -17,6 +17,7 @@ test_download_staging_safety() {
     local fake_bin
     local curl_log
     local missing_destination
+    local double_slash_destination
     local inside_destination
     local inside_symlink_destination
     local final_symlink_destination
@@ -84,6 +85,10 @@ printf '%s\n' 'materialized-model' >"$output"
 EOF
     chmod +x -- "$fake_bin/curl"
 
+    inside_destination="$checkout_root/models"
+    printf '%s\n' 'checkout-pointer' >"$inside_destination/htdemucs.onnx"
+    inside_pointer_before=$(sha256sum "$inside_destination/htdemucs.onnx")
+
     missing_destination="$checkout_root/new/nonexistent/staging"
     output="$test_download_root/missing.out"
     status=0
@@ -105,9 +110,30 @@ EOF
     grep -Fq 'outside the source checkout' "$output" || \
         fail 'nonexistent checkout rejection did not identify the containment contract'
 
-    inside_destination="$checkout_root/models"
-    printf '%s\n' 'checkout-pointer' >"$inside_destination/htdemucs.onnx"
-    inside_pointer_before=$(sha256sum "$inside_destination/htdemucs.onnx")
+    double_slash_destination="//${missing_destination#/}"
+    output="$test_download_root/double-slash.out"
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$double_slash_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || fail 'repeated-slash checkout destination was not rejected'
+    test ! -e "$checkout_root/new" || \
+        fail 'repeated-slash checkout destination created directories'
+    test ! -e "$double_slash_destination" || \
+        fail 'repeated-slash checkout destination was created'
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'repeated-slash checkout destination mutated checkout bytes'
+    test ! -s "$curl_log" || \
+        fail 'curl ran for a rejected repeated-slash checkout destination'
+    grep -Fq 'outside the source checkout' "$output" || \
+        fail 'repeated-slash rejection did not identify the containment contract'
+
     output="$test_download_root/inside.out"
     status=0
     if MIXXX_STEM_MODEL_DIR="$inside_destination" \

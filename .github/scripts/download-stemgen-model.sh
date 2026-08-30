@@ -61,10 +61,27 @@ canonicalize_path() {
         }'
 }
 
+normalize_path_for_comparison() {
+    normalized_path=$1
+    case "$path_platform" in
+        MINGW*|MSYS*|CYGWIN*)
+            ;;
+        *)
+            while [ "${normalized_path#//}" != "$normalized_path" ]; do
+                normalized_path=${normalized_path#/}
+            done
+            ;;
+    esac
+    printf '%s\n' "$normalized_path"
+}
+
+path_platform=$(uname -s)
 checkout_dir=$(canonicalize_path "$script_dir/../..")
+checkout_dir_for_comparison=$(normalize_path_for_comparison "$checkout_dir")
 canonical_model_dir=$(canonicalize_path "$model_dir")
-case "$canonical_model_dir/" in
-    "$checkout_dir/"*)
+canonical_model_dir_for_comparison=$(normalize_path_for_comparison "$canonical_model_dir")
+case "$canonical_model_dir_for_comparison/" in
+    "$checkout_dir_for_comparison/"*)
         printf '%s\n' \
             'MIXXX_STEM_MODEL_DIR must resolve to a staging directory outside the source checkout.' \
             >&2
