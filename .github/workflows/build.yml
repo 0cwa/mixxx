@@ -694,6 +694,10 @@ jobs:
 
   build-flatpak:
     name: "Flatpak"
+    env:
+      # Keep the downloaded model outside the checkout. The Flatpak model
+      # module fetches the same pinned asset for the actual package build.
+      MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.10
       options: --privileged
@@ -730,6 +734,10 @@ jobs:
       - name: "Download and verify Stemgen model"
         shell: bash
         run: .github/scripts/download-stemgen-model.sh
+
+      - name: "Confirm clean checkout after model staging"
+        shell: bash
+        run: test -z "$(git status --porcelain)"
 
       - name: "Store Git version"
         run: |
@@ -788,6 +796,9 @@ jobs:
           # The model is fetched from its pinned upstream release below. This
           # keeps this job and the regular matrix independent of Git LFS.
           lfs: false
+
+      - name: "Check Stemgen packaging contracts"
+        run: tools/test-stemgen-packaging.sh
 
       - name: "Stage pinned ONNX Runtime"
         run: tools/onnxruntime_buildenv.sh stage

@@ -6,8 +6,11 @@ only-arches:
 # These upstream CPU archives contain the C/C++ API and shared library. They
 # avoid a network-fetched ONNX Runtime source build and its test artifacts.
 build-commands:
-  - install -d "${FLATPAK_DEST}/include/onnxruntime" "${FLATPAK_DEST}/lib" "${FLATPAK_DEST}/lib/cmake/onnxruntime" "${FLATPAK_DEST}/lib/cmake/ONNXRuntime"
-  - cp -a include/. "${FLATPAK_DEST}/include/onnxruntime/"
+  - install -d "${FLATPAK_DEST}/include" "${FLATPAK_DEST}/lib" "${FLATPAK_DEST}/lib/cmake/onnxruntime" "${FLATPAK_DEST}/lib/cmake/ONNXRuntime"
+  # The archive already contains the onnxruntime/ include directory. Copy it
+  # below the package include root so the imported target's
+  # include/onnxruntime path matches <onnxruntime_cxx_api.h>.
+  - cp -a include/. "${FLATPAK_DEST}/include/"
   - cp -a lib/libonnxruntime.so* lib/libonnxruntime_providers_shared.so "${FLATPAK_DEST}/lib/"
   - cp -a lib/cmake/onnxruntime/. "${FLATPAK_DEST}/lib/cmake/onnxruntime/"
   # The archive libraries are in lib/, but the generated target file retains
