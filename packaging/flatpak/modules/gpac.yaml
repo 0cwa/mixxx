@@ -7,5 +7,5 @@ build-commands:
   - install -Dm644 COPYING ${FLATPAK_DEST}/share/licenses/gpac/COPYING
 sources:
   - type: archive
-    url: https://github.com/gpac/gpac/archive/5d70253ac94e5840be7b86054131dd753af63cc7.tar.gz
-    sha256: 7651bee9a94b241d0fe34301f385644ff23ba5ffb7020a9da2254337a1a7c9ed
+    url: https://github.com/gpac/gpac/archive/118e60a905878e56dc4f9c5b309143c5f447c702.tar.gz
+    sha256: 33f638030ed6cf4ce300fb840a05b0754f7a0ba02ebe1f223a2910173b36f628
