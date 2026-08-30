@@ -146,7 +146,9 @@ WaveformMark::WaveformMark(
         endPositionControl = QStringLiteral("hotcue_%1_endposition").arg(hotcueNumber);
         statusControl = QStringLiteral("hotcue_%1_status").arg(hotcueNumber);
         typeControl = QStringLiteral("hotcue_%1_type").arg(hotcueNumber);
-        m_showUntilNext = true;
+        // The legacy renderer uses m_countdownCategory for this selection.
+        // Keep the declarative renderer's existing behavior unchanged.
+        m_showUntilNext = false;
     } else {
         m_showUntilNext = isShowUntilNextPositionControl(positionControl);
     }
@@ -212,7 +214,9 @@ WaveformMark::WaveformMark(const QString& group,
         endPositionControl = "hotcue_" + QString::number(hotCue + 1) + "_endposition";
         typeControl = "hotcue_" + QString::number(hotCue + 1) + "_type";
         statusControl = "hotcue_" + QString::number(hotCue + 1) + "_status";
-        m_showUntilNext = true;
+        // The legacy renderer uses m_countdownCategory for this selection.
+        // Keep the declarative renderer's existing behavior unchanged.
+        m_showUntilNext = false;
     } else {
         positionControl = context.selectString(node, "Control");
         m_showUntilNext = isShowUntilNextPositionControl(positionControl);

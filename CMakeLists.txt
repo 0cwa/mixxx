@@ -3081,7 +3081,13 @@ if(BUILD_TESTING)
     mixxx-test
     PRIVATE src/preferences/dialog/dlgprefwaveformdlg.ui
   )
-  set_target_properties(mixxx-test PROPERTIES AUTOMOC ON AUTOUIC ON)
+  set_target_properties(
+    mixxx-test
+    PROPERTIES
+      AUTOMOC ON
+      AUTOUIC ON
+      AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src/preferences/dialog"
+  )
   target_link_libraries(
     mixxx-test
     PRIVATE mixxx-lib mixxx-gitinfostore mixxx-xwax GTest::gtest GTest::gmock

@@ -2,10 +2,22 @@
 
 #include <gtest/gtest.h>
 
+#include "preferences/dialog/ui_dlgprefwaveformdlg.h"
 #include "test/mixxxtest.h"
 #include "waveform/waveformwidgetfactory.h"
 
-class DlgPrefWaveformTest : public MixxxTest {};
+class DlgPrefWaveformTest : public MixxxTest {
+  protected:
+    void SetUp() override {
+        ASSERT_NE(nullptr, WaveformWidgetFactory::createInstance());
+    }
+
+    void TearDown() override {
+        if (WaveformWidgetFactory::isCreated()) {
+            WaveformWidgetFactory::destroy();
+        }
+    }
+};
 
 TEST_F(DlgPrefWaveformTest, CueCountdownControlsHaveIndependentDefaultsAndSettings) {
     auto* factory = WaveformWidgetFactory::instance();

@@ -41,6 +41,19 @@ WaveformMarkPointer makeFixedMark(const QString& group,
 
 } // anonymous namespace
 
+class WaveformFactoryTest : public MixxxTest {
+  protected:
+    void SetUp() override {
+        ASSERT_NE(nullptr, WaveformWidgetFactory::createInstance());
+    }
+
+    void TearDown() override {
+        if (WaveformWidgetFactory::isCreated()) {
+            WaveformWidgetFactory::destroy();
+        }
+    }
+};
+
 TEST(WaveformMarkSetTest, MemoryCueMarksShowUntilNext) {
     WaveformMarkSet marks;
     const WaveformMarkSet::DefaultMarkerStyle defaultMarker{
@@ -113,7 +126,7 @@ TEST(WaveformMarkSetTest, CountdownSelectionHonorsIndependentCategories) {
     WaveformMarkSet marks;
     const auto pHotCueMark = makeFixedMark({}, {}, 300.0, 0);
     ASSERT_TRUE(pHotCueMark);
-    EXPECT_TRUE(pHotCueMark->isShowUntilNext());
+    EXPECT_FALSE(pHotCueMark->isShowUntilNext());
     marks.addMark(pHotCueMark);
     marks.addMark(makeFixedMark({}, QStringLiteral("memory_cue"), 200.0));
     marks.addMark(makeFixedMark({}, QStringLiteral("intro_start_position"), 400.0));
@@ -175,7 +188,13 @@ TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets
     const QString group = QStringLiteral("[WaveformCountdownTest]");
     const QString visibilityControl = QStringLiteral(
             "[WaveformCountdownTest],show_intro_outro_cues");
-    ControlObject::set(ConfigKey(group, QStringLiteral("show_intro_outro_cues")), 0.0);
+    ControlObject introOutroVisibilityControl(
+            ConfigKey(group, QStringLiteral("show_intro_outro_cues")));
+    ControlObject introStartPositionControl(
+            ConfigKey(group, QStringLiteral("intro_start_position")));
+    ControlObject outroStartPositionControl(
+            ConfigKey(group, QStringLiteral("outro_start_position")));
+    introOutroVisibilityControl.set(0.0);
 
     WaveformMarkSet marks;
     marks.addMark(makeFixedMark(group,
@@ -193,7 +212,7 @@ TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets
             marks.findNextCountdownMarkPosition(
                     0.0, kNoNextMark, false, false, true, false));
 
-    ControlObject::set(ConfigKey(group, QStringLiteral("show_intro_outro_cues")), 1.0);
+    introOutroVisibilityControl.set(1.0);
     marks.update();
     EXPECT_DOUBLE_EQ(200.0,
             marks.findNextCountdownMarkPosition(
@@ -204,7 +223,7 @@ TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets
                     200.0, kNoNextMark, false, false, false, true));
 }
 
-class WaveformCueCountdownConfigTest : public MixxxTest {};
+class WaveformCueCountdownConfigTest : public WaveformFactoryTest {};
 
 TEST_F(WaveformCueCountdownConfigTest, DefaultsAreMigratedToWaveformConfig) {
     auto* factory = WaveformWidgetFactory::instance();
