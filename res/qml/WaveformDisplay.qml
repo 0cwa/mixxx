@@ -250,7 +250,8 @@ Item {
         onWheel: mouse => {
             if (mouse.angleDelta.y < 0 && zoomControl.value > 1) {
                 zoomControl.value -= 1;
-            } else if (mouse.angleDelta.y > 0 && zoomControl.value < 10.0) {
+            } else if (mouse.angleDelta.y > 0 &&
+                    zoomControl.value < Mixxx.Config.waveformMaxZoomOut) {
                 zoomControl.value += 1;
             }
         }

@@ -240,6 +240,11 @@ class WaveformWidgetFactory : public QObject,
     void setDefaultZoom(double zoom);
     double getDefaultZoom() const { return m_defaultZoom;}
 
+    void setMaxZoomOut(double maxZoomOut);
+    double getMaxZoomOut() const {
+        return m_maxZoomOut;
+    }
+
     void setZoomSync(bool sync);
     int isZoomSync() const { return m_zoomSync;}
 
@@ -282,6 +287,7 @@ class WaveformWidgetFactory : public QObject,
 
     void overviewScalingChanged();
     void visualGainChanged(double allChannelGain, double lowGain, double midGain, double highGain);
+    void maxZoomOutChanged(double maxZoomOut);
 
     void untilMarkShowBeatsChanged(bool value);
     void untilMarkShowTimeChanged(bool value);
@@ -316,6 +322,7 @@ class WaveformWidgetFactory : public QObject,
   private:
     void renderSelf();
     void swapSelf();
+    void setMaxZoomOutInternal(double maxZoomOut, bool persistDefaultZoom);
 
     void addHandle(
             QHash<WaveformWidgetType::Type, QList<WaveformWidgetBackend>>&
@@ -351,6 +358,7 @@ class WaveformWidgetFactory : public QObject,
     int m_frameRate;
     int m_endOfTrackWarningTime;
     double m_defaultZoom;
+    double m_maxZoomOut;
     bool m_zoomSync;
     double m_visualGain[BandCount];
     bool m_overviewNormalized;

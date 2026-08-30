@@ -51,9 +51,12 @@ class QmlConfigProxy : public QmlConfigProxyBase {
     Q_PROPERTY(bool waveformOverviewNormalized READ waveformOverviewNormalized
                     WRITE set_waveformOverviewNormalized NOTIFY
                             waveformOverviewNormalizedChanged);
-    // 1..10
+    // 1..100, limited by waveformMaxZoomOut
     Q_PROPERTY(double waveformDefaultZoom READ waveformDefaultZoom WRITE
                     set_waveformDefaultZoom NOTIFY waveformDefaultZoomChanged);
+    // 10..100
+    Q_PROPERTY(double waveformMaxZoomOut READ waveformMaxZoomOut WRITE
+                    set_waveformMaxZoomOut NOTIFY waveformMaxZoomOutChanged);
     // [0..1]
     Q_PROPERTY(double waveformPlayMarkerPosition READ waveformPlayMarkerPosition
                     WRITE set_waveformPlayMarkerPosition NOTIFY
@@ -324,8 +327,10 @@ class QmlConfigProxy : public QmlConfigProxyBase {
     // Waveform settings
     PROPERTY_DECL_ACCESSOR(bool, waveformZoomSynchronization);
     PROPERTY_DECL_ACCESSOR(bool, waveformOverviewNormalized);
-    // 1..10
+    // 1..100, limited by waveformMaxZoomOut
     PROPERTY_DECL_ACCESSOR(double, waveformDefaultZoom);
+    // 10..100
+    PROPERTY_DECL_ACCESSOR(double, waveformMaxZoomOut);
     // [0..1]
     PROPERTY_DECL_ACCESSOR(double, waveformPlayMarkerPosition);
     PROPERTY_DECL_ACCESSOR(bool, waveformUntilMarkShowBeats);
@@ -439,6 +444,7 @@ class QmlConfigProxy : public QmlConfigProxyBase {
     void waveformZoomSynchronizationChanged();
     void waveformOverviewNormalizedChanged();
     void waveformDefaultZoomChanged();
+    void waveformMaxZoomOutChanged();
     void waveformPlayMarkerPositionChanged();
     void waveformUntilMarkShowBeatsChanged();
     void waveformUntilMarkShowTimeChanged();
