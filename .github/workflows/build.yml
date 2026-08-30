@@ -69,6 +69,11 @@ jobs:
             cpack_generator: DEB
             buildenv_basepath: /home/runner/buildenv
             buildenv_script: tools/debian_buildenv.sh
+            # Ubuntu 24.04 does not publish the libonnxruntime-dev package
+            # required by the optional model-enabled CI path. Keep the
+            # conditional model staging below for a future job with a
+            # supported ONNX Runtime dependency.
+            stem_conversion: false
             artifacts_name: Ubuntu 24.04 Qt6 DEB
             artifacts_path: build/*.deb
             artifacts_slug: ubuntu-jammy
@@ -218,6 +223,10 @@ jobs:
         with:
           # This is necessary for making `git describe` work.
           fetch-depth: 0
+          # Regular jobs do not stage the optional Stemgen model. Keep this
+          # checkout independent of Git LFS; the Flatpak job has its own
+          # model-enabled checkout below.
+          lfs: false
 
       - name: "[Arch Linux] Workaround for the 'unsafe repository' issue caused by CVE-2022-24765"
         if: matrix.container != null
@@ -327,6 +336,26 @@ jobs:
         run: ${{ matrix.buildenv_script }} setup
         env:
           BUILDENV_BASEPATH: ${{ matrix.buildenv_basepath }}
+          MIXXX_INSTALL_STEM_CONVERSION: ${{ matrix.stem_conversion || false }}
+          MIXXX_STEM_MODEL_DIR: ${{ matrix.stem_conversion == true && format('{0}/mixxx-stemgen-model', runner.temp) || '' }}
+
+      - name: "[Ubuntu] Verify downloaded Stemgen model"
+        if: matrix.stem_conversion == true
+        shell: bash
+        env:
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
+        run: |
+          .github/scripts/verify-stemgen-model.sh
+          printf 'CMAKE_ARGS_EXTRA=%s -DMIXXX_STEM_MODEL_FILE=%s/htdemucs.onnx\n' \
+            "${CMAKE_ARGS_EXTRA:-}" "$MIXXX_STEM_MODEL_DIR" >> "$GITHUB_ENV"
+          printf 'MIXXX_STEM_MODEL_DIR=%s\n' "$MIXXX_STEM_MODEL_DIR" >> "$GITHUB_ENV"
+
+      - name: "[Ubuntu] Confirm clean checkout before configure"
+        if: matrix.stem_conversion == true
+        shell: bash
+        run: |
+          test -z "$(git status --porcelain)"
+          git describe --dirty=-modified
 
       - name: "[Windows] Set up build environment"
         if: matrix.buildenv_script != null && runner.os == 'Windows'
@@ -694,6 +723,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # The model is fetched from its pinned upstream release below. This
+          # avoids depending on a Git LFS object being available in forks.
+          lfs: false
+
+      - name: "Download and verify Stemgen model"
+        shell: bash
+        run: .github/scripts/download-stemgen-model.sh
 
       - name: "Store Git version"
         run: |

@@ -544,7 +544,6 @@ EngineBuffer::~EngineBuffer() {
     m_pBungeePublishedState.store(nullptr, std::memory_order_seq_cst);
     m_pBungeeWorker.reset();
 #endif
-
     delete m_pReadAheadManager;
     delete m_pReader;
 

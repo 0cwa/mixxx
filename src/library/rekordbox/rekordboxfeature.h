@@ -26,9 +26,11 @@
 
 #include <QFuture>
 #include <QFutureWatcher>
+#include <QList>
 #include <QStringListModel>
 #include <QtConcurrentRun>
 #include <fstream>
+#include <optional>
 
 #include "library/baseexternallibraryfeature.h"
 #include "library/baseexternalplaylistmodel.h"
@@ -38,6 +40,24 @@
 
 class TrackCollectionManager;
 class BaseExternalPlaylistModel;
+
+struct RekordboxDeviceInfo {
+    QString label;
+    QString path;
+};
+
+struct RekordboxPlaylistNode {
+    QString label;
+    QString path;
+    bool isFolder{false};
+    QList<RekordboxPlaylistNode> children;
+};
+
+struct RekordboxDeviceImportResult {
+    RekordboxDeviceInfo device;
+    QString devicePlaylist;
+    QList<RekordboxPlaylistNode> playlistNodes;
+};
 
 class RekordboxPlaylistModel : public BaseExternalPlaylistModel {
     Q_OBJECT
@@ -78,16 +98,24 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
 
   private:
     QString formatRootViewHtml() const;
+    void requestDeviceRefresh();
+    void startDeviceRefresh();
+    void refreshDevicesAfterImport();
+    void restorePendingDeviceMarker();
+    TreeItem* findDeviceItem(const RekordboxDeviceInfo& device) const;
     std::unique_ptr<BaseSqlTableModel> createPlaylistModelForPlaylist(
             const QVariant& data) override;
 
     parented_ptr<TreeItemModel> m_pSidebarModel;
     parented_ptr<RekordboxPlaylistModel> m_pRekordboxPlaylistModel;
 
-    QFutureWatcher<QList<TreeItem*>> m_devicesFutureWatcher;
-    QFuture<QList<TreeItem*>> m_devicesFuture;
-    QFutureWatcher<QString> m_tracksFutureWatcher;
-    QFuture<QString> m_tracksFuture;
+    QFutureWatcher<QList<RekordboxDeviceInfo>> m_devicesFutureWatcher;
+    QFuture<QList<RekordboxDeviceInfo>> m_devicesFuture;
+    QFutureWatcher<RekordboxDeviceImportResult> m_tracksFutureWatcher;
+    QFuture<RekordboxDeviceImportResult> m_tracksFuture;
+    std::optional<RekordboxDeviceInfo> m_pendingDevice;
+    bool m_deviceRefreshPending{false};
+    bool m_deviceScanActive{false};
     QString m_title;
 
     QSharedPointer<BaseTrackCache> m_trackSource;
