@@ -126,7 +126,7 @@ assert stemgen.count(staging_path) >= 4
 assert "MIXXX_INSTALL_STEM_CONVERSION: true" in stemgen
 assert "-DSTEM_CONVERSION=ON" in stemgen
 tag_fetch_position = stemgen.index("run: git fetch origin --force --tags")
-confirm_position = stemgen.index('git describe --dirty=-modified')
+confirm_position = stemgen.index('git describe --always --first-parent --dirty=-modified')
 assert tag_fetch_position < confirm_position
 
 print(

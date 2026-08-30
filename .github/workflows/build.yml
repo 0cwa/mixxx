@@ -828,7 +828,7 @@ jobs:
       - name: "Confirm clean checkout before configure"
         run: |
           test -z "$(git status --porcelain)"
-          git describe --dirty=-modified
+          git describe --always --first-parent --dirty=-modified
 
       - name: "Configure model-enabled Stemgen build"
         env:
