@@ -10,12 +10,108 @@
 #include <QTemporaryFile>
 #include <QUrl>
 #include <algorithm>
+#include <memory>
 #include <vector>
+
+#ifdef __STEM_CONVERSION__
+extern "C" {
+#include <libavutil/channel_layout.h>
+#include <sndfile.h>
+}
+#endif
 
 #include "sources/soundsourceffmpeg.h"
 #include "test/mixxxtest.h"
 
 #ifdef __STEM_CONVERSION__
+namespace {
+
+struct EncodedAudioInfo {
+    AVCodecID codecId{AV_CODEC_ID_NONE};
+    int sampleRate{0};
+    int channels{0};
+    bool isStereoLayout{false};
+};
+
+struct AVFormatContextDeleter {
+    void operator()(AVFormatContext* pContext) const {
+        if (pContext) {
+            avformat_close_input(&pContext);
+        }
+    }
+};
+
+bool readEncodedAudioInfo(const QString& filePath, EncodedAudioInfo* pInfo) {
+    if (!pInfo) {
+        return false;
+    }
+
+    std::unique_ptr<AVFormatContext, AVFormatContextDeleter> pContext(
+            mixxx::SoundSourceFFmpeg::openInputFile(filePath));
+    if (!pContext || avformat_find_stream_info(pContext.get(), nullptr) != 0) {
+        return false;
+    }
+
+    const int audioStreamIndex = av_find_best_stream(
+            pContext.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (audioStreamIndex < 0) {
+        return false;
+    }
+
+    const AVCodecParameters* pCodecParameters =
+            pContext->streams[audioStreamIndex]->codecpar;
+    pInfo->codecId = pCodecParameters->codec_id;
+    pInfo->sampleRate = pCodecParameters->sample_rate;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100) // FFmpeg 5.1
+    pInfo->channels = pCodecParameters->ch_layout.nb_channels;
+    AVChannelLayout stereoLayout;
+    av_channel_layout_default(&stereoLayout, 2);
+    pInfo->isStereoLayout =
+            av_channel_layout_compare(&pCodecParameters->ch_layout, &stereoLayout) == 0;
+    av_channel_layout_uninit(&stereoLayout);
+#else
+    pInfo->channels = pCodecParameters->channels;
+    pInfo->isStereoLayout = pCodecParameters->channel_layout == AV_CH_LAYOUT_STEREO;
+#endif
+    return true;
+}
+
+bool writeFourChannelWav(const QString& filePath) {
+    constexpr int kSampleRate = 44100;
+    constexpr int kChannels = 4;
+    constexpr sf_count_t kFrames = 4410;
+
+    SF_INFO sfInfo{};
+    sfInfo.samplerate = kSampleRate;
+    sfInfo.channels = kChannels;
+    sfInfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+
+    const QByteArray localFilePath = filePath.toLocal8Bit();
+    SNDFILE* pFile = sf_open(localFilePath.constData(), SFM_WRITE, &sfInfo);
+    if (!pFile) {
+        return false;
+    }
+
+    std::vector<float> samples(static_cast<std::size_t>(kFrames) * kChannels);
+    for (sf_count_t frame = 0; frame < kFrames; ++frame) {
+        for (int channel = 0; channel < kChannels; ++channel) {
+            const int sample = static_cast<int>(
+                                       (static_cast<std::size_t>(frame + 1) *
+                                               static_cast<std::size_t>(channel + 1)) %
+                                       17) -
+                    8;
+            samples[static_cast<std::size_t>(frame) * kChannels + channel] =
+                    static_cast<float>(sample) / 8.0f;
+        }
+    }
+
+    const sf_count_t writtenFrames = sf_writef_float(pFile, samples.data(), kFrames);
+    const int closeResult = sf_close(pFile);
+    return writtenFrames == kFrames && closeResult == 0;
+}
+
+} // namespace
+
 class StemgenMasterConversionTest : public MixxxTest {
   protected:
     static bool convertMasterToM4A(const QString& inputPath, const QString& outputPath) {
@@ -385,6 +481,35 @@ TEST_F(StemgenMasterConversionTest, ConvertsMonoMasterToStereoM4A) {
             mixxx::AudioSource::OpenResult::Succeeded);
     EXPECT_EQ(outputSource.getSignalInfo().getChannelCount(),
             mixxx::audio::ChannelCount::stereo());
+
+    EncodedAudioInfo outputInfo;
+    ASSERT_TRUE(readEncodedAudioInfo(outputPath, &outputInfo));
+    EXPECT_EQ(outputInfo.codecId, AV_CODEC_ID_ALAC);
+    EXPECT_EQ(outputInfo.sampleRate, 44100);
+    EXPECT_EQ(outputInfo.channels, 2);
+    EXPECT_TRUE(outputInfo.isStereoLayout);
+}
+
+TEST_F(StemgenMasterConversionTest, ConvertsMultichannelMasterToStereoALAC) {
+    QTemporaryDir tempDir;
+    ASSERT_TRUE(tempDir.isValid());
+
+    const QString inputPath = QDir(tempDir.path()).filePath("multichannel.wav");
+    ASSERT_TRUE(writeFourChannelWav(inputPath));
+
+    EncodedAudioInfo inputInfo;
+    ASSERT_TRUE(readEncodedAudioInfo(inputPath, &inputInfo));
+    ASSERT_EQ(inputInfo.channels, 4);
+
+    const QString outputPath = QDir(tempDir.path()).filePath("master.m4a");
+    ASSERT_TRUE(convertMasterToM4A(inputPath, outputPath));
+
+    EncodedAudioInfo outputInfo;
+    ASSERT_TRUE(readEncodedAudioInfo(outputPath, &outputInfo));
+    EXPECT_EQ(outputInfo.codecId, AV_CODEC_ID_ALAC);
+    EXPECT_EQ(outputInfo.sampleRate, 44100);
+    EXPECT_EQ(outputInfo.channels, 2);
+    EXPECT_TRUE(outputInfo.isStereoLayout);
 }
 #endif
 
