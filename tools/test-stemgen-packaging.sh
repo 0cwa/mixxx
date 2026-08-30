@@ -91,8 +91,23 @@ assert "model_dir=${MIXXX_STEM_MODEL_DIR:-}" in download_script
 assert "$script_dir/../../models" not in download_script
 
 workflow = workflow_path.read_text()
+# runner.* is unavailable in a job-level env mapping. Keep runner.temp in
+# step-level env mappings so the workflow can be expanded before a runner is
+# allocated.
+job_env_runner_context = [
+    line
+    for line in workflow.splitlines()
+    if line.startswith("      ")
+    and not line.startswith("        ")
+    and "${{ runner." in line
+]
+assert not job_env_runner_context, job_env_runner_context
+
 flatpak_start = workflow.index("  build-flatpak:")
 smoke_start = workflow.index("  build-stemgen-ubuntu:")
+regular_build = workflow[workflow.index("  build:"):flatpak_start]
+assert "stem_conversion: true" not in regular_build
+assert "stem_conversion: false" in regular_build
 flatpak = workflow[flatpak_start:smoke_start]
 staging_path = "MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model"
 assert staging_path in flatpak
@@ -100,6 +115,16 @@ download_position = flatpak.index("run: .github/scripts/download-stemgen-model.s
 clean_position = flatpak.index("Confirm clean checkout after model staging")
 version_position = flatpak.index('GIT_DESC=$(git describe --always --first-parent')
 assert download_position < clean_position < version_position
+
+stemgen_start = workflow.index("  build-stemgen-ubuntu:")
+manifest_start = workflow.index("  update_manifest:")
+stemgen = workflow[stemgen_start:manifest_start]
+assert "MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime" in stemgen
+assert staging_path in stemgen
+assert stemgen.count("MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime") >= 4
+assert stemgen.count(staging_path) >= 4
+assert "MIXXX_INSTALL_STEM_CONVERSION: true" in stemgen
+assert "-DSTEM_CONVERSION=ON" in stemgen
 
 print(
     "Stemgen packaging contracts passed: "

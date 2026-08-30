@@ -694,10 +694,6 @@ jobs:
 
   build-flatpak:
     name: "Flatpak"
-    env:
-      # Keep the downloaded model outside the checkout. The Flatpak model
-      # module fetches the same pinned asset for the actual package build.
-      MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.10
       options: --privileged
@@ -733,6 +729,10 @@ jobs:
 
       - name: "Download and verify Stemgen model"
         shell: bash
+        env:
+          # Keep the downloaded model outside the checkout. The Flatpak model
+          # module fetches the same pinned asset for the actual package build.
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
         run: .github/scripts/download-stemgen-model.sh
 
       - name: "Confirm clean checkout after model staging"
@@ -785,9 +785,6 @@ jobs:
     name: "Ubuntu 24.04 Stemgen model"
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
-      MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
     steps:
       - name: "Check out repository"
         uses: actions/checkout@v7
@@ -801,6 +798,8 @@ jobs:
         run: tools/test-stemgen-packaging.sh
 
       - name: "Stage pinned ONNX Runtime"
+        env:
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
         run: tools/onnxruntime_buildenv.sh stage
 
       - name: "Set up Ubuntu build environment"
@@ -808,11 +807,17 @@ jobs:
         env:
           BUILDENV_BASEPATH: ${{ runner.temp }}/mixxx-buildenv
           MIXXX_INSTALL_STEM_CONVERSION: true
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
 
       - name: "Verify staged ONNX Runtime"
+        env:
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
         run: tools/onnxruntime_buildenv.sh verify
 
       - name: "Verify downloaded Stemgen model"
+        env:
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
         run: .github/scripts/verify-stemgen-model.sh
 
       - name: "Confirm clean checkout before configure"
@@ -821,6 +826,8 @@ jobs:
           git describe --dirty=-modified
 
       - name: "Configure model-enabled Stemgen build"
+        env:
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
         run: |
           set -o pipefail
           cmake \
@@ -851,6 +858,7 @@ jobs:
         env:
           GTEST_COLOR: "1"
           LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
         run: |
           test_filter='StemConverterTest.*'
           listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
@@ -867,6 +875,7 @@ jobs:
         env:
           GTEST_COLOR: "1"
           LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
         run: ./mixxx-test --gtest_filter=MixxxTest.ConvertsRealAudioWithStemgenModel
 
   update_manifest:
