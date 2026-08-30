@@ -794,6 +794,11 @@ jobs:
           # keeps this job and the regular matrix independent of Git LFS.
           lfs: false
 
+      - name: "Ensure that all tags are fetched"
+        # actions/checkout does not fetch tags in this workflow. The version
+        # check below needs the release tags reachable from the PR merge ref.
+        run: git fetch origin --force --tags
+
       - name: "Check Stemgen packaging contracts"
         run: tools/test-stemgen-packaging.sh
 
