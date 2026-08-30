@@ -43,7 +43,7 @@ verify_prefix() {
     fi
 
     for required_file in \
-        "$runtime_prefix/include/onnxruntime/onnxruntime_cxx_api.h" \
+        "$runtime_prefix/include/onnxruntime_cxx_api.h" \
         "$runtime_prefix/lib/libonnxruntime.so" \
         "$runtime_prefix/lib/libonnxruntime_providers_shared.so" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeConfig.cmake" \
@@ -162,9 +162,9 @@ run_self_tests() {
 
     archive_root="$test_dir/onnxruntime-linux-x64-$ONNXRUNTIME_VERSION"
     mkdir -p \
-        "$archive_root/include/onnxruntime" \
+        "$archive_root/include" \
         "$archive_root/lib/cmake/onnxruntime"
-    printf 'test header\n' > "$archive_root/include/onnxruntime/onnxruntime_cxx_api.h"
+    printf 'test header\n' > "$archive_root/include/onnxruntime_cxx_api.h"
     : > "$archive_root/lib/libonnxruntime.so"
     : > "$archive_root/lib/libonnxruntime_providers_shared.so"
     printf 'test config\n' > "$archive_root/lib/cmake/onnxruntime/onnxruntimeConfig.cmake"
