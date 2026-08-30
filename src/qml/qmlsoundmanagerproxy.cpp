@@ -188,10 +188,7 @@ QList<EngineBuffer::KeylockEngine> QmlSoundManagerProxy::getKeylockEngines() con
 }
 
 void QmlSoundManagerProxy::setKeylockEngine(EngineBuffer::KeylockEngine keylockEngine) {
-    if (!EngineBuffer::isKeylockEngineAvailable(keylockEngine)) {
-        return;
-    }
-    m_pendingKeylockEngine = keylockEngine;
+    setKeylockEngineForAllDecks(keylockEngine);
 }
 
 void QmlSoundManagerProxy::setKeylockEngineForAllDecks(
@@ -205,7 +202,7 @@ void QmlSoundManagerProxy::setKeylockEngineForAllDecks(
 EngineBuffer::KeylockEngine QmlSoundManagerProxy::getKeylockEngine() const {
     return m_pSoundManager->userSettings()
             ->getValue<EngineBuffer::KeylockEngine>(
-                    kKeylockEngineCfgkey, EngineBuffer::defaultKeylockEngine());
+                    kKeylockEngineCfgkey1, EngineBuffer::defaultKeylockEngine());
 }
 
 QString QmlSoundManagerProxy::getAPI() const {

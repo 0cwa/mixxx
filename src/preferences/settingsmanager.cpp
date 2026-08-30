@@ -1,14 +1,63 @@
 #include "preferences/settingsmanager.h"
 
 #include <QDir>
+#include <array>
 
 #include "control/control.h"
+#include "engine/enginebuffer.h"
 #include "preferences/upgrade.h"
 #include "util/assert.h"
 
-#ifdef __BUNGEE__
-#include "engine/enginebuffer.h"
+namespace {
+
+const ConfigKey kGlobalKeylockEngineKey(
+        QStringLiteral("[App]"),
+        QStringLiteral("keylock_engine"));
+
+constexpr std::array<const char*, 4> kDeckGroups = {
+        "[Channel1]",
+        "[Channel2]",
+        "[Channel3]",
+        "[Channel4]",
+};
+
+EngineBuffer::KeylockEngine defaultStableKeylockEngine() {
+#ifdef __RUBBERBAND__
+    return EngineBuffer::KeylockEngine::RubberBandFaster;
+#else
+    return EngineBuffer::KeylockEngine::SoundTouch;
 #endif
+}
+
+EngineBuffer::KeylockEngine defaultKeylockEngineForMigration(
+        const UserSettingsPointer& pSettings) {
+    if (pSettings->exists(kGlobalKeylockEngineKey)) {
+        const auto globalKeylockEngine =
+                pSettings->getValue<EngineBuffer::KeylockEngine>(
+                        kGlobalKeylockEngineKey,
+                        defaultStableKeylockEngine());
+        if (EngineBuffer::isKeylockEngineAvailable(globalKeylockEngine)) {
+            return globalKeylockEngine;
+        }
+    }
+    return defaultStableKeylockEngine();
+}
+
+void initializePerDeckKeylockEngines(const UserSettingsPointer& pSettings) {
+    // Deck-specific values take precedence. The legacy global value is only
+    // used to initialize missing deck values during profile migration.
+    const auto keylockEngine = defaultKeylockEngineForMigration(pSettings);
+    for (const char* group : kDeckGroups) {
+        const ConfigKey keylockEngineKey(
+                QString::fromLatin1(group),
+                QStringLiteral("keylock_engine"));
+        if (!pSettings->exists(keylockEngineKey)) {
+            pSettings->setValue(keylockEngineKey, keylockEngine);
+        }
+    }
+}
+
+} // namespace
 
 SettingsManager::SettingsManager(const QString& settingsPath)
         : m_bShouldRescanLibrary(false) {
@@ -27,20 +76,7 @@ SettingsManager::SettingsManager(const QString& settingsPath)
         m_pSettings = UserSettingsPointer(new UserSettings(""));
     }
 
-#ifdef __BUNGEE__
-    if (!settingsDirectoryExistedBeforeStartup) {
-        const ConfigKey keylockEngineKey(
-                QStringLiteral("[App]"),
-                QStringLiteral("keylock_engine"));
-        if (!m_pSettings->exists(keylockEngineKey)) {
-            // Match Sound Preferences' Reset to Defaults. Enabling Bungee in
-            // CMake does not change the runtime keylock-engine policy.
-            m_pSettings->setValue(
-                    keylockEngineKey,
-                    EngineBuffer::defaultKeylockEngine());
-        }
-    }
-#endif
+    initializePerDeckKeylockEngines(m_pSettings);
 
     m_bShouldRescanLibrary = upgrader.rescanLibrary();
 
