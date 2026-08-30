@@ -16,8 +16,11 @@ test_download_staging_safety() {
     local script_dir
     local fake_bin
     local curl_log
+    local missing_destination
     local inside_destination
     local inside_symlink_destination
+    local final_symlink_destination
+    local non_regular_destination
     local external_destination
     local checkout_symlink_destination
     local pointer_path
@@ -81,6 +84,27 @@ printf '%s\n' 'materialized-model' >"$output"
 EOF
     chmod +x -- "$fake_bin/curl"
 
+    missing_destination="$checkout_root/new/nonexistent/staging"
+    output="$test_download_root/missing.out"
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$missing_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || fail 'nonexistent checkout destination was not rejected'
+    test ! -e "$checkout_root/new" || \
+        fail 'rejected checkout destination created directories'
+    test ! -e "$missing_destination" || \
+        fail 'rejected checkout destination was created'
+    test ! -s "$curl_log" || \
+        fail 'curl ran for a rejected nonexistent checkout destination'
+    grep -Fq 'outside the source checkout' "$output" || \
+        fail 'nonexistent checkout rejection did not identify the containment contract'
+
     inside_destination="$checkout_root/models"
     printf '%s\n' 'checkout-pointer' >"$inside_destination/htdemucs.onnx"
     inside_pointer_before=$(sha256sum "$inside_destination/htdemucs.onnx")
@@ -118,6 +142,50 @@ EOF
         "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
         fail 'symlinked checkout model was replaced'
     test ! -s "$curl_log" || fail 'curl ran for a rejected symlinked destination'
+
+    final_symlink_destination="$test_download_root/final-symlink-models"
+    mkdir -p -- "$final_symlink_destination"
+    ln -s -- "$checkout_root/models" "$final_symlink_destination/htdemucs.onnx"
+    : >"$curl_log"
+    output="$test_download_root/final-symlink.out"
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$final_symlink_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || fail 'final model symlink was not rejected'
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'final model symlink replaced the checkout model'
+    test -L "$final_symlink_destination/htdemucs.onnx" || \
+        fail 'final model symlink was removed'
+    test ! -s "$curl_log" || fail 'curl ran for a rejected final symlink'
+    grep -Fq 'must not be a symlink' "$output" || \
+        fail 'final symlink rejection did not identify the destination type'
+
+    non_regular_destination="$test_download_root/non-regular-models"
+    mkdir -p -- "$non_regular_destination/htdemucs.onnx"
+    : >"$curl_log"
+    output="$test_download_root/non-regular.out"
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$non_regular_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || fail 'non-regular final model destination was not rejected'
+    test -d "$non_regular_destination/htdemucs.onnx" || \
+        fail 'non-regular final model destination was replaced'
+    test ! -s "$curl_log" || fail 'curl ran for a non-regular final destination'
+    grep -Fq 'must be a regular file or absent' "$output" || \
+        fail 'non-regular destination rejection did not identify the destination type'
 
     external_destination="$test_download_root/external-models"
     : >"$curl_log"
