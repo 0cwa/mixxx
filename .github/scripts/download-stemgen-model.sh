@@ -3,7 +3,13 @@
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-model_dir=${MIXXX_STEM_MODEL_DIR:-"$script_dir/../../models"}
+model_dir=${MIXXX_STEM_MODEL_DIR:-}
+if [ -z "$model_dir" ]; then
+    printf '%s\n' \
+        'MIXXX_STEM_MODEL_DIR must be set to a staging directory outside the source checkout.' \
+        >&2
+    exit 2
+fi
 model_path="$model_dir/htdemucs.onnx"
 model_url=https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx
 

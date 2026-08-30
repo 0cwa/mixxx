@@ -14,3 +14,8 @@ The repository stores the file as a Git LFS pointer. A checkout used for
 packaging must materialize the model before configuring CMake; a pointer is not
 a usable model. Model-enabled CI materializes the pinned release asset from
 the manifest provenance and verifies its size and SHA-256 before the build.
+
+The `.github/scripts/download-stemgen-model.sh` helper requires
+`MIXXX_STEM_MODEL_DIR` to be set explicitly to a staging directory outside the
+source checkout. The Flatpak workflow uses the runner's temporary directory;
+the helper does not select the tracked `models/` directory by default.

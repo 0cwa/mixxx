@@ -6,9 +6,24 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 readonly repository_root
 
+fail() {
+    printf 'FAIL: %s\n' "$1" >&2
+    exit 1
+}
+
+download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
+model_pointer="$repository_root/models/htdemucs.onnx"
+pointer_before=$(sha256sum "$model_pointer")
+if env -u MIXXX_STEM_MODEL_DIR "$download_script" >/dev/null 2>&1; then
+    fail 'unparameterized model download unexpectedly succeeded'
+fi
+test "$pointer_before" = "$(sha256sum "$model_pointer")" || \
+    fail 'unparameterized model download changed the tracked LFS pointer'
+
 python3 - \
     "$repository_root/models/htdemucs.onnx.manifest.json" \
     "$repository_root/models/NOTICE.md" \
+    "$repository_root/models/README.md" \
     "$repository_root/packaging/flatpak/modules/onnxruntime.yaml" \
     "$repository_root/packaging/flatpak/modules/stemgen-model.yaml" \
     "$repository_root/src/stems/stemconverter.h" \
@@ -23,6 +38,7 @@ from pathlib import Path
 (
     manifest_path,
     notice_path,
+    readme_path,
     onnxruntime_module_path,
     stemgen_model_module_path,
     stemconverter_path,
@@ -47,6 +63,10 @@ assert model_sha256 == (
 notice = " ".join(notice_path.read_text().split())
 assert "does not claim that the weights are MIT licensed" in notice
 
+readme = " ".join(readme_path.read_text().split())
+assert "requires `MIXXX_STEM_MODEL_DIR`" in readme
+assert "outside the source checkout" in readme
+
 onnxruntime_module = onnxruntime_module_path.read_text()
 assert 'cp -a include/. "${FLATPAK_DEST}/include/"' in onnxruntime_module
 assert 'cp -a include/. "${FLATPAK_DEST}/include/onnxruntime/"' not in onnxruntime_module
@@ -65,6 +85,10 @@ for path in (
         assert model_url in contents, path
     if path in (verifier_path, debian_buildenv_path, stemgen_model_module_path):
         assert model_sha256 in contents, path
+
+download_script = download_script_path.read_text()
+assert "model_dir=${MIXXX_STEM_MODEL_DIR:-}" in download_script
+assert "$script_dir/../../models" not in download_script
 
 workflow = workflow_path.read_text()
 flatpak_start = workflow.index("  build-flatpak:")
