@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QMutex>
 #include <QObject>
 #include <QString>
@@ -92,6 +93,11 @@ class StemConverter : public QObject {
             const QString& modelDirectoryOverride,
             const QString& resourcePath,
             const QString& userModelDirectory);
+
+    /// Verify a model file against the expected size and SHA-256 digest.
+    static bool isVerifiedModelFile(const QString& modelPath,
+            qint64 expectedSize,
+            const QByteArray& expectedSha256);
 #endif
 
     /// Return whether an overlapping inference window starts after this one.

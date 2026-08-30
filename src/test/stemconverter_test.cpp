@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -13,6 +14,55 @@
 #include "test/mixxxtest.h"
 
 #ifdef __STEM_CONVERSION__
+TEST(StemConverterTest, AcceptsModelMatchingExpectedSizeAndHash) {
+    QTemporaryFile modelFile;
+    ASSERT_TRUE(modelFile.open());
+    const QByteArray modelContents = QByteArrayLiteral("valid model contents");
+    ASSERT_EQ(modelFile.write(modelContents), modelContents.size());
+    modelFile.close();
+
+    EXPECT_TRUE(StemConverter::isVerifiedModelFile(
+            modelFile.fileName(),
+            modelContents.size(),
+            QCryptographicHash::hash(modelContents, QCryptographicHash::Sha256).toHex()));
+}
+
+TEST(StemConverterTest, RejectsMissingAndUnmaterializedModels) {
+    QTemporaryDir modelDir;
+    ASSERT_TRUE(modelDir.isValid());
+    const QByteArray expectedSha256 = QByteArrayLiteral("0123456789abcdef");
+
+    EXPECT_FALSE(StemConverter::isVerifiedModelFile(
+            QDir(modelDir.path()).filePath("missing.onnx"), 1, expectedSha256));
+
+    const QString pointerPath = QDir(modelDir.path()).filePath("pointer.onnx");
+    QFile pointerFile(pointerPath);
+    ASSERT_TRUE(pointerFile.open(QIODevice::WriteOnly));
+    ASSERT_GT(pointerFile.write(
+                      "version https://git-lfs.github.com/spec/v1\n"
+                      "oid sha256:0123456789abcdef\n"
+                      "size 123\n"),
+            0);
+    pointerFile.close();
+
+    EXPECT_FALSE(StemConverter::isVerifiedModelFile(pointerPath, 80, expectedSha256));
+}
+
+TEST(StemConverterTest, RejectsWrongModelSizeAndHash) {
+    QTemporaryFile modelFile;
+    ASSERT_TRUE(modelFile.open());
+    const QByteArray modelContents = QByteArrayLiteral("model contents");
+    ASSERT_EQ(modelFile.write(modelContents), modelContents.size());
+    modelFile.close();
+
+    const QByteArray modelSha256 =
+            QCryptographicHash::hash(modelContents, QCryptographicHash::Sha256).toHex();
+    EXPECT_FALSE(StemConverter::isVerifiedModelFile(
+            modelFile.fileName(), modelContents.size() + 1, modelSha256));
+    EXPECT_FALSE(StemConverter::isVerifiedModelFile(
+            modelFile.fileName(), modelContents.size(), QByteArrayLiteral("wrong")));
+}
+
 TEST(StemConverterTest, FindsModelInInstalledResourceDirectory) {
     QTemporaryDir resourceDir;
     ASSERT_TRUE(resourceDir.isValid());

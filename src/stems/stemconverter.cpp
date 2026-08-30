@@ -1,6 +1,7 @@
 #include "stems/stemconverter.h"
 
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -32,6 +33,7 @@ constexpr int kStemModelChannels = 2;
 constexpr auto kStemModelResourceDirectory = "models";
 constexpr auto kStemModelDirectoryEnvironmentVariable = "MIXXX_STEM_MODEL_DIR";
 constexpr auto kStemModelLfsPointerHeader = "version https://git-lfs.github.com/spec/v1";
+constexpr qint64 kStemModelHashChunkSize = 1024 * 1024;
 constexpr int kExternalProcessTimeoutMs = 10 * 60 * 1000;
 constexpr int kProcessTerminateGracePeriodMs = 1000;
 
@@ -447,7 +449,7 @@ StemConverter::ModelConfig StemConverter::getModelConfig(Resolution resolution) 
         return {nullptr, 0};
     }
 
-    return {"htdemucs.onnx", kStemModelSampleRate};
+    return {MIXXX_STEM_MODEL_NAME, kStemModelSampleRate};
 }
 
 QString StemConverter::findModelPath(const QString& modelFileName,
@@ -502,6 +504,59 @@ QString StemConverter::findModelPath(const QString& modelFileName,
     return findInDirectory(userModelDirectory);
 }
 
+bool StemConverter::isVerifiedModelFile(const QString& modelPath,
+        qint64 expectedSize,
+        const QByteArray& expectedSha256) {
+    const QFileInfo modelFile(modelPath);
+    if (!modelFile.isFile()) {
+        kLogger.warning() << "Stem model is missing or not a regular file:" << modelPath;
+        return false;
+    }
+
+    if (isGitLfsPointer(modelFile)) {
+        kLogger.warning()
+                << "Stem model is an unmaterialized Git LFS pointer, not model content:"
+                << modelPath;
+        return false;
+    }
+
+    if (modelFile.size() != expectedSize) {
+        kLogger.warning() << "Stem model has size" << modelFile.size() << "bytes; expected"
+                          << expectedSize << "bytes:" << modelPath;
+        return false;
+    }
+
+    QFile model(modelPath);
+    if (!model.open(QIODevice::ReadOnly)) {
+        kLogger.warning() << "Failed to open Stem model for SHA-256 verification:"
+                          << modelPath << model.errorString();
+        return false;
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    while (!model.atEnd()) {
+        const QByteArray chunk = model.read(kStemModelHashChunkSize);
+        if (chunk.isEmpty()) {
+            if (model.error() != QFileDevice::NoError) {
+                kLogger.warning() << "Failed to read Stem model for SHA-256 verification:"
+                                  << modelPath << model.errorString();
+                return false;
+            }
+            break;
+        }
+        hash.addData(chunk);
+    }
+
+    const QByteArray actualSha256 = hash.result().toHex();
+    if (actualSha256 != expectedSha256.toLower()) {
+        kLogger.warning() << "Stem model SHA-256 is" << actualSha256 << "; expected"
+                          << expectedSha256 << ":" << modelPath;
+        return false;
+    }
+
+    return true;
+}
+
 bool StemConverter::loadOnnxModel() {
     if (m_pOrtSession && m_loadedResolution && *m_loadedResolution == m_resolution) {
         return true; // Already loaded
@@ -528,6 +583,14 @@ bool StemConverter::loadOnnxModel() {
         if (modelPath.isEmpty()) {
             kLogger.warning() << "ONNX model not found in the configured, "
                                  "installed, or user model directories";
+            return false;
+        }
+
+        if (!isVerifiedModelFile(
+                    modelPath,
+                    MIXXX_STEM_MODEL_EXPECTED_SIZE,
+                    QByteArrayLiteral(MIXXX_STEM_MODEL_EXPECTED_SHA256))) {
+            kLogger.warning() << "Refusing to load unverified Stem model:" << modelPath;
             return false;
         }
 
