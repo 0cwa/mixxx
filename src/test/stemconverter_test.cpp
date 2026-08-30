@@ -8,12 +8,22 @@
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
+#include <QUrl>
 #include <algorithm>
 #include <vector>
 
+#include "sources/soundsourceffmpeg.h"
 #include "test/mixxxtest.h"
 
 #ifdef __STEM_CONVERSION__
+class StemgenMasterConversionTest : public MixxxTest {
+  protected:
+    static bool convertMasterToM4A(const QString& inputPath, const QString& outputPath) {
+        StemConverter converter;
+        return converter.convertTrackToM4A(inputPath, outputPath);
+    }
+};
+
 TEST(StemConverterTest, AcceptsModelMatchingExpectedSizeAndHash) {
     QTemporaryFile modelFile;
     ASSERT_TRUE(modelFile.open());
@@ -356,6 +366,25 @@ TEST_F(MixxxTest, ConvertsRealAudioWithStemgenModel) {
             getTestDataDir().filePath("stemgen-smoke.stem.m4a"));
     ASSERT_TRUE(outputFile.isFile());
     EXPECT_GT(outputFile.size(), 0);
+}
+
+TEST_F(StemgenMasterConversionTest, ConvertsMonoMasterToStereoM4A) {
+    QTemporaryDir tempDir;
+    ASSERT_TRUE(tempDir.isValid());
+
+    const QString inputPath = QDir(tempDir.path()).filePath("mono.wav");
+    ASSERT_TRUE(QFile::copy(getTestDir().filePath("sine-30.wav"), inputPath));
+    const QString outputPath = QDir(tempDir.path()).filePath("master.m4a");
+
+    ASSERT_TRUE(convertMasterToM4A(inputPath, outputPath));
+    ASSERT_TRUE(QFileInfo::exists(outputPath));
+
+    mixxx::SoundSourceFFmpeg outputSource(QUrl::fromLocalFile(outputPath));
+    mixxx::AudioSource::OpenParams openParams;
+    ASSERT_EQ(outputSource.open(mixxx::AudioSource::OpenMode::Strict, openParams),
+            mixxx::AudioSource::OpenResult::Succeeded);
+    EXPECT_EQ(outputSource.getSignalInfo().getChannelCount(),
+            mixxx::audio::ChannelCount::stereo());
 }
 #endif
 

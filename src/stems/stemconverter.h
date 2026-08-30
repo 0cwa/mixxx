@@ -19,6 +19,8 @@
 class StemConverter : public QObject {
     Q_OBJECT
 
+    friend class StemgenMasterConversionTest;
+
   public:
     enum class Resolution {
         High, // Unsupported until a verified htdemucs_ft artifact is published.

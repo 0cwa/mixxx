@@ -1099,6 +1099,7 @@ bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& o
 
     arguments << "-i" << inputPath;
     arguments << "-ar" << QString::number(kStemModelSampleRate);
+    arguments << "-ac" << QString::number(kStemModelChannels);
     arguments << "-c:a" << "alac";
     arguments << "-y" << outputPath;
 
