@@ -773,6 +773,91 @@ jobs:
           archive: "false"
           path: Mixxx-${{ env.GIT_DESC }}-${{ matrix.variant.arch }}.Debug.flatpak
 
+  build-stemgen-ubuntu:
+    name: "Ubuntu 24.04 Stemgen model"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
+      MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
+    steps:
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # The model is fetched from its pinned upstream release below. This
+          # keeps this job and the regular matrix independent of Git LFS.
+          lfs: false
+
+      - name: "Stage pinned ONNX Runtime"
+        run: tools/onnxruntime_buildenv.sh stage
+
+      - name: "Set up Ubuntu build environment"
+        run: tools/debian_buildenv.sh setup
+        env:
+          BUILDENV_BASEPATH: ${{ runner.temp }}/mixxx-buildenv
+          MIXXX_INSTALL_STEM_CONVERSION: true
+
+      - name: "Verify staged ONNX Runtime"
+        run: tools/onnxruntime_buildenv.sh verify
+
+      - name: "Verify downloaded Stemgen model"
+        run: .github/scripts/verify-stemgen-model.sh
+
+      - name: "Confirm clean checkout before configure"
+        run: |
+          test -z "$(git status --porcelain)"
+          git describe --dirty=-modified
+
+      - name: "Configure model-enabled Stemgen build"
+        run: |
+          set -o pipefail
+          cmake \
+            -S . \
+            -B build-stemgen \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$MIXXX_ONNX_RUNTIME_PREFIX" \
+            -DBUILD_TESTING=ON \
+            -DFFMPEG=ON \
+            -DPIPEWIRE=ON \
+            -DSTEM=ON \
+            -DSTEM_CONVERSION=ON \
+            -DWARNINGS_FATAL=ON \
+            -DDEBUG_ASSERTIONS_FATAL=OFF \
+            -DDOWNLOAD_MANUAL=OFF \
+            2>&1 | tee "$RUNNER_TEMP/stemgen-cmake-configure.log"
+          grep -F "Enabling STEM conversion support" \
+            "$RUNNER_TEMP/stemgen-cmake-configure.log"
+          cmake -LA -N build-stemgen | grep -E '^(PIPEWIRE|STEM|STEM_CONVERSION):'
+
+      - name: "Build mixxx-test with up to 12 cores"
+        run: cmake --build build-stemgen --target mixxx-test --parallel 12
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
+
+      - name: "Run StemConverter and Stemgen tests"
+        working-directory: build-stemgen
+        env:
+          GTEST_COLOR: "1"
+          LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
+        run: |
+          test_filter='StemConverterTest.*'
+          listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
+          test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
+          if [ "$test_count" -eq 0 ]; then
+            echo "No tests matched GTest filter: $test_filter" >&2
+            exit 1
+          fi
+          echo "Running $test_count tests matching GTest filter: $test_filter"
+          ./mixxx-test --gtest_filter="$test_filter"
+
+      - name: "Run required real inference/conversion smoke test"
+        working-directory: build-stemgen
+        env:
+          GTEST_COLOR: "1"
+          LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
+        run: ./mixxx-test --gtest_filter=MixxxTest.ConvertsRealAudioWithStemgenModel
+
   update_manifest:
     name: "Update manifest file on download server"
     runs-on: ubuntu-latest

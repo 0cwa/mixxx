@@ -10,6 +10,9 @@ fi
 
 set -e -o pipefail
 
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly ONNXRUNTIME_HELPER="$SCRIPT_DIR/onnxruntime_buildenv.sh"
 readonly HTDEMUCS_MODEL_NAME="htdemucs.onnx"
 readonly HTDEMUCS_MODEL_URL="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx"
 readonly HTDEMUCS_MODEL_SIZE=304413278
@@ -477,8 +480,16 @@ case "$1" in
                 echo "GPAC installation did not provide a package-owned executable MP4Box." >&2
                 exit 1
             fi
+            if [[ -n "${MIXXX_ONNX_RUNTIME_PREFIX:-}" ]]; then
+                if ! "$ONNXRUNTIME_HELPER" verify "$MIXXX_ONNX_RUNTIME_PREFIX"; then
+                    echo "The externally staged ONNX Runtime is missing or incomplete; aborting setup." >&2
+                    exit 1
+                fi
+                echo "Using the externally staged ONNX Runtime at $MIXXX_ONNX_RUNTIME_PREFIX."
+            else
+                PACKAGES_EXTRA+=(libonnxruntime-dev)
+            fi
             PACKAGES_EXTRA+=(
-                libonnxruntime-dev
                 libsndfile1-dev
                 ffmpeg
                 sox

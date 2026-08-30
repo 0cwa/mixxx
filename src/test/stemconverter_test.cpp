@@ -4,10 +4,13 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <algorithm>
 #include <vector>
+
+#include "test/mixxxtest.h"
 
 #ifdef __STEM_CONVERSION__
 TEST(StemConverterTest, FindsModelInInstalledResourceDirectory) {
@@ -273,6 +276,36 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     EXPECT_EQ(conversionProgressCount, 0);
     EXPECT_EQ(failureMessage, QStringLiteral("Verified HTDemucs model unavailable"));
     EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
+}
+
+TEST_F(MixxxTest, ConvertsRealAudioWithStemgenModel) {
+    const QString inputPath = getTestDataDir().filePath("stemgen-smoke.wav");
+    ASSERT_TRUE(QFile::copy(getTestDir().filePath("stems/mainmix.wav"), inputPath));
+
+    const auto pTrack = Track::newTemporary(inputPath);
+    ASSERT_TRUE(pTrack);
+
+    StemConverter converter;
+    bool conversionCompleted = false;
+    QString failureMessage;
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionCompleted,
+            [&conversionCompleted](TrackId) { conversionCompleted = true; });
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionFailed,
+            [&failureMessage](TrackId, const QString& message) { failureMessage = message; });
+
+    converter.convertTrack(pTrack, StemConverter::Resolution::Low);
+
+    ASSERT_TRUE(conversionCompleted) << qPrintable(failureMessage);
+    ASSERT_EQ(converter.getState(), StemConverter::ConversionState::Completed);
+
+    const QFileInfo outputFile(
+            getTestDataDir().filePath("stemgen-smoke.stem.m4a"));
+    ASSERT_TRUE(outputFile.isFile());
+    EXPECT_GT(outputFile.size(), 0);
 }
 #endif
 
