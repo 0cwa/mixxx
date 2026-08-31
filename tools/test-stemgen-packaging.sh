@@ -29,6 +29,10 @@ test_download_staging_safety() {
     local output
     local status
     local inside_pointer_before
+    local race_destination
+    local race_backup_destination
+    local real_mktemp
+    local final_race_destination
 
     test_download_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-model-test.XXXXXX")
     cleanup_download_test() {
@@ -80,6 +84,9 @@ printf '%s\n' "$output" >>"${FAKE_CURL_LOG:?}"
 if [ "${FAKE_CURL_FAIL:-0}" -eq 1 ]; then
     printf '%s\n' 'partial-model' >"$output"
     exit 17
+fi
+if [ "${FAKE_CURL_REPLACE_FINAL:-0}" -eq 1 ]; then
+    ln -s -- "${FAKE_CURL_FINAL_TARGET:?}" "${FAKE_CURL_FINAL_PATH:?}"
 fi
 printf '%s\n' 'materialized-model' >"$output"
 EOF
@@ -221,7 +228,7 @@ EOF
         "$script_dir/download-stemgen-model.sh" >/dev/null
     test -f "$external_destination/htdemucs.onnx" || \
         fail 'valid external destination did not receive a model'
-    grep -Fq "$external_destination/.stemgen-model." "$curl_log" || \
+    grep -Fq '.stemgen-model.' "$curl_log" || \
         fail 'valid external destination did not use a temporary download path'
     test -z "$(find "$external_destination" -mindepth 1 -maxdepth 1 \
         -name '.stemgen-model.*' -print -quit)" || \
@@ -252,6 +259,73 @@ EOF
     grep -Fqx 'materialized-model' "$pointer_path" || \
         fail 'existing LFS pointer was not replaced with downloaded content'
     test -s "$curl_log" || fail 'existing LFS pointer was incorrectly reused'
+
+    # Replace the validated pathname after the script has entered the staging
+    # directory. All temporary and final writes must stay in the directory
+    # that was entered, even though its pathname now points at the checkout.
+    race_destination="$test_download_root/race-models"
+    race_backup_destination="$test_download_root/race-models-original"
+    mkdir -p -- "$race_destination"
+    real_mktemp=$(command -v mktemp)
+    cat >"$fake_bin/mktemp" <<'EOF'
+#!/bin/sh
+
+set -eu
+
+mv -- "$RACE_DESTINATION" "$RACE_BACKUP_DESTINATION"
+ln -s -- "$RACE_CHECKOUT_DESTINATION" "$RACE_DESTINATION"
+exec "$REAL_MKTEMP" "$@"
+EOF
+    chmod +x -- "$fake_bin/mktemp"
+    : >"$curl_log"
+    if ! RACE_DESTINATION="$race_destination" \
+            RACE_BACKUP_DESTINATION="$race_backup_destination" \
+            RACE_CHECKOUT_DESTINATION="$checkout_root/models" \
+            REAL_MKTEMP="$real_mktemp" \
+            MIXXX_STEM_MODEL_DIR="$race_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        fail 'staging directory replacement race was not handled safely'
+    fi
+    test -L "$race_destination" || \
+        fail 'race harness did not replace the staging directory with a symlink'
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'staging directory replacement race modified the checkout model'
+    grep -Fqx 'materialized-model' \
+        "$race_backup_destination/htdemucs.onnx" || \
+        fail 'race-safe write did not remain in the original staging directory'
+    rm -f -- "$fake_bin/mktemp"
+
+    final_race_destination="$test_download_root/final-race-models"
+    mkdir -p -- "$final_race_destination"
+    : >"$curl_log"
+    status=0
+    if FAKE_CURL_REPLACE_FINAL=1 \
+            FAKE_CURL_FINAL_PATH="$final_race_destination/htdemucs.onnx" \
+            FAKE_CURL_FINAL_TARGET="$checkout_root/models" \
+            MIXXX_STEM_MODEL_DIR="$final_race_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 0 || \
+        fail 'final destination symlink race was not replaced safely'
+    test ! -L "$final_race_destination/htdemucs.onnx" || \
+        fail 'final destination symlink race left the injected symlink'
+    grep -Fqx 'materialized-model' \
+        "$final_race_destination/htdemucs.onnx" || \
+        fail 'final destination symlink race did not install the model'
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'final destination directory race modified the checkout model'
+    test -z "$(find "$checkout_root/models" -mindepth 1 -maxdepth 1 \
+        ! -name 'htdemucs.onnx' -print -quit)" || \
+        fail 'final destination directory race left a checkout artifact'
 
     failure_destination="$test_download_root/failed-models"
     : >"$curl_log"

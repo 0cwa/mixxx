@@ -40,6 +40,19 @@ canonicalize_model_staging_directory() {
     printf '%s\n' "$canonical_model_path"
 }
 
+validate_model_file_destination() {
+    local model_file_path="$1"
+
+    if [[ -L "$model_file_path" ]]; then
+        echo "The final Stemgen model destination must not be a symlink." >&2
+        return 1
+    fi
+    if [[ -e "$model_file_path" && ! -f "$model_file_path" ]]; then
+        echo "The final Stemgen model destination must be a regular file or absent." >&2
+        return 1
+    fi
+}
+
 validate_model_staging_destination() {
     local model_path="$1"
     local canonical_model_path
@@ -49,16 +62,87 @@ validate_model_staging_destination() {
         return 1
     fi
     model_file_path="$canonical_model_path/$HTDEMUCS_MODEL_NAME"
-    if [[ -L "$model_file_path" ]]; then
-        echo "The final Stemgen model destination must not be a symlink." >&2
-        return 1
-    fi
-    if [[ -e "$model_file_path" && ! -f "$model_file_path" ]]; then
-        echo "The final Stemgen model destination must be a regular file or absent." >&2
+    if ! validate_model_file_destination "$model_file_path"; then
         return 1
     fi
 
     printf '%s\n' "$canonical_model_path"
+}
+
+assert_model_staging_directory_outside_checkout() {
+    local current_model_path
+    local checkout_path
+
+    if ! current_model_path="$(pwd -P)" ||
+            ! checkout_path="$(realpath -m -- "$SCRIPT_DIR/..")"; then
+        return 1
+    fi
+    case "$current_model_path/" in
+        "$checkout_path/"*)
+            echo "MIXXX_STEM_MODEL_DIR must resolve to a staging directory outside the source checkout." >&2
+            return 1
+            ;;
+    esac
+}
+
+enter_model_staging_directory() {
+    local model_path="$1"
+    local download_user="$2"
+    local canonical_model_path
+    local staging_anchor_path
+    local staging_remaining_suffix
+    local staging_parent_path
+    local staging_component
+
+    if ! canonical_model_path="$(validate_model_staging_destination "$model_path")"; then
+        return 1
+    fi
+
+    # Anchor the shell in the first existing directory. Every missing path
+    # component is then created and entered relative to that directory. This
+    # prevents a replacement of the checked path from redirecting later file
+    # operations through a symlink.
+    staging_anchor_path="$canonical_model_path"
+    while [[ ! -e "$staging_anchor_path" ]]; do
+        staging_parent_path="${staging_anchor_path%/*}"
+        if [[ -z "$staging_parent_path" ]]; then
+            staging_parent_path=/
+        fi
+        staging_anchor_path="$staging_parent_path"
+    done
+    if [[ ! -d "$staging_anchor_path" ]] ||
+            ! cd -P -- "$staging_anchor_path" ||
+            ! assert_model_staging_directory_outside_checkout; then
+        return 1
+    fi
+
+    staging_remaining_suffix="${canonical_model_path#"$staging_anchor_path"}"
+    while [[ -n "$staging_remaining_suffix" ]]; do
+        staging_remaining_suffix="${staging_remaining_suffix#/}"
+        if [[ "$staging_remaining_suffix" == */* ]]; then
+            staging_component="${staging_remaining_suffix%%/*}"
+            staging_remaining_suffix="/${staging_remaining_suffix#*/}"
+        else
+            staging_component="$staging_remaining_suffix"
+            staging_remaining_suffix=
+        fi
+
+        [[ -n "$staging_component" ]] || continue
+        if [[ ! -e "$staging_component" ]]; then
+            if ! sudo -u "$download_user" mkdir -- "$staging_component" &&
+                    [[ ! -d "$staging_component" ]]; then
+                return 1
+            fi
+        elif [[ ! -d "$staging_component" ]]; then
+            return 1
+        fi
+        if ! cd -P -- "$staging_component" ||
+                ! assert_model_staging_directory_outside_checkout; then
+            return 1
+        fi
+    done
+
+    validate_model_file_destination "$HTDEMUCS_MODEL_NAME"
 }
 
 get_model_sha256() {
@@ -124,7 +208,11 @@ download_verified_file() {
     local destination="$5"
     local temporary_path
 
-    temporary_path="$(sudo -u "$download_user" mktemp "${destination}.tmp.XXXXXX")" || {
+    if ! validate_model_file_destination "$destination"; then
+        return 1
+    fi
+
+    temporary_path="$(sudo -u "$download_user" mktemp "./${destination}.tmp.XXXXXX")" || {
         echo "Failed to create a temporary download for $destination" >&2
         return 1
     }
@@ -146,7 +234,10 @@ download_verified_file() {
         return 1
     fi
 
-    if ! sudo -u "$download_user" mv -- "$temporary_path" "$destination"; then
+    # GNU mv -T uses rename semantics and will not descend into a destination
+    # directory that appears after the final-destination checks above. This
+    # script is supported on Debian and Ubuntu, where GNU coreutils is present.
+    if ! sudo -u "$download_user" mv -T -- "$temporary_path" "$destination"; then
         echo "Failed to install verified artifact at $destination" >&2
         sudo -u "$download_user" rm -f -- "$temporary_path"
         return 1
@@ -292,6 +383,15 @@ run_self_tests() {
     local checkout_model_file
     local external_model_file
     local non_regular_model_path
+    local race_model_path
+    local race_model_backup_path
+    local race_payload_path
+    local race_payload_size
+    local race_payload_sha256
+    local checkout_model_before
+    local sudo_path
+    local wget_path
+    local final_race_model_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
     test_file="$test_dir/verified-artifact"
@@ -479,6 +579,108 @@ run_self_tests() {
     mkdir -p -- "$non_regular_model_path/$HTDEMUCS_MODEL_NAME"
     if validate_model_staging_destination "$non_regular_model_path" >/dev/null; then
         echo "Self-test failed: non-regular final model destination was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+
+    # Replace the validated pathname after the script has entered the staging
+    # directory. All temporary and final writes must stay in the directory
+    # that was entered, even though its pathname now points at the checkout.
+    race_model_path="$test_dir/race-models"
+    race_model_backup_path="$test_dir/race-models-original"
+    mkdir -p -- "$race_model_path"
+    race_payload_path="$test_dir/race-payload"
+    printf '%s\n' 'race-model' > "$race_payload_path"
+    race_payload_size="$(stat -c '%s' -- "$race_payload_path")"
+    race_payload_sha256="$(sha256sum "$race_payload_path")"
+    race_payload_sha256="${race_payload_sha256%% *}"
+    checkout_model_before="$(sha256sum "$checkout_model_file")"
+
+    sudo_path="$fake_path/sudo"
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        "[ \"\$1\" = \"-u\" ]" \
+        'shift 2' \
+        'exec "$@"' > "$sudo_path"
+    chmod +x "$sudo_path"
+    wget_path="$fake_path/wget"
+    # The generated fixture intentionally contains literal shell variables.
+    # shellcheck disable=SC2016
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'output=' \
+        'while [ "$#" -gt 0 ]; do' \
+        '    case "$1" in' \
+        '        --output-document=*) output=${1#*=} ;;' \
+        '        --output-document) output=$2; shift ;;' \
+        '    esac' \
+        '    shift' \
+        'done' \
+        ': "${output:?wget output path was not provided}"' \
+        'if [ "${FAKE_WGET_REPLACE_FINAL:-0}" -eq 1 ]; then' \
+        '    ln -s -- "${FAKE_WGET_FINAL_TARGET:?}" "${FAKE_WGET_FINAL_PATH:?}"' \
+        'fi' \
+        'printf "%s\\n" "${FAKE_WGET_CONTENT:?wget content was not provided}" > "$output"' > "$wget_path"
+    chmod +x "$wget_path"
+
+    if ! (
+        enter_model_staging_directory "$race_model_path" "$USER"
+        mv -- "$race_model_path" "$race_model_backup_path"
+        ln -s -- "$checkout_model_path" "$race_model_path"
+        PATH="$fake_path:$original_path"
+        export PATH
+        FAKE_WGET_CONTENT='race-model'
+        export FAKE_WGET_CONTENT
+        download_verified_file \
+            "$USER" \
+            "$HTDEMUCS_MODEL_URL" \
+            "$race_payload_size" \
+            "$race_payload_sha256" \
+            "$HTDEMUCS_MODEL_NAME"
+    ); then
+        echo "Self-test failed: staging directory replacement race was not handled safely" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ ! -L "$race_model_path" ]] ||
+            [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
+            ! grep -Fqx 'race-model' "$race_model_backup_path/$HTDEMUCS_MODEL_NAME"; then
+        echo "Self-test failed: staging directory replacement race modified the checkout" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+
+    final_race_model_path="$test_dir/final-race-models"
+    mkdir -p -- "$final_race_model_path"
+    if ! (
+        enter_model_staging_directory "$final_race_model_path" "$USER"
+        PATH="$fake_path:$original_path"
+        export PATH
+        FAKE_WGET_CONTENT='race-model'
+        export FAKE_WGET_CONTENT
+        FAKE_WGET_REPLACE_FINAL=1
+        export FAKE_WGET_REPLACE_FINAL
+        FAKE_WGET_FINAL_PATH="$final_race_model_path/$HTDEMUCS_MODEL_NAME"
+        export FAKE_WGET_FINAL_PATH
+        FAKE_WGET_FINAL_TARGET="$checkout_model_path"
+        export FAKE_WGET_FINAL_TARGET
+        download_verified_file \
+            "$USER" \
+            "$HTDEMUCS_MODEL_URL" \
+            "$race_payload_size" \
+            "$race_payload_sha256" \
+            "$HTDEMUCS_MODEL_NAME"
+    ); then
+        echo "Self-test failed: final destination symlink race was not replaced safely" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ -L "$final_race_model_path/$HTDEMUCS_MODEL_NAME" ]] ||
+            [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
+            ! grep -Fqx 'race-model' "$final_race_model_path/$HTDEMUCS_MODEL_NAME"; then
+        echo "Self-test failed: final destination symlink race modified the checkout" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -724,15 +926,15 @@ case "$1" in
             echo "The unsupported htdemucs_ft.onnx model is intentionally disabled."
             echo "Maintainer action: publish a verifiable artifact and digest before re-enabling it."
 
-            if ! MODEL_PATH="$(validate_model_staging_destination "$MODEL_PATH")"; then
-                echo "Refusing to stage Mixxx HTDemucs models at $MODEL_PATH" >&2
-                exit 1
-            fi
+            if ! (
+                if ! enter_model_staging_directory "$MODEL_PATH" "$ACTUAL_USER"; then
+                    echo "Refusing to stage Mixxx HTDemucs models at $MODEL_PATH" >&2
+                    exit 1
+                fi
+                MODEL_PATH="$(pwd -P)"
 
-            # Create directory with proper ownership
-            if sudo -u "$ACTUAL_USER" mkdir -p "$MODEL_PATH"; then
                 for MODEL_NAME in "${MODEL_FILES[@]}"; do
-                    MODEL_FILE="$MODEL_PATH/$MODEL_NAME"
+                    MODEL_FILE="$MODEL_NAME"
                     if ! MODEL_SHA256="$(get_model_sha256 "$MODEL_NAME")"; then
                         echo "Unsupported model $MODEL_NAME has no trusted digest; aborting." >&2
                         exit 1
@@ -746,10 +948,9 @@ case "$1" in
                         echo "Failed to download Mixxx HTDemucs model $MODEL_NAME"
                         exit 1
                     fi
-                    echo "Verified model downloaded successfully to $MODEL_FILE"
+                    echo "Verified model downloaded successfully to $MODEL_PATH/$MODEL_NAME"
                 done
-            else
-                echo "Failed to create model path: $MODEL_PATH"
+            ); then
                 exit 1
             fi
 
