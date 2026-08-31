@@ -14,11 +14,13 @@ fail() {
 test_secure_download_descriptor_install_race() {
     python3 - "$repository_root/tools/secure-download.py" <<'PY'
 import errno
+import hashlib
 import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 
@@ -30,152 +32,190 @@ secure_download = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(secure_download)
 
-def exercise_temporary_path_replacement(replacement: str) -> None:
-    with tempfile.TemporaryDirectory(
-        prefix=f"mixxx-secure-download-{replacement}."
-    ) as root:
+payload = b"verified payload\n"
+expected_size = len(payload)
+expected_sha256 = hashlib.sha256(payload).hexdigest()
+
+
+def install(source_path: Path, root_path: Path) -> None:
+    source_fd = os.open(source_path, os.O_RDONLY)
+    destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        secure_download.install_from_file_descriptor(
+            source_fd,
+            destination_fd,
+            "destination",
+            expected_size,
+            expected_sha256,
+        )
+    finally:
+        os.close(source_fd)
+        os.close(destination_fd)
+
+
+def assert_rejected(root_path: Path, source_path: Path, message: str) -> None:
+    try:
+        install(source_path, root_path)
+    except OSError as error:
+        assert message in str(error), (message, error)
+    else:
+        raise AssertionError(f"{message} was accepted")
+
+
+def exercise_existing_destinations() -> None:
+    with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-dest.") as root:
         root_path = Path(root)
         source_path = root_path / "source"
         destination_path = root_path / "destination"
         protected_path = root_path / "protected"
-        temporary_path = None
-        payload = b"verified payload\n"
-        original = b"original destination\n"
         source_path.write_bytes(payload)
-        destination_path.write_bytes(original)
-        protected_path.write_bytes(b"protected content\n")
 
-        source_fd = os.open(source_path, os.O_RDONLY)
-        destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
-        real_fsync = secure_download.os.fsync
-        injection_state = {"fsync_called": False}
+        destination_path.write_bytes(payload)
+        destination_inode = destination_path.stat().st_ino
+        install(source_path, root_path)
+        assert destination_path.read_bytes() == payload
+        assert destination_path.stat().st_ino == destination_inode
 
-        def replace_temporary_path(fd: int) -> None:
-            nonlocal temporary_path
-            real_fsync(fd)
-            if injection_state["fsync_called"]:
-                return
-            candidates = list(root_path.glob(".secure-download.*"))
-            assert len(candidates) == 1
-            temporary_path = candidates[0]
-            temporary_path.unlink()
-            if replacement == "regular":
-                temporary_path.write_bytes(b"unverified content\n")
-            else:
-                temporary_path.symlink_to(protected_path)
-            injection_state["fsync_called"] = True
+        destination_path.write_bytes(b"mismatched destination\n")
+        mismatched_before = destination_path.read_bytes()
+        assert_rejected(root_path, source_path, "expected")
+        assert destination_path.read_bytes() == mismatched_before
 
-        secure_download.os.fsync = replace_temporary_path
-        installation_error = None
-        try:
-            try:
-                secure_download.install_from_file_descriptor(
-                    source_fd, destination_fd, destination_path.name
-                )
-            except OSError as error:
-                installation_error = error
-        finally:
-            secure_download.os.fsync = real_fsync
-            os.close(source_fd)
-            os.close(destination_fd)
+        destination_path.unlink()
+        destination_path.write_bytes(b"protected destination\n")
+        os.link(destination_path, protected_path)
+        protected_before = protected_path.read_bytes()
+        assert_rejected(root_path, source_path, "multiple hard links")
+        assert destination_path.read_bytes() == protected_before
+        assert protected_path.read_bytes() == protected_before
 
-        assert injection_state["fsync_called"]
-        assert installation_error is not None, (
-            f"temporary {replacement} replacement was accepted"
-        )
-        assert destination_path.read_bytes() == original
-        assert not destination_path.is_symlink()
-        assert not list(root_path.glob(".secure-download.existing.*"))
-        assert protected_path.read_bytes() == b"protected content\n"
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+        destination_path.unlink()
+        destination_path.symlink_to(protected_path)
+        assert_rejected(root_path, source_path, "must not be a symlink")
+        assert destination_path.is_symlink()
+        assert protected_path.read_bytes() == protected_before
 
 
-for replacement_kind in ("regular", "symlink"):
-    exercise_temporary_path_replacement(replacement_kind)
+exercise_existing_destinations()
 
 
-def exercise_failed_replacement_preserves_existing() -> None:
-    with tempfile.TemporaryDirectory(
-        prefix="mixxx-secure-download-link-failure."
-    ) as root:
+def exercise_wrong_hash_preserves_destination() -> None:
+    with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-hash.") as root:
         root_path = Path(root)
         source_path = root_path / "source"
         destination_path = root_path / "destination"
-        source_path.write_bytes(b"verified payload\n")
+        source_path.write_bytes(b"wrong payload!!!\n")
         destination_path.write_bytes(b"original destination\n")
+        destination_before = destination_path.read_bytes()
+        assert_rejected(root_path, source_path, "SHA-256")
+        assert destination_path.read_bytes() == destination_before
 
-        source_fd = os.open(source_path, os.O_RDONLY)
-        destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
-        real_link = secure_download.link_from_file_descriptor
-        failure_state = {"failed": False}
 
-        def fail_final_link(
+exercise_wrong_hash_preserves_destination()
+
+
+def exercise_concurrent_winner_is_preserved() -> None:
+    with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-race.") as root:
+        root_path = Path(root)
+        source_a = root_path / "source-a"
+        source_b = root_path / "source-b"
+        source_a.write_bytes(payload)
+        source_b.write_bytes(payload)
+        real_publish = secure_download.link_from_file_descriptor
+        publication_barrier = threading.Barrier(2)
+
+        def synchronized_publish(
             source_fd: int, destination_fd: int, destination_name: str
         ) -> None:
-            if destination_name == destination_path.name and not failure_state[
-                "failed"
-            ]:
-                failure_state["failed"] = True
-                raise OSError(errno.EIO, "injected final link failure")
-            real_link(source_fd, destination_fd, destination_name)
+            publication_barrier.wait()
+            real_publish(source_fd, destination_fd, destination_name)
 
-        secure_download.link_from_file_descriptor = fail_final_link
-        installation_error = None
-        try:
+        secure_download.link_from_file_descriptor = synchronized_publish
+        errors = []
+
+        def worker(source_path: Path) -> None:
             try:
-                secure_download.install_from_file_descriptor(
-                    source_fd, destination_fd, destination_path.name
-                )
+                install(source_path, root_path)
             except OSError as error:
-                installation_error = error
+                errors.append(error)
+
+        threads = [threading.Thread(target=worker, args=(source,)) for source in (source_a, source_b)]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
         finally:
-            secure_download.link_from_file_descriptor = real_link
-            os.close(source_fd)
-            os.close(destination_fd)
+            secure_download.link_from_file_descriptor = real_publish
 
-        assert failure_state["failed"]
-        assert installation_error is not None
-        assert destination_path.read_bytes() == b"original destination\n"
-        assert not destination_path.is_symlink()
-        assert not list(root_path.glob(".secure-download.existing.*"))
-
-
-exercise_failed_replacement_preserves_existing()
+        assert not errors, errors
+        source_a.unlink()
+        source_b.unlink()
+        destination_path = root_path / "destination"
+        assert destination_path.read_bytes() == payload
+        assert destination_path.stat().st_nlink == 1
 
 
-def exercise_hard_link_destination_is_rejected() -> None:
-    with tempfile.TemporaryDirectory(
-        prefix="mixxx-secure-download-hard-link."
-    ) as root:
+exercise_concurrent_winner_is_preserved()
+
+
+def exercise_unsupported_publication_fails_closed() -> None:
+    with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-unsupported.") as root:
         root_path = Path(root)
         source_path = root_path / "source"
-        destination_path = root_path / "destination"
-        protected_path = root_path / "protected"
-        source_path.write_bytes(b"verified payload\n")
-        destination_path.write_bytes(b"original destination\n")
-        os.link(destination_path, protected_path)
+        source_path.write_bytes(payload)
+        real_publish = secure_download.link_from_file_descriptor
 
-        source_fd = os.open(source_path, os.O_RDONLY)
-        destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
-        installation_error = None
+        def unavailable_publish(
+            source_fd: int, destination_fd: int, destination_name: str
+        ) -> None:
+            raise OSError(errno.ENOSYS, "injected unavailable primitive")
+
+        secure_download.link_from_file_descriptor = unavailable_publish
         try:
             try:
-                secure_download.install_from_file_descriptor(
-                    source_fd, destination_fd, destination_path.name
-                )
+                install(source_path, root_path)
             except OSError as error:
-                installation_error = error
+                assert "publication is unavailable" in str(error)
+            else:
+                raise AssertionError("unsupported publication primitive was accepted")
         finally:
-            os.close(source_fd)
-            os.close(destination_fd)
-
-        assert installation_error is not None
-        assert destination_path.read_bytes() == b"original destination\n"
-        assert protected_path.read_bytes() == b"original destination\n"
+            secure_download.link_from_file_descriptor = real_publish
+        assert not (root_path / "destination").exists()
 
 
-exercise_hard_link_destination_is_rejected()
+exercise_unsupported_publication_fails_closed()
+
+
+def exercise_unsupported_temporary_file_fails_closed() -> None:
+    if not hasattr(os, "O_TMPFILE"):
+        return
+    with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-tmpfile.") as root:
+        root_path = Path(root)
+        directory_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+        real_open = secure_download.os.open
+
+        def unavailable_open(path, flags, mode=0o777, *, dir_fd=None):
+            if flags & os.O_TMPFILE:
+                raise OSError(errno.EOPNOTSUPP, "injected unavailable primitive")
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        secure_download.os.open = unavailable_open
+        try:
+            try:
+                secure_download.create_secure_temporary_file(directory_fd)
+            except OSError as error:
+                assert "anonymous temporary file primitive is unavailable" in str(
+                    error
+                )
+            else:
+                raise AssertionError("unsupported temporary file primitive was accepted")
+        finally:
+            secure_download.os.open = real_open
+            os.close(directory_fd)
+
+
+exercise_unsupported_temporary_file_fails_closed()
 
 
 def exercise_cwd_install_cleans_up_failed_download() -> None:
@@ -487,14 +527,21 @@ EOF
         'version https://git-lfs.github.com/spec/v1' \
         'oid sha256:0123456789abcdef' \
         'size 123' >"$pointer_path"
+    pointer_before=$(sha256sum "$pointer_path")
     : >"$curl_log"
-    MIXXX_STEM_MODEL_DIR="$external_destination" \
-        PATH="$fake_bin:$PATH" \
-        FAKE_CURL_LOG="$curl_log" \
-        "$script_dir/download-stemgen-model.sh" >/dev/null
-    grep -Fqx 'materialized-model' "$pointer_path" || \
-        fail 'existing LFS pointer was not replaced with downloaded content'
-    test -s "$curl_log" || fail 'existing LFS pointer was incorrectly reused'
+    status=0
+    if MIXXX_STEM_MODEL_DIR="$external_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || fail 'existing mismatched destination was accepted'
+    test "$pointer_before" = "$(sha256sum "$pointer_path")" || \
+        fail 'existing mismatched destination was replaced'
+    test -s "$curl_log" || fail 'existing mismatched destination did not exercise download'
 
     reuse_race_destination="$test_download_root/reuse-race-models"
     reuse_race_backup_destination="$test_download_root/reuse-race-model"
@@ -644,12 +691,16 @@ test_cmake_install_staging_safety() {
     local test_root
     local project_dir
     local build_dir
+    local source_model
     local staged_parent
     local staged_model
+    local staged_protected_model
     local staged_parent_backup
     local staged_symlink_target
     local staged_parent_target
     local target_before
+    local protected_digest_before
+    local protected_inode_before
     local model_size
     local model_sha256
     local install_root
@@ -658,6 +709,9 @@ test_cmake_install_staging_safety() {
     local hardlink_protected_model
     local hardlink_destination
     local target_inode_before
+    local installed_inode
+    local destination_mismatch_root
+    local destination_mismatch_model
     local failed_install_root
     local destination_symlink_root
     local destination_symlink_target
@@ -669,8 +723,10 @@ test_cmake_install_staging_safety() {
     test_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-cmake-test.XXXXXX")
     project_dir="$test_root/project"
     build_dir="$test_root/build"
+    source_model="$test_root/source-model"
     staged_parent="$test_root/staged-models"
     staged_model="$staged_parent/htdemucs.onnx"
+    staged_protected_model="$test_root/staged-protected-model"
     staged_parent_backup="$test_root/staged-models-original"
     staged_symlink_target="$test_root/staged-model-target"
     staged_parent_target="$test_root/staged-model-parent-target"
@@ -678,6 +734,8 @@ test_cmake_install_staging_safety() {
     hardlink_install_root="$test_root/hardlink-install"
     hardlink_protected_model="$test_root/protected-model"
     hardlink_destination="$hardlink_install_root/share/mixxx/models/htdemucs.onnx"
+    destination_mismatch_root="$test_root/destination-mismatch-install"
+    destination_mismatch_model="$destination_mismatch_root/share/mixxx/models/htdemucs.onnx"
     failed_install_root="$test_root/failed-install"
     destination_symlink_root="$test_root/destination-symlink-install"
     destination_symlink_target="$test_root/destination-symlink-target"
@@ -685,16 +743,29 @@ test_cmake_install_staging_safety() {
     destination_file_symlink_target="$test_root/destination-file-symlink-target"
     output="$test_root/output"
     mkdir -p -- "$project_dir" "$staged_parent"
-    printf '%s\n' 'trusted-model' >"$staged_model"
-    model_size=$(stat -c '%s' -- "$staged_model")
-    model_sha256=$(sha256sum "$staged_model")
+    printf '%s\n' 'trusted-model' >"$source_model"
+    printf '%s\n' 'stale-staged-model' >"$staged_model"
+    ln -- "$staged_model" "$staged_protected_model"
+    model_size=$(stat -c '%s' -- "$source_model")
+    model_sha256=$(sha256sum "$source_model")
     model_sha256=${model_sha256%% *}
+    protected_digest_before=$(sha256sum "$staged_protected_model")
+    protected_digest_before=${protected_digest_before%% *}
+    protected_inode_before=$(stat -c '%i' -- "$staged_protected_model")
 
-    # Configure the actual install-script template used by CMakeLists.txt so
-    # this test covers its generated verification and install semantics.
+    # Configure the actual staging helper and install-script template used by
+    # CMakeLists.txt so this test covers both configure and install semantics.
     cat >"$project_dir/CMakeLists.txt" <<EOF
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.22)
 project(stemgen_install_fixture NONE)
+include([==[${repository_root}/cmake/StageStemgenModel.cmake]==])
+mixxx_stage_stem_model(
+    [==[${source_model}]==]
+    [==[${staged_model}]==]
+    [==[${staged_parent}]==]
+    ${model_size}
+    [==[${model_sha256}]==]
+)
 set(MIXXX_STEM_MODEL_STAGED_FILE [==[${staged_model}]==])
 set(MIXXX_STEM_MODEL_NAME [==[htdemucs.onnx]==])
 set(MIXXX_STEM_MODEL_SIZE ${model_size})
@@ -714,6 +785,19 @@ EOF
         status=$?
     fi
     test "$status" -eq 0 || fail 'CMake install fixture did not configure'
+    target_before=$(sha256sum "$staged_protected_model")
+    target_before=${target_before%% *}
+    test "$target_before" = "$protected_digest_before" || \
+        fail 'configure staging modified the protected hard-linked sibling'
+    test "$protected_inode_before" = "$(stat -c '%i' -- "$staged_protected_model")" || \
+        fail 'configure staging replaced the protected hard-linked sibling inode'
+    grep -Fqx 'trusted-model' "$staged_model" || \
+        fail 'configure staging did not publish the verified model'
+    test "$protected_inode_before" != "$(stat -c '%i' -- "$staged_model")" || \
+        fail 'configure staging mutated the hard-linked staged inode'
+    test -z "$(find "$staged_parent" -mindepth 1 -maxdepth 1 \
+        -name '.htdemucs.onnx.*.tmp' -print -quit)" || \
+        fail 'configure staging left its temporary model file behind'
 
     status=0
     if cmake --install "$build_dir" --prefix "$install_root" >"$output" 2>&1; then
@@ -726,9 +810,8 @@ EOF
     grep -Fqx 'trusted-model' "$installed_model" || \
         fail 'generated CMake install script did not install the verified model'
 
-    # Atomic publication must not truncate a protected file when the old
-    # destination is a hard link. The old directory entry may be replaced,
-    # but the other link must retain its original bytes.
+    # An existing hard-linked destination is not an owned install target. It
+    # must be rejected without changing either directory entry.
     mkdir -p -- "$(dirname -- "$hardlink_destination")"
     printf '%s\n' 'protected-model' >"$hardlink_protected_model"
     ln -- "$hardlink_protected_model" "$hardlink_destination"
@@ -743,18 +826,54 @@ EOF
     else
         status=$?
     fi
-    test "$status" -eq 0 || \
-        fail 'generated CMake install script rejected a hard-linked destination'
+    test "$status" -ne 0 || \
+        fail 'generated CMake install script accepted a hard-linked destination'
     test "$target_before" = "$(sha256sum "$hardlink_protected_model")" || \
         fail 'generated CMake install script modified a protected hard link'
     test "$target_inode_before" = "$(stat -c '%i' -- "$hardlink_protected_model")" || \
         fail 'generated CMake install script replaced the protected inode'
-    test "$target_inode_before" != "$(stat -c '%i' -- "$hardlink_destination")" || \
-        fail 'generated CMake install script did not replace only the destination inode'
-    grep -Fqx 'trusted-model' "$hardlink_destination" || \
-        fail 'generated CMake install script did not replace the hard-linked destination'
-    test ! -L "$hardlink_destination" || \
-        fail 'generated CMake install script left a hard-linked destination symlink'
+    test "$target_inode_before" = "$(stat -c '%i' -- "$hardlink_destination")" || \
+        fail 'generated CMake install script changed a hard-linked destination inode'
+    grep -Fqx 'protected-model' "$hardlink_destination" || \
+        fail 'generated CMake install script changed a hard-linked destination'
+    test -z "$(find "$hardlink_install_root/share/mixxx/models" \
+        -mindepth 1 -maxdepth 1 -name '.htdemucs.onnx.*.tmp' -print -quit)" || \
+        fail 'hard-link install conflict left a temporary model file'
+    grep -Fq 'hard link' "$output" || \
+        fail 'generated CMake install script did not identify the hard-link conflict'
+
+    # A mismatched regular destination is also not owned by this installer.
+    mkdir -p -- "$(dirname -- "$destination_mismatch_model")"
+    printf '%s\n' 'mismatched-model' >"$destination_mismatch_model"
+    target_before=$(sha256sum "$destination_mismatch_model")
+    status=0
+    if cmake --install "$build_dir" --prefix "$destination_mismatch_root" \
+            >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || \
+        fail 'generated CMake install script accepted a mismatched destination'
+    test "$target_before" = "$(sha256sum "$destination_mismatch_model")" || \
+        fail 'generated CMake install script modified a mismatched destination'
+    grep -Fq 'refusing to replace' "$output" || \
+        fail 'generated CMake install script did not identify the mismatch conflict'
+
+    # Reinstalling a correct, single-link destination is a no-op.
+    installed_inode=$(stat -c '%i' -- "$installed_model")
+    status=0
+    if cmake --install "$build_dir" --prefix "$install_root" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 0 || fail 'verified install destination was not reusable'
+    test "$installed_inode" = "$(stat -c '%i' -- "$installed_model")" || \
+        fail 'verified install destination was not preserved as a no-op'
+    test -z "$(find "$install_root/share/mixxx/models" -mindepth 1 -maxdepth 1 \
+        -name '.htdemucs.onnx.*.tmp' -print -quit)" || \
+        fail 'verified install no-op created a temporary model'
 
     # A final destination symlink must be rejected before publication can
     # replace it, preserving the destination contract and its target.
@@ -878,6 +997,7 @@ python3 - \
     "$repository_root/tools/onnxruntime_buildenv.sh" \
     "$repository_root/tools/secure-download.py" \
     "$repository_root/CMakeLists.txt" \
+    "$repository_root/cmake/StageStemgenModel.cmake" \
     "$repository_root/cmake/InstallStemgenModel.cmake.in" \
     "$repository_root/.github/workflows/build.yml" <<'PY'
 import json
@@ -898,6 +1018,7 @@ from pathlib import Path
     onnxruntime_buildenv_path,
     secure_download_path,
     cmake_lists_path,
+    stage_module_path,
     cmake_install_script_path,
     workflow_path,
 ) = map(Path, sys.argv[1:])
@@ -996,33 +1117,45 @@ assert '--output "$archive_path"' not in onnxruntime_buildenv
 
 cmake_lists = cmake_lists_path.read_text()
 assert 'IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"' in cmake_lists
-assert 'COPY_FILE' in cmake_lists
+assert 'StageStemgenModel.cmake' in cmake_lists
+assert 'mixxx_stage_stem_model(' in cmake_lists
+assert 'COPY_FILE\n    "${MIXXX_STEM_MODEL_FILE}"' not in cmake_lists
 assert 'MIXXX_STEM_MODEL_STAGED_FILE' in cmake_lists
 assert 'InstallStemgenModel.cmake.in' in cmake_lists
 assert 'install(SCRIPT "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}")' in cmake_lists
 assert "MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST" not in cmake_lists
-copy_position = cmake_lists.index(
-    'COPY_FILE\n    "${MIXXX_STEM_MODEL_FILE}"'
-)
 staged_hash_position = cmake_lists.index(
     'mixxx_stem_model_matches_manifest(\n    "${MIXXX_STEM_MODEL_STAGED_FILE}"'
 )
-assert copy_position < staged_hash_position
+
+stage_module = stage_module_path.read_text()
+assert 'CMAKE_VERSION VERSION_LESS "3.22"' in stage_module
+assert 'file(\n    COPY_FILE' in stage_module
+assert 'file(\n    RENAME' in stage_module
+assert 'staging_temporary_owned' in stage_module
+assert 'RENAME\n    NO_REPLACE' not in stage_module
 
 cmake_install_script = cmake_install_script_path.read_text()
 assert 'function(_mixxx_stem_model_path_has_symlink_component' in cmake_install_script
-assert 'file(SHA256 "${_mixxx_stem_model_path}"' in cmake_install_script
+assert 'file(SHA256 "${input_path}" actual_sha256)' in cmake_install_script
 assert 'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")' in cmake_install_script
 assert 'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"\n  "${_mixxx_stem_model_temporary_path}"' in cmake_install_script
 assert 'file(\n  RENAME\n  "${_mixxx_stem_model_temporary_path}"' in cmake_install_script
 assert '_mixxx_stem_model_file_matches' in cmake_install_script
+assert 'function(_mixxx_stem_model_has_single_link' in cmake_install_script
+assert 'file(\n  LOCK' in cmake_install_script
+assert 'GUARD PROCESS' in cmake_install_script
+assert 'RESULT_VARIABLE _mixxx_stem_model_lock_result' in cmake_install_script
 assert cmake_install_script.index(
     'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")'
 ) < cmake_install_script.index(
     'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"'
 )
-assert "atomic rename" in cmake_install_script
-assert "rollback" in cmake_install_script
+assert "cooperative boundary" in cmake_install_script
+assert "descriptor-relative atomicity" in cmake_install_script
+assert "refusing to replace" in cmake_install_script
+assert "return()" in cmake_install_script
+assert "RENAME\n  NO_REPLACE" not in cmake_install_script
 
 verifier = powershell_verifier_path.read_text()
 assert "FileAttributes]::ReparsePoint" in verifier

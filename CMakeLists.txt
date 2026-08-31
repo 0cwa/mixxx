@@ -3243,84 +3243,16 @@ if(MIXXX_STEM_MODEL_FILE)
     MIXXX_STEM_MODEL_STAGED_DIRECTORY
     "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model"
   )
-  set(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT FALSE)
-  mixxx_stem_model_path_has_symlink_component(
-    "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
-    MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT
-  )
-  if(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT)
-    message(
-      FATAL_ERROR
-      "The staged Stemgen model path must not contain a symlink component: ${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
-    )
-  endif()
-  file(MAKE_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}")
-  set(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT FALSE)
-  mixxx_stem_model_path_has_symlink_component(
-    "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
-    MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT
-  )
-  if(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT)
-    message(
-      FATAL_ERROR
-      "The staged Stemgen model path contains a symlink component: ${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
-    )
-  endif()
-  if(
-    IS_SYMLINK "${MIXXX_STEM_MODEL_STAGED_FILE}"
-    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_FILE}"
-  )
-    message(
-      FATAL_ERROR
-      "The staged Stemgen model destination is not a regular file: ${MIXXX_STEM_MODEL_STAGED_FILE}"
-    )
-  endif()
-  file(
-    COPY_FILE
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageStemgenModel.cmake")
+  mixxx_stage_stem_model(
     "${MIXXX_STEM_MODEL_FILE}"
     "${MIXXX_STEM_MODEL_STAGED_FILE}"
-    ONLY_IF_DIFFERENT
+    "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
+    "${MIXXX_STEM_MODEL_SIZE}"
+    "${MIXXX_STEM_MODEL_SHA256}"
   )
-  # Validate the copied bytes, not a source pathname that was hashed before
-  # COPY_FILE reopened it. The staged file is the only model path consumed by
-  # the generated install rule.
-  if(
-    NOT EXISTS "${MIXXX_STEM_MODEL_FILE}"
-    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_FILE}"
-    OR IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"
-  )
-    message(
-      FATAL_ERROR
-      "MIXXX_STEM_MODEL_FILE changed during staging: ${MIXXX_STEM_MODEL_FILE}"
-    )
-  endif()
-  set(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT FALSE)
-  mixxx_stem_model_path_has_symlink_component(
-    "${MIXXX_STEM_MODEL_FILE}"
-    MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT
-  )
-  if(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT)
-    message(
-      FATAL_ERROR
-      "MIXXX_STEM_MODEL_FILE gained a symlink path component during staging: ${MIXXX_STEM_MODEL_FILE}"
-    )
-  endif()
-  set(MIXXX_STEM_MODEL_STAGED_FILE_HAS_SYMLINK_COMPONENT FALSE)
-  mixxx_stem_model_path_has_symlink_component(
-    "${MIXXX_STEM_MODEL_STAGED_FILE}"
-    MIXXX_STEM_MODEL_STAGED_FILE_HAS_SYMLINK_COMPONENT
-  )
-  if(
-    IS_SYMLINK "${MIXXX_STEM_MODEL_STAGED_FILE}"
-    OR MIXXX_STEM_MODEL_STAGED_FILE_HAS_SYMLINK_COMPONENT
-    OR NOT EXISTS "${MIXXX_STEM_MODEL_STAGED_FILE}"
-    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_FILE}"
-  )
-    message(
-      FATAL_ERROR
-      "The staged Stemgen model is not a regular file: ${MIXXX_STEM_MODEL_STAGED_FILE}"
-    )
-  endif()
+  # Validate the published bytes again here. The staged file is the only model
+  # path consumed by the generated install rule.
   set(MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST FALSE)
   mixxx_stem_model_matches_manifest(
     "${MIXXX_STEM_MODEL_STAGED_FILE}"
