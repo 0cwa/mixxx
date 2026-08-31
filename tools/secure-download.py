@@ -321,8 +321,10 @@ def install_from_file_descriptor(
             if error.errno != errno.EEXIST:
                 raise
             # A concurrent invocation may have won publication. Accept only a
-            # verified, single-link regular file; never remove or overwrite
-            # the winner or any other entry that appeared at this pathname.
+            # verified regular file that is the exact source inode. A named
+            # source remains linked at its pathname after publication, so a
+            # legitimate winner may have two links; matching bytes alone is
+            # not enough to accept an unrelated hard link.
             try:
                 winner_stat = os.stat(
                     destination_name,
@@ -336,7 +338,8 @@ def install_from_file_descriptor(
             if (
                 stat.S_ISLNK(winner_stat.st_mode)
                 or not stat.S_ISREG(winner_stat.st_mode)
-                or winner_stat.st_nlink != 1
+                or winner_stat.st_dev != source_stat.st_dev
+                or winner_stat.st_ino != source_stat.st_ino
             ):
                 raise OSError(
                     "secure install destination appeared during publication"
@@ -356,7 +359,8 @@ def install_from_file_descriptor(
                 if (
                     winner_fd_stat.st_dev != winner_stat.st_dev
                     or winner_fd_stat.st_ino != winner_stat.st_ino
-                    or winner_fd_stat.st_nlink != 1
+                    or winner_fd_stat.st_dev != source_stat.st_dev
+                    or winner_fd_stat.st_ino != source_stat.st_ino
                 ):
                     raise OSError(
                         "secure install destination changed during publication"
@@ -372,7 +376,8 @@ def install_from_file_descriptor(
                 if (
                     current_winner_stat.st_dev != winner_fd_stat.st_dev
                     or current_winner_stat.st_ino != winner_fd_stat.st_ino
-                    or current_winner_stat.st_nlink != 1
+                    or current_winner_stat.st_dev != source_stat.st_dev
+                    or current_winner_stat.st_ino != source_stat.st_ino
                 ):
                     raise OSError(
                         "secure install destination changed during publication"

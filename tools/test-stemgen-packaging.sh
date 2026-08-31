@@ -57,20 +57,6 @@ def install(source_path: Path, root_path: Path) -> None:
         os.close(destination_fd)
 
 
-def install_anonymous_source(root_path: Path) -> None:
-    destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
-    source_fd = None
-    try:
-        source_fd = secure_download.create_secure_temporary_file(destination_fd)
-        assert os.write(source_fd, payload) == len(payload)
-        os.fsync(source_fd)
-        install_from_descriptor(source_fd, destination_fd)
-    finally:
-        if source_fd is not None:
-            os.close(source_fd)
-        os.close(destination_fd)
-
-
 def assert_rejected(root_path: Path, source_path: Path, message: str) -> None:
     try:
         install(source_path, root_path)
@@ -132,9 +118,11 @@ def exercise_wrong_hash_preserves_destination() -> None:
 exercise_wrong_hash_preserves_destination()
 
 
-def exercise_concurrent_winner_is_preserved() -> None:
+def exercise_named_source_concurrent_winner_is_preserved() -> None:
     with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-race.") as root:
         root_path = Path(root)
+        source_path = root_path / "htdemucs.onnx"
+        source_path.write_bytes(payload)
         real_publish = secure_download.link_from_file_descriptor
         publication_barrier = threading.Barrier(2)
 
@@ -149,7 +137,7 @@ def exercise_concurrent_winner_is_preserved() -> None:
 
         def worker() -> None:
             try:
-                install_anonymous_source(root_path)
+                install(source_path, root_path)
             except OSError as error:
                 errors.append(error)
 
@@ -165,10 +153,14 @@ def exercise_concurrent_winner_is_preserved() -> None:
         assert not errors, errors
         destination_path = root_path / "destination"
         assert destination_path.read_bytes() == payload
-        assert destination_path.stat().st_nlink == 1
+        source_stat = source_path.stat()
+        destination_stat = destination_path.stat()
+        assert destination_stat.st_dev == source_stat.st_dev
+        assert destination_stat.st_ino == source_stat.st_ino
+        assert destination_stat.st_nlink == 2
 
 
-exercise_concurrent_winner_is_preserved()
+exercise_named_source_concurrent_winner_is_preserved()
 
 
 def exercise_concurrent_hard_link_winner_is_rejected() -> None:
