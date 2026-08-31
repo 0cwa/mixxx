@@ -22,6 +22,7 @@ extern "C" {
 
 #include "sources/soundsourceffmpeg.h"
 #include "test/mixxxtest.h"
+#include "test/soundsourceproviderregistration.h"
 
 #ifdef __STEM_CONVERSION__
 namespace {
@@ -112,7 +113,7 @@ bool writeFourChannelWav(const QString& filePath) {
 
 } // namespace
 
-class StemgenMasterConversionTest : public MixxxTest {
+class StemgenMasterConversionTest : public MixxxTest, SoundSourceProviderRegistration {
   protected:
     static bool convertMasterToM4A(const QString& inputPath, const QString& outputPath) {
         StemConverter converter;
@@ -434,7 +435,7 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
 }
 
-TEST_F(MixxxTest, ConvertsRealAudioWithStemgenModel) {
+TEST_F(StemgenMasterConversionTest, ConvertsRealAudioWithStemgenModel) {
     const QString inputPath = getTestDataDir().filePath("stemgen-smoke.wav");
     ASSERT_TRUE(QFile::copy(getTestDir().filePath("stems/mainmix.wav"), inputPath));
 

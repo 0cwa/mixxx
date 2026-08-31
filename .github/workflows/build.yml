@@ -904,7 +904,7 @@ jobs:
           GTEST_COLOR: "1"
           LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
           MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
-        run: ./mixxx-test --gtest_filter=MixxxTest.ConvertsRealAudioWithStemgenModel
+        run: ./mixxx-test --gtest_filter=StemgenMasterConversionTest.ConvertsRealAudioWithStemgenModel
 
   update_manifest:
     name: "Update manifest file on download server"
