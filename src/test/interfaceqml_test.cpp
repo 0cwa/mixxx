@@ -131,7 +131,8 @@ Item {
         const auto children = root->findChildren<QObject*>();
         for (QObject* child : children) {
             const auto* controlProxy = qobject_cast<mixxx::qml::QmlControlProxy*>(child);
-            if (controlProxy && controlProxy->getKey() == key) {
+            if ((controlProxy && controlProxy->getKey() == key) ||
+                    child->property("key").toString() == key) {
                 return child;
             }
         }
