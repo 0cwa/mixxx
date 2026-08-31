@@ -37,19 +37,37 @@ expected_size = len(payload)
 expected_sha256 = hashlib.sha256(payload).hexdigest()
 
 
+def install_from_descriptor(source_fd: int, destination_fd: int) -> None:
+    secure_download.install_from_file_descriptor(
+        source_fd,
+        destination_fd,
+        "destination",
+        expected_size,
+        expected_sha256,
+    )
+
+
 def install(source_path: Path, root_path: Path) -> None:
     source_fd = os.open(source_path, os.O_RDONLY)
     destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        secure_download.install_from_file_descriptor(
-            source_fd,
-            destination_fd,
-            "destination",
-            expected_size,
-            expected_sha256,
-        )
+        install_from_descriptor(source_fd, destination_fd)
     finally:
         os.close(source_fd)
+        os.close(destination_fd)
+
+
+def install_anonymous_source(root_path: Path) -> None:
+    destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+    source_fd = None
+    try:
+        source_fd = secure_download.create_secure_temporary_file(destination_fd)
+        assert os.write(source_fd, payload) == len(payload)
+        os.fsync(source_fd)
+        install_from_descriptor(source_fd, destination_fd)
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
         os.close(destination_fd)
 
 
@@ -117,10 +135,6 @@ exercise_wrong_hash_preserves_destination()
 def exercise_concurrent_winner_is_preserved() -> None:
     with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-race.") as root:
         root_path = Path(root)
-        source_a = root_path / "source-a"
-        source_b = root_path / "source-b"
-        source_a.write_bytes(payload)
-        source_b.write_bytes(payload)
         real_publish = secure_download.link_from_file_descriptor
         publication_barrier = threading.Barrier(2)
 
@@ -133,13 +147,13 @@ def exercise_concurrent_winner_is_preserved() -> None:
         secure_download.link_from_file_descriptor = synchronized_publish
         errors = []
 
-        def worker(source_path: Path) -> None:
+        def worker() -> None:
             try:
-                install(source_path, root_path)
+                install_anonymous_source(root_path)
             except OSError as error:
                 errors.append(error)
 
-        threads = [threading.Thread(target=worker, args=(source,)) for source in (source_a, source_b)]
+        threads = [threading.Thread(target=worker) for _ in range(2)]
         try:
             for thread in threads:
                 thread.start()
@@ -149,14 +163,51 @@ def exercise_concurrent_winner_is_preserved() -> None:
             secure_download.link_from_file_descriptor = real_publish
 
         assert not errors, errors
-        source_a.unlink()
-        source_b.unlink()
         destination_path = root_path / "destination"
         assert destination_path.read_bytes() == payload
         assert destination_path.stat().st_nlink == 1
 
 
 exercise_concurrent_winner_is_preserved()
+
+
+def exercise_concurrent_hard_link_winner_is_rejected() -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="mixxx-secure-download-hard-link-race."
+    ) as root:
+        root_path = Path(root)
+        source_path = root_path / "source"
+        protected_path = root_path / "protected"
+        destination_path = root_path / "destination"
+        source_path.write_bytes(payload)
+        protected_path.write_bytes(payload)
+        protected_before = protected_path.read_bytes()
+        protected_inode_before = protected_path.stat().st_ino
+        real_publish = secure_download.link_from_file_descriptor
+
+        def publish_hard_link_winner(
+            source_fd: int, destination_fd: int, destination_name: str
+        ) -> None:
+            os.link(protected_path, destination_path)
+            raise OSError(errno.EEXIST, "injected concurrent winner")
+
+        secure_download.link_from_file_descriptor = publish_hard_link_winner
+        try:
+            assert_rejected(
+                root_path,
+                source_path,
+                "secure install destination appeared during publication",
+            )
+        finally:
+            secure_download.link_from_file_descriptor = real_publish
+
+        assert protected_path.read_bytes() == protected_before
+        assert protected_path.stat().st_ino == protected_inode_before
+        assert destination_path.stat().st_ino == protected_inode_before
+        assert destination_path.stat().st_nlink == 2
+
+
+exercise_concurrent_hard_link_winner_is_rejected()
 
 
 def exercise_unsupported_publication_fails_closed() -> None:

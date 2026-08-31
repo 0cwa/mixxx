@@ -333,8 +333,10 @@ def install_from_file_descriptor(
                 raise OSError(
                     "secure install destination changed during publication"
                 ) from missing_error
-            if stat.S_ISLNK(winner_stat.st_mode) or not stat.S_ISREG(
-                winner_stat.st_mode
+            if (
+                stat.S_ISLNK(winner_stat.st_mode)
+                or not stat.S_ISREG(winner_stat.st_mode)
+                or winner_stat.st_nlink != 1
             ):
                 raise OSError(
                     "secure install destination appeared during publication"
@@ -354,6 +356,7 @@ def install_from_file_descriptor(
                 if (
                     winner_fd_stat.st_dev != winner_stat.st_dev
                     or winner_fd_stat.st_ino != winner_stat.st_ino
+                    or winner_fd_stat.st_nlink != 1
                 ):
                     raise OSError(
                         "secure install destination changed during publication"
@@ -369,6 +372,7 @@ def install_from_file_descriptor(
                 if (
                     current_winner_stat.st_dev != winner_fd_stat.st_dev
                     or current_winner_stat.st_ino != winner_fd_stat.st_ino
+                    or current_winner_stat.st_nlink != 1
                 ):
                     raise OSError(
                         "secure install destination changed during publication"
