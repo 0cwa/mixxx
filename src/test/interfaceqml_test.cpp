@@ -204,7 +204,7 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = findControlProxy(waveformDisplay, QStringLiteral("waveform_zoom"));
+    QObject* zoomControl = findControlProxy(m_root.get(), QStringLiteral("waveform_zoom"));
     ASSERT_NE(nullptr, zoomControl);
 
     QObject* configProxy = m_root->property("configProxy").value<QObject*>();
