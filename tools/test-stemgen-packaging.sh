@@ -654,6 +654,9 @@ test_cmake_install_staging_safety() {
     local model_sha256
     local install_root
     local installed_model
+    local hardlink_install_root
+    local hardlink_protected_model
+    local hardlink_destination
     local failed_install_root
     local destination_symlink_root
     local destination_symlink_target
@@ -671,6 +674,9 @@ test_cmake_install_staging_safety() {
     staged_symlink_target="$test_root/staged-model-target"
     staged_parent_target="$test_root/staged-model-parent-target"
     install_root="$test_root/install"
+    hardlink_install_root="$test_root/hardlink-install"
+    hardlink_protected_model="$test_root/protected-model"
+    hardlink_destination="$hardlink_install_root/share/mixxx/models/htdemucs.onnx"
     failed_install_root="$test_root/failed-install"
     destination_symlink_root="$test_root/destination-symlink-install"
     destination_symlink_target="$test_root/destination-symlink-target"
@@ -719,7 +725,30 @@ EOF
     grep -Fqx 'trusted-model' "$installed_model" || \
         fail 'generated CMake install script did not install the verified model'
 
-    # A final destination symlink must be rejected before COPY_FILE can
+    # Atomic publication must not truncate a protected file when the old
+    # destination is a hard link. The old directory entry may be replaced,
+    # but the other link must retain its original bytes.
+    mkdir -p -- "$(dirname -- "$hardlink_destination")"
+    printf '%s\n' 'protected-model' >"$hardlink_protected_model"
+    ln -- "$hardlink_protected_model" "$hardlink_destination"
+    target_before=$(sha256sum "$hardlink_protected_model")
+    status=0
+    if cmake --install "$build_dir" --prefix "$hardlink_install_root" \
+            >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 0 || \
+        fail 'generated CMake install script rejected a hard-linked destination'
+    test "$target_before" = "$(sha256sum "$hardlink_protected_model")" || \
+        fail 'generated CMake install script modified a protected hard link'
+    grep -Fqx 'trusted-model' "$hardlink_destination" || \
+        fail 'generated CMake install script did not replace the hard-linked destination'
+    test ! -L "$hardlink_destination" || \
+        fail 'generated CMake install script left a hard-linked destination symlink'
+
+    # A final destination symlink must be rejected before publication can
     # replace it, preserving the destination contract and its target.
     mkdir -p -- "$destination_file_symlink_root/share/mixxx/models"
     printf '%s\n' 'protected-model' >"$destination_file_symlink_target"
@@ -743,7 +772,7 @@ EOF
         fail 'generated CMake install script did not identify a destination file symlink'
 
     # Replace the staged artifact after configure. The generated install
-    # script must reject the symlink before COPY_FILE can consume it.
+    # script must reject the symlink before the temporary copy can consume it.
     printf '%s\n' 'trusted-model' >"$staged_symlink_target"
     target_before=$(sha256sum "$staged_symlink_target")
     rm -- "$staged_model"
@@ -783,7 +812,7 @@ EOF
         fail 'generated CMake install script did not identify an install parent symlink'
 
     # Replace the staged directory itself after configure. Its parent-chain
-    # check must prevent COPY_FILE from following a redirected directory.
+    # check must prevent the temporary copy from following a redirected directory.
     rm -- "$staged_model"
     mv -- "$staged_parent" "$staged_parent_backup"
     mkdir -- "$staged_parent_target"
@@ -952,7 +981,9 @@ assert "--timeout=30" in debian_buildenv
 assert "--waitretry=5" in debian_buildenv
 
 onnxruntime_buildenv = onnxruntime_buildenv_path.read_text()
-assert 'python3 "$SECURE_DOWNLOAD_HELPER" "$archive_path"' in onnxruntime_buildenv
+assert 'python3 "$SECURE_DOWNLOAD_HELPER" - ' in onnxruntime_buildenv
+assert '--install-cwd' in onnxruntime_buildenv
+assert '--install-name "$ONNXRUNTIME_ARCHIVE_NAME"' in onnxruntime_buildenv
 assert '--output "$archive_path"' not in onnxruntime_buildenv
 
 cmake_lists = cmake_lists_path.read_text()
@@ -971,17 +1002,19 @@ staged_hash_position = cmake_lists.index(
 assert copy_position < staged_hash_position
 
 cmake_install_script = cmake_install_script_path.read_text()
-assert 'if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")' in cmake_install_script
+assert 'function(_mixxx_stem_model_path_has_symlink_component' in cmake_install_script
 assert 'file(SHA256 "${_mixxx_stem_model_path}"' in cmake_install_script
 assert 'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")' in cmake_install_script
-assert 'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"' in cmake_install_script
-assert 'file(\n  SHA256\n  "${_mixxx_stem_model_destination_path}"' in cmake_install_script
+assert 'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"\n  "${_mixxx_stem_model_temporary_path}"' in cmake_install_script
+assert 'file(\n  RENAME\n  "${_mixxx_stem_model_temporary_path}"' in cmake_install_script
+assert '_mixxx_stem_model_file_matches' in cmake_install_script
 assert cmake_install_script.index(
     'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")'
 ) < cmake_install_script.index(
     'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"'
 )
-assert "Revalidate it after" in cmake_install_script
+assert "atomic rename" in cmake_install_script
+assert "rollback" in cmake_install_script
 
 verifier = powershell_verifier_path.read_text()
 assert "FileAttributes]::ReparsePoint" in verifier

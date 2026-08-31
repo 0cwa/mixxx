@@ -11,10 +11,21 @@ readonly ONNXRUNTIME_ARCHIVE_ROOT="onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}"
 readonly ONNXRUNTIME_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/${ONNXRUNTIME_ARCHIVE_NAME}"
 readonly ONNXRUNTIME_SHA256="1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57"
 ONNXRUNTIME_CLEANUP_DIR=
+ONNXRUNTIME_CLEANUP_IDENTITY=
+
+path_identity() {
+    stat -c '%d:%i' -- "$1"
+}
 
 cleanup() {
-    if [[ -n "$ONNXRUNTIME_CLEANUP_DIR" ]]; then
-        rm -rf -- "$ONNXRUNTIME_CLEANUP_DIR"
+    if [[ -n "$ONNXRUNTIME_CLEANUP_DIR" &&
+            -n "$ONNXRUNTIME_CLEANUP_IDENTITY" ]]; then
+        local cleanup_identity
+        cleanup_identity=$(path_identity "$ONNXRUNTIME_CLEANUP_DIR" 2>/dev/null || :)
+        if [[ "$cleanup_identity" == "$ONNXRUNTIME_CLEANUP_IDENTITY" ]] &&
+                ! path_contains_symlink_component "$ONNXRUNTIME_CLEANUP_DIR"; then
+            rm -rf -- "$ONNXRUNTIME_CLEANUP_DIR"
+        fi
     fi
 }
 
@@ -57,6 +68,25 @@ path_contains_symlink_component() {
 
 path_contains_symlink_parent_component() {
     path_contains_symlink_component "$(dirname -- "$1")"
+}
+
+verify_directory_path() {
+    local directory_path="$1"
+
+    [[ -d "$directory_path" && ! -L "$directory_path" ]] || return 1
+    ! path_contains_symlink_component "$directory_path"
+}
+
+remove_owned_path() {
+    local path_to_remove="$1"
+    local expected_identity="$2"
+    local actual_identity
+
+    [[ -e "$path_to_remove" && ! -L "$path_to_remove" ]] || return 0
+    actual_identity=$(path_identity "$path_to_remove" 2>/dev/null || :)
+    if [[ "$actual_identity" == "$expected_identity" ]]; then
+        rm -rf -- "$path_to_remove"
+    fi
 }
 
 verify_internal_library_symlink() {
@@ -200,19 +230,40 @@ verify_archive_layout() {
     done
 }
 
-stage_archive() {
+stage_archive() (
     local archive_path="$1"
     local runtime_prefix="$2"
     local parent_dir
     local temporary_prefix
     local targets_file
+    local runtime_name
+    local parent_identity
+    local temporary_prefix_identity
+    local temporary_prefix_realpath
+    local archive_identity
+    local archive_identity_after
+    local targets_file_relative
 
     if [[ ! -f "$archive_path" ]] ||
             path_contains_symlink_component "$archive_path"; then
         echo "Cannot stage missing ONNX Runtime archive: $archive_path" >&2
         return 1
     fi
+    archive_identity=$(path_identity "$archive_path") || {
+        echo "Cannot identify ONNX Runtime archive: $archive_path" >&2
+        return 1
+    }
     if ! verify_archive_layout "$archive_path"; then
+        return 1
+    fi
+    if [[ ! -f "$archive_path" ]] ||
+            path_contains_symlink_component "$archive_path"; then
+        echo "ONNX Runtime archive changed during layout verification: $archive_path" >&2
+        return 1
+    fi
+    archive_identity_after=$(path_identity "$archive_path") || return 1
+    if [[ "$archive_identity_after" != "$archive_identity" ]]; then
+        echo "ONNX Runtime archive changed during layout verification: $archive_path" >&2
         return 1
     fi
 
@@ -221,17 +272,56 @@ stage_archive() {
         echo "ONNX Runtime prefix contains a symlink path component: $runtime_prefix" >&2
         return 1
     fi
-    mkdir -p -- "$parent_dir"
-    if [[ -e "$runtime_prefix" || -L "$runtime_prefix" ]]; then
+    if ! mkdir -p -- "$parent_dir" || ! verify_directory_path "$parent_dir"; then
+        echo "Could not safely create ONNX Runtime prefix parent: $parent_dir" >&2
+        return 1
+    fi
+    parent_dir=$(CDPATH='' cd -P -- "$parent_dir" && pwd -P) || return 1
+    if ! CDPATH='' cd -P -- "$parent_dir"; then
+        echo "Could not safely enter ONNX Runtime prefix parent: $parent_dir" >&2
+        return 1
+    fi
+    parent_identity=$(path_identity "$parent_dir") || return 1
+    runtime_name=$(basename -- "$runtime_prefix")
+    runtime_prefix="$parent_dir/$runtime_name"
+    if [[ -e "$runtime_name" || -L "$runtime_name" ]]; then
         echo "Refusing to overwrite existing ONNX Runtime prefix: $runtime_prefix" >&2
         return 1
     fi
 
-    temporary_prefix=$(mktemp -d "$parent_dir/.onnxruntime-prefix.XXXXXX")
-    if ! tar --extract --gzip --file="$archive_path" \
-            --strip-components=1 --directory="$temporary_prefix"; then
-        rm -rf -- "$temporary_prefix"
+    temporary_prefix=$(mktemp -d "./.onnxruntime-prefix.XXXXXX") || return 1
+    if ! verify_directory_path "$temporary_prefix"; then
+        echo "ONNX Runtime temporary prefix has an unsafe path: $temporary_prefix" >&2
+        return 1
+    fi
+    temporary_prefix_identity=$(path_identity "$temporary_prefix") || return 1
+    temporary_prefix_realpath=$(CDPATH='' cd -P -- "$temporary_prefix" && pwd -P) || {
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
+        return 1
+    }
+    if [[ "$(path_identity .)" != "$parent_identity" ]]; then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
+        echo "ONNX Runtime prefix parent changed during staging: $runtime_prefix" >&2
+        return 1
+    fi
+
+    if ! (
+        CDPATH='' cd -P -- "$temporary_prefix" &&
+        [[ "$(pwd -P)" == "$temporary_prefix_realpath" ]] &&
+        [[ "$(path_identity .)" == "$temporary_prefix_identity" ]] &&
+        [[ -f "$archive_path" ]] &&
+        ! path_contains_symlink_component "$archive_path" &&
+        tar --extract --gzip --file="$archive_path" \
+            --strip-components=1 --directory=.
+    ); then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
         echo "Could not extract ONNX Runtime archive: $archive_path" >&2
+        return 1
+    fi
+    if ! verify_directory_path "$temporary_prefix" ||
+            [[ "$(path_identity "$temporary_prefix")" != "$temporary_prefix_identity" ]]; then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
+        echo "ONNX Runtime temporary prefix changed during extraction: $temporary_prefix" >&2
         return 1
     fi
 
@@ -239,38 +329,77 @@ stage_archive() {
         "$temporary_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
         "$temporary_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; do
         if [[ ! -f "$targets_file" ]]; then
-            rm -rf -- "$temporary_prefix"
+            remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
             echo "ONNX Runtime archive has incomplete CMake targets: $archive_path" >&2
             return 1
         fi
+        targets_file_relative="${targets_file#"$temporary_prefix/"}"
         # The upstream archive's generated target files retain the build-time
         # include/onnxruntime and lib64 paths even though the archive delivers
         # flat headers in include/ and shared libraries in lib/.
-        sed -i \
-            -e 's#/include/onnxruntime#/include#g' \
-            -e 's#/lib64/#/lib/#g' \
-            "$targets_file"
+        if ! (
+            CDPATH='' cd -P -- "$temporary_prefix" &&
+            [[ "$(pwd -P)" == "$temporary_prefix_realpath" ]] &&
+            [[ "$(path_identity .)" == "$temporary_prefix_identity" ]] &&
+            ! path_contains_symlink_component "$targets_file_relative" &&
+            sed -i \
+                -e 's#/include/onnxruntime#/include#g' \
+                -e 's#/lib64/#/lib/#g' \
+                "$targets_file_relative"
+        ); then
+            remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
+            echo "ONNX Runtime CMake target changed during normalization: $targets_file" >&2
+            return 1
+        fi
     done
 
-    if ! verify_prefix "$temporary_prefix"; then
-        rm -rf -- "$temporary_prefix"
+    if ! (
+        CDPATH='' cd -P -- "$temporary_prefix" &&
+        [[ "$(pwd -P)" == "$temporary_prefix_realpath" ]] &&
+        [[ "$(path_identity .)" == "$temporary_prefix_identity" ]] &&
+        verify_prefix .
+    ) || ! verify_directory_path "$temporary_prefix" ||
+            [[ "$(path_identity "$temporary_prefix")" != "$temporary_prefix_identity" ]]; then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
         return 1
     fi
 
-    # GNU mv -T treats the destination as an exact path and never descends
-    # into a directory symlink; a raced destination is rejected safely.
-    if ! mv -T -- "$temporary_prefix" "$runtime_prefix"; then
-        rm -rf -- "$temporary_prefix"
+    if [[ "$(path_identity .)" != "$parent_identity" ]] ||
+            path_contains_symlink_component "$runtime_prefix" ||
+            [[ -e "$runtime_name" || -L "$runtime_name" ]]; then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
+        echo "ONNX Runtime prefix changed before publication: $runtime_prefix" >&2
+        return 1
+    fi
+
+    # Run from the verified parent and use no-clobber exact-path publication.
+    # This keeps a raced final symlink/hard link from being followed or
+    # replaced, while the held current directory keeps parent replacement from
+    # redirecting the move.
+    if ! mv -T --no-clobber -- "$temporary_prefix" "$runtime_name"; then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
         echo "Could not safely install ONNX Runtime at: $runtime_prefix" >&2
         return 1
     fi
+    if [[ "$(path_identity .)" != "$parent_identity" ]] ||
+            path_contains_symlink_component "$runtime_prefix" ||
+            [[ ! -d "$runtime_name" ]] ||
+            [[ "$(path_identity "$runtime_name")" != "$temporary_prefix_identity" ]] ||
+            ! verify_prefix "$runtime_name"; then
+        remove_owned_path "$temporary_prefix" "$temporary_prefix_identity"
+        remove_owned_path "$runtime_name" "$temporary_prefix_identity"
+        echo "ONNX Runtime prefix changed during publication: $runtime_prefix" >&2
+        return 1
+    fi
     printf 'Staged ONNX Runtime %s at %s\n' "$ONNXRUNTIME_VERSION" "$runtime_prefix"
-}
+)
 
-stage_runtime() {
+stage_runtime() (
     local runtime_prefix="${1:-${MIXXX_ONNX_RUNTIME_PREFIX:-}}"
     local parent_dir
     local temporary_dir
+    local temporary_directory_path
+    local temporary_directory_identity
     local archive_path
 
     if [[ -z "$runtime_prefix" ]]; then
@@ -279,6 +408,10 @@ stage_runtime() {
     fi
     if [[ -e "$runtime_prefix" || -L "$runtime_prefix" ]]; then
         verify_prefix "$runtime_prefix"
+        if path_contains_symlink_component "$runtime_prefix"; then
+            echo "ONNX Runtime prefix changed while verifying: $runtime_prefix" >&2
+            return 1
+        fi
         echo "Using existing verified ONNX Runtime prefix: $runtime_prefix"
         return 0
     fi
@@ -288,14 +421,36 @@ stage_runtime() {
         echo "ONNX Runtime prefix contains a symlink path component: $runtime_prefix" >&2
         return 1
     fi
-    mkdir -p -- "$parent_dir"
-    temporary_dir=$(mktemp -d "$parent_dir/.onnxruntime-download.XXXXXX")
-    archive_path="$temporary_dir/$ONNXRUNTIME_ARCHIVE_NAME"
+    if ! mkdir -p -- "$parent_dir" || ! verify_directory_path "$parent_dir"; then
+        echo "Could not safely create ONNX Runtime download parent: $parent_dir" >&2
+        return 1
+    fi
+    temporary_dir=$(mktemp -d "$parent_dir/.onnxruntime-download.XXXXXX") || return 1
+    if ! verify_directory_path "$temporary_dir"; then
+        echo "ONNX Runtime download directory has an unsafe path: $temporary_dir" >&2
+        return 1
+    fi
+    temporary_directory_identity=$(path_identity "$temporary_dir") || return 1
+    temporary_directory_path=$(CDPATH='' cd -P -- "$temporary_dir" && pwd -P) || return 1
+    if [[ "$(path_identity "$temporary_dir")" != "$temporary_directory_identity" ]]; then
+        echo "ONNX Runtime download directory changed after creation: $temporary_dir" >&2
+        return 1
+    fi
+    archive_path="$temporary_directory_path/$ONNXRUNTIME_ARCHIVE_NAME"
     ONNXRUNTIME_CLEANUP_DIR="$temporary_dir"
+    ONNXRUNTIME_CLEANUP_IDENTITY="$temporary_directory_identity"
     trap cleanup EXIT HUP INT TERM
 
-    python3 "$SECURE_DOWNLOAD_HELPER" "$archive_path" \
+    if ! CDPATH='' cd -P -- "$temporary_dir" ||
+            [[ "$(pwd -P)" != "$temporary_directory_path" ]] ||
+            [[ "$(path_identity .)" != "$temporary_directory_identity" ]]; then
+        echo "Could not safely enter the ONNX Runtime download directory." >&2
+        return 1
+    fi
+    python3 "$SECURE_DOWNLOAD_HELPER" - \
         --verify-sha256 "$ONNXRUNTIME_SHA256" \
+        --install-cwd \
+        --install-name "$ONNXRUNTIME_ARCHIVE_NAME" \
         -- \
         curl \
         --fail \
@@ -307,11 +462,18 @@ stage_runtime() {
         --show-error \
         --tlsv1.2 \
         "$ONNXRUNTIME_URL"
+    if [[ ! -f "$archive_path" ]] ||
+            path_contains_symlink_component "$archive_path" ||
+            [[ "$(path_identity "$temporary_dir")" != "$temporary_directory_identity" ]]; then
+        echo "ONNX Runtime download path changed during download: $archive_path" >&2
+        return 1
+    fi
     stage_archive "$archive_path" "$runtime_prefix"
     trap - EXIT HUP INT TERM
     cleanup
     ONNXRUNTIME_CLEANUP_DIR=
-}
+    ONNXRUNTIME_CLEANUP_IDENTITY=
+)
 
 run_self_tests() {
     local test_dir
@@ -321,10 +483,22 @@ run_self_tests() {
     local targets_file
     local actual_sha256
     local fake_bin
+    local real_mkdir
+    local real_mktemp
+    local real_tar
     local real_mv
     local race_prefix
     local race_target
     local race_target_marker
+    local mkdir_race_prefix
+    local mkdir_race_backup
+    local mkdir_race_target
+    local mktemp_race_prefix
+    local mktemp_race_backup
+    local mktemp_race_target
+    local tar_race_prefix
+    local tar_race_backup
+    local tar_race_target
     local symlink_prefix
     local symlink_required_file
     local symlink_required_target
@@ -342,6 +516,7 @@ run_self_tests() {
 
     test_dir=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-onnxruntime-test.XXXXXX")
     ONNXRUNTIME_CLEANUP_DIR="$test_dir"
+    ONNXRUNTIME_CLEANUP_IDENTITY=$(path_identity "$test_dir")
     trap cleanup EXIT HUP INT TERM
 
     archive_root="$test_dir/onnxruntime-linux-x64-$ONNXRUNTIME_VERSION"
@@ -500,15 +675,59 @@ EOF
 
     fake_bin="$test_dir/fake-bin"
     mkdir -- "$fake_bin"
+    real_mkdir="$(command -v mkdir)"
+    real_mktemp="$(command -v mktemp)"
+    real_tar="$(command -v tar)"
     real_mv="$(command -v mv)"
+    cat >"$fake_bin/mkdir" <<'EOF'
+#!/bin/bash
+
+set -euo pipefail
+
+"$REAL_MKDIR" "$@"
+if [[ "${FAKE_MKDIR_RACE:-0}" -eq 1 ]]; then
+    target="${!#}"
+    if [[ "$target" == "${FAKE_MKDIR_PATH:?}" ]]; then
+        "$REAL_MV" -- "$target" "${FAKE_MKDIR_BACKUP:?}"
+        ln -s -- "${FAKE_MKDIR_TARGET:?}" "$target"
+    fi
+fi
+EOF
+    chmod +x -- "$fake_bin/mkdir"
+    cat >"$fake_bin/mktemp" <<'EOF'
+#!/bin/bash
+
+set -euo pipefail
+
+temporary_path=$("$REAL_MKTEMP" "$@")
+printf '%s\n' "$temporary_path"
+if [[ "${FAKE_MKTEMP_RACE:-0}" -eq 1 ]]; then
+    "$REAL_MV" -- "$temporary_path" "${FAKE_MKTEMP_BACKUP:?}"
+    ln -s -- "${FAKE_MKTEMP_TARGET:?}" "$temporary_path"
+fi
+EOF
+    chmod +x -- "$fake_bin/mktemp"
+    cat >"$fake_bin/tar" <<'EOF'
+#!/bin/bash
+
+set -euo pipefail
+
+"$REAL_TAR" "$@"
+if [[ "${FAKE_TAR_RACE:-0}" -eq 1 ]] && [[ "$*" == *'--extract'* ]]; then
+    temporary_path=$(pwd -P)
+    "$REAL_MV" -- "$temporary_path" "${FAKE_TAR_BACKUP:?}"
+    ln -s -- "${FAKE_TAR_TARGET:?}" "$temporary_path"
+fi
+EOF
+    chmod +x -- "$fake_bin/tar"
     cat >"$fake_bin/mv" <<'EOF'
 #!/bin/bash
 
 set -euo pipefail
 
 if [[ "${FAKE_MV_RACE:-0}" -eq 1 ]]; then
-    [[ "$1" == "-T" && "$2" == "--" ]]
-    destination="$4"
+    [[ "$1" == "-T" && "$2" == "--no-clobber" && "$3" == "--" ]]
+    destination="$5"
     ln -s -- "${FAKE_MV_TARGET:?}" "$destination"
 fi
 exec "$REAL_MV" "$@"
@@ -522,6 +741,9 @@ EOF
     if ! PATH="$fake_bin:$PATH" \
             FAKE_MV_RACE=1 \
             FAKE_MV_TARGET="$race_target" \
+            REAL_MKDIR="$real_mkdir" \
+            REAL_MKTEMP="$real_mktemp" \
+            REAL_TAR="$real_tar" \
             REAL_MV="$real_mv" \
             stage_archive "$archive_path" "$race_prefix"; then
         :
@@ -536,9 +758,86 @@ EOF
         return 1
     fi
 
+    mkdir_race_prefix="$test_dir/runtime-mkdir-race/runtime"
+    mkdir_race_backup="$test_dir/runtime-mkdir-race-original"
+    mkdir_race_target="$test_dir/runtime-mkdir-race-target"
+    mkdir -- "$mkdir_race_target"
+    if PATH="$fake_bin:$PATH" \
+            FAKE_MKDIR_RACE=1 \
+            FAKE_MKDIR_PATH="$(dirname -- "$mkdir_race_prefix")" \
+            FAKE_MKDIR_BACKUP="$mkdir_race_backup" \
+            FAKE_MKDIR_TARGET="$mkdir_race_target" \
+            REAL_MKDIR="$real_mkdir" \
+            REAL_MKTEMP="$real_mktemp" \
+            REAL_TAR="$real_tar" \
+            REAL_MV="$real_mv" \
+            stage_archive "$archive_path" "$mkdir_race_prefix"; then
+        echo "Self-test failed: ONNX Runtime parent mkdir race was accepted" >&2
+        return 1
+    fi
+    if [[ ! -L "$(dirname -- "$mkdir_race_prefix")" ]]; then
+        echo "Self-test failed: ONNX Runtime parent mkdir race was not observed" >&2
+        return 1
+    fi
+    if [[ -e "$mkdir_race_target/runtime" ]]; then
+        echo "Self-test failed: ONNX Runtime parent mkdir race was followed" >&2
+        return 1
+    fi
+
+    mktemp_race_prefix="$test_dir/runtime-mktemp-race"
+    mktemp_race_backup="$test_dir/runtime-mktemp-race-original"
+    mktemp_race_target="$test_dir/runtime-mktemp-race-target"
+    mkdir -- "$mktemp_race_target"
+    if PATH="$fake_bin:$PATH" \
+            FAKE_MKTEMP_RACE=1 \
+            FAKE_MKTEMP_BACKUP="$mktemp_race_backup" \
+            FAKE_MKTEMP_TARGET="$mktemp_race_target" \
+            REAL_MKDIR="$real_mkdir" \
+            REAL_MKTEMP="$real_mktemp" \
+            REAL_TAR="$real_tar" \
+            REAL_MV="$real_mv" \
+            stage_archive "$archive_path" "$mktemp_race_prefix"; then
+        echo "Self-test failed: ONNX Runtime mktemp race was accepted" >&2
+        return 1
+    fi
+    if [[ ! -d "$mktemp_race_backup" ]] ||
+            [[ -z "$(find "$test_dir" -maxdepth 1 -type l \
+                -name '.onnxruntime-prefix.*' -print -quit)" ]]; then
+        echo "Self-test failed: ONNX Runtime mktemp race was not observed" >&2
+        return 1
+    fi
+    if [[ -e "$mktemp_race_target/include" ]]; then
+        echo "Self-test failed: ONNX Runtime mktemp race was followed" >&2
+        return 1
+    fi
+
+    tar_race_prefix="$test_dir/runtime-tar-race"
+    tar_race_backup="$test_dir/runtime-tar-race-original"
+    tar_race_target="$test_dir/runtime-tar-race-target"
+    mkdir -- "$tar_race_target"
+    if PATH="$fake_bin:$PATH" \
+            FAKE_TAR_RACE=1 \
+            FAKE_TAR_BACKUP="$tar_race_backup" \
+            FAKE_TAR_TARGET="$tar_race_target" \
+            REAL_MKDIR="$real_mkdir" \
+            REAL_MKTEMP="$real_mktemp" \
+            REAL_TAR="$real_tar" \
+            REAL_MV="$real_mv" \
+            stage_archive "$archive_path" "$tar_race_prefix"; then
+        echo "Self-test failed: ONNX Runtime extraction race was accepted" >&2
+        return 1
+    fi
+    if [[ ! -d "$tar_race_backup" ]] ||
+            [[ -e "$tar_race_target/include" ]] ||
+            [[ -e "$tar_race_prefix" ]]; then
+        echo "Self-test failed: ONNX Runtime extraction race was followed" >&2
+        return 1
+    fi
+
     trap - EXIT HUP INT TERM
     cleanup
     ONNXRUNTIME_CLEANUP_DIR=
+    ONNXRUNTIME_CLEANUP_IDENTITY=
     echo "ONNX Runtime staging self-tests passed."
 }
 
