@@ -20,7 +20,7 @@ constexpr double kWaveformMaxZoomLimit = 100.0;
 } // namespace
 
 const double WaveformWidgetRenderer::s_waveformMinZoom = 1.0;
-double WaveformWidgetRenderer::s_waveformMaxZoom = 10.0;
+ControlValueAtomic<double> WaveformWidgetRenderer::s_waveformMaxZoom(10.0);
 const double WaveformWidgetRenderer::s_waveformDefaultMaxZoom = 10.0;
 const double WaveformWidgetRenderer::s_waveformDefaultZoom = 3.0;
 const double WaveformWidgetRenderer::s_defaultPlayMarkerPosition = 0.5;
@@ -450,7 +450,7 @@ void WaveformWidgetRenderer::setZoom(double zoom) {
 }
 
 double WaveformWidgetRenderer::getWaveformMaxZoom() {
-    return s_waveformMaxZoom;
+    return s_waveformMaxZoom.getValue();
 }
 
 double WaveformWidgetRenderer::clampWaveformMaxZoom(double maxZoom) {
@@ -461,7 +461,7 @@ double WaveformWidgetRenderer::clampWaveformMaxZoom(double maxZoom) {
 }
 
 void WaveformWidgetRenderer::setWaveformMaxZoom(double maxZoom) {
-    s_waveformMaxZoom = clampWaveformMaxZoom(maxZoom);
+    s_waveformMaxZoom.setValue(clampWaveformMaxZoom(maxZoom));
 }
 
 void WaveformWidgetRenderer::setDisplayBeatGridAlpha(int alpha) {
