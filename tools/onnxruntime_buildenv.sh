@@ -36,6 +36,7 @@ verify_sha256() {
 verify_prefix() {
     local runtime_prefix="$1"
     local required_file
+    local targets_file
 
     if [[ -z "$runtime_prefix" || ! -d "$runtime_prefix" ]]; then
         echo "ONNX Runtime prefix is missing: $runtime_prefix" >&2
@@ -47,6 +48,7 @@ verify_prefix() {
         "$runtime_prefix/lib/libonnxruntime.so" \
         "$runtime_prefix/lib/libonnxruntime_providers_shared.so" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeConfig.cmake" \
+        "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; do
         if [[ ! -f "$required_file" ]]; then
             echo "ONNX Runtime prefix is incomplete; missing: $required_file" >&2
@@ -54,11 +56,14 @@ verify_prefix() {
         fi
     done
 
-    if grep -q '/lib64/' \
-            "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; then
-        echo "ONNX Runtime CMake targets still reference lib64: $runtime_prefix" >&2
-        return 1
-    fi
+    for targets_file in \
+        "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
+        "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; do
+        if grep -Eq '/include/onnxruntime|/lib64/' "$targets_file"; then
+            echo "ONNX Runtime CMake targets contain unnormalized paths: $runtime_prefix" >&2
+            return 1
+        fi
+    done
 }
 
 stage_archive() {
@@ -88,15 +93,22 @@ stage_archive() {
         return 1
     fi
 
-    targets_file="$temporary_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"
-    if [[ ! -f "$targets_file" ]]; then
-        rm -rf -- "$temporary_prefix"
-        echo "ONNX Runtime archive has no release CMake targets: $archive_path" >&2
-        return 1
-    fi
-    # The upstream archive's generated target file contains its build-time
-    # lib64 path even though the shared libraries are delivered in lib/.
-    sed -i 's#/lib64/#/lib/#g' "$targets_file"
+    for targets_file in \
+        "$temporary_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
+        "$temporary_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; do
+        if [[ ! -f "$targets_file" ]]; then
+            rm -rf -- "$temporary_prefix"
+            echo "ONNX Runtime archive has incomplete CMake targets: $archive_path" >&2
+            return 1
+        fi
+        # The upstream archive's generated target files retain the build-time
+        # include/onnxruntime and lib64 paths even though the archive delivers
+        # flat headers in include/ and shared libraries in lib/.
+        sed -i \
+            -e 's#/include/onnxruntime#/include#g' \
+            -e 's#/lib64/#/lib/#g' \
+            "$targets_file"
+    done
 
     if ! verify_prefix "$temporary_prefix"; then
         rm -rf -- "$temporary_prefix"
@@ -168,6 +180,10 @@ run_self_tests() {
     : > "$archive_root/lib/libonnxruntime.so"
     : > "$archive_root/lib/libonnxruntime_providers_shared.so"
     printf 'test config\n' > "$archive_root/lib/cmake/onnxruntime/onnxruntimeConfig.cmake"
+    # The generated fixture intentionally contains a literal CMake variable.
+    # shellcheck disable=SC2016
+    printf 'INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include/onnxruntime"\n' \
+        > "$archive_root/lib/cmake/onnxruntime/onnxruntimeTargets.cmake"
     printf 'IMPORTED_LOCATION "/build/lib64/libonnxruntime.so"\n' \
         > "$archive_root/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"
 
@@ -190,6 +206,12 @@ run_self_tests() {
     targets_file="$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"
     if ! grep -q '/lib/libonnxruntime.so' "$targets_file"; then
         echo "Self-test failed: the lib64 CMake target path was not normalized" >&2
+        return 1
+    fi
+    targets_file="$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake"
+    if grep -q '/include/onnxruntime' "$targets_file" ||
+            ! grep -q '/include"' "$targets_file"; then
+        echo "Self-test failed: the ONNX Runtime include target path was not normalized" >&2
         return 1
     fi
 

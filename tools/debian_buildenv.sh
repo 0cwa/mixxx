@@ -10,7 +10,7 @@ fi
 
 set -e -o pipefail
 
-SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly ONNXRUNTIME_HELPER="$SCRIPT_DIR/onnxruntime_buildenv.sh"
 readonly HTDEMUCS_MODEL_NAME="htdemucs.onnx"
@@ -18,6 +18,48 @@ readonly HTDEMUCS_MODEL_URL="https://github.com/mixxxdj/demucs/releases/download
 readonly HTDEMUCS_MODEL_SIZE=304413278
 readonly HTDEMUCS_MODEL_SHA256="db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d"
 readonly GPAC_PACKAGE_NAME="gpac"
+
+canonicalize_model_staging_directory() {
+    local model_path="$1"
+    local checkout_path
+    local canonical_model_path
+
+    if ! checkout_path="$(realpath -m -- "$SCRIPT_DIR/..")" ||
+            ! canonical_model_path="$(realpath -m -- "$model_path")"; then
+        echo "Could not resolve MIXXX_STEM_MODEL_DIR: $model_path" >&2
+        return 1
+    fi
+
+    case "$canonical_model_path/" in
+        "$checkout_path/"*)
+            echo "MIXXX_STEM_MODEL_DIR must resolve to a staging directory outside the source checkout." >&2
+            return 1
+            ;;
+    esac
+
+    printf '%s\n' "$canonical_model_path"
+}
+
+validate_model_staging_destination() {
+    local model_path="$1"
+    local canonical_model_path
+    local model_file_path
+
+    if ! canonical_model_path="$(canonicalize_model_staging_directory "$model_path")"; then
+        return 1
+    fi
+    model_file_path="$canonical_model_path/$HTDEMUCS_MODEL_NAME"
+    if [[ -L "$model_file_path" ]]; then
+        echo "The final Stemgen model destination must not be a symlink." >&2
+        return 1
+    fi
+    if [[ -e "$model_file_path" && ! -f "$model_file_path" ]]; then
+        echo "The final Stemgen model destination must be a regular file or absent." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$canonical_model_path"
+}
 
 get_model_sha256() {
     local model_name="$1"
@@ -243,6 +285,13 @@ run_self_tests() {
     local trusted_dpkg_query_path
     local poison_marker_path
     local actual_test_size
+    local checkout_model_path
+    local checkout_model_symlink
+    local normalized_checkout_model_path
+    local external_model_path
+    local checkout_model_file
+    local external_model_file
+    local non_regular_model_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
     test_file="$test_dir/verified-artifact"
@@ -394,6 +443,42 @@ run_self_tests() {
     fi
     if [[ "$HTDEMUCS_MODEL_SHA256" != "$expected_publisher_sha256" ]]; then
         echo "Self-test failed: installer model digest differs from publisher value" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+
+    checkout_model_path="$SCRIPT_DIR/../models"
+    normalized_checkout_model_path="$SCRIPT_DIR//../models/./../models"
+    checkout_model_symlink="$test_dir/checkout-models-link"
+    external_model_path="$test_dir/external-models"
+    checkout_model_file="$checkout_model_path/$HTDEMUCS_MODEL_NAME"
+    external_model_file="$external_model_path/$HTDEMUCS_MODEL_NAME"
+    non_regular_model_path="$test_dir/non-regular-models"
+    ln -s -- "$checkout_model_path" "$checkout_model_symlink"
+    if validate_model_staging_destination "$checkout_model_path" >/dev/null ||
+            validate_model_staging_destination "$normalized_checkout_model_path" >/dev/null ||
+            validate_model_staging_destination "$checkout_model_symlink" >/dev/null; then
+        echo "Self-test failed: checkout-contained model staging path was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ "$(validate_model_staging_destination "$external_model_path")" != \
+            "$external_model_path" ]]; then
+        echo "Self-test failed: external model staging path was not canonicalized" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    mkdir -p -- "$external_model_path"
+    ln -s -- "$checkout_model_file" "$external_model_file"
+    if validate_model_staging_destination "$external_model_path" >/dev/null; then
+        echo "Self-test failed: symlinked final model destination was accepted" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    rm -- "$external_model_file"
+    mkdir -p -- "$non_regular_model_path/$HTDEMUCS_MODEL_NAME"
+    if validate_model_staging_destination "$non_regular_model_path" >/dev/null; then
+        echo "Self-test failed: non-regular final model destination was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
@@ -638,6 +723,11 @@ case "$1" in
 
             echo "The unsupported htdemucs_ft.onnx model is intentionally disabled."
             echo "Maintainer action: publish a verifiable artifact and digest before re-enabling it."
+
+            if ! MODEL_PATH="$(validate_model_staging_destination "$MODEL_PATH")"; then
+                echo "Refusing to stage Mixxx HTDemucs models at $MODEL_PATH" >&2
+                exit 1
+            fi
 
             # Create directory with proper ownership
             if sudo -u "$ACTUAL_USER" mkdir -p "$MODEL_PATH"; then

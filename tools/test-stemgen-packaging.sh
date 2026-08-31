@@ -275,6 +275,14 @@ EOF
 
 download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
 model_pointer="$repository_root/models/htdemucs.onnx"
+
+if ! "$repository_root/tools/onnxruntime_buildenv.sh" test; then
+    fail 'ONNX Runtime staging self-test failed'
+fi
+if ! "$repository_root/tools/debian_buildenv.sh" test; then
+    fail 'Debian model staging self-test failed'
+fi
+
 test_download_staging_safety
 pointer_before=$(sha256sum "$model_pointer")
 if env -u MIXXX_STEM_MODEL_DIR "$download_script" >/dev/null 2>&1; then
