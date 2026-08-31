@@ -4,7 +4,6 @@
 #include <QDir>
 #include <QQmlComponent>
 #include <QQmlEngine>
-#include <QQuickStyle>
 #include <QUrl>
 #include <gsl/pointers>
 #include <memory>
@@ -26,7 +25,6 @@ const ConfigKey kMaxZoomOutKey(QStringLiteral("[Waveform]"),
 class InterfaceQmlTest : public MixxxTest {
   protected:
     void SetUp() override {
-        QQuickStyle::setStyle("Basic");
         mixxx::qml::QmlConfigProxy::registerUserSettings(config());
         m_engine.addImportPath(QStringLiteral(RESOURCE_FOLDER "/qml"));
         m_engine.addImportPath(
@@ -204,7 +202,7 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = findControlProxy(waveformDisplay, QStringLiteral("waveform_zoom"));
+    QObject* zoomControl = findControlProxy(m_root.get(), QStringLiteral("waveform_zoom"));
     ASSERT_NE(nullptr, zoomControl);
 
     QObject* configProxy = m_root->property("configProxy").value<QObject*>();
