@@ -97,12 +97,9 @@ Item {
     property var configProxy: Mixxx.Config
 
     WaveformDisplay {
-        id: waveformDisplay
         objectName: "waveformDisplay"
         group: "[Channel1]"
     }
-
-    property alias waveformZoomControl: waveformDisplay.zoomControlProxy
 }
 )",
                 QUrl::fromLocalFile(QStringLiteral(
@@ -195,7 +192,7 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = m_root->property("waveformZoomControl").value<QObject*>();
+    QObject* zoomControl = waveformDisplay->property("zoomControlProxy").value<QObject*>();
     ASSERT_NE(nullptr, zoomControl);
     EXPECT_EQ(QStringLiteral("waveform_zoom"), zoomControl->property("key").toString());
 
