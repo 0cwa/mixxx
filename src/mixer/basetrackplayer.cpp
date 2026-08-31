@@ -53,7 +53,8 @@ BaseTrackPlayerImpl::BaseTrackPlayerImpl(
           m_pLoadedTrack(),
           m_pPrevFailedTrackId(),
           m_replaygainPending(false),
-          m_pChannelToCloneFrom(nullptr) {
+          m_pChannelToCloneFrom(nullptr),
+          m_pWaveformMaxZoomOut(ConfigKey("[Waveform]", "MaxZoomOut")) {
     auto channel = std::make_unique<EngineDeck>(handleGroup,
             pConfig,
             pMixingEngine,
@@ -1064,8 +1065,7 @@ void BaseTrackPlayerImpl::setupEqControls() {
 }
 
 void BaseTrackPlayerImpl::slotWaveformZoomValueChangeRequest(double v) {
-    if (v <= WaveformWidgetRenderer::s_waveformMaxZoom
-            && v >= WaveformWidgetRenderer::s_waveformMinZoom) {
+    if (v <= m_pWaveformMaxZoomOut.get() && v >= WaveformWidgetRenderer::s_waveformMinZoom) {
         m_pWaveformZoom->setAndConfirm(v);
     }
 }

@@ -2,6 +2,7 @@
 
 #include <QPainter>
 #include <QPainterPath>
+#include <cmath>
 
 #include "control/controlproxy.h"
 #include "track/track.h"
@@ -13,14 +14,16 @@
 #include "waveform/vsyncthread.h"
 #include "waveform/waveform.h"
 
-const double WaveformWidgetRenderer::s_waveformMinZoom = 1.0;
-const double WaveformWidgetRenderer::s_waveformMaxZoom = 10.0;
-const double WaveformWidgetRenderer::s_waveformDefaultZoom = 3.0;
-const double WaveformWidgetRenderer::s_defaultPlayMarkerPosition = 0.5;
-
 namespace {
 constexpr int kDefaultDimBrightThreshold = 127;
+constexpr double kWaveformMaxZoomLimit = 100.0;
 } // namespace
+
+const double WaveformWidgetRenderer::s_waveformMinZoom = 1.0;
+double WaveformWidgetRenderer::s_waveformMaxZoom = 10.0;
+const double WaveformWidgetRenderer::s_waveformDefaultMaxZoom = 10.0;
+const double WaveformWidgetRenderer::s_waveformDefaultZoom = 3.0;
+const double WaveformWidgetRenderer::s_defaultPlayMarkerPosition = 0.5;
 
 WaveformWidgetRenderer::WaveformWidgetRenderer(const QString& group)
         : m_group(group),
@@ -443,7 +446,22 @@ void WaveformWidgetRenderer::setup(
 
 void WaveformWidgetRenderer::setZoom(double zoom) {
     //qDebug() << "WaveformWidgetRenderer::setZoom" << zoom;
-    m_zoomFactor = math_clamp<double>(zoom, s_waveformMinZoom, s_waveformMaxZoom);
+    m_zoomFactor = math_clamp<double>(zoom, s_waveformMinZoom, getWaveformMaxZoom());
+}
+
+double WaveformWidgetRenderer::getWaveformMaxZoom() {
+    return s_waveformMaxZoom;
+}
+
+double WaveformWidgetRenderer::clampWaveformMaxZoom(double maxZoom) {
+    if (!std::isfinite(maxZoom)) {
+        return s_waveformDefaultMaxZoom;
+    }
+    return math_clamp<double>(maxZoom, s_waveformDefaultMaxZoom, kWaveformMaxZoomLimit);
+}
+
+void WaveformWidgetRenderer::setWaveformMaxZoom(double maxZoom) {
+    s_waveformMaxZoom = clampWaveformMaxZoom(maxZoom);
 }
 
 void WaveformWidgetRenderer::setDisplayBeatGridAlpha(int alpha) {

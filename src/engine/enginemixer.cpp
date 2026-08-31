@@ -33,6 +33,8 @@ namespace {
 const QString kAppGroup = QStringLiteral("[App]");
 const QString kLegacyGroup = QStringLiteral("[Master]");
 const QString kMainGroup = QStringLiteral("[Main]");
+const ConfigKey kWaveformMaxZoomOutKey{QStringLiteral("[Waveform]"),
+        QStringLiteral("MaxZoomOut")};
 
 const ConfigKey kGlobalKeylockEngineKey{kAppGroup, QStringLiteral("keylock_engine")};
 const ConfigKey kInternalClockBpmKey{QStringLiteral("[InternalClock]"), QStringLiteral("bpm")};
@@ -87,6 +89,8 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
                   ConfigKey(kAppGroup, QStringLiteral("output_latency_ms")),
                   true,
                   true)),
+          m_pWaveformMaxZoomOut(std::make_unique<ControlObject>(
+                  kWaveformMaxZoomOutKey, true, false, false, 10.0)),
           m_pAudioLatencyOverloadCount(
                   std::make_unique<ControlObject>(ConfigKey(kAppGroup,
                           QStringLiteral("audio_latency_overload_count")))),
