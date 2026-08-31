@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QUrl>
@@ -7,7 +9,12 @@
 #include <vector>
 
 #include "control/controlobject.h"
+#include "effects/effectsmanager.h"
+#include "engine/channelhandle.h"
+#include "engine/enginemixer.h"
+#include "mixer/playermanager.h"
 #include "qml/qmlconfigproxy.h"
+#include "qml/qmlplayermanagerproxy.h"
 #include "test/mixxxtest.h"
 
 namespace {
@@ -19,6 +26,13 @@ class InterfaceQmlTest : public MixxxTest {
     void SetUp() override {
         mixxx::qml::QmlConfigProxy::registerUserSettings(config());
         m_engine.addImportPath(QStringLiteral(RESOURCE_FOLDER "/qml"));
+        m_engine.addImportPath(
+                QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("qml")));
+    }
+
+    void TearDown() override {
+        m_root.reset();
+        mixxx::qml::QmlPlayerManagerProxy::registerPlayerManager(nullptr);
     }
 
     QObject* loadInterface() {
@@ -51,6 +65,18 @@ Item {
     }
 
     QObject* loadWaveformDisplay() {
+        m_testChannelHandleFactory = std::make_shared<ChannelHandleFactory>();
+        m_testEffectsManager = std::make_unique<EffectsManager>(
+                config(), m_testChannelHandleFactory);
+        m_testEngineMixer = std::make_unique<EngineMixer>(config(),
+                QStringLiteral("[Master]"),
+                m_testEffectsManager.get(),
+                m_testChannelHandleFactory,
+                false);
+        m_testPlayerManager = std::make_shared<PlayerManager>(
+                config(), nullptr, m_testEffectsManager.get(), m_testEngineMixer.get());
+        mixxx::qml::QmlPlayerManagerProxy::registerPlayerManager(m_testPlayerManager);
+
         QQmlComponent component(&m_engine);
         component.setData(R"(
 import QtQuick
@@ -115,6 +141,10 @@ Item {
         return QMetaObject::invokeMethod(button, "pressed");
     }
 
+    std::shared_ptr<ChannelHandleFactory> m_testChannelHandleFactory;
+    std::unique_ptr<EffectsManager> m_testEffectsManager;
+    std::unique_ptr<EngineMixer> m_testEngineMixer;
+    std::shared_ptr<PlayerManager> m_testPlayerManager;
     QQmlEngine m_engine;
     std::unique_ptr<QObject> m_root;
 };
