@@ -54,6 +54,59 @@ path_contains_symlink_component() {
     return 1
 }
 
+path_contains_symlink_parent_component() {
+    path_contains_symlink_component "$(dirname -- "$1")"
+}
+
+verify_internal_library_symlink() {
+    local symlink_path="$1"
+    local runtime_prefix="$2"
+    local canonical_prefix
+    local current_path="$symlink_path"
+    local symlink_target
+    local resolved_path
+    local link_count=0
+
+    canonical_prefix=$(realpath -e -- "$runtime_prefix") || return 1
+    while [[ -L "$current_path" ]]; do
+        if path_contains_symlink_parent_component "$current_path"; then
+            return 1
+        fi
+        symlink_target=$(readlink -- "$current_path") || return 1
+        if [[ -z "$symlink_target" || "$symlink_target" = /* ]]; then
+            return 1
+        fi
+        current_path="$(dirname -- "$current_path")/$symlink_target"
+        link_count=$((link_count + 1))
+        if ((link_count > 16)); then
+            return 1
+        fi
+    done
+
+    resolved_path=$(realpath -e -- "$current_path") || return 1
+    case "$resolved_path/" in
+        "$canonical_prefix/"*) ;;
+        *) return 1 ;;
+    esac
+    [[ -f "$resolved_path" ]]
+}
+
+verify_required_file() {
+    local required_file="$1"
+    local runtime_prefix="$2"
+    local allow_internal_symlink="${3:-0}"
+
+    if path_contains_symlink_parent_component "$required_file"; then
+        return 1
+    fi
+    if [[ -L "$required_file" ]]; then
+        [[ "$allow_internal_symlink" -eq 1 ]] || return 1
+        verify_internal_library_symlink "$required_file" "$runtime_prefix"
+        return $?
+    fi
+    [[ -f "$required_file" ]]
+}
+
 verify_prefix() {
     local runtime_prefix="$1"
     local required_file
@@ -70,17 +123,22 @@ verify_prefix() {
 
     for required_file in \
         "$runtime_prefix/include/onnxruntime_cxx_api.h" \
-        "$runtime_prefix/lib/libonnxruntime.so" \
         "$runtime_prefix/lib/libonnxruntime_providers_shared.so" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeConfig.cmake" \
+        "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeConfigVersion.cmake" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; do
-        if [[ ! -f "$required_file" ]] ||
-                path_contains_symlink_component "$required_file"; then
+        if ! verify_required_file "$required_file" "$runtime_prefix"; then
             echo "ONNX Runtime prefix is incomplete; missing: $required_file" >&2
             return 1
         fi
     done
+
+    required_file="$runtime_prefix/lib/libonnxruntime.so"
+    if ! verify_required_file "$required_file" "$runtime_prefix" 1; then
+        echo "ONNX Runtime prefix is incomplete; missing: $required_file" >&2
+        return 1
+    fi
 
     for targets_file in \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
@@ -217,6 +275,11 @@ run_self_tests() {
     local symlink_prefix
     local symlink_required_file
     local symlink_required_target
+    local library_link
+    local library_link_target
+    local external_library_target
+    local cmake_project
+    local cmake_output
 
     test_dir=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-onnxruntime-test.XXXXXX")
     ONNXRUNTIME_CLEANUP_DIR="$test_dir"
@@ -227,15 +290,38 @@ run_self_tests() {
         "$archive_root/include" \
         "$archive_root/lib/cmake/onnxruntime"
     printf 'test header\n' > "$archive_root/include/onnxruntime_cxx_api.h"
-    : > "$archive_root/lib/libonnxruntime.so"
+    : > "$archive_root/lib/libonnxruntime.so.1.26.0"
+    ln -s -- libonnxruntime.so.1.26.0 "$archive_root/lib/libonnxruntime.so.1"
+    ln -s -- libonnxruntime.so.1 "$archive_root/lib/libonnxruntime.so"
     : > "$archive_root/lib/libonnxruntime_providers_shared.so"
-    printf 'test config\n' > "$archive_root/lib/cmake/onnxruntime/onnxruntimeConfig.cmake"
-    # The generated fixture intentionally contains a literal CMake variable.
-    # shellcheck disable=SC2016
-    printf 'INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include/onnxruntime"\n' \
-        > "$archive_root/lib/cmake/onnxruntime/onnxruntimeTargets.cmake"
-    printf 'IMPORTED_LOCATION "/build/lib64/libonnxruntime.so"\n' \
-        > "$archive_root/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"
+    cat >"$archive_root/lib/cmake/onnxruntime/onnxruntimeConfig.cmake" <<'EOF'
+include("${CMAKE_CURRENT_LIST_DIR}/onnxruntimeTargets.cmake")
+EOF
+    printf 'set(PACKAGE_VERSION "1.26.0")\n' > \
+        "$archive_root/lib/cmake/onnxruntime/onnxruntimeConfigVersion.cmake"
+    # The generated fixture intentionally contains literal CMake variables.
+    # Keep the target files close enough to the real export for the CMake
+    # probe below to exercise the imported target and its resolved paths.
+    cat >"$archive_root/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" <<'EOF'
+get_filename_component(_IMPORT_PREFIX "${CMAKE_CURRENT_LIST_FILE}" PATH)
+get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)
+get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)
+get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)
+add_library(onnxruntime::onnxruntime SHARED IMPORTED)
+set_target_properties(
+    onnxruntime::onnxruntime
+    PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include/onnxruntime"
+)
+include("${CMAKE_CURRENT_LIST_DIR}/onnxruntimeTargets-release.cmake")
+EOF
+    cat >"$archive_root/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake" <<'EOF'
+set_target_properties(
+    onnxruntime::onnxruntime
+    PROPERTIES
+    IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/lib64/libonnxruntime.so.1.26.0"
+)
+EOF
 
     archive_path="$test_dir/$ONNXRUNTIME_ARCHIVE_NAME"
     tar --create --gzip --file="$archive_path" \
@@ -258,10 +344,43 @@ run_self_tests() {
         echo "Self-test failed: the lib64 CMake target path was not normalized" >&2
         return 1
     fi
+    if [[ "$(readlink -- "$runtime_prefix/lib/libonnxruntime.so")" != \
+            'libonnxruntime.so.1' ]] ||
+            [[ "$(readlink -- "$runtime_prefix/lib/libonnxruntime.so.1")" != \
+            'libonnxruntime.so.1.26.0' ]]; then
+        echo "Self-test failed: the ONNX Runtime library symlink chain changed" >&2
+        return 1
+    fi
     targets_file="$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake"
     if grep -q '/include/onnxruntime' "$targets_file" ||
             ! grep -q '/include"' "$targets_file"; then
         echo "Self-test failed: the ONNX Runtime include target path was not normalized" >&2
+        return 1
+    fi
+
+    cmake_project="$test_dir/cmake-project"
+    cmake_output="$test_dir/cmake-output"
+    mkdir -- "$cmake_project"
+    cat >"$cmake_project/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.22)
+project(onnxruntime_target_probe NONE)
+find_package(onnxruntime CONFIG REQUIRED)
+if(NOT TARGET onnxruntime::onnxruntime)
+    message(FATAL_ERROR "ONNX Runtime imported target is missing")
+endif()
+get_target_property(probe_include onnxruntime::onnxruntime INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(probe_location onnxruntime::onnxruntime IMPORTED_LOCATION_RELEASE)
+if(NOT probe_include STREQUAL "${CMAKE_PREFIX_PATH}/include")
+    message(FATAL_ERROR "ONNX Runtime imported target has the wrong include path")
+endif()
+if(NOT probe_location STREQUAL "${CMAKE_PREFIX_PATH}/lib/libonnxruntime.so.1.26.0")
+    message(FATAL_ERROR "ONNX Runtime imported target has the wrong library path")
+endif()
+EOF
+    if ! cmake -S "$cmake_project" -B "$test_dir/cmake-build" \
+            -DCMAKE_PREFIX_PATH="$runtime_prefix" >"$cmake_output" 2>&1; then
+        cat "$cmake_output" >&2
+        echo "Self-test failed: normalized ONNX Runtime CMake target did not load" >&2
         return 1
     fi
 
@@ -281,6 +400,19 @@ run_self_tests() {
     fi
     rm -- "$symlink_required_file"
     mv -- "$symlink_required_target" "$symlink_required_file"
+
+    library_link="$runtime_prefix/lib/libonnxruntime.so"
+    external_library_target="$test_dir/external-libonnxruntime.so"
+    library_link_target=$(readlink -- "$library_link")
+    : > "$external_library_target"
+    rm -- "$library_link"
+    ln -s -- "$external_library_target" "$library_link"
+    if verify_prefix "$runtime_prefix"; then
+        echo "Self-test failed: external ONNX Runtime library symlink was accepted" >&2
+        return 1
+    fi
+    rm -- "$library_link"
+    ln -s -- "$library_link_target" "$library_link"
 
     fake_bin="$test_dir/fake-bin"
     mkdir -- "$fake_bin"

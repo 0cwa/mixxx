@@ -3,6 +3,7 @@
 
 import hashlib
 import os
+import secrets
 import stat
 import subprocess
 import sys
@@ -155,41 +156,80 @@ def install_from_file_descriptor(
             "secure install destination descriptor is not a directory"
         )
 
-    destination_flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
     try:
-        installed_fd = os.open(
-            destination_name, destination_flags, 0o600, dir_fd=destination_fd
+        existing_stat = os.stat(
+            destination_name, dir_fd=destination_fd, follow_symlinks=False
         )
-    except OSError as error:
-        raise OSError(
-            f"could not open secure install destination {destination_name}: "
-            f"{error}"
-        ) from error
+    except FileNotFoundError:
+        existing_stat = None
 
-    try:
-        installed_stat = os.fstat(installed_fd)
-        if not stat.S_ISREG(installed_stat.st_mode):
+    if existing_stat is not None:
+        if stat.S_ISLNK(existing_stat.st_mode):
+            raise OSError("secure install destination must not be a symlink")
+        if not stat.S_ISREG(existing_stat.st_mode):
             raise OSError("secure install destination is not a regular file")
-        if installed_stat.st_nlink != 1:
+        if existing_stat.st_nlink != 1:
             raise OSError("secure install destination has multiple hard links")
-        os.ftruncate(installed_fd, 0)
+
+    temporary_name = None
+    installed_fd = None
+    for _ in range(100):
+        candidate_name = (
+            f".secure-download.{os.getpid()}.{secrets.token_hex(16)}"
+        )
+        try:
+            installed_fd = os.open(
+                candidate_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=destination_fd,
+            )
+        except FileExistsError:
+            continue
+        temporary_name = candidate_name
+        break
+    if installed_fd is None or temporary_name is None:
+        raise OSError("could not create secure install temporary file")
+
+    renamed = False
+    try:
         os.lseek(source_fd, 0, os.SEEK_SET)
         while chunk := os.read(source_fd, 1024 * 1024):
             chunk_offset = 0
             while chunk_offset < len(chunk):
                 chunk_offset += os.write(installed_fd, chunk[chunk_offset:])
         os.fsync(installed_fd)
+        temporary_stat = os.fstat(installed_fd)
+        if (
+            not stat.S_ISREG(temporary_stat.st_mode)
+            or temporary_stat.st_nlink != 1
+        ):
+            raise OSError(
+                "secure install temporary file changed during install"
+            )
+        os.replace(
+            temporary_name,
+            destination_name,
+            src_dir_fd=destination_fd,
+            dst_dir_fd=destination_fd,
+        )
+        renamed = True
         installed_path_stat = os.stat(
             destination_name, dir_fd=destination_fd, follow_symlinks=False
         )
         if (
             not stat.S_ISREG(installed_path_stat.st_mode)
-            or installed_path_stat.st_dev != installed_stat.st_dev
-            or installed_path_stat.st_ino != installed_stat.st_ino
+            or installed_path_stat.st_nlink != 1
         ):
             raise OSError("secure install destination changed during install")
+        os.fsync(destination_fd)
     finally:
         os.close(installed_fd)
+        if not renamed:
+            try:
+                os.unlink(temporary_name, dir_fd=destination_fd)
+            except FileNotFoundError:
+                pass
 
 
 def main() -> int:

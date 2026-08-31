@@ -1,6 +1,6 @@
 # This script runs during installation, after the staged model was verified at
 # configure time. Revalidate the source and destination immediately before
-# and after file(INSTALL), which necessarily reopens both paths.
+# and after file(COPY_FILE), which necessarily reopens both paths.
 set(_mixxx_stem_model_path "@MIXXX_STEM_MODEL_STAGED_FILE@")
 set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_path}")
 while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
@@ -77,11 +77,12 @@ while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
   set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_parent}")
 endwhile()
 
+file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")
+
 file(
-  INSTALL "${_mixxx_stem_model_path}"
-  DESTINATION "${_mixxx_stem_model_destination_dir}"
-  TYPE FILE
-  RENAME "@MIXXX_STEM_MODEL_NAME@"
+  COPY_FILE
+  "${_mixxx_stem_model_path}"
+  "${_mixxx_stem_model_destination_path}"
 )
 
 set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_path}")

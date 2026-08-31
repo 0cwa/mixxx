@@ -11,6 +11,66 @@ fail() {
     exit 1
 }
 
+test_secure_download_hard_link_safety() {
+    python3 - "$repository_root/tools/secure-download.py" <<'PY'
+import importlib.util
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+
+secure_download_path = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "secure_download", secure_download_path
+)
+secure_download = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(secure_download)
+
+with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-test.") as root:
+    root_path = Path(root)
+    source_path = root_path / "source"
+    destination_path = root_path / "destination"
+    protected_path = root_path / "protected"
+    original = b"original destination\n"
+    payload = b"verified payload\n"
+    source_path.write_bytes(payload)
+    destination_path.write_bytes(original)
+
+    source_fd = os.open(source_path, os.O_RDONLY)
+    destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        real_ftruncate = secure_download.os.ftruncate
+        injection_state = {"ftruncate_called": False}
+
+        def inject_hard_link(fd: int, length: int) -> None:
+            injection_state["ftruncate_called"] = True
+            os.link(destination_path, protected_path)
+            real_ftruncate(fd, length)
+
+        secure_download.os.ftruncate = inject_hard_link
+        secure_download.install_from_file_descriptor(
+            source_fd, destination_fd, destination_path.name
+        )
+    finally:
+        os.close(source_fd)
+        os.close(destination_fd)
+
+    assert destination_path.read_bytes() == payload
+    if injection_state["ftruncate_called"]:
+        assert protected_path.read_bytes() == original, (
+            "hard-linked protected file was modified during install"
+        )
+    else:
+        assert not protected_path.exists(), (
+            "secure install unexpectedly created a protected hard link"
+        )
+
+print("Secure download hard-link race regression passed.")
+PY
+}
+
 test_download_staging_safety() {
     local checkout_root
     local script_dir
@@ -458,6 +518,8 @@ test_cmake_install_staging_safety() {
     local failed_install_root
     local destination_symlink_root
     local destination_symlink_target
+    local destination_file_symlink_root
+    local destination_file_symlink_target
     local output
     local status
 
@@ -473,6 +535,8 @@ test_cmake_install_staging_safety() {
     failed_install_root="$test_root/failed-install"
     destination_symlink_root="$test_root/destination-symlink-install"
     destination_symlink_target="$test_root/destination-symlink-target"
+    destination_file_symlink_root="$test_root/destination-file-symlink-install"
+    destination_file_symlink_target="$test_root/destination-file-symlink-target"
     output="$test_root/output"
     mkdir -p -- "$project_dir" "$staged_parent"
     printf '%s\n' 'trusted-model' >"$staged_model"
@@ -516,8 +580,31 @@ EOF
     grep -Fqx 'trusted-model' "$installed_model" || \
         fail 'generated CMake install script did not install the verified model'
 
+    # A final destination symlink must be rejected before COPY_FILE can
+    # replace it, preserving the destination contract and its target.
+    mkdir -p -- "$destination_file_symlink_root/share/mixxx/models"
+    printf '%s\n' 'protected-model' >"$destination_file_symlink_target"
+    ln -s -- "$destination_file_symlink_target" \
+        "$destination_file_symlink_root/share/mixxx/models/htdemucs.onnx"
+    target_before=$(sha256sum "$destination_file_symlink_target")
+    status=0
+    if cmake --install "$build_dir" --prefix "$destination_file_symlink_root" \
+            >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || \
+        fail 'generated CMake install script accepted a destination file symlink'
+    test -L "$destination_file_symlink_root/share/mixxx/models/htdemucs.onnx" || \
+        fail 'CMake destination file symlink was replaced'
+    test "$target_before" = "$(sha256sum "$destination_file_symlink_target")" || \
+        fail 'generated CMake install script modified a destination symlink target'
+    grep -Fq 'symlink component' "$output" || \
+        fail 'generated CMake install script did not identify a destination file symlink'
+
     # Replace the staged artifact after configure. The generated install
-    # script must reject the symlink before file(INSTALL) can follow it.
+    # script must reject the symlink before COPY_FILE can consume it.
     printf '%s\n' 'trusted-model' >"$staged_symlink_target"
     target_before=$(sha256sum "$staged_symlink_target")
     rm -- "$staged_model"
@@ -557,7 +644,7 @@ EOF
         fail 'generated CMake install script did not identify an install parent symlink'
 
     # Replace the staged directory itself after configure. Its parent-chain
-    # check must prevent file(INSTALL) from following a redirected directory.
+    # check must prevent COPY_FILE from following a redirected directory.
     rm -- "$staged_model"
     mv -- "$staged_parent" "$staged_parent_backup"
     mkdir -- "$staged_parent_target"
@@ -584,6 +671,7 @@ EOF
 download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
 model_pointer="$repository_root/models/htdemucs.onnx"
 
+test_secure_download_hard_link_safety
 if ! "$repository_root/tools/onnxruntime_buildenv.sh" test; then
     fail 'ONNX Runtime staging self-test failed'
 fi
@@ -609,6 +697,7 @@ python3 - \
     "$repository_root/src/stems/stemconverter.h" \
     "$repository_root/.github/scripts/download-stemgen-model.sh" \
     "$repository_root/.github/scripts/verify-stemgen-model.sh" \
+    "$repository_root/.github/scripts/verify-stemgen-model.ps1" \
     "$repository_root/tools/debian_buildenv.sh" \
     "$repository_root/tools/onnxruntime_buildenv.sh" \
     "$repository_root/tools/secure-download.py" \
@@ -628,6 +717,7 @@ from pathlib import Path
     stemconverter_path,
     download_script_path,
     verifier_path,
+    powershell_verifier_path,
     debian_buildenv_path,
     onnxruntime_buildenv_path,
     secure_download_path,
@@ -683,6 +773,8 @@ assert "--install-fd" in download_script
 
 secure_download = secure_download_path.read_text()
 assert "os.O_NOFOLLOW" in secure_download
+assert "os.O_EXCL" in secure_download
+assert "os.replace" in secure_download
 assert "os.fstat" in secure_download
 assert "os.fsync" in secure_download
 assert "--install-fd" in secure_download
@@ -701,8 +793,14 @@ assert 'install(SCRIPT "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}")' in cmake_lists
 cmake_install_script = cmake_install_script_path.read_text()
 assert 'if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")' in cmake_install_script
 assert 'file(SHA256 "${_mixxx_stem_model_path}"' in cmake_install_script
-assert 'file(\n  INSTALL "${_mixxx_stem_model_path}"' in cmake_install_script
+assert 'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")' in cmake_install_script
+assert 'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"' in cmake_install_script
 assert 'file(\n  SHA256\n  "${_mixxx_stem_model_destination_path}"' in cmake_install_script
+
+verifier = powershell_verifier_path.read_text()
+assert "FileAttributes]::ReparsePoint" in verifier
+assert "FileStream]::new" in verifier
+assert "Get-FileHash" not in verifier
 
 workflow = workflow_path.read_text()
 # runner.* is unavailable in a job-level env mapping. Keep runner.temp in
