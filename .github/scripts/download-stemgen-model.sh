@@ -3,6 +3,7 @@
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+secure_download_helper="$script_dir/../../tools/secure-download.py"
 model_dir=${MIXXX_STEM_MODEL_DIR:-}
 if [ -z "$model_dir" ]; then
     printf '%s\n' \
@@ -161,6 +162,8 @@ if ! enter_staging_directory "$canonical_model_dir"; then
         >&2
     exit 2
 fi
+exec 9<.
+staging_fd_path="/proc/$$/fd/9"
 
 # Keep all subsequent operations relative to the directory that was entered
 # above. The shell's current directory remains bound to that directory even
@@ -181,20 +184,38 @@ fi
 
 # Reuse an already materialized, verified model when one is present. This also
 # makes local and CI runs idempotent without replacing a valid artifact.
-if [ -f "$model_path" ] &&
+if [ -f "$model_path" ] && [ ! -L "$model_path" ] &&
         MIXXX_STEM_MODEL_DIR=. "$script_dir/verify-stemgen-model.sh"; then
+    if [ -L "$model_path" ]; then
+        printf '%s\n' \
+            'The verified Stemgen model destination became a symlink.' \
+            >&2
+        exit 2
+    fi
     exit 0
 fi
 
 model_url=https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx
 temporary_dir=$(mktemp -d './.stemgen-model.XXXXXX')
-temporary_path="$temporary_dir/htdemucs.onnx"
+temporary_dir_name=${temporary_dir#./}
+staging_directory_path=$(CDPATH='' cd -P -- "$staging_fd_path" && pwd -P)
+temporary_directory_path="$staging_directory_path/$temporary_dir_name"
 cleanup() {
-    rm -rf -- "$temporary_dir"
+    rm -rf -- "${staging_fd_path:?}/${temporary_dir_name:?}" 2>/dev/null || :
+    exec 9<&-
 }
 trap cleanup EXIT HUP INT TERM
 
-curl \
+if ! CDPATH='' cd -P -- "$staging_fd_path/$temporary_dir_name" ||
+        [ "$(pwd -P)" != "$temporary_directory_path" ] ||
+        ! assert_staging_directory_outside_checkout; then
+    printf '%s\n' \
+        'Could not safely enter the Stemgen model temporary directory.' \
+        >&2
+    exit 2
+fi
+
+python3 "$secure_download_helper" ./htdemucs.onnx curl \
     --fail \
     --location \
     --proto '=https' \
@@ -203,13 +224,14 @@ curl \
     --silent \
     --show-error \
     --tlsv1.2 \
-    --output "$temporary_path" \
     "$model_url"
 
-MIXXX_STEM_MODEL_DIR="$temporary_dir" "$script_dir/verify-stemgen-model.sh"
+MIXXX_STEM_MODEL_DIR=. "$script_dir/verify-stemgen-model.sh"
 # GNU mv -T uses rename semantics and will not descend into a destination
 # directory that appears after the final-destination checks above. The
-# packaging callers run in GNU/Linux environments.
-mv -T -- "$temporary_path" "$model_path"
+# packaging callers run in GNU/Linux environments. The open directory
+# descriptor keeps the final destination bound to the original staging
+# directory even if its pathname is replaced while this script runs.
+mv -T -- ./htdemucs.onnx "$staging_fd_path/htdemucs.onnx"
 
 printf 'Materialized verified Stemgen model at %s\n' "$model_path"

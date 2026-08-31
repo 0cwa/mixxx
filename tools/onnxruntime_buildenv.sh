@@ -115,7 +115,13 @@ stage_archive() {
         return 1
     fi
 
-    mv -- "$temporary_prefix" "$runtime_prefix"
+    # GNU mv -T treats the destination as an exact path and never descends
+    # into a directory symlink; a raced destination is rejected safely.
+    if ! mv -T -- "$temporary_prefix" "$runtime_prefix"; then
+        rm -rf -- "$temporary_prefix"
+        echo "Could not safely install ONNX Runtime at: $runtime_prefix" >&2
+        return 1
+    fi
     printf 'Staged ONNX Runtime %s at %s\n' "$ONNXRUNTIME_VERSION" "$runtime_prefix"
 }
 
@@ -167,6 +173,11 @@ run_self_tests() {
     local runtime_prefix
     local targets_file
     local actual_sha256
+    local fake_bin
+    local real_mv
+    local race_prefix
+    local race_target
+    local race_target_marker
 
     test_dir=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-onnxruntime-test.XXXXXX")
     ONNXRUNTIME_CLEANUP_DIR="$test_dir"
@@ -212,6 +223,44 @@ run_self_tests() {
     if grep -q '/include/onnxruntime' "$targets_file" ||
             ! grep -q '/include"' "$targets_file"; then
         echo "Self-test failed: the ONNX Runtime include target path was not normalized" >&2
+        return 1
+    fi
+
+    fake_bin="$test_dir/fake-bin"
+    mkdir -- "$fake_bin"
+    real_mv="$(command -v mv)"
+    cat >"$fake_bin/mv" <<'EOF'
+#!/bin/bash
+
+set -euo pipefail
+
+if [[ "${FAKE_MV_RACE:-0}" -eq 1 ]]; then
+    [[ "$1" == "-T" && "$2" == "--" ]]
+    destination="$4"
+    ln -s -- "${FAKE_MV_TARGET:?}" "$destination"
+fi
+exec "$REAL_MV" "$@"
+EOF
+    chmod +x -- "$fake_bin/mv"
+    race_prefix="$test_dir/runtime-race"
+    race_target="$test_dir/runtime-race-target"
+    race_target_marker="$race_target/marker"
+    mkdir -p -- "$race_target"
+    printf '%s\n' 'untouched' >"$race_target_marker"
+    if ! PATH="$fake_bin:$PATH" \
+            FAKE_MV_RACE=1 \
+            FAKE_MV_TARGET="$race_target" \
+            REAL_MV="$real_mv" \
+            stage_archive "$archive_path" "$race_prefix"; then
+        :
+    else
+        echo "Self-test failed: ONNX Runtime destination race was accepted" >&2
+        return 1
+    fi
+    if [[ ! -L "$race_prefix" ]] ||
+            [[ "$(cat "$race_target_marker")" != 'untouched' ]] ||
+            [[ -e "$race_target/runtime-race" ]]; then
+        echo "Self-test failed: ONNX Runtime destination race modified the target" >&2
         return 1
     fi
 

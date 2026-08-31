@@ -13,6 +13,7 @@ set -e -o pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly ONNXRUNTIME_HELPER="$SCRIPT_DIR/onnxruntime_buildenv.sh"
+readonly SECURE_DOWNLOAD_HELPER="$SCRIPT_DIR/secure-download.py"
 readonly HTDEMUCS_MODEL_NAME="htdemucs.onnx"
 readonly HTDEMUCS_MODEL_URL="https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx"
 readonly HTDEMUCS_MODEL_SIZE=304413278
@@ -206,42 +207,67 @@ download_verified_file() {
     local expected_size="$3"
     local expected_sha256="$4"
     local destination="$5"
-    local temporary_path
+    local temporary_dir
+    local temporary_dir_name
 
     if ! validate_model_file_destination "$destination"; then
         return 1
     fi
 
-    temporary_path="$(sudo -u "$download_user" mktemp "./${destination}.tmp.XXXXXX")" || {
-        echo "Failed to create a temporary download for $destination" >&2
-        return 1
-    }
+    (
+        local staging_directory_path
+        local staging_fd_path
+        local temporary_directory_path
 
-    if ! sudo -u "$download_user" wget --quiet --output-document="$temporary_path" "$url";
-    then
-        echo "Failed to download $url" >&2
-        sudo -u "$download_user" rm -f -- "$temporary_path"
-        return 1
-    fi
+        exec 9<.
+        staging_fd_path="/proc/$BASHPID/fd/9"
 
-    if ! verify_file_size "$expected_size" "$temporary_path"; then
-        sudo -u "$download_user" rm -f -- "$temporary_path"
-        return 1
-    fi
+        temporary_dir="$(sudo -u "$download_user" mktemp -d "./.${destination}.tmp.XXXXXX")" || {
+            echo "Failed to create a temporary download for $destination" >&2
+            exit 1
+        }
+        temporary_dir_name=${temporary_dir#./}
+        staging_directory_path="$(cd -P -- "$staging_fd_path" && pwd -P)"
+        temporary_directory_path="$staging_directory_path/$temporary_dir_name"
 
-    if ! verify_sha256 "$expected_sha256" "$temporary_path"; then
-        sudo -u "$download_user" rm -f -- "$temporary_path"
-        return 1
-    fi
+        # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+        cleanup_temporary_download() {
+            rm -rf -- "${staging_fd_path:?}/${temporary_dir_name:?}" 2>/dev/null || :
+            exec 9<&-
+        }
+        trap cleanup_temporary_download EXIT HUP INT TERM
 
-    # GNU mv -T uses rename semantics and will not descend into a destination
-    # directory that appears after the final-destination checks above. This
-    # script is supported on Debian and Ubuntu, where GNU coreutils is present.
-    if ! sudo -u "$download_user" mv -T -- "$temporary_path" "$destination"; then
-        echo "Failed to install verified artifact at $destination" >&2
-        sudo -u "$download_user" rm -f -- "$temporary_path"
-        return 1
-    fi
+        if ! cd -P -- "$staging_fd_path/$temporary_dir_name" ||
+                [[ "$(pwd -P)" != "$temporary_directory_path" ]] ||
+                ! assert_model_staging_directory_outside_checkout; then
+            echo "Could not safely enter the temporary download directory for $destination" >&2
+            exit 1
+        fi
+        if ! sudo -u "$download_user" \
+                python3 "$SECURE_DOWNLOAD_HELPER" "./$HTDEMUCS_MODEL_NAME" \
+                wget --quiet --output-document=- "$url";
+        then
+            echo "Failed to download $url" >&2
+            exit 1
+        fi
+
+        if ! verify_file_size "$expected_size" "./$HTDEMUCS_MODEL_NAME"; then
+            exit 1
+        fi
+
+        if ! verify_sha256 "$expected_sha256" "./$HTDEMUCS_MODEL_NAME"; then
+            exit 1
+        fi
+
+        # GNU mv -T uses rename semantics and will not descend into a destination
+        # directory that appears after the final-destination checks above. This
+        # script is supported on Debian and Ubuntu, where GNU coreutils is present.
+        if ! mv -T -- "./$HTDEMUCS_MODEL_NAME" \
+                "$staging_fd_path/$destination"; then
+            echo "Failed to install verified artifact at $destination" >&2
+            exit 1
+        fi
+    )
 }
 
 find_mp4box() {
@@ -392,6 +418,8 @@ run_self_tests() {
     local sudo_path
     local wget_path
     local final_race_model_path
+    local temporary_race_model_path
+    local temporary_race_backup_path
 
     test_dir="$(mktemp -d /tmp/mixxx-debian-buildenv-test.XXXXXX)" || return 1
     test_file="$test_dir/verified-artifact"
@@ -610,19 +638,15 @@ run_self_tests() {
     printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        'output=' \
-        'while [ "$#" -gt 0 ]; do' \
-        '    case "$1" in' \
-        '        --output-document=*) output=${1#*=} ;;' \
-        '        --output-document) output=$2; shift ;;' \
-        '    esac' \
-        '    shift' \
-        'done' \
-        ': "${output:?wget output path was not provided}"' \
+        'current_temp_directory=$(pwd -P)' \
+        'if [ "${FAKE_WGET_REPLACE_TEMP:-0}" -eq 1 ]; then' \
+        '    mv -- "$current_temp_directory" "${FAKE_WGET_TEMP_BACKUP:?}"' \
+        '    ln -s -- "${FAKE_WGET_TEMP_TARGET:?}" "$current_temp_directory"' \
+        'fi' \
         'if [ "${FAKE_WGET_REPLACE_FINAL:-0}" -eq 1 ]; then' \
         '    ln -s -- "${FAKE_WGET_FINAL_TARGET:?}" "${FAKE_WGET_FINAL_PATH:?}"' \
         'fi' \
-        'printf "%s\\n" "${FAKE_WGET_CONTENT:?wget content was not provided}" > "$output"' > "$wget_path"
+        'printf "%s\\n" "${FAKE_WGET_CONTENT:?wget content was not provided}"' > "$wget_path"
     chmod +x "$wget_path"
 
     if ! (
@@ -648,6 +672,40 @@ run_self_tests() {
             [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
             ! grep -Fqx 'race-model' "$race_model_backup_path/$HTDEMUCS_MODEL_NAME"; then
         echo "Self-test failed: staging directory replacement race modified the checkout" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+
+    temporary_race_model_path="$test_dir/temporary-race-models"
+    temporary_race_backup_path="$test_dir/temporary-race-models-original"
+    mkdir -p -- "$temporary_race_model_path"
+    if ! (
+        enter_model_staging_directory "$temporary_race_model_path" "$USER"
+        PATH="$fake_path:$original_path"
+        export PATH
+        FAKE_WGET_CONTENT='race-model'
+        export FAKE_WGET_CONTENT
+        FAKE_WGET_REPLACE_TEMP=1
+        export FAKE_WGET_REPLACE_TEMP
+        FAKE_WGET_TEMP_BACKUP="$temporary_race_backup_path"
+        export FAKE_WGET_TEMP_BACKUP
+        FAKE_WGET_TEMP_TARGET="$checkout_model_path"
+        export FAKE_WGET_TEMP_TARGET
+        download_verified_file \
+            "$USER" \
+            "$HTDEMUCS_MODEL_URL" \
+            "$race_payload_size" \
+            "$race_payload_sha256" \
+            "$HTDEMUCS_MODEL_NAME"
+    ); then
+        echo "Self-test failed: temporary download pathname race was not handled safely" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
+    if [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
+            ! grep -Fqx 'race-model' \
+                "$temporary_race_model_path/$HTDEMUCS_MODEL_NAME"; then
+        echo "Self-test failed: temporary download pathname race modified the checkout" >&2
         rm -rf -- "$test_dir"
         return 1
     fi

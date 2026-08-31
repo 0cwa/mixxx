@@ -3102,7 +3102,11 @@ set(
 set(MIXXX_STEM_LFS_POINTER_HEADER "version https://git-lfs.github.com/spec/v1")
 function(mixxx_stem_model_is_lfs_pointer model_file result_variable)
   set(${result_variable} FALSE PARENT_SCOPE)
-  if(NOT EXISTS "${model_file}" OR IS_DIRECTORY "${model_file}")
+  if(
+    NOT EXISTS "${model_file}"
+    OR IS_DIRECTORY "${model_file}"
+    OR IS_SYMLINK "${model_file}"
+  )
     return()
   endif()
 
@@ -3120,7 +3124,11 @@ endfunction()
 
 function(mixxx_stem_model_matches_manifest model_file result_variable)
   set(${result_variable} FALSE PARENT_SCOPE)
-  if(NOT EXISTS "${model_file}" OR IS_DIRECTORY "${model_file}")
+  if(
+    NOT EXISTS "${model_file}"
+    OR IS_DIRECTORY "${model_file}"
+    OR IS_SYMLINK "${model_file}"
+  )
     return()
   endif()
 
@@ -3182,6 +3190,7 @@ if(MIXXX_STEM_MODEL_FILE)
   if(
     NOT EXISTS "${MIXXX_STEM_MODEL_FILE}"
     OR IS_DIRECTORY "${MIXXX_STEM_MODEL_FILE}"
+    OR IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"
   )
     message(
       FATAL_ERROR
@@ -3211,8 +3220,73 @@ if(MIXXX_STEM_MODEL_FILE)
     )
   endif()
 
+  set(
+    MIXXX_STEM_MODEL_STAGED_FILE
+    "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model/${MIXXX_STEM_MODEL_NAME}"
+  )
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model")
+  if(
+    IS_SYMLINK "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_FILE}"
+  )
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model destination is not a regular file: ${MIXXX_STEM_MODEL_STAGED_FILE}"
+    )
+  endif()
+  file(
+    COPY_FILE
+    "${MIXXX_STEM_MODEL_FILE}"
+    "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    ONLY_IF_DIFFERENT
+  )
+  if(
+    IS_SYMLINK "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    OR NOT EXISTS "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_FILE}"
+  )
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model is not a regular file: ${MIXXX_STEM_MODEL_STAGED_FILE}"
+    )
+  endif()
+  set(MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST FALSE)
+  mixxx_stem_model_matches_manifest(
+    "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST
+  )
+  if(NOT MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST)
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model does not match the verified model manifest: ${MIXXX_STEM_MODEL_STAGED_FILE}"
+    )
+  endif()
+
+  string(
+    CONCAT
+    MIXXX_STEM_MODEL_INSTALL_CHECK
+    "if(IS_SYMLINK [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
+    "  message(FATAL_ERROR [==[The staged Stemgen model must not be a symlink: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
+    "endif()\n"
+    "if(NOT EXISTS [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==] OR IS_DIRECTORY [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
+    "  message(FATAL_ERROR [==[The staged Stemgen model is missing or is not a regular file: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
+    "endif()\n"
+    "file(SIZE [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==] model_size)\n"
+    "if(NOT model_size EQUAL ${MIXXX_STEM_MODEL_SIZE})\n"
+    "  message(FATAL_ERROR [==[The staged Stemgen model size changed before install: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
+    "endif()\n"
+    "file(SHA256 [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==] model_sha256)\n"
+    "if(NOT model_sha256 STREQUAL [==[${MIXXX_STEM_MODEL_SHA256}]==])\n"
+    "  message(FATAL_ERROR [==[The staged Stemgen model checksum changed before install: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
+    "endif()\n"
+  )
+  # Revalidate the configure-time snapshot immediately before the generated
+  # install rule consumes it. The staged path is never the caller-owned model
+  # pathname, and symlinks are rejected at both configure and install time.
+  install(CODE "${MIXXX_STEM_MODEL_INSTALL_CHECK}")
+
   install(
-    FILES "${MIXXX_STEM_MODEL_FILE}"
+    FILES "${MIXXX_STEM_MODEL_STAGED_FILE}"
     DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
     RENAME "${MIXXX_STEM_MODEL_NAME}"
   )

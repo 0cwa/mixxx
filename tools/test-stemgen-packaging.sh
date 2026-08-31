@@ -33,6 +33,13 @@ test_download_staging_safety() {
     local race_backup_destination
     local real_mktemp
     local final_race_destination
+    local temporary_race_destination
+    local temporary_race_backup_destination
+    local reuse_race_destination
+    local reuse_race_backup_destination
+    local reuse_race_target
+    local verify_symlink_destination
+    local verify_symlink_target
 
     test_download_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-model-test.XXXXXX")
     cleanup_download_test() {
@@ -44,8 +51,10 @@ test_download_staging_safety() {
     script_dir="$checkout_root/.github/scripts"
     fake_bin="$test_download_root/bin"
     curl_log="$test_download_root/curl.log"
-    mkdir -p -- "$script_dir" "$checkout_root/models" "$fake_bin"
+    mkdir -p -- "$script_dir" "$checkout_root/models" "$checkout_root/tools" "$fake_bin"
     cp -- "$download_script" "$script_dir/download-stemgen-model.sh"
+    cp -- "$repository_root/tools/secure-download.py" \
+        "$checkout_root/tools/secure-download.py"
     chmod +x -- "$script_dir/download-stemgen-model.sh"
 
     cat >"$script_dir/verify-stemgen-model.sh" <<'EOF'
@@ -54,6 +63,10 @@ test_download_staging_safety() {
 set -eu
 
 model_path="${MIXXX_STEM_MODEL_DIR:?}/htdemucs.onnx"
+if [ "${FAKE_VERIFY_REPLACE_MODEL:-0}" -eq 1 ]; then
+    mv -- "$model_path" "${FAKE_VERIFY_MODEL_BACKUP:?}"
+    ln -s -- "${FAKE_VERIFY_MODEL_TARGET:?}" "$model_path"
+fi
 if [ ! -f "$model_path" ]; then
     exit 1
 fi
@@ -66,29 +79,20 @@ EOF
 
 set -eu
 
-output=
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --output)
-            output=$2
-            shift 2
-            ;;
-        *)
-            shift
-            ;;
-    esac
-done
-
-: "${output:?curl output path was not provided}"
-printf '%s\n' "$output" >>"${FAKE_CURL_LOG:?}"
+printf '%s\n' "$(pwd -P)" >>"${FAKE_CURL_LOG:?}"
+if [ "${FAKE_CURL_REPLACE_TEMP:-0}" -eq 1 ]; then
+    current_temp_directory=$(pwd -P)
+    mv -- "$current_temp_directory" "${FAKE_CURL_TEMP_BACKUP:?}"
+    ln -s -- "${FAKE_CURL_TEMP_TARGET:?}" "$current_temp_directory"
+fi
 if [ "${FAKE_CURL_FAIL:-0}" -eq 1 ]; then
-    printf '%s\n' 'partial-model' >"$output"
+    printf '%s\n' 'partial-model'
     exit 17
 fi
 if [ "${FAKE_CURL_REPLACE_FINAL:-0}" -eq 1 ]; then
     ln -s -- "${FAKE_CURL_FINAL_TARGET:?}" "${FAKE_CURL_FINAL_PATH:?}"
 fi
-printf '%s\n' 'materialized-model' >"$output"
+printf '%s\n' 'materialized-model'
 EOF
     chmod +x -- "$fake_bin/curl"
 
@@ -260,6 +264,46 @@ EOF
         fail 'existing LFS pointer was not replaced with downloaded content'
     test -s "$curl_log" || fail 'existing LFS pointer was incorrectly reused'
 
+    reuse_race_destination="$test_download_root/reuse-race-models"
+    reuse_race_backup_destination="$test_download_root/reuse-race-model"
+    reuse_race_target="$test_download_root/reuse-race-target"
+    mkdir -p -- "$reuse_race_destination"
+    printf '%s\n' 'materialized-model' >"$reuse_race_destination/htdemucs.onnx"
+    printf '%s\n' 'materialized-model' >"$reuse_race_target"
+    : >"$curl_log"
+    status=0
+    if FAKE_VERIFY_REPLACE_MODEL=1 \
+            FAKE_VERIFY_MODEL_BACKUP="$reuse_race_backup_destination" \
+            FAKE_VERIFY_MODEL_TARGET="$reuse_race_target" \
+            MIXXX_STEM_MODEL_DIR="$reuse_race_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 2 || \
+        fail 'verified model reuse race was accepted'
+    test -L "$reuse_race_destination/htdemucs.onnx" || \
+        fail 'verified model reuse race did not inject its symlink'
+    test -f "$reuse_race_backup_destination" || \
+        fail 'verified model reuse race lost the original model'
+    test ! -s "$curl_log" || \
+        fail 'verified model reuse race started a download'
+
+    verify_symlink_destination="$test_download_root/verify-symlink-models"
+    verify_symlink_target="$test_download_root/verify-symlink-target"
+    mkdir -p -- "$verify_symlink_destination"
+    printf '%s\n' 'materialized-model' >"$verify_symlink_target"
+    ln -s -- "$verify_symlink_target" \
+        "$verify_symlink_destination/htdemucs.onnx"
+    if MIXXX_STEM_MODEL_DIR="$verify_symlink_destination" \
+            "$repository_root/.github/scripts/verify-stemgen-model.sh" \
+            >/dev/null 2>&1; then
+        fail 'model verifier accepted a symlink'
+    fi
+
     # Replace the validated pathname after the script has entered the staging
     # directory. All temporary and final writes must stay in the directory
     # that was entered, even though its pathname now points at the checkout.
@@ -297,6 +341,26 @@ EOF
         "$race_backup_destination/htdemucs.onnx" || \
         fail 'race-safe write did not remain in the original staging directory'
     rm -f -- "$fake_bin/mktemp"
+
+    temporary_race_destination="$test_download_root/temporary-race-models"
+    temporary_race_backup_destination="$test_download_root/temporary-race-models-original"
+    mkdir -p -- "$temporary_race_destination"
+    : >"$curl_log"
+    if ! FAKE_CURL_REPLACE_TEMP=1 \
+            FAKE_CURL_TEMP_BACKUP="$temporary_race_backup_destination" \
+            FAKE_CURL_TEMP_TARGET="$checkout_root/models" \
+            MIXXX_STEM_MODEL_DIR="$temporary_race_destination" \
+            PATH="$fake_bin:$PATH" \
+            FAKE_CURL_LOG="$curl_log" \
+            "$script_dir/download-stemgen-model.sh" >/dev/null 2>&1; then
+        fail 'temporary download pathname race was not handled safely'
+    fi
+    test "$inside_pointer_before" = \
+        "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
+        fail 'temporary download pathname race modified the checkout model'
+    grep -Fqx 'materialized-model' \
+        "$temporary_race_destination/htdemucs.onnx" || \
+        fail 'temporary download pathname race lost the downloaded model'
 
     final_race_destination="$test_download_root/final-race-models"
     mkdir -p -- "$final_race_destination"
@@ -347,6 +411,49 @@ EOF
         fail 'temporary download directory was not cleaned after failure'
 }
 
+test_cmake_install_staging_safety() {
+    local test_root
+    local staged_model
+    local target_model
+    local install_root
+    local target_before
+    local output
+    local status
+
+    test_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-cmake-test.XXXXXX")
+    staged_model="$test_root/staged-model"
+    target_model="$test_root/target-model"
+    install_root="$test_root/install"
+    output="$test_root/output"
+    printf '%s\n' 'trusted-model' >"$target_model"
+    target_before=$(sha256sum "$target_model")
+    ln -s -- "$target_model" "$staged_model"
+
+    status=0
+    if cmake -P /dev/stdin >"$output" 2>&1 <<EOF
+if(IS_SYMLINK "${staged_model}")
+    message(FATAL_ERROR "The staged Stemgen model must not be a symlink")
+endif()
+file(SIZE "${staged_model}" staged_size)
+file(SHA256 "${staged_model}" staged_sha256)
+file(INSTALL DESTINATION "${install_root}" TYPE FILE FILES "${staged_model}")
+EOF
+    then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || fail 'CMake install guard accepted a staged symlink'
+    test -L "$staged_model" || fail 'CMake race fixture lost its staged symlink'
+    test "$target_before" = "$(sha256sum "$target_model")" || \
+        fail 'CMake install guard modified the symlink target'
+    test ! -e "$install_root" || \
+        fail 'CMake install guard created an install artifact for a symlink'
+    grep -Fq 'must not be a symlink' "$output" || \
+        fail 'CMake install guard did not identify the staged symlink'
+    rm -rf -- "$test_root"
+}
+
 download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
 model_pointer="$repository_root/models/htdemucs.onnx"
 
@@ -358,6 +465,7 @@ if ! "$repository_root/tools/debian_buildenv.sh" test; then
 fi
 
 test_download_staging_safety
+test_cmake_install_staging_safety
 pointer_before=$(sha256sum "$model_pointer")
 if env -u MIXXX_STEM_MODEL_DIR "$download_script" >/dev/null 2>&1; then
     fail 'unparameterized model download unexpectedly succeeded'
@@ -375,6 +483,7 @@ python3 - \
     "$repository_root/.github/scripts/download-stemgen-model.sh" \
     "$repository_root/.github/scripts/verify-stemgen-model.sh" \
     "$repository_root/tools/debian_buildenv.sh" \
+    "$repository_root/CMakeLists.txt" \
     "$repository_root/.github/workflows/build.yml" <<'PY'
 import json
 import sys
@@ -390,6 +499,7 @@ from pathlib import Path
     download_script_path,
     verifier_path,
     debian_buildenv_path,
+    cmake_lists_path,
     workflow_path,
 ) = map(Path, sys.argv[1:])
 
@@ -434,6 +544,14 @@ for path in (
 download_script = download_script_path.read_text()
 assert "model_dir=${MIXXX_STEM_MODEL_DIR:-}" in download_script
 assert "$script_dir/../../models" not in download_script
+
+cmake_lists = cmake_lists_path.read_text()
+assert 'IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"' in cmake_lists
+assert 'COPY_FILE' in cmake_lists
+assert 'MIXXX_STEM_MODEL_STAGED_FILE' in cmake_lists
+assert 'install(CODE "${MIXXX_STEM_MODEL_INSTALL_CHECK}")' in cmake_lists
+assert 'FILES "${MIXXX_STEM_MODEL_STAGED_FILE}"' in cmake_lists
+assert 'The staged Stemgen model must not be a symlink' in cmake_lists
 
 workflow = workflow_path.read_text()
 # runner.* is unavailable in a job-level env mapping. Keep runner.temp in
