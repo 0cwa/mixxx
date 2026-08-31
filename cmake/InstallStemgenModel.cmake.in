@@ -226,7 +226,6 @@ if(EXISTS "${_mixxx_stem_model_destination_path}")
     RENAME
     "${_mixxx_stem_model_destination_path}"
     "${_mixxx_stem_model_backup_path}"
-    NO_REPLACE
     RESULT _mixxx_stem_model_backup_result
   )
   if(NOT _mixxx_stem_model_backup_result STREQUAL "0")
@@ -242,7 +241,6 @@ file(
   RENAME
   "${_mixxx_stem_model_temporary_path}"
   "${_mixxx_stem_model_destination_path}"
-  NO_REPLACE
   RESULT _mixxx_stem_model_rename_result
 )
 if(NOT _mixxx_stem_model_rename_result STREQUAL "0")
@@ -255,7 +253,6 @@ if(NOT _mixxx_stem_model_rename_result STREQUAL "0")
         RENAME
         "${_mixxx_stem_model_backup_path}"
         "${_mixxx_stem_model_destination_path}"
-        NO_REPLACE
         RESULT _mixxx_stem_model_restore_result
       )
       if(_mixxx_stem_model_restore_result STREQUAL "0")
@@ -333,7 +330,6 @@ if(NOT _mixxx_stem_model_destination_matches)
         RENAME
         "${_mixxx_stem_model_backup_path}"
         "${_mixxx_stem_model_destination_path}"
-        NO_REPLACE
         RESULT _mixxx_stem_model_rollback_result
       )
       if(_mixxx_stem_model_rollback_result STREQUAL "0")

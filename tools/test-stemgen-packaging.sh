@@ -657,6 +657,7 @@ test_cmake_install_staging_safety() {
     local hardlink_install_root
     local hardlink_protected_model
     local hardlink_destination
+    local target_inode_before
     local failed_install_root
     local destination_symlink_root
     local destination_symlink_target
@@ -731,6 +732,9 @@ EOF
     mkdir -p -- "$(dirname -- "$hardlink_destination")"
     printf '%s\n' 'protected-model' >"$hardlink_protected_model"
     ln -- "$hardlink_protected_model" "$hardlink_destination"
+    target_inode_before=$(stat -c '%i' -- "$hardlink_protected_model")
+    test "$target_inode_before" = "$(stat -c '%i' -- "$hardlink_destination")" || \
+        fail 'hard-link fixture did not share the protected inode'
     target_before=$(sha256sum "$hardlink_protected_model")
     status=0
     if cmake --install "$build_dir" --prefix "$hardlink_install_root" \
@@ -743,6 +747,10 @@ EOF
         fail 'generated CMake install script rejected a hard-linked destination'
     test "$target_before" = "$(sha256sum "$hardlink_protected_model")" || \
         fail 'generated CMake install script modified a protected hard link'
+    test "$target_inode_before" = "$(stat -c '%i' -- "$hardlink_protected_model")" || \
+        fail 'generated CMake install script replaced the protected inode'
+    test "$target_inode_before" != "$(stat -c '%i' -- "$hardlink_destination")" || \
+        fail 'generated CMake install script did not replace only the destination inode'
     grep -Fqx 'trusted-model' "$hardlink_destination" || \
         fail 'generated CMake install script did not replace the hard-linked destination'
     test ! -L "$hardlink_destination" || \
