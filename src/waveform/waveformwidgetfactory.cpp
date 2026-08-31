@@ -28,6 +28,7 @@
 #include "util/performancetimer.h"
 #include "util/timer.h"
 #include "waveform/guitick.h"
+#include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/sharedglcontext.h"
 #include "waveform/visualsmanager.h"
 #include "waveform/vsyncthread.h"
@@ -84,6 +85,8 @@ const ConfigKey kEndOfTrackWarningKey = ConfigKey(
         kWaveformGroup, QStringLiteral("EndOfTrackWarningTime"));
 const ConfigKey kDefaultZoomKey =
         ConfigKey(kWaveformGroup, QStringLiteral("DefaultZoom"));
+const ConfigKey kMaxZoomOutKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("MaxZoomOut"));
 const ConfigKey kFrameRateKey =
         ConfigKey(kWaveformGroup, QStringLiteral("FrameRate"));
 const ConfigKey kVSyncKey = ConfigKey(kWaveformGroup, QStringLiteral("VSync"));
@@ -139,6 +142,7 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_frameRate(60),
           m_endOfTrackWarningTime(30),
           m_defaultZoom(WaveformWidgetRenderer::s_waveformDefaultZoom),
+          m_maxZoomOut(WaveformWidgetRenderer::s_waveformDefaultMaxZoom),
           m_zoomSync(true),
           m_overviewNormalized(kOverviewNormalizedDefault),
           m_untilMarkShowBeats(false),
@@ -409,6 +413,12 @@ bool WaveformWidgetFactory::setConfig(UserSettingsPointer config) {
     } else {
         m_config->setValue(kEndOfTrackWarningKey, m_endOfTrackWarningTime);
     }
+
+    double maxZoomOut = m_config->getValueString(kMaxZoomOutKey).toDouble(&ok);
+    if (!ok) {
+        maxZoomOut = WaveformWidgetRenderer::s_waveformDefaultMaxZoom;
+    }
+    setMaxZoomOutInternal(maxZoomOut, false);
 
     double defaultZoom = m_config->getValueString(kDefaultZoomKey).toDouble(&ok);
     if (ok) {
@@ -764,14 +774,51 @@ bool WaveformWidgetFactory::setWidgetTypeFromHandle(int handleIndex, bool force)
 }
 
 void WaveformWidgetFactory::setDefaultZoom(double zoom) {
-    m_defaultZoom = math_clamp(zoom, WaveformWidgetRenderer::s_waveformMinZoom,
-                               WaveformWidgetRenderer::s_waveformMaxZoom);
+    m_defaultZoom = math_clamp(zoom, WaveformWidgetRenderer::s_waveformMinZoom, m_maxZoomOut);
     if (m_config) {
         m_config->setValue(kDefaultZoomKey, m_defaultZoom);
     }
 
     for (const auto& holder : std::as_const(m_waveformWidgetHolders)) {
         holder.m_waveformViewer->setZoom(m_defaultZoom);
+    }
+}
+
+void WaveformWidgetFactory::setMaxZoomOut(double maxZoomOut) {
+    setMaxZoomOutInternal(maxZoomOut, true);
+}
+
+void WaveformWidgetFactory::setMaxZoomOutInternal(
+        double maxZoomOut, bool persistDefaultZoom) {
+    const double newMaxZoomOut =
+            WaveformWidgetRenderer::clampWaveformMaxZoom(maxZoomOut);
+    const bool maxZoomOutChanged = newMaxZoomOut != m_maxZoomOut;
+    WaveformWidgetRenderer::setWaveformMaxZoom(newMaxZoomOut);
+    if (ControlObject::exists(kMaxZoomOutKey)) {
+        ControlObject::set(kMaxZoomOutKey, newMaxZoomOut);
+    }
+    m_maxZoomOut = newMaxZoomOut;
+
+    m_defaultZoom = math_clamp(m_defaultZoom,
+            WaveformWidgetRenderer::s_waveformMinZoom,
+            m_maxZoomOut);
+
+    if (m_config) {
+        m_config->setValue(kMaxZoomOutKey, m_maxZoomOut);
+        if (persistDefaultZoom) {
+            m_config->setValue(kDefaultZoomKey, m_defaultZoom);
+        }
+    }
+
+    for (const auto& holder : std::as_const(m_waveformWidgetHolders)) {
+        holder.m_waveformViewer->setZoom(
+                math_clamp(holder.m_waveformWidget->getZoom(),
+                        WaveformWidgetRenderer::s_waveformMinZoom,
+                        m_maxZoomOut));
+    }
+
+    if (maxZoomOutChanged) {
+        emit this->maxZoomOutChanged(m_maxZoomOut);
     }
 }
 

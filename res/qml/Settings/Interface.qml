@@ -76,13 +76,23 @@ Category {
         jumpPaletteInput.currentIndex = colorPane.jumpPaletteColorIndex;
         themeColorTab.dirty = false;
     }
+    function setWaveformMaxZoomOutInput(value) {
+        maxZoomOutInput.value = Qt.binding(function () {
+            return maxZoomOutInput.decimalToInt(maxZoomOutInput.realValue);
+        });
+        maxZoomOutInput.realValue = value;
+    }
     function loadWaveform() {
+        setWaveformMaxZoomOutInput(Mixxx.Config.waveformMaxZoomOut);
+        waveformTab.dirty = false;
     }
     function resetDeck() {
     }
     function resetInterface() {
     }
     function resetWaveform() {
+        setWaveformMaxZoomOutInput(10);
+        waveformTab.dirty = true;
     }
     function saveDeck() {
         Mixxx.Config.controlCueDefault = cueModeInput.currentIndex;
@@ -136,6 +146,7 @@ Category {
         loadInterface();
     }
     function saveWaveform() {
+        Mixxx.Config.waveformMaxZoomOut = maxZoomOutInput.realValue;
         loadWaveform();
     }
 
@@ -888,6 +899,56 @@ Category {
 
             onActivated: {
                 root.selectedIndex = 1;
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.topMargin: 20
+                spacing: 0
+
+                GridLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 14
+                    Layout.rightMargin: 14
+                    columnSpacing: 20
+                    columns: 2
+                    rowSpacing: 15
+
+                    RowLayout {
+                        Layout.fillWidth: true
+
+                        Mixxx.SettingParameter {
+                            Layout.fillWidth: true
+                            label: "Maximum zoom-out level"
+
+                            Text {
+                                anchors.fill: parent
+                                color: Theme.white
+                                font.pixelSize: 14
+                                font.weight: Font.Medium
+                                horizontalAlignment: Text.AlignLeft
+                                text: parent.label
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                        SettingComponents.SpinBox {
+                            id: maxZoomOutInput
+
+                            Layout.preferredWidth: 140
+                            max: 100
+                            min: 10
+                            precision: 0
+                            realValue: 10
+                            suffix: "x"
+
+                            onValueChanged: waveformTab.dirty = true
+                        }
+                    }
+                }
+                Item {
+                    Layout.fillHeight: true
+                    Layout.fillWidth: true
+                }
             }
         }
         Mixxx.SettingGroup {
