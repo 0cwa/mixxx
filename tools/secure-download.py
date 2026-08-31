@@ -2,6 +2,7 @@
 """Download an artifact into a regular file and optionally install it."""
 
 import ctypes
+import errno
 import hashlib
 import os
 import secrets
@@ -176,6 +177,25 @@ def link_from_file_descriptor(
         raise OSError(error_number, os.strerror(error_number))
 
 
+def link_from_file_descriptor_with_unique_name(
+    source_fd: int, destination_fd: int, prefix: str
+) -> str:
+    for _ in range(100):
+        candidate_name = (
+            f".secure-download.{prefix}.{os.getpid()}.{secrets.token_hex(16)}"
+        )
+        try:
+            link_from_file_descriptor(
+                source_fd, destination_fd, candidate_name
+            )
+        except OSError as error:
+            if error.errno == errno.EEXIST:
+                continue
+            raise
+        return candidate_name
+    raise OSError("could not create secure install backup link")
+
+
 def unlink_temporary_name_if_owned(
     destination_fd: int,
     temporary_name: str,
@@ -196,6 +216,49 @@ def unlink_temporary_name_if_owned(
             os.unlink(temporary_name, dir_fd=destination_fd)
         except FileNotFoundError:
             pass
+
+
+def restore_existing_destination(
+    existing_fd: int,
+    destination_fd: int,
+    destination_name: str,
+    existing_backup_name: str,
+    existing_fd_stat: os.stat_result,
+    installed_stat: os.stat_result,
+) -> bool:
+    try:
+        current_stat = os.stat(
+            destination_name, dir_fd=destination_fd, follow_symlinks=False
+        )
+    except FileNotFoundError:
+        current_stat = None
+
+    if current_stat is not None:
+        if (
+            stat.S_ISREG(current_stat.st_mode)
+            and current_stat.st_dev == existing_fd_stat.st_dev
+            and current_stat.st_ino == existing_fd_stat.st_ino
+        ):
+            unlink_temporary_name_if_owned(
+                destination_fd, existing_backup_name, existing_fd_stat
+            )
+            return True
+        if (
+            not stat.S_ISREG(current_stat.st_mode)
+            or current_stat.st_dev != installed_stat.st_dev
+            or current_stat.st_ino != installed_stat.st_ino
+            or current_stat.st_nlink != 1
+        ):
+            # Do not remove or replace an entry that was not created by this
+            # install. Leave the old artifact linked by existing_backup_name.
+            return False
+        os.unlink(destination_name, dir_fd=destination_fd)
+
+    link_from_file_descriptor(existing_fd, destination_fd, destination_name)
+    unlink_temporary_name_if_owned(
+        destination_fd, existing_backup_name, existing_fd_stat
+    )
+    return True
 
 
 def install_from_file_descriptor(
@@ -251,8 +314,33 @@ def install_from_file_descriptor(
     if installed_fd is None or temporary_name is None:
         raise OSError("could not create secure install temporary file")
 
-    temporary_stat = None
+    existing_fd = None
+    existing_fd_stat = None
+    existing_backup_name = None
+    temporary_stat = os.fstat(installed_fd)
     try:
+        if existing_stat is not None:
+            try:
+                existing_fd = os.open(
+                    destination_name,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=destination_fd,
+                )
+            except OSError as error:
+                raise OSError(
+                    "secure install destination changed during install"
+                ) from error
+            existing_fd_stat = os.fstat(existing_fd)
+            if (
+                not stat.S_ISREG(existing_fd_stat.st_mode)
+                or existing_fd_stat.st_dev != existing_stat.st_dev
+                or existing_fd_stat.st_ino != existing_stat.st_ino
+                or existing_fd_stat.st_nlink != 1
+            ):
+                raise OSError(
+                    "secure install destination changed during install"
+                )
+
         os.lseek(source_fd, 0, os.SEEK_SET)
         while chunk := os.read(source_fd, 1024 * 1024):
             chunk_offset = 0
@@ -283,7 +371,32 @@ def install_from_file_descriptor(
         # directly from the held descriptor. A pathname-based rename would let
         # a concurrent process replace temporary_name after the descriptor was
         # verified and before the rename reopened that pathname.
-        if existing_stat is not None:
+        if existing_fd is not None:
+            try:
+                current_existing_stat = os.stat(
+                    destination_name,
+                    dir_fd=destination_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError as error:
+                raise OSError(
+                    "secure install destination changed during install"
+                ) from error
+            if (
+                not stat.S_ISREG(current_existing_stat.st_mode)
+                or current_existing_stat.st_dev != existing_fd_stat.st_dev
+                or current_existing_stat.st_ino != existing_fd_stat.st_ino
+                or current_existing_stat.st_nlink != 1
+            ):
+                raise OSError(
+                    "secure install destination changed during install"
+                )
+            # Keep a descriptor-bound link to the old artifact while replacing
+            # the destination. This lets a failed linkat restore the old file
+            # without relying on linking an already-unlinked inode.
+            existing_backup_name = link_from_file_descriptor_with_unique_name(
+                existing_fd, destination_fd, "existing"
+            )
             os.unlink(destination_name, dir_fd=destination_fd)
         link_from_file_descriptor(
             installed_fd, destination_fd, destination_name
@@ -302,7 +415,34 @@ def install_from_file_descriptor(
         ):
             raise OSError("secure install destination changed during install")
         os.fsync(destination_fd)
+        if existing_backup_name is not None:
+            unlink_temporary_name_if_owned(
+                destination_fd, existing_backup_name, existing_fd_stat
+            )
+            existing_backup_name = None
+    except OSError:
+        if existing_backup_name is not None:
+            try:
+                if restore_existing_destination(
+                    existing_fd,
+                    destination_fd,
+                    destination_name,
+                    existing_backup_name,
+                    existing_fd_stat,
+                    temporary_stat,
+                ):
+                    existing_backup_name = None
+            except OSError as restore_error:
+                raise OSError(
+                    "secure install failed and the existing destination "
+                    "could not be preserved"
+                ) from restore_error
+        raise
     finally:
+        # Retain an unverified rollback link if a competing path prevented a
+        # safe restoration. The old artifact is then still recoverable by name.
+        if existing_fd is not None:
+            os.close(existing_fd)
         os.close(installed_fd)
         if temporary_stat is not None:
             unlink_temporary_name_if_owned(

@@ -38,8 +38,9 @@ def exercise_temporary_path_replacement(replacement: str) -> None:
         protected_path = root_path / "protected"
         temporary_path = None
         payload = b"verified payload\n"
+        original = b"original destination\n"
         source_path.write_bytes(payload)
-        destination_path.write_bytes(b"original destination\n")
+        destination_path.write_bytes(original)
         protected_path.write_bytes(b"protected content\n")
 
         source_fd = os.open(source_path, os.O_RDONLY)
@@ -80,8 +81,9 @@ def exercise_temporary_path_replacement(replacement: str) -> None:
         assert installation_error is not None, (
             f"temporary {replacement} replacement was accepted"
         )
-        assert not destination_path.exists()
+        assert destination_path.read_bytes() == original
         assert not destination_path.is_symlink()
+        assert not list(root_path.glob(".secure-download.existing.*"))
         assert protected_path.read_bytes() == b"protected content\n"
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
@@ -816,6 +818,10 @@ assert "os.fsync" in secure_download
 assert "--install-fd" in secure_download
 
 debian_buildenv = debian_buildenv_path.read_text()
+assert 'sudo -C 10 -u "$download_user"' in debian_buildenv
+assert "--preserve-fds=9" not in debian_buildenv
+assert 'Stemgen model: $MODEL_PATH/$HTDEMUCS_MODEL_NAME' in debian_buildenv
+assert "VENV_PATH" not in debian_buildenv
 assert "--no-verbose" in debian_buildenv
 assert "--tries=3" in debian_buildenv
 assert "--timeout=30" in debian_buildenv
@@ -893,6 +899,8 @@ assert stemgen.count("MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxru
 assert stemgen.count(staging_path) >= 4
 assert "MIXXX_INSTALL_STEM_CONVERSION: true" in stemgen
 assert "-DSTEM_CONVERSION=ON" in stemgen
+assert "MIXXX_STEM_MODEL_FILE: ${{ runner.temp }}/mixxx-stemgen-model/htdemucs.onnx" in stemgen
+assert '-DMIXXX_STEM_MODEL_FILE="$MIXXX_STEM_MODEL_FILE"' in stemgen
 tag_fetch_position = stemgen.index("run: git fetch origin --force --tags")
 confirm_position = stemgen.index('git describe --always --first-parent --dirty=-modified')
 assert tag_fetch_position < confirm_position

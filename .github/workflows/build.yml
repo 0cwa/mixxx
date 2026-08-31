@@ -833,6 +833,7 @@ jobs:
       - name: "Configure model-enabled Stemgen build"
         env:
           MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
+          MIXXX_STEM_MODEL_FILE: ${{ runner.temp }}/mixxx-stemgen-model/htdemucs.onnx
         run: |
           set -o pipefail
           cmake \
@@ -845,6 +846,7 @@ jobs:
             -DPIPEWIRE=ON \
             -DSTEM=ON \
             -DSTEM_CONVERSION=ON \
+            -DMIXXX_STEM_MODEL_FILE="$MIXXX_STEM_MODEL_FILE" \
             -DWARNINGS_FATAL=ON \
             -DDEBUG_ASSERTIONS_FATAL=OFF \
             -DDOWNLOAD_MANUAL=OFF \

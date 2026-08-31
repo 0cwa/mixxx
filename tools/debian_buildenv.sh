@@ -243,7 +243,10 @@ download_verified_file() {
             echo "Could not safely enter the temporary download directory for $destination" >&2
             exit 1
         fi
-        if ! sudo --preserve-fds=9 -u "$download_user" \
+        # sudo on the Ubuntu runner supports -C, but not the newer
+        # --preserve-fds spelling. Closing descriptors from 10 preserves the
+        # staging directory descriptor at 9 for the descriptor-bound install.
+        if ! sudo -C 10 -u "$download_user" \
                 python3 "$SECURE_DOWNLOAD_HELPER" "./$HTDEMUCS_MODEL_NAME" \
                 --verify-size "$expected_size" \
                 --verify-sha256 "$expected_sha256" \
@@ -619,12 +622,22 @@ run_self_tests() {
     checkout_model_before="$(sha256sum "$checkout_model_file")"
 
     sudo_path="$fake_path/sudo"
+    # The generated fixture intentionally contains literal shell variables.
+    # shellcheck disable=SC2016
     printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        "if [ \"\$1\" = \"--preserve-fds=9\" ]; then shift; fi" \
-        "[ \"\$1\" = \"-u\" ]" \
+        'preserved_fds=false' \
+        'if [ "${1:-}" = "-C" ]; then' \
+        '    [ "${2:-}" = "10" ]' \
+        '    preserved_fds=true' \
+        '    shift 2' \
+        'fi' \
+        '[ "${1:-}" = "-u" ]' \
         'shift 2' \
+        'if [ "${1:-}" = "python3" ]; then' \
+        '    [ "$preserved_fds" = true ]' \
+        'fi' \
         'exec "$@"' > "$sudo_path"
     chmod +x "$sudo_path"
     wget_path="$fake_path/wget"
@@ -985,7 +998,7 @@ case "$1" in
                     echo "Refusing to stage Mixxx HTDemucs models at $MODEL_PATH" >&2
                     exit 1
                 fi
-                MODEL_PATH="$(pwd -P)"
+                MODEL_STAGING_PATH="$(pwd -P)"
 
                 for MODEL_NAME in "${MODEL_FILES[@]}"; do
                     MODEL_FILE="$MODEL_NAME"
@@ -1002,7 +1015,7 @@ case "$1" in
                         echo "Failed to download Mixxx HTDemucs model $MODEL_NAME"
                         exit 1
                     fi
-                    echo "Verified model downloaded successfully to $MODEL_PATH/$MODEL_NAME"
+                    echo "Verified model downloaded successfully to $MODEL_STAGING_PATH/$MODEL_NAME"
                 done
             ); then
                 exit 1
@@ -1016,9 +1029,8 @@ case "$1" in
             echo "✓ MP4Box is installed at: $MP4BOX_PATH"
 
             echo ""
-            echo "✓ Mixxx Python environment setup complete!"
-            echo "Virtual environment location: $VENV_PATH"
-            echo "Demucs: $VENV_PATH/bin/demucs"
+            echo "✓ Stem conversion environment setup complete!"
+            echo "Stemgen model: $MODEL_PATH/$HTDEMUCS_MODEL_NAME"
             echo "MP4Box: $MP4BOX_PATH"
         fi
         ;;
