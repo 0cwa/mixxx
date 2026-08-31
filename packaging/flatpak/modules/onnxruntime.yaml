@@ -10,6 +10,16 @@ build-commands:
   # The release archive contains flat headers directly in include/. Fail early
   # if the header consumed by Mixxx is missing before copying that layout.
   - test -f include/onnxruntime_cxx_api.h
+  - test -f lib/libonnxruntime_providers_shared.so
+  - test -L lib/libonnxruntime.so
+  - test "$(readlink lib/libonnxruntime.so)" = libonnxruntime.so.1
+  - test -L lib/libonnxruntime.so.1
+  - test "$(readlink lib/libonnxruntime.so.1)" = libonnxruntime.so.1.26.0
+  - test -f lib/libonnxruntime.so.1.26.0
+  - test -f lib/cmake/onnxruntime/onnxruntimeConfig.cmake
+  - test -f lib/cmake/onnxruntime/onnxruntimeConfigVersion.cmake
+  - test -f lib/cmake/onnxruntime/onnxruntimeTargets.cmake
+  - test -f lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake
   - cp -a include/. "${FLATPAK_DEST}/include/"
   - cp -a lib/libonnxruntime.so* lib/libonnxruntime_providers_shared.so "${FLATPAK_DEST}/lib/"
   - cp -a lib/cmake/onnxruntime/. "${FLATPAK_DEST}/lib/cmake/onnxruntime/"

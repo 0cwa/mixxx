@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Download an artifact into a regular file and optionally install it."""
 
+import ctypes
 import hashlib
 import os
 import secrets
@@ -142,8 +143,67 @@ def verify_file_descriptor(
         os.lseek(file_descriptor, 0, os.SEEK_SET)
 
 
-def install_from_file_descriptor(
+def link_from_file_descriptor(
     source_fd: int, destination_fd: int, destination_name: str
+) -> None:
+    """Create a directory entry for source_fd without reopening its path."""
+    if sys.platform != "linux":
+        raise OSError(
+            "secure descriptor installation is only supported on Linux"
+        )
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    linkat.restype = ctypes.c_int
+    if (
+        linkat(
+            source_fd,
+            b"",
+            destination_fd,
+            os.fsencode(destination_name),
+            0x1000,  # Linux AT_EMPTY_PATH
+        )
+        != 0
+    ):
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+
+
+def unlink_temporary_name_if_owned(
+    destination_fd: int,
+    temporary_name: str,
+    temporary_stat: os.stat_result,
+) -> None:
+    try:
+        path_stat = os.stat(
+            temporary_name, dir_fd=destination_fd, follow_symlinks=False
+        )
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISREG(path_stat.st_mode)
+        and path_stat.st_dev == temporary_stat.st_dev
+        and path_stat.st_ino == temporary_stat.st_ino
+    ):
+        try:
+            os.unlink(temporary_name, dir_fd=destination_fd)
+        except FileNotFoundError:
+            pass
+
+
+def install_from_file_descriptor(
+    source_fd: int,
+    destination_fd: int,
+    destination_name: str,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
 ) -> None:
     if (
         not destination_name
@@ -180,7 +240,7 @@ def install_from_file_descriptor(
         try:
             installed_fd = os.open(
                 candidate_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 0o600,
                 dir_fd=destination_fd,
             )
@@ -191,14 +251,13 @@ def install_from_file_descriptor(
     if installed_fd is None or temporary_name is None:
         raise OSError("could not create secure install temporary file")
 
-    renamed = False
+    temporary_stat = None
     try:
         os.lseek(source_fd, 0, os.SEEK_SET)
         while chunk := os.read(source_fd, 1024 * 1024):
             chunk_offset = 0
             while chunk_offset < len(chunk):
                 chunk_offset += os.write(installed_fd, chunk[chunk_offset:])
-        os.fsync(installed_fd)
         temporary_stat = os.fstat(installed_fd)
         if (
             not stat.S_ISREG(temporary_stat.st_mode)
@@ -207,29 +266,48 @@ def install_from_file_descriptor(
             raise OSError(
                 "secure install temporary file changed during install"
             )
-        os.replace(
-            temporary_name,
-            destination_name,
-            src_dir_fd=destination_fd,
-            dst_dir_fd=destination_fd,
+        os.fsync(installed_fd)
+        verify_file_descriptor(installed_fd, expected_size, expected_sha256)
+        temporary_final_stat = os.fstat(installed_fd)
+        if (
+            not stat.S_ISREG(temporary_final_stat.st_mode)
+            or temporary_final_stat.st_dev != temporary_stat.st_dev
+            or temporary_final_stat.st_ino != temporary_stat.st_ino
+            or temporary_final_stat.st_nlink > 1
+        ):
+            raise OSError(
+                "secure install temporary file changed during install"
+            )
+
+        # Remove the old entry without following it, then create the new entry
+        # directly from the held descriptor. A pathname-based rename would let
+        # a concurrent process replace temporary_name after the descriptor was
+        # verified and before the rename reopened that pathname.
+        if existing_stat is not None:
+            os.unlink(destination_name, dir_fd=destination_fd)
+        link_from_file_descriptor(
+            installed_fd, destination_fd, destination_name
         )
-        renamed = True
+        unlink_temporary_name_if_owned(
+            destination_fd, temporary_name, temporary_stat
+        )
         installed_path_stat = os.stat(
             destination_name, dir_fd=destination_fd, follow_symlinks=False
         )
         if (
             not stat.S_ISREG(installed_path_stat.st_mode)
+            or installed_path_stat.st_dev != temporary_stat.st_dev
+            or installed_path_stat.st_ino != temporary_stat.st_ino
             or installed_path_stat.st_nlink != 1
         ):
             raise OSError("secure install destination changed during install")
         os.fsync(destination_fd)
     finally:
         os.close(installed_fd)
-        if not renamed:
-            try:
-                os.unlink(temporary_name, dir_fd=destination_fd)
-            except FileNotFoundError:
-                pass
+        if temporary_stat is not None:
+            unlink_temporary_name_if_owned(
+                destination_fd, temporary_name, temporary_stat
+            )
 
 
 def main() -> int:
@@ -270,7 +348,13 @@ def main() -> int:
     try:
         verify_file_descriptor(output_fd, verify_size, verify_sha256)
         if install_fd is not None and install_name is not None:
-            install_from_file_descriptor(output_fd, install_fd, install_name)
+            install_from_file_descriptor(
+                output_fd,
+                install_fd,
+                install_name,
+                verify_size,
+                verify_sha256,
+            )
     except OSError as error:
         print(
             f"Secure download verification/install failed: {error}",

@@ -11,7 +11,7 @@ fail() {
     exit 1
 }
 
-test_secure_download_hard_link_safety() {
+test_secure_download_descriptor_install_race() {
     python3 - "$repository_root/tools/secure-download.py" <<'PY'
 import importlib.util
 import os
@@ -28,46 +28,69 @@ secure_download = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(secure_download)
 
-with tempfile.TemporaryDirectory(prefix="mixxx-secure-download-test.") as root:
-    root_path = Path(root)
-    source_path = root_path / "source"
-    destination_path = root_path / "destination"
-    protected_path = root_path / "protected"
-    original = b"original destination\n"
-    payload = b"verified payload\n"
-    source_path.write_bytes(payload)
-    destination_path.write_bytes(original)
+def exercise_temporary_path_replacement(replacement: str) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix=f"mixxx-secure-download-{replacement}."
+    ) as root:
+        root_path = Path(root)
+        source_path = root_path / "source"
+        destination_path = root_path / "destination"
+        protected_path = root_path / "protected"
+        temporary_path = None
+        payload = b"verified payload\n"
+        source_path.write_bytes(payload)
+        destination_path.write_bytes(b"original destination\n")
+        protected_path.write_bytes(b"protected content\n")
 
-    source_fd = os.open(source_path, os.O_RDONLY)
-    destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        real_ftruncate = secure_download.os.ftruncate
-        injection_state = {"ftruncate_called": False}
+        source_fd = os.open(source_path, os.O_RDONLY)
+        destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+        real_fsync = secure_download.os.fsync
+        injection_state = {"fsync_called": False}
 
-        def inject_hard_link(fd: int, length: int) -> None:
-            injection_state["ftruncate_called"] = True
-            os.link(destination_path, protected_path)
-            real_ftruncate(fd, length)
+        def replace_temporary_path(fd: int) -> None:
+            nonlocal temporary_path
+            real_fsync(fd)
+            if injection_state["fsync_called"]:
+                return
+            candidates = list(root_path.glob(".secure-download.*"))
+            assert len(candidates) == 1
+            temporary_path = candidates[0]
+            temporary_path.unlink()
+            if replacement == "regular":
+                temporary_path.write_bytes(b"unverified content\n")
+            else:
+                temporary_path.symlink_to(protected_path)
+            injection_state["fsync_called"] = True
 
-        secure_download.os.ftruncate = inject_hard_link
-        secure_download.install_from_file_descriptor(
-            source_fd, destination_fd, destination_path.name
+        secure_download.os.fsync = replace_temporary_path
+        installation_error = None
+        try:
+            try:
+                secure_download.install_from_file_descriptor(
+                    source_fd, destination_fd, destination_path.name
+                )
+            except OSError as error:
+                installation_error = error
+        finally:
+            secure_download.os.fsync = real_fsync
+            os.close(source_fd)
+            os.close(destination_fd)
+
+        assert injection_state["fsync_called"]
+        assert installation_error is not None, (
+            f"temporary {replacement} replacement was accepted"
         )
-    finally:
-        os.close(source_fd)
-        os.close(destination_fd)
+        assert not destination_path.exists()
+        assert not destination_path.is_symlink()
+        assert protected_path.read_bytes() == b"protected content\n"
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
-    assert destination_path.read_bytes() == payload
-    if injection_state["ftruncate_called"]:
-        assert protected_path.read_bytes() == original, (
-            "hard-linked protected file was modified during install"
-        )
-    else:
-        assert not protected_path.exists(), (
-            "secure install unexpectedly created a protected hard link"
-        )
 
-print("Secure download hard-link race regression passed.")
+for replacement_kind in ("regular", "symlink"):
+    exercise_temporary_path_replacement(replacement_kind)
+
+print("Secure download descriptor-install race regressions passed.")
 PY
 }
 
@@ -671,7 +694,7 @@ EOF
 download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
 model_pointer="$repository_root/models/htdemucs.onnx"
 
-test_secure_download_hard_link_safety
+test_secure_download_descriptor_install_race
 if ! "$repository_root/tools/onnxruntime_buildenv.sh" test; then
     fail 'ONNX Runtime staging self-test failed'
 fi
@@ -748,6 +771,17 @@ assert "outside the source checkout" in readme
 onnxruntime_module = onnxruntime_module_path.read_text()
 assert 'cp -a include/. "${FLATPAK_DEST}/include/"' in onnxruntime_module
 assert 'cp -a include/. "${FLATPAK_DEST}/include/onnxruntime/"' not in onnxruntime_module
+for required_layout_check in (
+    "test -f include/onnxruntime_cxx_api.h",
+    "test -f lib/libonnxruntime_providers_shared.so",
+    "test -L lib/libonnxruntime.so",
+    "test -L lib/libonnxruntime.so.1",
+    "test -f lib/libonnxruntime.so.1.26.0",
+    "test -f lib/cmake/onnxruntime/onnxruntimeConfig.cmake",
+    "test -f lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake",
+):
+    assert required_layout_check in onnxruntime_module
+assert 'cp -a lib/libonnxruntime.so* lib/libonnxruntime_providers_shared.so' in onnxruntime_module
 
 stemconverter = stemconverter_path.read_text()
 assert "#include <onnxruntime_cxx_api.h>" in stemconverter
@@ -774,10 +808,18 @@ assert "--install-fd" in download_script
 secure_download = secure_download_path.read_text()
 assert "os.O_NOFOLLOW" in secure_download
 assert "os.O_EXCL" in secure_download
-assert "os.replace" in secure_download
+assert "linkat" in secure_download
+assert "link_from_file_descriptor" in secure_download
+assert "os.replace" not in secure_download
 assert "os.fstat" in secure_download
 assert "os.fsync" in secure_download
 assert "--install-fd" in secure_download
+
+debian_buildenv = debian_buildenv_path.read_text()
+assert "--no-verbose" in debian_buildenv
+assert "--tries=3" in debian_buildenv
+assert "--timeout=30" in debian_buildenv
+assert "--waitretry=5" in debian_buildenv
 
 onnxruntime_buildenv = onnxruntime_buildenv_path.read_text()
 assert 'python3 "$SECURE_DOWNLOAD_HELPER" "$archive_path"' in onnxruntime_buildenv
@@ -789,6 +831,14 @@ assert 'COPY_FILE' in cmake_lists
 assert 'MIXXX_STEM_MODEL_STAGED_FILE' in cmake_lists
 assert 'InstallStemgenModel.cmake.in' in cmake_lists
 assert 'install(SCRIPT "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}")' in cmake_lists
+assert "MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST" not in cmake_lists
+copy_position = cmake_lists.index(
+    'COPY_FILE\n    "${MIXXX_STEM_MODEL_FILE}"'
+)
+staged_hash_position = cmake_lists.index(
+    'mixxx_stem_model_matches_manifest(\n    "${MIXXX_STEM_MODEL_STAGED_FILE}"'
+)
+assert copy_position < staged_hash_position
 
 cmake_install_script = cmake_install_script_path.read_text()
 assert 'if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")' in cmake_install_script
@@ -796,6 +846,12 @@ assert 'file(SHA256 "${_mixxx_stem_model_path}"' in cmake_install_script
 assert 'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")' in cmake_install_script
 assert 'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"' in cmake_install_script
 assert 'file(\n  SHA256\n  "${_mixxx_stem_model_destination_path}"' in cmake_install_script
+assert cmake_install_script.index(
+    'file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")'
+) < cmake_install_script.index(
+    'file(\n  COPY_FILE\n  "${_mixxx_stem_model_path}"'
+)
+assert "Revalidate it after" in cmake_install_script
 
 verifier = powershell_verifier_path.read_text()
 assert "FileAttributes]::ReparsePoint" in verifier

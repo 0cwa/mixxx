@@ -79,6 +79,31 @@ endwhile()
 
 file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")
 
+# MAKE_DIRECTORY reopens the destination parent chain. Revalidate it after
+# creation so a replacement that happened while creating missing components is
+# rejected before COPY_FILE can follow it.
+set(
+  _mixxx_stem_model_path_to_check
+  "${_mixxx_stem_model_destination_path}"
+)
+while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
+  if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")
+    message(
+      FATAL_ERROR
+      "The installed Stemgen model path gained a symlink component while creating its parent: ${_mixxx_stem_model_destination_path}"
+    )
+  endif()
+  get_filename_component(
+    _mixxx_stem_model_parent
+    "${_mixxx_stem_model_path_to_check}"
+    DIRECTORY
+  )
+  if(_mixxx_stem_model_parent STREQUAL _mixxx_stem_model_path_to_check)
+    break()
+  endif()
+  set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_parent}")
+endwhile()
+
 file(
   COPY_FILE
   "${_mixxx_stem_model_path}"

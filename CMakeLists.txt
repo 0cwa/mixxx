@@ -3223,18 +3223,6 @@ if(MIXXX_STEM_MODEL_FILE)
       "MIXXX_STEM_MODEL_FILE is an unmaterialized Git LFS pointer, not a model file: ${MIXXX_STEM_MODEL_FILE}. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
     )
   endif()
-  set(MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST FALSE)
-  mixxx_stem_model_matches_manifest(
-    "${MIXXX_STEM_MODEL_FILE}"
-    MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST
-  )
-  if(NOT MIXXX_STEM_MODEL_FILE_MATCHES_MANIFEST)
-    message(
-      FATAL_ERROR
-      "MIXXX_STEM_MODEL_FILE does not match the verified Stem model in ${MIXXX_STEM_MODEL_MANIFEST}: ${MIXXX_STEM_MODEL_FILE}"
-    )
-  endif()
-
   set(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT FALSE)
   mixxx_stem_model_path_has_symlink_component(
     "${MIXXX_STEM_MODEL_FILE}"
@@ -3293,6 +3281,19 @@ if(MIXXX_STEM_MODEL_FILE)
     "${MIXXX_STEM_MODEL_STAGED_FILE}"
     ONLY_IF_DIFFERENT
   )
+  # Validate the copied bytes, not a source pathname that was hashed before
+  # COPY_FILE reopened it. The staged file is the only model path consumed by
+  # the generated install rule.
+  if(
+    NOT EXISTS "${MIXXX_STEM_MODEL_FILE}"
+    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_FILE}"
+    OR IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"
+  )
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE changed during staging: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
   set(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT FALSE)
   mixxx_stem_model_path_has_symlink_component(
     "${MIXXX_STEM_MODEL_FILE}"

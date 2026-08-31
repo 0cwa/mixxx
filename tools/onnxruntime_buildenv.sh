@@ -7,6 +7,7 @@ readonly SCRIPT_DIR
 readonly SECURE_DOWNLOAD_HELPER="$SCRIPT_DIR/secure-download.py"
 readonly ONNXRUNTIME_VERSION="1.26.0"
 readonly ONNXRUNTIME_ARCHIVE_NAME="onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+readonly ONNXRUNTIME_ARCHIVE_ROOT="onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}"
 readonly ONNXRUNTIME_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/${ONNXRUNTIME_ARCHIVE_NAME}"
 readonly ONNXRUNTIME_SHA256="1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57"
 ONNXRUNTIME_CLEANUP_DIR=
@@ -150,6 +151,55 @@ verify_prefix() {
     done
 }
 
+verify_archive_layout() {
+    local archive_path="$1"
+    local archive_listing
+    local archive_entry
+    local relative_entry
+    local required_entry
+
+    if ! archive_listing=$(tar --list --gzip --file="$archive_path"); then
+        echo "Could not inspect ONNX Runtime archive: $archive_path" >&2
+        return 1
+    fi
+
+    while IFS= read -r archive_entry; do
+        [[ -n "$archive_entry" ]] || continue
+        case "$archive_entry" in
+            "$ONNXRUNTIME_ARCHIVE_ROOT"|"$ONNXRUNTIME_ARCHIVE_ROOT/"*)
+                ;;
+            *)
+                echo "ONNX Runtime archive has an unexpected top-level entry: $archive_entry" >&2
+                return 1
+                ;;
+        esac
+        relative_entry="${archive_entry#"$ONNXRUNTIME_ARCHIVE_ROOT"}"
+        case "$relative_entry" in
+            *"/../"*|*"/.."|"../"*|".."|*"/./"*|*"/."|"./"*)
+                echo "ONNX Runtime archive has an unsafe relative entry: $archive_entry" >&2
+                return 1
+                ;;
+        esac
+    done <<< "$archive_listing"
+
+    for required_entry in \
+        include/onnxruntime_cxx_api.h \
+        lib/libonnxruntime.so \
+        lib/libonnxruntime.so.1 \
+        lib/libonnxruntime.so.1.26.0 \
+        lib/libonnxruntime_providers_shared.so \
+        lib/cmake/onnxruntime/onnxruntimeConfig.cmake \
+        lib/cmake/onnxruntime/onnxruntimeConfigVersion.cmake \
+        lib/cmake/onnxruntime/onnxruntimeTargets.cmake \
+        lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake; do
+        if ! grep -Fqx "$ONNXRUNTIME_ARCHIVE_ROOT/$required_entry" <<< "$archive_listing" &&
+                ! grep -Fqx "$ONNXRUNTIME_ARCHIVE_ROOT/$required_entry/" <<< "$archive_listing"; then
+            echo "ONNX Runtime archive is missing required entry: $required_entry" >&2
+            return 1
+        fi
+    done
+}
+
 stage_archive() {
     local archive_path="$1"
     local runtime_prefix="$2"
@@ -160,6 +210,9 @@ stage_archive() {
     if [[ ! -f "$archive_path" ]] ||
             path_contains_symlink_component "$archive_path"; then
         echo "Cannot stage missing ONNX Runtime archive: $archive_path" >&2
+        return 1
+    fi
+    if ! verify_archive_layout "$archive_path"; then
         return 1
     fi
 
@@ -280,6 +333,12 @@ run_self_tests() {
     local external_library_target
     local cmake_project
     local cmake_output
+    local incomplete_archive_dir
+    local incomplete_archive_root
+    local incomplete_archive_path
+    local unexpected_archive_dir
+    local unexpected_archive_root
+    local unexpected_archive_path
 
     test_dir=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-onnxruntime-test.XXXXXX")
     ONNXRUNTIME_CLEANUP_DIR="$test_dir"
@@ -333,6 +392,31 @@ EOF
             "0000000000000000000000000000000000000000000000000000000000000000" \
             "$archive_path"; then
         echo "Self-test failed: checksum mismatch was accepted" >&2
+        return 1
+    fi
+
+    incomplete_archive_dir="$test_dir/incomplete-archive"
+    incomplete_archive_root="$incomplete_archive_dir/$ONNXRUNTIME_ARCHIVE_ROOT"
+    mkdir -p -- "$incomplete_archive_root/include"
+    cp -a "$archive_root/." "$incomplete_archive_root/"
+    rm -- "$incomplete_archive_root/include/onnxruntime_cxx_api.h"
+    incomplete_archive_path="$test_dir/incomplete-$ONNXRUNTIME_ARCHIVE_NAME"
+    tar --create --gzip --file="$incomplete_archive_path" \
+        --directory="$incomplete_archive_dir" "$ONNXRUNTIME_ARCHIVE_ROOT"
+    if stage_archive "$incomplete_archive_path" "$test_dir/incomplete-runtime"; then
+        echo "Self-test failed: incomplete ONNX Runtime archive was accepted" >&2
+        return 1
+    fi
+
+    unexpected_archive_dir="$test_dir/unexpected-archive"
+    unexpected_archive_root="$unexpected_archive_dir/unexpected-root"
+    mkdir -p -- "$unexpected_archive_root/include"
+    printf 'test header\n' > "$unexpected_archive_root/include/onnxruntime_cxx_api.h"
+    unexpected_archive_path="$test_dir/unexpected-$ONNXRUNTIME_ARCHIVE_NAME"
+    tar --create --gzip --file="$unexpected_archive_path" \
+        --directory="$unexpected_archive_dir" unexpected-root
+    if stage_archive "$unexpected_archive_path" "$test_dir/unexpected-runtime"; then
+        echo "Self-test failed: unexpected ONNX Runtime archive root was accepted" >&2
         return 1
     fi
 

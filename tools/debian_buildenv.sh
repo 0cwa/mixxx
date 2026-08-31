@@ -250,7 +250,13 @@ download_verified_file() {
                 --install-fd 9 \
                 --install-name "$destination" \
                 -- \
-                wget --quiet --output-document=- "$url";
+                wget \
+                    --no-verbose \
+                    --output-document=- \
+                    --tries=3 \
+                    --timeout=30 \
+                    --waitretry=5 \
+                    "$url";
         then
             echo "Failed to download $url" >&2
             exit 1
