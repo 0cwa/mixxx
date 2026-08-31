@@ -196,6 +196,8 @@ if [ -f "$model_path" ] && [ ! -L "$model_path" ] &&
 fi
 
 model_url=https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx
+model_size=304413278
+model_sha256=db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d
 temporary_dir=$(mktemp -d './.stemgen-model.XXXXXX')
 temporary_dir_name=${temporary_dir#./}
 staging_directory_path=$(CDPATH='' cd -P -- "$staging_fd_path" && pwd -P)
@@ -215,7 +217,13 @@ if ! CDPATH='' cd -P -- "$staging_fd_path/$temporary_dir_name" ||
     exit 2
 fi
 
-python3 "$secure_download_helper" ./htdemucs.onnx curl \
+python3 "$secure_download_helper" ./htdemucs.onnx \
+    --verify-size "$model_size" \
+    --verify-sha256 "$model_sha256" \
+    --install-fd 9 \
+    --install-name htdemucs.onnx \
+    -- \
+    curl \
     --fail \
     --location \
     --proto '=https' \
@@ -225,13 +233,5 @@ python3 "$secure_download_helper" ./htdemucs.onnx curl \
     --show-error \
     --tlsv1.2 \
     "$model_url"
-
-MIXXX_STEM_MODEL_DIR=. "$script_dir/verify-stemgen-model.sh"
-# GNU mv -T uses rename semantics and will not descend into a destination
-# directory that appears after the final-destination checks above. The
-# packaging callers run in GNU/Linux environments. The open directory
-# descriptor keeps the final destination bound to the original staging
-# directory even if its pathname is replaced while this script runs.
-mv -T -- ./htdemucs.onnx "$staging_fd_path/htdemucs.onnx"
 
 printf 'Materialized verified Stemgen model at %s\n' "$model_path"

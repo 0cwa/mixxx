@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+readonly SECURE_DOWNLOAD_HELPER="$SCRIPT_DIR/secure-download.py"
 readonly ONNXRUNTIME_VERSION="1.26.0"
 readonly ONNXRUNTIME_ARCHIVE_NAME="onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
 readonly ONNXRUNTIME_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/${ONNXRUNTIME_ARCHIVE_NAME}"
@@ -33,6 +36,24 @@ verify_sha256() {
     fi
 }
 
+path_contains_symlink_component() {
+    local path_to_check="$1"
+    local parent_path
+
+    while [[ -n "$path_to_check" && "$path_to_check" != "/" &&
+            "$path_to_check" != "." ]]; do
+        if [[ -L "$path_to_check" ]]; then
+            return 0
+        fi
+        parent_path=$(dirname -- "$path_to_check")
+        if [[ "$parent_path" == "$path_to_check" ]]; then
+            break
+        fi
+        path_to_check="$parent_path"
+    done
+    return 1
+}
+
 verify_prefix() {
     local runtime_prefix="$1"
     local required_file
@@ -40,6 +61,10 @@ verify_prefix() {
 
     if [[ -z "$runtime_prefix" || ! -d "$runtime_prefix" ]]; then
         echo "ONNX Runtime prefix is missing: $runtime_prefix" >&2
+        return 1
+    fi
+    if path_contains_symlink_component "$runtime_prefix"; then
+        echo "ONNX Runtime prefix contains a symlink path component: $runtime_prefix" >&2
         return 1
     fi
 
@@ -50,7 +75,8 @@ verify_prefix() {
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeConfig.cmake" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets.cmake" \
         "$runtime_prefix/lib/cmake/onnxruntime/onnxruntimeTargets-release.cmake"; do
-        if [[ ! -f "$required_file" ]]; then
+        if [[ ! -f "$required_file" ]] ||
+                path_contains_symlink_component "$required_file"; then
             echo "ONNX Runtime prefix is incomplete; missing: $required_file" >&2
             return 1
         fi
@@ -73,14 +99,19 @@ stage_archive() {
     local temporary_prefix
     local targets_file
 
-    if [[ ! -f "$archive_path" ]]; then
+    if [[ ! -f "$archive_path" ]] ||
+            path_contains_symlink_component "$archive_path"; then
         echo "Cannot stage missing ONNX Runtime archive: $archive_path" >&2
         return 1
     fi
 
     parent_dir=$(dirname -- "$runtime_prefix")
+    if path_contains_symlink_component "$runtime_prefix"; then
+        echo "ONNX Runtime prefix contains a symlink path component: $runtime_prefix" >&2
+        return 1
+    fi
     mkdir -p -- "$parent_dir"
-    if [[ -e "$runtime_prefix" ]]; then
+    if [[ -e "$runtime_prefix" || -L "$runtime_prefix" ]]; then
         echo "Refusing to overwrite existing ONNX Runtime prefix: $runtime_prefix" >&2
         return 1
     fi
@@ -135,20 +166,27 @@ stage_runtime() {
         echo "Set MIXXX_ONNX_RUNTIME_PREFIX or pass an ONNX Runtime prefix to stage." >&2
         return 1
     fi
-    if [[ -e "$runtime_prefix" ]]; then
+    if [[ -e "$runtime_prefix" || -L "$runtime_prefix" ]]; then
         verify_prefix "$runtime_prefix"
         echo "Using existing verified ONNX Runtime prefix: $runtime_prefix"
         return 0
     fi
 
     parent_dir=$(dirname -- "$runtime_prefix")
+    if path_contains_symlink_component "$runtime_prefix"; then
+        echo "ONNX Runtime prefix contains a symlink path component: $runtime_prefix" >&2
+        return 1
+    fi
     mkdir -p -- "$parent_dir"
     temporary_dir=$(mktemp -d "$parent_dir/.onnxruntime-download.XXXXXX")
     archive_path="$temporary_dir/$ONNXRUNTIME_ARCHIVE_NAME"
     ONNXRUNTIME_CLEANUP_DIR="$temporary_dir"
     trap cleanup EXIT HUP INT TERM
 
-    curl \
+    python3 "$SECURE_DOWNLOAD_HELPER" "$archive_path" \
+        --verify-sha256 "$ONNXRUNTIME_SHA256" \
+        -- \
+        curl \
         --fail \
         --location \
         --proto '=https' \
@@ -157,9 +195,7 @@ stage_runtime() {
         --silent \
         --show-error \
         --tlsv1.2 \
-        --output "$archive_path" \
         "$ONNXRUNTIME_URL"
-    verify_sha256 "$ONNXRUNTIME_SHA256" "$archive_path"
     stage_archive "$archive_path" "$runtime_prefix"
     trap - EXIT HUP INT TERM
     cleanup
@@ -178,6 +214,9 @@ run_self_tests() {
     local race_prefix
     local race_target
     local race_target_marker
+    local symlink_prefix
+    local symlink_required_file
+    local symlink_required_target
 
     test_dir=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-onnxruntime-test.XXXXXX")
     ONNXRUNTIME_CLEANUP_DIR="$test_dir"
@@ -225,6 +264,23 @@ run_self_tests() {
         echo "Self-test failed: the ONNX Runtime include target path was not normalized" >&2
         return 1
     fi
+
+    symlink_prefix="$test_dir/runtime-link"
+    ln -s -- "$runtime_prefix" "$symlink_prefix"
+    if verify_prefix "$symlink_prefix"; then
+        echo "Self-test failed: symlinked ONNX Runtime prefix was accepted" >&2
+        return 1
+    fi
+    symlink_required_file="$runtime_prefix/include/onnxruntime_cxx_api.h"
+    symlink_required_target="$runtime_prefix/include/onnxruntime_cxx_api.real.h"
+    mv -- "$symlink_required_file" "$symlink_required_target"
+    ln -s -- "$symlink_required_target" "$symlink_required_file"
+    if verify_prefix "$runtime_prefix"; then
+        echo "Self-test failed: symlinked ONNX Runtime file was accepted" >&2
+        return 1
+    fi
+    rm -- "$symlink_required_file"
+    mv -- "$symlink_required_target" "$symlink_required_file"
 
     fake_bin="$test_dir/fake-bin"
     mkdir -- "$fake_bin"

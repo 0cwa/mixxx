@@ -40,6 +40,8 @@ test_download_staging_safety() {
     local reuse_race_target
     local verify_symlink_destination
     local verify_symlink_target
+    local fake_model_size
+    local fake_model_sha256
 
     test_download_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-model-test.XXXXXX")
     cleanup_download_test() {
@@ -55,6 +57,37 @@ test_download_staging_safety() {
     cp -- "$download_script" "$script_dir/download-stemgen-model.sh"
     cp -- "$repository_root/tools/secure-download.py" \
         "$checkout_root/tools/secure-download.py"
+    fake_model_size=$(printf '%s\n' 'materialized-model' | wc -c)
+    fake_model_sha256=$(printf '%s\n' 'materialized-model' | sha256sum)
+    fake_model_sha256=${fake_model_sha256%% *}
+    cat >"$checkout_root/tools/secure-download.py" <<EOF
+#!/usr/bin/env python3
+
+import os
+import sys
+
+arguments = sys.argv[1:]
+separator_index = arguments.index("--")
+command = arguments[separator_index + 1 :]
+os.execv(
+    sys.executable,
+    [
+        sys.executable,
+        "$repository_root/tools/secure-download.py",
+        arguments[0],
+        "--verify-size",
+        "$fake_model_size",
+        "--verify-sha256",
+        "$fake_model_sha256",
+        "--install-fd",
+        "9",
+        "--install-name",
+        "htdemucs.onnx",
+        "--",
+        *command,
+    ],
+)
+EOF
     chmod +x -- "$script_dir/download-stemgen-model.sh"
 
     cat >"$script_dir/verify-stemgen-model.sh" <<'EOF'
@@ -377,13 +410,10 @@ EOF
     else
         status=$?
     fi
-    test "$status" -eq 0 || \
-        fail 'final destination symlink race was not replaced safely'
-    test ! -L "$final_race_destination/htdemucs.onnx" || \
-        fail 'final destination symlink race left the injected symlink'
-    grep -Fqx 'materialized-model' \
-        "$final_race_destination/htdemucs.onnx" || \
-        fail 'final destination symlink race did not install the model'
+    test "$status" -ne 0 || \
+        fail 'final destination symlink race was accepted'
+    test -L "$final_race_destination/htdemucs.onnx" || \
+        fail 'final destination symlink race was removed instead of rejected'
     test "$inside_pointer_before" = \
         "$(sha256sum "$inside_destination/htdemucs.onnx")" || \
         fail 'final destination directory race modified the checkout model'
@@ -413,44 +443,141 @@ EOF
 
 test_cmake_install_staging_safety() {
     local test_root
+    local project_dir
+    local build_dir
+    local staged_parent
     local staged_model
-    local target_model
-    local install_root
+    local staged_parent_backup
+    local staged_symlink_target
+    local staged_parent_target
     local target_before
+    local model_size
+    local model_sha256
+    local install_root
+    local installed_model
+    local failed_install_root
+    local destination_symlink_root
+    local destination_symlink_target
     local output
     local status
 
     test_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-stemgen-cmake-test.XXXXXX")
-    staged_model="$test_root/staged-model"
-    target_model="$test_root/target-model"
+    project_dir="$test_root/project"
+    build_dir="$test_root/build"
+    staged_parent="$test_root/staged-models"
+    staged_model="$staged_parent/htdemucs.onnx"
+    staged_parent_backup="$test_root/staged-models-original"
+    staged_symlink_target="$test_root/staged-model-target"
+    staged_parent_target="$test_root/staged-model-parent-target"
     install_root="$test_root/install"
+    failed_install_root="$test_root/failed-install"
+    destination_symlink_root="$test_root/destination-symlink-install"
+    destination_symlink_target="$test_root/destination-symlink-target"
     output="$test_root/output"
-    printf '%s\n' 'trusted-model' >"$target_model"
-    target_before=$(sha256sum "$target_model")
-    ln -s -- "$target_model" "$staged_model"
+    mkdir -p -- "$project_dir" "$staged_parent"
+    printf '%s\n' 'trusted-model' >"$staged_model"
+    model_size=$(stat -c '%s' -- "$staged_model")
+    model_sha256=$(sha256sum "$staged_model")
+    model_sha256=${model_sha256%% *}
 
-    status=0
-    if cmake -P /dev/stdin >"$output" 2>&1 <<EOF
-if(IS_SYMLINK "${staged_model}")
-    message(FATAL_ERROR "The staged Stemgen model must not be a symlink")
-endif()
-file(SIZE "${staged_model}" staged_size)
-file(SHA256 "${staged_model}" staged_sha256)
-file(INSTALL DESTINATION "${install_root}" TYPE FILE FILES "${staged_model}")
+    # Configure the actual install-script template used by CMakeLists.txt so
+    # this test covers its generated verification and install semantics.
+    cat >"$project_dir/CMakeLists.txt" <<EOF
+cmake_minimum_required(VERSION 3.20)
+project(stemgen_install_fixture NONE)
+set(MIXXX_STEM_MODEL_STAGED_FILE [==[${staged_model}]==])
+set(MIXXX_STEM_MODEL_NAME [==[htdemucs.onnx]==])
+set(MIXXX_STEM_MODEL_SIZE ${model_size})
+set(MIXXX_STEM_MODEL_SHA256 [==[${model_sha256}]==])
+set(MIXXX_INSTALL_DATADIR [==[share/mixxx]==])
+configure_file(
+    [==[${repository_root}/cmake/InstallStemgenModel.cmake.in]==]
+    "\${CMAKE_CURRENT_BINARY_DIR}/InstallStemgenModel.cmake"
+    @ONLY
+)
+install(SCRIPT "\${CMAKE_CURRENT_BINARY_DIR}/InstallStemgenModel.cmake")
 EOF
-    then
+    status=0
+    if cmake -S "$project_dir" -B "$build_dir" >"$output" 2>&1; then
         status=0
     else
         status=$?
     fi
-    test "$status" -ne 0 || fail 'CMake install guard accepted a staged symlink'
-    test -L "$staged_model" || fail 'CMake race fixture lost its staged symlink'
-    test "$target_before" = "$(sha256sum "$target_model")" || \
-        fail 'CMake install guard modified the symlink target'
-    test ! -e "$install_root" || \
-        fail 'CMake install guard created an install artifact for a symlink'
-    grep -Fq 'must not be a symlink' "$output" || \
-        fail 'CMake install guard did not identify the staged symlink'
+    test "$status" -eq 0 || fail 'CMake install fixture did not configure'
+
+    status=0
+    if cmake --install "$build_dir" --prefix "$install_root" >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -eq 0 || fail 'generated CMake install script rejected a valid model'
+    installed_model="$install_root/share/mixxx/models/htdemucs.onnx"
+    grep -Fqx 'trusted-model' "$installed_model" || \
+        fail 'generated CMake install script did not install the verified model'
+
+    # Replace the staged artifact after configure. The generated install
+    # script must reject the symlink before file(INSTALL) can follow it.
+    printf '%s\n' 'trusted-model' >"$staged_symlink_target"
+    target_before=$(sha256sum "$staged_symlink_target")
+    rm -- "$staged_model"
+    ln -s -- "$staged_symlink_target" "$staged_model"
+    status=0
+    if cmake --install "$build_dir" --prefix "$failed_install_root" \
+            >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || fail 'generated CMake install script accepted a staged symlink'
+    test -L "$staged_model" || fail 'CMake symlink fixture lost its staged symlink'
+    test "$target_before" = "$(sha256sum "$staged_symlink_target")" || \
+        fail 'generated CMake install script modified the symlink target'
+    test ! -e "$failed_install_root" || \
+        fail 'generated CMake install script created an artifact for a symlink'
+    grep -Fq 'symlink component' "$output" || \
+        fail 'generated CMake install script did not identify the staged symlink'
+
+    mkdir -p -- "$destination_symlink_root/share"
+    mkdir -- "$destination_symlink_target"
+    ln -s -- "$destination_symlink_target" \
+        "$destination_symlink_root/share/mixxx"
+    status=0
+    if cmake --install "$build_dir" --prefix "$destination_symlink_root" \
+            >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || \
+        fail 'generated CMake install script followed an install parent symlink'
+    test ! -e "$destination_symlink_target/htdemucs.onnx" || \
+        fail 'generated CMake install script installed through a parent symlink'
+    grep -Fq 'symlink component' "$output" || \
+        fail 'generated CMake install script did not identify an install parent symlink'
+
+    # Replace the staged directory itself after configure. Its parent-chain
+    # check must prevent file(INSTALL) from following a redirected directory.
+    rm -- "$staged_model"
+    mv -- "$staged_parent" "$staged_parent_backup"
+    mkdir -- "$staged_parent_target"
+    printf '%s\n' 'trusted-model' >"$staged_parent_target/htdemucs.onnx"
+    ln -s -- "$staged_parent_target" "$staged_parent"
+    status=0
+    if cmake --install "$build_dir" --prefix "$failed_install_root" \
+            >"$output" 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+    test "$status" -ne 0 || \
+        fail 'generated CMake install script followed a staged parent symlink'
+    test -L "$staged_parent" || fail 'CMake parent symlink fixture was lost'
+    test ! -e "$failed_install_root" || \
+        fail 'generated CMake install script created an artifact through a parent symlink'
+    grep -Fq 'symlink component' "$output" || \
+        fail 'generated CMake install script did not identify a parent symlink'
+
     rm -rf -- "$test_root"
 }
 
@@ -483,7 +610,10 @@ python3 - \
     "$repository_root/.github/scripts/download-stemgen-model.sh" \
     "$repository_root/.github/scripts/verify-stemgen-model.sh" \
     "$repository_root/tools/debian_buildenv.sh" \
+    "$repository_root/tools/onnxruntime_buildenv.sh" \
+    "$repository_root/tools/secure-download.py" \
     "$repository_root/CMakeLists.txt" \
+    "$repository_root/cmake/InstallStemgenModel.cmake.in" \
     "$repository_root/.github/workflows/build.yml" <<'PY'
 import json
 import sys
@@ -499,7 +629,10 @@ from pathlib import Path
     download_script_path,
     verifier_path,
     debian_buildenv_path,
+    onnxruntime_buildenv_path,
+    secure_download_path,
     cmake_lists_path,
+    cmake_install_script_path,
     workflow_path,
 ) = map(Path, sys.argv[1:])
 
@@ -544,14 +677,32 @@ for path in (
 download_script = download_script_path.read_text()
 assert "model_dir=${MIXXX_STEM_MODEL_DIR:-}" in download_script
 assert "$script_dir/../../models" not in download_script
+assert "--verify-size" in download_script
+assert "--verify-sha256" in download_script
+assert "--install-fd" in download_script
+
+secure_download = secure_download_path.read_text()
+assert "os.O_NOFOLLOW" in secure_download
+assert "os.fstat" in secure_download
+assert "os.fsync" in secure_download
+assert "--install-fd" in secure_download
+
+onnxruntime_buildenv = onnxruntime_buildenv_path.read_text()
+assert 'python3 "$SECURE_DOWNLOAD_HELPER" "$archive_path"' in onnxruntime_buildenv
+assert '--output "$archive_path"' not in onnxruntime_buildenv
 
 cmake_lists = cmake_lists_path.read_text()
 assert 'IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"' in cmake_lists
 assert 'COPY_FILE' in cmake_lists
 assert 'MIXXX_STEM_MODEL_STAGED_FILE' in cmake_lists
-assert 'install(CODE "${MIXXX_STEM_MODEL_INSTALL_CHECK}")' in cmake_lists
-assert 'FILES "${MIXXX_STEM_MODEL_STAGED_FILE}"' in cmake_lists
-assert 'The staged Stemgen model must not be a symlink' in cmake_lists
+assert 'InstallStemgenModel.cmake.in' in cmake_lists
+assert 'install(SCRIPT "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}")' in cmake_lists
+
+cmake_install_script = cmake_install_script_path.read_text()
+assert 'if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")' in cmake_install_script
+assert 'file(SHA256 "${_mixxx_stem_model_path}"' in cmake_install_script
+assert 'file(\n  INSTALL "${_mixxx_stem_model_path}"' in cmake_install_script
+assert 'file(\n  SHA256\n  "${_mixxx_stem_model_destination_path}"' in cmake_install_script
 
 workflow = workflow_path.read_text()
 # runner.* is unavailable in a job-level env mapping. Keep runner.temp in

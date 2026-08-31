@@ -1,0 +1,158 @@
+# This script runs during installation, after the staged model was verified at
+# configure time. Revalidate the source and destination immediately before
+# and after file(INSTALL), which necessarily reopens both paths.
+set(_mixxx_stem_model_path "@MIXXX_STEM_MODEL_STAGED_FILE@")
+set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_path}")
+while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
+  if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model path contains a symlink component: ${_mixxx_stem_model_path}"
+    )
+  endif()
+  get_filename_component(
+    _mixxx_stem_model_parent
+    "${_mixxx_stem_model_path_to_check}"
+    DIRECTORY
+  )
+  if(_mixxx_stem_model_parent STREQUAL _mixxx_stem_model_path_to_check)
+    break()
+  endif()
+  set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_parent}")
+endwhile()
+
+if(
+  NOT EXISTS "${_mixxx_stem_model_path}"
+  OR IS_DIRECTORY "${_mixxx_stem_model_path}"
+)
+  message(
+    FATAL_ERROR
+    "The staged Stemgen model is missing or is not a regular file: ${_mixxx_stem_model_path}"
+  )
+endif()
+
+file(SIZE "${_mixxx_stem_model_path}" _mixxx_stem_model_size)
+if(NOT _mixxx_stem_model_size EQUAL @MIXXX_STEM_MODEL_SIZE@)
+  message(
+    FATAL_ERROR
+    "The staged Stemgen model size changed before install: ${_mixxx_stem_model_path}"
+  )
+endif()
+
+file(SHA256 "${_mixxx_stem_model_path}" _mixxx_stem_model_sha256)
+if(NOT _mixxx_stem_model_sha256 STREQUAL "@MIXXX_STEM_MODEL_SHA256@")
+  message(
+    FATAL_ERROR
+    "The staged Stemgen model checksum changed before install: ${_mixxx_stem_model_path}"
+  )
+endif()
+
+set(
+  _mixxx_stem_model_destination_dir
+  "${CMAKE_INSTALL_PREFIX}/@MIXXX_INSTALL_DATADIR@/models"
+)
+set(
+  _mixxx_stem_model_destination_path
+  "${_mixxx_stem_model_destination_dir}/@MIXXX_STEM_MODEL_NAME@"
+)
+set(
+  _mixxx_stem_model_path_to_check
+  "${_mixxx_stem_model_destination_path}"
+)
+while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
+  if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")
+    message(
+      FATAL_ERROR
+      "The installed Stemgen model path contains a symlink component: ${_mixxx_stem_model_destination_path}"
+    )
+  endif()
+  get_filename_component(
+    _mixxx_stem_model_parent
+    "${_mixxx_stem_model_path_to_check}"
+    DIRECTORY
+  )
+  if(_mixxx_stem_model_parent STREQUAL _mixxx_stem_model_path_to_check)
+    break()
+  endif()
+  set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_parent}")
+endwhile()
+
+file(
+  INSTALL "${_mixxx_stem_model_path}"
+  DESTINATION "${_mixxx_stem_model_destination_dir}"
+  TYPE FILE
+  RENAME "@MIXXX_STEM_MODEL_NAME@"
+)
+
+set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_path}")
+while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
+  if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model path gained a symlink component during install: ${_mixxx_stem_model_path}"
+    )
+  endif()
+  get_filename_component(
+    _mixxx_stem_model_parent
+    "${_mixxx_stem_model_path_to_check}"
+    DIRECTORY
+  )
+  if(_mixxx_stem_model_parent STREQUAL _mixxx_stem_model_path_to_check)
+    break()
+  endif()
+  set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_parent}")
+endwhile()
+
+set(
+  _mixxx_stem_model_path_to_check
+  "${_mixxx_stem_model_destination_path}"
+)
+while(NOT _mixxx_stem_model_path_to_check STREQUAL "")
+  if(IS_SYMLINK "${_mixxx_stem_model_path_to_check}")
+    message(
+      FATAL_ERROR
+      "The installed Stemgen model path gained a symlink component during install: ${_mixxx_stem_model_destination_path}"
+    )
+  endif()
+  get_filename_component(
+    _mixxx_stem_model_parent
+    "${_mixxx_stem_model_path_to_check}"
+    DIRECTORY
+  )
+  if(_mixxx_stem_model_parent STREQUAL _mixxx_stem_model_path_to_check)
+    break()
+  endif()
+  set(_mixxx_stem_model_path_to_check "${_mixxx_stem_model_parent}")
+endwhile()
+
+if(
+  IS_SYMLINK "${_mixxx_stem_model_destination_path}"
+  OR NOT EXISTS "${_mixxx_stem_model_destination_path}"
+  OR IS_DIRECTORY "${_mixxx_stem_model_destination_path}"
+)
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model is not a regular file: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+file(SIZE "${_mixxx_stem_model_destination_path}" _mixxx_stem_model_installed_size)
+if(NOT _mixxx_stem_model_installed_size EQUAL @MIXXX_STEM_MODEL_SIZE@)
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model size does not match the verified model: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+file(
+  SHA256
+  "${_mixxx_stem_model_destination_path}"
+  _mixxx_stem_model_installed_sha256
+)
+if(
+  NOT _mixxx_stem_model_installed_sha256 STREQUAL
+      "@MIXXX_STEM_MODEL_SHA256@"
+)
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model checksum does not match the verified model: ${_mixxx_stem_model_destination_path}"
+  )
+endif()

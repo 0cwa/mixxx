@@ -3100,6 +3100,21 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/models/${MIXXX_STEM_MODEL_NAME}"
 )
 set(MIXXX_STEM_LFS_POINTER_HEADER "version https://git-lfs.github.com/spec/v1")
+function(mixxx_stem_model_path_has_symlink_component model_path result_variable)
+  set(path_to_check "${model_path}")
+  while(NOT path_to_check STREQUAL "")
+    if(IS_SYMLINK "${path_to_check}")
+      set(${result_variable} TRUE PARENT_SCOPE)
+      return()
+    endif()
+    get_filename_component(parent_path "${path_to_check}" DIRECTORY)
+    if(parent_path STREQUAL path_to_check)
+      break()
+    endif()
+    set(path_to_check "${parent_path}")
+  endwhile()
+  set(${result_variable} FALSE PARENT_SCOPE)
+endfunction()
 function(mixxx_stem_model_is_lfs_pointer model_file result_variable)
   set(${result_variable} FALSE PARENT_SCOPE)
   if(
@@ -3220,11 +3235,49 @@ if(MIXXX_STEM_MODEL_FILE)
     )
   endif()
 
+  set(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT FALSE)
+  mixxx_stem_model_path_has_symlink_component(
+    "${MIXXX_STEM_MODEL_FILE}"
+    MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT
+  )
+  if(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE must not contain a symlink path component: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
+
   set(
     MIXXX_STEM_MODEL_STAGED_FILE
     "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model/${MIXXX_STEM_MODEL_NAME}"
   )
-  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model")
+  set(
+    MIXXX_STEM_MODEL_STAGED_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model"
+  )
+  set(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT FALSE)
+  mixxx_stem_model_path_has_symlink_component(
+    "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
+    MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT
+  )
+  if(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT)
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model path must not contain a symlink component: ${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
+    )
+  endif()
+  file(MAKE_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}")
+  set(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT FALSE)
+  mixxx_stem_model_path_has_symlink_component(
+    "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
+    MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT
+  )
+  if(MIXXX_STEM_MODEL_STAGED_DIRECTORY_HAS_SYMLINK_COMPONENT)
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model path contains a symlink component: ${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
+    )
+  endif()
   if(
     IS_SYMLINK "${MIXXX_STEM_MODEL_STAGED_FILE}"
     OR IS_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_FILE}"
@@ -3240,8 +3293,25 @@ if(MIXXX_STEM_MODEL_FILE)
     "${MIXXX_STEM_MODEL_STAGED_FILE}"
     ONLY_IF_DIFFERENT
   )
+  set(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT FALSE)
+  mixxx_stem_model_path_has_symlink_component(
+    "${MIXXX_STEM_MODEL_FILE}"
+    MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT
+  )
+  if(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE gained a symlink path component during staging: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
+  set(MIXXX_STEM_MODEL_STAGED_FILE_HAS_SYMLINK_COMPONENT FALSE)
+  mixxx_stem_model_path_has_symlink_component(
+    "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    MIXXX_STEM_MODEL_STAGED_FILE_HAS_SYMLINK_COMPONENT
+  )
   if(
     IS_SYMLINK "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    OR MIXXX_STEM_MODEL_STAGED_FILE_HAS_SYMLINK_COMPONENT
     OR NOT EXISTS "${MIXXX_STEM_MODEL_STAGED_FILE}"
     OR IS_DIRECTORY "${MIXXX_STEM_MODEL_STAGED_FILE}"
   )
@@ -3262,34 +3332,20 @@ if(MIXXX_STEM_MODEL_FILE)
     )
   endif()
 
-  string(
-    CONCAT
-    MIXXX_STEM_MODEL_INSTALL_CHECK
-    "if(IS_SYMLINK [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
-    "  message(FATAL_ERROR [==[The staged Stemgen model must not be a symlink: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
-    "endif()\n"
-    "if(NOT EXISTS [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==] OR IS_DIRECTORY [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
-    "  message(FATAL_ERROR [==[The staged Stemgen model is missing or is not a regular file: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
-    "endif()\n"
-    "file(SIZE [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==] model_size)\n"
-    "if(NOT model_size EQUAL ${MIXXX_STEM_MODEL_SIZE})\n"
-    "  message(FATAL_ERROR [==[The staged Stemgen model size changed before install: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
-    "endif()\n"
-    "file(SHA256 [==[${MIXXX_STEM_MODEL_STAGED_FILE}]==] model_sha256)\n"
-    "if(NOT model_sha256 STREQUAL [==[${MIXXX_STEM_MODEL_SHA256}]==])\n"
-    "  message(FATAL_ERROR [==[The staged Stemgen model checksum changed before install: ${MIXXX_STEM_MODEL_STAGED_FILE}]==])\n"
-    "endif()\n"
+  set(
+    MIXXX_STEM_MODEL_INSTALL_SCRIPT
+    "${CMAKE_CURRENT_BINARY_DIR}/InstallStemgenModel.cmake"
+  )
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/InstallStemgenModel.cmake.in"
+    "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}"
+    @ONLY
   )
   # Revalidate the configure-time snapshot immediately before the generated
   # install rule consumes it. The staged path is never the caller-owned model
   # pathname, and symlinks are rejected at both configure and install time.
-  install(CODE "${MIXXX_STEM_MODEL_INSTALL_CHECK}")
+  install(SCRIPT "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}")
 
-  install(
-    FILES "${MIXXX_STEM_MODEL_STAGED_FILE}"
-    DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
-    RENAME "${MIXXX_STEM_MODEL_NAME}"
-  )
   # Keep the model's provenance and rights documentation alongside it.
   install(
     FILES

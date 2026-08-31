@@ -243,28 +243,16 @@ download_verified_file() {
             echo "Could not safely enter the temporary download directory for $destination" >&2
             exit 1
         fi
-        if ! sudo -u "$download_user" \
+        if ! sudo --preserve-fds=9 -u "$download_user" \
                 python3 "$SECURE_DOWNLOAD_HELPER" "./$HTDEMUCS_MODEL_NAME" \
+                --verify-size "$expected_size" \
+                --verify-sha256 "$expected_sha256" \
+                --install-fd 9 \
+                --install-name "$destination" \
+                -- \
                 wget --quiet --output-document=- "$url";
         then
             echo "Failed to download $url" >&2
-            exit 1
-        fi
-
-        if ! verify_file_size "$expected_size" "./$HTDEMUCS_MODEL_NAME"; then
-            exit 1
-        fi
-
-        if ! verify_sha256 "$expected_sha256" "./$HTDEMUCS_MODEL_NAME"; then
-            exit 1
-        fi
-
-        # GNU mv -T uses rename semantics and will not descend into a destination
-        # directory that appears after the final-destination checks above. This
-        # script is supported on Debian and Ubuntu, where GNU coreutils is present.
-        if ! mv -T -- "./$HTDEMUCS_MODEL_NAME" \
-                "$staging_fd_path/$destination"; then
-            echo "Failed to install verified artifact at $destination" >&2
             exit 1
         fi
     )
@@ -628,6 +616,7 @@ run_self_tests() {
     printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
+        "if [ \"\$1\" = \"--preserve-fds=9\" ]; then shift; fi" \
         "[ \"\$1\" = \"-u\" ]" \
         'shift 2' \
         'exec "$@"' > "$sudo_path"
@@ -712,7 +701,7 @@ run_self_tests() {
 
     final_race_model_path="$test_dir/final-race-models"
     mkdir -p -- "$final_race_model_path"
-    if ! (
+    if (
         enter_model_staging_directory "$final_race_model_path" "$USER"
         PATH="$fake_path:$original_path"
         export PATH
@@ -731,14 +720,15 @@ run_self_tests() {
             "$race_payload_sha256" \
             "$HTDEMUCS_MODEL_NAME"
     ); then
-        echo "Self-test failed: final destination symlink race was not replaced safely" >&2
+        echo "Self-test failed: final destination symlink race was accepted" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
-    if [[ -L "$final_race_model_path/$HTDEMUCS_MODEL_NAME" ]] ||
+    if [[ ! -L "$final_race_model_path/$HTDEMUCS_MODEL_NAME" ]] ||
             [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
-            ! grep -Fqx 'race-model' "$final_race_model_path/$HTDEMUCS_MODEL_NAME"; then
-        echo "Self-test failed: final destination symlink race modified the checkout" >&2
+            [[ -e "$final_race_model_path/$HTDEMUCS_MODEL_NAME" &&
+                    ! -L "$final_race_model_path/$HTDEMUCS_MODEL_NAME" ]]; then
+        echo "Self-test failed: final destination symlink race was not rejected safely" >&2
         rm -rf -- "$test_dir"
         return 1
     fi
