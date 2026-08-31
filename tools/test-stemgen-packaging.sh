@@ -13,8 +13,10 @@ fail() {
 
 test_secure_download_descriptor_install_race() {
     python3 - "$repository_root/tools/secure-download.py" <<'PY'
+import errno
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -91,6 +93,118 @@ def exercise_temporary_path_replacement(replacement: str) -> None:
 
 for replacement_kind in ("regular", "symlink"):
     exercise_temporary_path_replacement(replacement_kind)
+
+
+def exercise_failed_replacement_preserves_existing() -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="mixxx-secure-download-link-failure."
+    ) as root:
+        root_path = Path(root)
+        source_path = root_path / "source"
+        destination_path = root_path / "destination"
+        source_path.write_bytes(b"verified payload\n")
+        destination_path.write_bytes(b"original destination\n")
+
+        source_fd = os.open(source_path, os.O_RDONLY)
+        destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+        real_link = secure_download.link_from_file_descriptor
+        failure_state = {"failed": False}
+
+        def fail_final_link(
+            source_fd: int, destination_fd: int, destination_name: str
+        ) -> None:
+            if destination_name == destination_path.name and not failure_state[
+                "failed"
+            ]:
+                failure_state["failed"] = True
+                raise OSError(errno.EIO, "injected final link failure")
+            real_link(source_fd, destination_fd, destination_name)
+
+        secure_download.link_from_file_descriptor = fail_final_link
+        installation_error = None
+        try:
+            try:
+                secure_download.install_from_file_descriptor(
+                    source_fd, destination_fd, destination_path.name
+                )
+            except OSError as error:
+                installation_error = error
+        finally:
+            secure_download.link_from_file_descriptor = real_link
+            os.close(source_fd)
+            os.close(destination_fd)
+
+        assert failure_state["failed"]
+        assert installation_error is not None
+        assert destination_path.read_bytes() == b"original destination\n"
+        assert not destination_path.is_symlink()
+        assert not list(root_path.glob(".secure-download.existing.*"))
+
+
+exercise_failed_replacement_preserves_existing()
+
+
+def exercise_hard_link_destination_is_rejected() -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="mixxx-secure-download-hard-link."
+    ) as root:
+        root_path = Path(root)
+        source_path = root_path / "source"
+        destination_path = root_path / "destination"
+        protected_path = root_path / "protected"
+        source_path.write_bytes(b"verified payload\n")
+        destination_path.write_bytes(b"original destination\n")
+        os.link(destination_path, protected_path)
+
+        source_fd = os.open(source_path, os.O_RDONLY)
+        destination_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY)
+        installation_error = None
+        try:
+            try:
+                secure_download.install_from_file_descriptor(
+                    source_fd, destination_fd, destination_path.name
+                )
+            except OSError as error:
+                installation_error = error
+        finally:
+            os.close(source_fd)
+            os.close(destination_fd)
+
+        assert installation_error is not None
+        assert destination_path.read_bytes() == b"original destination\n"
+        assert protected_path.read_bytes() == b"original destination\n"
+
+
+exercise_hard_link_destination_is_rejected()
+
+
+def exercise_cwd_install_cleans_up_failed_download() -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="mixxx-secure-download-failed-download."
+    ) as root:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(secure_download_path),
+                "-",
+                "--install-cwd",
+                "--install-name",
+                "destination",
+                "--",
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(17)",
+            ],
+            cwd=root,
+            check=False,
+            capture_output=True,
+        )
+        assert result.returncode == 17, result.stderr.decode()
+        assert not (Path(root) / "destination").exists()
+        assert not list(Path(root).glob(".secure-download.output.*"))
+
+
+exercise_cwd_install_cleans_up_failed_download()
 
 print("Secure download descriptor-install race regressions passed.")
 PY
@@ -816,10 +930,20 @@ assert "os.replace" not in secure_download
 assert "os.fstat" in secure_download
 assert "os.fsync" in secure_download
 assert "--install-fd" in secure_download
+assert "--install-cwd" in secure_download
 
 debian_buildenv = debian_buildenv_path.read_text()
-assert 'sudo -C 10 -u "$download_user"' in debian_buildenv
-assert "--preserve-fds=9" not in debian_buildenv
+download_function = debian_buildenv[
+    debian_buildenv.index("download_verified_file()"):
+    debian_buildenv.index("find_mp4box()")
+]
+assert "sudo" not in download_function
+assert "download_user" not in download_function
+assert "--install-fd" not in debian_buildenv
+assert "--install-cwd" in debian_buildenv
+assert "-C" not in debian_buildenv
+assert "--preserve-fds" not in debian_buildenv
+assert "Reusing verified Mixxx HTDemucs model" in debian_buildenv
 assert 'Stemgen model: $MODEL_PATH/$HTDEMUCS_MODEL_NAME' in debian_buildenv
 assert "VENV_PATH" not in debian_buildenv
 assert "--no-verbose" in debian_buildenv
@@ -901,6 +1025,18 @@ assert "MIXXX_INSTALL_STEM_CONVERSION: true" in stemgen
 assert "-DSTEM_CONVERSION=ON" in stemgen
 assert "MIXXX_STEM_MODEL_FILE: ${{ runner.temp }}/mixxx-stemgen-model/htdemucs.onnx" in stemgen
 assert '-DMIXXX_STEM_MODEL_FILE="$MIXXX_STEM_MODEL_FILE"' in stemgen
+download_position = stemgen.index('name: "Download and verify Stemgen model"')
+setup_position = stemgen.index('name: "Set up Ubuntu build environment"')
+verify_model_position = stemgen.index('name: "Verify downloaded Stemgen model"')
+configure_position = stemgen.index("Configure model-enabled Stemgen build")
+install_position = stemgen.index("Install model-enabled Stemgen build")
+test_position = stemgen.index("Run StemConverter and Stemgen tests")
+assert "cmake --install build-stemgen" in stemgen
+assert "cmake --build build-stemgen --target mixxx-test mixxx --parallel 12" in stemgen
+assert "build-stemgen/stemgen-model/htdemucs.onnx" in stemgen
+assert "share/mixxx/models/htdemucs.onnx" in stemgen
+assert download_position < setup_position < verify_model_position < configure_position
+assert configure_position < install_position < test_position
 tag_fetch_position = stemgen.index("run: git fetch origin --force --tags")
 confirm_position = stemgen.index('git describe --always --first-parent --dirty=-modified')
 assert tag_fetch_position < confirm_position

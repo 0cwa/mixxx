@@ -88,7 +88,6 @@ assert_model_staging_directory_outside_checkout() {
 
 enter_model_staging_directory() {
     local model_path="$1"
-    local download_user="$2"
     local canonical_model_path
     local staging_anchor_path
     local staging_remaining_suffix
@@ -130,7 +129,7 @@ enter_model_staging_directory() {
 
         [[ -n "$staging_component" ]] || continue
         if [[ ! -e "$staging_component" ]]; then
-            if ! sudo -u "$download_user" mkdir -- "$staging_component" &&
+            if ! mkdir -- "$staging_component" &&
                     [[ ! -d "$staging_component" ]]; then
                 return 1
             fi
@@ -201,56 +200,33 @@ verify_file_size() {
     fi
 }
 
-download_verified_file() {
-    local download_user="$1"
-    local url="$2"
-    local expected_size="$3"
-    local expected_sha256="$4"
-    local destination="$5"
-    local temporary_dir
-    local temporary_dir_name
+verify_model_artifact() {
+    local model_path="$1"
 
+    validate_model_file_destination "$model_path" || return 1
+    verify_file_size "$HTDEMUCS_MODEL_SIZE" "$model_path" || return 1
+    verify_sha256 "$HTDEMUCS_MODEL_SHA256" "$model_path"
+}
+
+download_verified_file() {
+    local url="$1"
+    local expected_size="$2"
+    local expected_sha256="$3"
+    local destination="$4"
     if ! validate_model_file_destination "$destination"; then
         return 1
     fi
 
     (
-        local staging_directory_path
-        local staging_fd_path
-        local temporary_directory_path
-
-        exec 9<.
-        staging_fd_path="/proc/$BASHPID/fd/9"
-
-        temporary_dir="$(sudo -u "$download_user" mktemp -d "./.${destination}.tmp.XXXXXX")" || {
-            echo "Failed to create a temporary download for $destination" >&2
-            exit 1
-        }
-        temporary_dir_name=${temporary_dir#./}
-        staging_directory_path="$(cd -P -- "$staging_fd_path" && pwd -P)"
-        temporary_directory_path="$staging_directory_path/$temporary_dir_name"
-
-        # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
-        cleanup_temporary_download() {
-            rm -rf -- "${staging_fd_path:?}/${temporary_dir_name:?}" 2>/dev/null || :
-            exec 9<&-
-        }
-        trap cleanup_temporary_download EXIT HUP INT TERM
-
-        if ! cd -P -- "$staging_fd_path/$temporary_dir_name" ||
-                [[ "$(pwd -P)" != "$temporary_directory_path" ]] ||
-                ! assert_model_staging_directory_outside_checkout; then
-            echo "Could not safely enter the temporary download directory for $destination" >&2
-            exit 1
-        fi
-        # sudo on the Ubuntu runner supports -C, but not the newer
-        # --preserve-fds spelling. Closing descriptors from 10 preserves the
-        # staging directory descriptor at 9 for the descriptor-bound install.
-        if ! sudo -C 10 -u "$download_user" \
-                python3 "$SECURE_DOWNLOAD_HELPER" "./$HTDEMUCS_MODEL_NAME" \
+        # Keep model staging entirely unprivileged. The helper opens the
+        # already-entered cwd itself, creates a private temporary artifact
+        # there, and performs the descriptor-bound install without a pathname
+        # write. System package installation is handled separately and never
+        # crosses this user-local model artifact boundary.
+        if ! python3 "$SECURE_DOWNLOAD_HELPER" - \
                 --verify-size "$expected_size" \
                 --verify-sha256 "$expected_sha256" \
-                --install-fd 9 \
+                --install-cwd \
                 --install-name "$destination" \
                 -- \
                 wget \
@@ -412,7 +388,8 @@ run_self_tests() {
     local race_payload_size
     local race_payload_sha256
     local checkout_model_before
-    local sudo_path
+    local sudo_policy_path
+    local sudo_policy_marker_path
     local wget_path
     local final_race_model_path
     local temporary_race_model_path
@@ -621,35 +598,30 @@ run_self_tests() {
     race_payload_sha256="${race_payload_sha256%% *}"
     checkout_model_before="$(sha256sum "$checkout_model_file")"
 
-    sudo_path="$fake_path/sudo"
+    sudo_policy_path="$fake_path/sudo"
+    sudo_policy_marker_path="$test_dir/sudo-invoked"
+    # The production model path must not invoke the privilege boundary at all.
+    # Make any accidental invocation fail, independent of its arguments.
     # The generated fixture intentionally contains literal shell variables.
     # shellcheck disable=SC2016
     printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        'preserved_fds=false' \
-        'if [ "${1:-}" = "-C" ]; then' \
-        '    [ "${2:-}" = "10" ]' \
-        '    preserved_fds=true' \
-        '    shift 2' \
-        'fi' \
-        '[ "${1:-}" = "-u" ]' \
-        'shift 2' \
-        'if [ "${1:-}" = "python3" ]; then' \
-        '    [ "$preserved_fds" = true ]' \
-        'fi' \
-        'exec "$@"' > "$sudo_path"
-    chmod +x "$sudo_path"
+        'touch "${FAKE_SUDO_POLICY_MARKER:?}"' \
+        'echo "unexpected sudo invocation" >&2' \
+        'exit 125' > "$sudo_policy_path"
+    chmod +x "$sudo_policy_path"
+
     wget_path="$fake_path/wget"
     # The generated fixture intentionally contains literal shell variables.
     # shellcheck disable=SC2016
     printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        'current_temp_directory=$(pwd -P)' \
-        'if [ "${FAKE_WGET_REPLACE_TEMP:-0}" -eq 1 ]; then' \
-        '    mv -- "$current_temp_directory" "${FAKE_WGET_TEMP_BACKUP:?}"' \
-        '    ln -s -- "${FAKE_WGET_TEMP_TARGET:?}" "$current_temp_directory"' \
+        'current_staging_directory=$(pwd -P)' \
+        'if [ "${FAKE_WGET_REPLACE_STAGING:-0}" -eq 1 ]; then' \
+        '    mv -- "$current_staging_directory" "${FAKE_WGET_STAGING_BACKUP:?}"' \
+        '    ln -s -- "${FAKE_WGET_STAGING_TARGET:?}" "$current_staging_directory"' \
         'fi' \
         'if [ "${FAKE_WGET_REPLACE_FINAL:-0}" -eq 1 ]; then' \
         '    ln -s -- "${FAKE_WGET_FINAL_TARGET:?}" "${FAKE_WGET_FINAL_PATH:?}"' \
@@ -658,15 +630,16 @@ run_self_tests() {
     chmod +x "$wget_path"
 
     if ! (
-        enter_model_staging_directory "$race_model_path" "$USER"
+        enter_model_staging_directory "$race_model_path"
         mv -- "$race_model_path" "$race_model_backup_path"
         ln -s -- "$checkout_model_path" "$race_model_path"
         PATH="$fake_path:$original_path"
         export PATH
+        FAKE_SUDO_POLICY_MARKER="$sudo_policy_marker_path"
+        export FAKE_SUDO_POLICY_MARKER
         FAKE_WGET_CONTENT='race-model'
         export FAKE_WGET_CONTENT
         download_verified_file \
-            "$USER" \
             "$HTDEMUCS_MODEL_URL" \
             "$race_payload_size" \
             "$race_payload_sha256" \
@@ -683,24 +656,28 @@ run_self_tests() {
         rm -rf -- "$test_dir"
         return 1
     fi
+    if [[ -e "$sudo_policy_marker_path" ]]; then
+        echo "Self-test failed: model staging invoked the sudo privilege boundary" >&2
+        rm -rf -- "$test_dir"
+        return 1
+    fi
 
     temporary_race_model_path="$test_dir/temporary-race-models"
     temporary_race_backup_path="$test_dir/temporary-race-models-original"
     mkdir -p -- "$temporary_race_model_path"
     if ! (
-        enter_model_staging_directory "$temporary_race_model_path" "$USER"
+        enter_model_staging_directory "$temporary_race_model_path"
         PATH="$fake_path:$original_path"
         export PATH
         FAKE_WGET_CONTENT='race-model'
         export FAKE_WGET_CONTENT
-        FAKE_WGET_REPLACE_TEMP=1
-        export FAKE_WGET_REPLACE_TEMP
-        FAKE_WGET_TEMP_BACKUP="$temporary_race_backup_path"
-        export FAKE_WGET_TEMP_BACKUP
-        FAKE_WGET_TEMP_TARGET="$checkout_model_path"
-        export FAKE_WGET_TEMP_TARGET
+        FAKE_WGET_REPLACE_STAGING=1
+        export FAKE_WGET_REPLACE_STAGING
+        FAKE_WGET_STAGING_BACKUP="$temporary_race_backup_path"
+        export FAKE_WGET_STAGING_BACKUP
+        FAKE_WGET_STAGING_TARGET="$checkout_model_path"
+        export FAKE_WGET_STAGING_TARGET
         download_verified_file \
-            "$USER" \
             "$HTDEMUCS_MODEL_URL" \
             "$race_payload_size" \
             "$race_payload_sha256" \
@@ -710,9 +687,10 @@ run_self_tests() {
         rm -rf -- "$test_dir"
         return 1
     fi
-    if [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
+    if [[ ! -L "$temporary_race_model_path" ]] ||
+            [[ "$(sha256sum "$checkout_model_file")" != "$checkout_model_before" ]] ||
             ! grep -Fqx 'race-model' \
-                "$temporary_race_model_path/$HTDEMUCS_MODEL_NAME"; then
+                "$temporary_race_backup_path/$HTDEMUCS_MODEL_NAME"; then
         echo "Self-test failed: temporary download pathname race modified the checkout" >&2
         rm -rf -- "$test_dir"
         return 1
@@ -721,7 +699,7 @@ run_self_tests() {
     final_race_model_path="$test_dir/final-race-models"
     mkdir -p -- "$final_race_model_path"
     if (
-        enter_model_staging_directory "$final_race_model_path" "$USER"
+        enter_model_staging_directory "$final_race_model_path"
         PATH="$fake_path:$original_path"
         export PATH
         FAKE_WGET_CONTENT='race-model'
@@ -733,7 +711,6 @@ run_self_tests() {
         FAKE_WGET_FINAL_TARGET="$checkout_model_path"
         export FAKE_WGET_FINAL_TARGET
         download_verified_file \
-            "$USER" \
             "$HTDEMUCS_MODEL_URL" \
             "$race_payload_size" \
             "$race_payload_sha256" \
@@ -971,7 +948,13 @@ case "$1" in
 
         # Install demucs if user requested it
         if [ "$INSTALL_DEMUCS" = true ]; then
-            # Get the actual user running sudo
+            if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+                echo "Run debian_buildenv.sh as the target user; model staging is intentionally unprivileged." >&2
+                echo "The script invokes sudo only for system package installation." >&2
+                exit 1
+            fi
+
+            # Resolve the target user's home for the default local model path.
             ACTUAL_USER="${SUDO_USER:-$USER}"
             ACTUAL_HOME="$(getent passwd "$ACTUAL_USER" | cut -d: -f6)"
             if [ -z "$ACTUAL_HOME" ]; then
@@ -994,7 +977,7 @@ case "$1" in
             echo "Maintainer action: publish a verifiable artifact and digest before re-enabling it."
 
             if ! (
-                if ! enter_model_staging_directory "$MODEL_PATH" "$ACTUAL_USER"; then
+                if ! enter_model_staging_directory "$MODEL_PATH"; then
                     echo "Refusing to stage Mixxx HTDemucs models at $MODEL_PATH" >&2
                     exit 1
                 fi
@@ -1006,16 +989,20 @@ case "$1" in
                         echo "Unsupported model $MODEL_NAME has no trusted digest; aborting." >&2
                         exit 1
                     fi
-                    if ! download_verified_file \
-                            "$ACTUAL_USER" \
-                            "$HTDEMUCS_MODEL_URL" \
-                            "$HTDEMUCS_MODEL_SIZE" \
-                            "$MODEL_SHA256" \
-                            "$MODEL_FILE"; then
-                        echo "Failed to download Mixxx HTDemucs model $MODEL_NAME"
-                        exit 1
+                    if verify_model_artifact "$MODEL_FILE"; then
+                        echo "Reusing verified Mixxx HTDemucs model $MODEL_NAME"
+                    else
+                        echo "No valid local Mixxx HTDemucs model found; downloading $MODEL_NAME..."
+                        if ! download_verified_file \
+                                "$HTDEMUCS_MODEL_URL" \
+                                "$HTDEMUCS_MODEL_SIZE" \
+                                "$MODEL_SHA256" \
+                                "$MODEL_FILE"; then
+                            echo "Failed to download Mixxx HTDemucs model $MODEL_NAME" >&2
+                            exit 1
+                        fi
+                        echo "Verified model downloaded successfully to $MODEL_STAGING_PATH/$MODEL_NAME"
                     fi
-                    echo "Verified model downloaded successfully to $MODEL_STAGING_PATH/$MODEL_NAME"
                 done
             ); then
                 exit 1

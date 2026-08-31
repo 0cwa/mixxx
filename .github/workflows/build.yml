@@ -807,6 +807,11 @@ jobs:
           MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
         run: tools/onnxruntime_buildenv.sh stage
 
+      - name: "Download and verify Stemgen model"
+        env:
+          MIXXX_STEM_MODEL_DIR: ${{ runner.temp }}/mixxx-stemgen-model
+        run: .github/scripts/download-stemgen-model.sh
+
       - name: "Set up Ubuntu build environment"
         run: tools/debian_buildenv.sh setup
         env:
@@ -856,9 +861,25 @@ jobs:
           cmake -LA -N build-stemgen | grep -E '^(PIPEWIRE|STEM|STEM_CONVERSION):'
 
       - name: "Build mixxx-test with up to 12 cores"
-        run: cmake --build build-stemgen --target mixxx-test --parallel 12
+        run: cmake --build build-stemgen --target mixxx-test mixxx --parallel 12
         env:
           LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
+
+      - name: "Install model-enabled Stemgen build"
+        env:
+          MIXXX_STEM_MODEL_FILE: ${{ runner.temp }}/mixxx-stemgen-model/htdemucs.onnx
+        run: |
+          test -f build-stemgen/stemgen-model/htdemucs.onnx
+          test ! -L build-stemgen/stemgen-model/htdemucs.onnx
+          cmake --install build-stemgen \
+            --prefix "$RUNNER_TEMP/mixxx-stemgen-install"
+          installed_model="$RUNNER_TEMP/mixxx-stemgen-install/share/mixxx/models/htdemucs.onnx"
+          test -f "$installed_model"
+          test ! -L "$installed_model"
+          cmp -- "$MIXXX_STEM_MODEL_FILE" "$installed_model"
+          test -f "$RUNNER_TEMP/mixxx-stemgen-install/share/mixxx/models/htdemucs.onnx.manifest.json"
+          test -f "$RUNNER_TEMP/mixxx-stemgen-install/share/mixxx/models/NOTICE.md"
+          test -f "$RUNNER_TEMP/mixxx-stemgen-install/share/mixxx/models/README.md"
 
       - name: "Run StemConverter and Stemgen tests"
         working-directory: build-stemgen

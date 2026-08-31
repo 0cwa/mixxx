@@ -19,12 +19,21 @@ def usage() -> None:
     print(
         "Options: --verify-size BYTES --verify-sha256 SHA256", file=sys.stderr
     )
-    print("         --install-fd FD --install-name NAME", file=sys.stderr)
+    print(
+        "         --install-fd FD --install-cwd --install-name NAME",
+        file=sys.stderr,
+    )
 
 
-def parse_arguments() -> (
-    tuple[str, list[str], int | None, str | None, int | None, str | None]
-):
+def parse_arguments() -> tuple[
+    str,
+    list[str],
+    int | None,
+    str | None,
+    int | None,
+    bool,
+    str | None,
+]:
     arguments = sys.argv[1:]
     if len(arguments) < 2:
         usage()
@@ -41,10 +50,15 @@ def parse_arguments() -> (
     verify_size = None
     verify_sha256 = None
     install_fd = None
+    install_cwd = False
     install_name = None
     option_index = 0
     while option_index < len(option_arguments):
         option = option_arguments[option_index]
+        if option == "--install-cwd":
+            install_cwd = True
+            option_index += 1
+            continue
         if option in (
             "--verify-size",
             "--verify-sha256",
@@ -105,7 +119,14 @@ def parse_arguments() -> (
         elif option == "--install-name":
             install_name = value
 
-    if not command or (install_fd is None) != (install_name is None):
+    if (
+        not command
+        or (not install_cwd and (install_fd is None) != (install_name is None))
+        or (install_fd is not None and install_cwd)
+        or (install_cwd and install_name is None)
+        or (install_cwd and output_path != "-")
+        or (output_path == "-" and not install_cwd)
+    ):
         usage()
         raise SystemExit(2)
     return (
@@ -114,6 +135,7 @@ def parse_arguments() -> (
         verify_size,
         verify_sha256,
         install_fd,
+        install_cwd,
         install_name,
     )
 
@@ -450,6 +472,24 @@ def install_from_file_descriptor(
             )
 
 
+def create_secure_temporary_file(directory_fd: int) -> tuple[int, str]:
+    for _ in range(100):
+        candidate_name = (
+            f".secure-download.output.{os.getpid()}.{secrets.token_hex(16)}"
+        )
+        try:
+            output_fd = os.open(
+                candidate_name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError:
+            continue
+        return output_fd, candidate_name
+    raise OSError("could not create secure download temporary file")
+
+
 def main() -> int:
     (
         output_path,
@@ -457,54 +497,105 @@ def main() -> int:
         verify_size,
         verify_sha256,
         install_fd,
+        install_cwd,
         install_name,
     ) = parse_arguments()
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    output_fd = None
+    output_directory_fd = None
+    output_temporary_name = None
+    output_temporary_stat = None
+    install_directory_fd = install_fd
     try:
-        output_fd = os.open(output_path, flags, 0o600)
-    except OSError as error:
-        print(
-            f"Could not create secure download file {output_path}: {error}",
-            file=sys.stderr,
-        )
-        return 1
-
-    try:
-        return_code = subprocess.run(
-            command, stdout=output_fd, check=False
-        ).returncode
-    except OSError as error:
-        print(
-            f"Could not execute downloader {command[0]}: {error}",
-            file=sys.stderr,
-        )
-        os.close(output_fd)
-        return 127
-
-    if return_code != 0:
-        os.close(output_fd)
-        return return_code
-
-    try:
-        verify_file_descriptor(output_fd, verify_size, verify_sha256)
-        if install_fd is not None and install_name is not None:
-            install_from_file_descriptor(
-                output_fd,
-                install_fd,
-                install_name,
-                verify_size,
-                verify_sha256,
+        if install_cwd:
+            output_directory_fd = os.open(
+                ".",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
             )
+            install_directory_fd = output_directory_fd
+
+        if output_path == "-":
+            assert output_directory_fd is not None
+            output_fd, output_temporary_name = create_secure_temporary_file(
+                output_directory_fd
+            )
+            output_temporary_stat = os.fstat(output_fd)
+        else:
+            output_fd = os.open(output_path, flags, 0o600)
     except OSError as error:
+        if output_fd is not None:
+            os.close(output_fd)
+        if (
+            output_directory_fd is not None
+            and output_temporary_name is not None
+            and output_temporary_stat is not None
+        ):
+            unlink_temporary_name_if_owned(
+                output_directory_fd,
+                output_temporary_name,
+                output_temporary_stat,
+            )
+        if output_directory_fd is not None:
+            os.close(output_directory_fd)
+        if output_path == "-":
+            output_description = "the current directory"
+        else:
+            output_description = output_path
         print(
-            f"Secure download verification/install failed: {error}",
+            f"Could not create secure download file {output_description}: "
+            f"{error}",
             file=sys.stderr,
         )
-        os.close(output_fd)
         return 1
 
-    os.close(output_fd)
-    return 0
+    assert output_fd is not None
+
+    try:
+        try:
+            return_code = subprocess.run(
+                command, stdout=output_fd, check=False
+            ).returncode
+        except OSError as error:
+            print(
+                f"Could not execute downloader {command[0]}: {error}",
+                file=sys.stderr,
+            )
+            return 127
+
+        if return_code != 0:
+            return return_code
+
+        try:
+            verify_file_descriptor(output_fd, verify_size, verify_sha256)
+            if install_directory_fd is not None and install_name is not None:
+                install_from_file_descriptor(
+                    output_fd,
+                    install_directory_fd,
+                    install_name,
+                    verify_size,
+                    verify_sha256,
+                )
+        except OSError as error:
+            print(
+                f"Secure download verification/install failed: {error}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+    finally:
+        os.close(output_fd)
+        if (
+            output_directory_fd is not None
+            and output_temporary_name is not None
+            and output_temporary_stat is not None
+        ):
+            unlink_temporary_name_if_owned(
+                output_directory_fd,
+                output_temporary_name,
+                output_temporary_stat,
+            )
+        if output_directory_fd is not None:
+            os.close(output_directory_fd)
 
 
 if __name__ == "__main__":
