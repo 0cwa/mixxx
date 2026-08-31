@@ -126,6 +126,16 @@ Item {
         return nullptr;
     }
 
+    static QObject* findControlProxy(QObject* root, const QString& key) {
+        const auto children = root->findChildren<QObject*>();
+        for (QObject* child : children) {
+            if (child->property("key").toString() == key) {
+                return child;
+            }
+        }
+        return nullptr;
+    }
+
     static QObject* findButton(QObject* root, const QString& text) {
         const auto children = root->findChildren<QObject*>();
         for (QObject* child : children) {
@@ -192,7 +202,7 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = waveformDisplay->property("zoomControlProxy").value<QObject*>();
+    QObject* zoomControl = findControlProxy(m_root.get(), QStringLiteral("waveform_zoom"));
     ASSERT_NE(nullptr, zoomControl);
     EXPECT_EQ(QStringLiteral("waveform_zoom"), zoomControl->property("key").toString());
 
