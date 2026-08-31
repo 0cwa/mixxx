@@ -936,7 +936,7 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
 
         std::vector<std::vector<float>> chunkStems;
         if (!runInference(inputChunk, sampleRate, chunkStems) ||
-                chunkStems.size() != stemNames.size()) {
+                chunkStems.size() != static_cast<std::size_t>(stemNames.size())) {
             kLogger.warning() << "Failed to run ONNX inference for chunk at frame:"
                               << frameOffset;
             return false;
