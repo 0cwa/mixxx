@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QQmlComponent>
 #include <QQmlEngine>
+#include <QQuickStyle>
 #include <QUrl>
 #include <gsl/pointers>
 #include <memory>
@@ -25,6 +26,7 @@ const ConfigKey kMaxZoomOutKey(QStringLiteral("[Waveform]"),
 class InterfaceQmlTest : public MixxxTest {
   protected:
     void SetUp() override {
+        QQuickStyle::setStyle("Basic");
         mixxx::qml::QmlConfigProxy::registerUserSettings(config());
         m_engine.addImportPath(QStringLiteral(RESOURCE_FOLDER "/qml"));
         m_engine.addImportPath(
@@ -115,7 +117,8 @@ Item {
     }
 
     static QObject* findMaxZoomOutInput(QObject* root) {
-        for (QObject* child : root->findChildren<QObject*>()) {
+        const auto children = root->findChildren<QObject*>();
+        for (QObject* child : children) {
             if (child->property("suffix").toString() == QStringLiteral("x") &&
                     child->property("min").toDouble() == 10.0 &&
                     child->property("max").toDouble() == 100.0) {
@@ -126,7 +129,8 @@ Item {
     }
 
     static QObject* findControlProxy(QObject* root, const QString& key) {
-        for (QObject* child : root->findChildren<QObject*>()) {
+        const auto children = root->findChildren<QObject*>();
+        for (QObject* child : children) {
             if (child->property("key").toString() == key) {
                 return child;
             }
@@ -135,7 +139,8 @@ Item {
     }
 
     static QObject* findButton(QObject* root, const QString& text) {
-        for (QObject* child : root->findChildren<QObject*>()) {
+        const auto children = root->findChildren<QObject*>();
+        for (QObject* child : children) {
             if (child->property("text").toString() == text) {
                 return child;
             }
