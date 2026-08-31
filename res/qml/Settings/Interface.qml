@@ -76,8 +76,14 @@ Category {
         jumpPaletteInput.currentIndex = colorPane.jumpPaletteColorIndex;
         themeColorTab.dirty = false;
     }
+    function setWaveformMaxZoomOutInput(value) {
+        maxZoomOutInput.value = Qt.binding(function () {
+            return maxZoomOutInput.decimalToInt(maxZoomOutInput.realValue);
+        });
+        maxZoomOutInput.realValue = value;
+    }
     function loadWaveform() {
-        maxZoomOutInput.value = Mixxx.Config.waveformMaxZoomOut;
+        setWaveformMaxZoomOutInput(Mixxx.Config.waveformMaxZoomOut);
         waveformTab.dirty = false;
     }
     function resetDeck() {
@@ -85,7 +91,7 @@ Category {
     function resetInterface() {
     }
     function resetWaveform() {
-        maxZoomOutInput.value = 10;
+        setWaveformMaxZoomOutInput(10);
         waveformTab.dirty = true;
     }
     function saveDeck() {
@@ -140,7 +146,7 @@ Category {
         loadInterface();
     }
     function saveWaveform() {
-        Mixxx.Config.waveformMaxZoomOut = maxZoomOutInput.value / maxZoomOutInput.decimalFactor;
+        Mixxx.Config.waveformMaxZoomOut = maxZoomOutInput.realValue;
         loadWaveform();
     }
 

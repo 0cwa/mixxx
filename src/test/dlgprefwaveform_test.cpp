@@ -101,6 +101,7 @@ TEST_F(DlgPrefWaveformTest, MaxZoomOutExpandsWaveformClamp) {
     ASSERT_TRUE(factory->setConfig(config()));
 
     EXPECT_DOUBLE_EQ(20.0, factory->getMaxZoomOut());
+    EXPECT_DOUBLE_EQ(20.0, WaveformWidgetRenderer::getWaveformMaxZoom());
     EXPECT_DOUBLE_EQ(15, factory->getDefaultZoom());
 
     WaveformWidgetRenderer renderer;

@@ -2,6 +2,7 @@
 
 #include <Qt>
 
+#include "control/controlobject.h"
 #include "library/basetracktablemodel.h"
 #include "library/library.h"
 #include "library/library_prefs.h"
@@ -137,7 +138,12 @@ QmlConfigProxy::QmlConfigProxy(
                 this,
                 [this](double) { emit waveformMaxZoomOutChanged(); });
     } else {
-        WaveformWidgetRenderer::setWaveformMaxZoom(waveformMaxZoomOut());
+        const double maxZoomOut = waveformMaxZoomOut();
+        WaveformWidgetRenderer::setWaveformMaxZoom(maxZoomOut);
+        const ConfigKey maxZoomOutKey(kWaveformGroup, kMaxZoomOutKey);
+        if (ControlObject::exists(maxZoomOutKey)) {
+            ControlObject::set(maxZoomOutKey, maxZoomOut);
+        }
     }
 }
 
@@ -257,6 +263,10 @@ void QmlConfigProxy::set_waveformMaxZoomOut(double value) {
 
     const double clampedValue = WaveformWidgetRenderer::clampWaveformMaxZoom(value);
     WaveformWidgetRenderer::setWaveformMaxZoom(clampedValue);
+    const ConfigKey maxZoomOutKey(kWaveformGroup, kMaxZoomOutKey);
+    if (ControlObject::exists(maxZoomOutKey)) {
+        ControlObject::set(maxZoomOutKey, clampedValue);
+    }
     setConfigValueAndNotify<double>(
             kWaveformGroup,
             kMaxZoomOutKey,

@@ -794,6 +794,9 @@ void WaveformWidgetFactory::setMaxZoomOutInternal(
             WaveformWidgetRenderer::clampWaveformMaxZoom(maxZoomOut);
     const bool maxZoomOutChanged = newMaxZoomOut != m_maxZoomOut;
     WaveformWidgetRenderer::setWaveformMaxZoom(newMaxZoomOut);
+    if (ControlObject::exists(kMaxZoomOutKey)) {
+        ControlObject::set(kMaxZoomOutKey, newMaxZoomOut);
+    }
     m_maxZoomOut = newMaxZoomOut;
 
     m_defaultZoom = math_clamp(m_defaultZoom,
