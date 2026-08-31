@@ -97,9 +97,12 @@ Item {
     property var configProxy: Mixxx.Config
 
     WaveformDisplay {
+        id: waveformDisplay
         objectName: "waveformDisplay"
         group: "[Channel1]"
     }
+
+    property alias waveformZoomControl: waveformDisplay.zoomControlProxy
 }
 )",
                 QUrl::fromLocalFile(QStringLiteral(
@@ -120,16 +123,6 @@ Item {
             if (child->property("suffix").toString() == QStringLiteral("x") &&
                     child->property("min").toDouble() == 10.0 &&
                     child->property("max").toDouble() == 100.0) {
-                return child;
-            }
-        }
-        return nullptr;
-    }
-
-    static QObject* findControlProxy(QObject* root, const QString& key) {
-        const auto children = root->findChildren<QObject*>();
-        for (QObject* child : children) {
-            if (child->property("key").toString() == key) {
                 return child;
             }
         }
@@ -202,8 +195,9 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = findControlProxy(m_root.get(), QStringLiteral("waveform_zoom"));
+    QObject* zoomControl = m_root->property("waveformZoomControl").value<QObject*>();
     ASSERT_NE(nullptr, zoomControl);
+    EXPECT_EQ(QStringLiteral("waveform_zoom"), zoomControl->property("key").toString());
 
     QObject* configProxy = m_root->property("configProxy").value<QObject*>();
     ASSERT_NE(nullptr, configProxy);
