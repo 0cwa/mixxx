@@ -14,6 +14,7 @@
 #include "engine/enginemixer.h"
 #include "mixer/playermanager.h"
 #include "qml/qmlconfigproxy.h"
+#include "qml/qmlcontrolproxy.h"
 #include "qml/qmlplayermanagerproxy.h"
 #include "soundio/soundmanager.h"
 #include "test/mixxxtest.h"
@@ -129,7 +130,8 @@ Item {
     static QObject* findControlProxy(QObject* root, const QString& key) {
         const auto children = root->findChildren<QObject*>();
         for (QObject* child : children) {
-            if (child->property("key").toString() == key) {
+            const auto* controlProxy = qobject_cast<mixxx::qml::QmlControlProxy*>(child);
+            if (controlProxy && controlProxy->getKey() == key) {
                 return child;
             }
         }
