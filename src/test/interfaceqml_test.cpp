@@ -89,22 +89,29 @@ Item {
         mixxx::qml::QmlPlayerManagerProxy::registerPlayerManager(m_testPlayerManager);
 
         QQmlComponent component(&m_engine);
-        component.setData(R"(
+        const QString componentData =
+                QStringLiteral(R"(
 import QtQuick
 import Mixxx 1.0 as Mixxx
-import "."
 
 Item {
     property var configProxy: Mixxx.Config
 
-    WaveformDisplay {
-        objectName: "waveformDisplay"
-        group: "[Channel1]"
+    Loader {
+        id: waveformDisplayLoader
     }
+    Component.onCompleted: waveformDisplayLoader.setSource(
+        "%1",
+        { group: "[Channel1]", objectName: "waveformDisplay" })
 }
-)",
+)")
+                        .arg(QUrl::fromLocalFile(
+                                QStringLiteral(RESOURCE_FOLDER
+                                        "/qml/WaveformDisplay.qml"))
+                                        .toString());
+        component.setData(componentData.toUtf8(),
                 QUrl::fromLocalFile(QStringLiteral(
-                        RESOURCE_FOLDER "/qml/waveformdisplayqml_test.qml")));
+                        RESOURCE_FOLDER "/qml/main.qml")));
 
         m_root.reset(component.create());
         EXPECT_FALSE(component.isError()) << qPrintable(component.errorString());
@@ -112,6 +119,7 @@ Item {
         if (!m_root) {
             return nullptr;
         }
+        application()->processEvents();
         return m_root->findChild<QObject*>(QStringLiteral("waveformDisplay"));
     }
 
@@ -193,8 +201,7 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = waveformDisplay->findChild<QObject*>(
-            QStringLiteral("waveformZoomControl"));
+    QObject* zoomControl = waveformDisplay->property("zoomControlProxy").value<QObject*>();
     ASSERT_NE(nullptr, zoomControl);
     auto* zoomControlProxy = qobject_cast<mixxx::qml::QmlControlProxy*>(zoomControl);
     ASSERT_NE(nullptr, zoomControlProxy);
