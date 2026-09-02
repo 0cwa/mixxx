@@ -1,0 +1,84 @@
+# Resolve and install the optional runtime dependencies for the native
+# user-local install. The wrapper invokes this generated script explicitly
+# after the ordinary CMake install has populated its disposable prefix.
+
+if(NOT DEFINED MIXXX_RUNTIME_EXECUTABLE)
+  message(FATAL_ERROR "MIXXX_RUNTIME_EXECUTABLE was not provided")
+endif()
+
+set(MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES
+    "@MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES@")
+if(MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES)
+  set(
+    MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES_ARG
+    DIRECTORIES ${MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES}
+  )
+else()
+  set(MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES_ARG)
+endif()
+
+file(
+  GET_RUNTIME_DEPENDENCIES
+  EXECUTABLES "${MIXXX_RUNTIME_EXECUTABLE}"
+  ${MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES_ARG}
+  RESOLVED_DEPENDENCIES_VAR MIXXX_RUNTIME_RESOLVED_DEPENDENCIES
+  UNRESOLVED_DEPENDENCIES_VAR MIXXX_RUNTIME_UNRESOLVED_DEPENDENCIES
+  POST_INCLUDE_REGEXES
+    ".*/libonnx.*\\.so\\..*"
+    ".*/lib(cpuinfo|re2)\\.so\\..*"
+    ".*/libportmidi\\.so\\..*"
+    ".*/libprotobuf(-lite)?\\.so\\..*"
+    ".*/libmp4(v2)?\\.so\\..*"
+    ".*/libmad\\.so\\..*"
+    ".*/libid3tag\\.so\\..*"
+  # Include the allowlist before excluding everything else. This keeps
+  # system libraries out of the user-local prefix while still resolving all
+  # dependencies before activation.
+  POST_EXCLUDE_REGEXES ".*"
+)
+
+if(MIXXX_RUNTIME_UNRESOLVED_DEPENDENCIES)
+  string(
+    REPLACE
+    ";"
+    "\\n  "
+    MIXXX_RUNTIME_UNRESOLVED_MESSAGE
+    "${MIXXX_RUNTIME_UNRESOLVED_DEPENDENCIES}"
+  )
+  message(
+    FATAL_ERROR
+    "Unable to resolve Mixxx runtime dependencies:\\n  ${MIXXX_RUNTIME_UNRESOLVED_MESSAGE}"
+  )
+endif()
+
+# Keep the portable layout reproducible: install every discovered library and
+# its complete SONAME symlink chain, so a clean install and an upgrade have the
+# same versioned target plus relative symlinks.
+foreach(MIXXX_RUNTIME_DEPENDENCY IN LISTS MIXXX_RUNTIME_RESOLVED_DEPENDENCIES)
+  file(
+    INSTALL "${MIXXX_RUNTIME_DEPENDENCY}"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/@CMAKE_INSTALL_LIBDIR@/mixxx"
+    FOLLOW_SYMLINK_CHAIN
+  )
+endforeach()
+
+# ONNX Runtime loads its shared provider bridge with dlopen(), so it is not
+# visible to GET_RUNTIME_DEPENDENCIES. Keep the explicit fallback scoped to
+# the one provider required by the packaged ONNX Runtime.
+foreach(
+  MIXXX_RUNTIME_DEPENDENCY_DIRECTORY
+  IN
+  LISTS MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES
+)
+  set(
+    MIXXX_RUNTIME_ONNX_PROVIDER_LIBRARY
+    "${MIXXX_RUNTIME_DEPENDENCY_DIRECTORY}/libonnxruntime_providers_shared.so"
+  )
+  if(EXISTS "${MIXXX_RUNTIME_ONNX_PROVIDER_LIBRARY}")
+    file(
+      INSTALL "${MIXXX_RUNTIME_ONNX_PROVIDER_LIBRARY}"
+      DESTINATION "${CMAKE_INSTALL_PREFIX}/@CMAKE_INSTALL_LIBDIR@/mixxx"
+      FOLLOW_SYMLINK_CHAIN
+    )
+  endif()
+endforeach()

@@ -1,0 +1,334 @@
+# Install the configure-time Stemgen model snapshot.
+#
+# CMake 3.22 provides file(LOCK), file(COPY_FILE), and file(RENAME ... RESULT),
+# but its file operations are pathname based. The lock is therefore a
+# cooperative boundary for installers using this script. An uncooperative
+# process that can replace a parent directory entry between the explicit
+# checks and a CMake operation is outside this script's threat boundary; this
+# script does not claim portable descriptor-relative atomicity.
+
+function(_mixxx_stem_model_path_has_symlink_component input_path result_var)
+  set(path_to_check "${input_path}")
+  while(NOT path_to_check STREQUAL "")
+    if(IS_SYMLINK "${path_to_check}")
+      set(${result_var} TRUE PARENT_SCOPE)
+      return()
+    endif()
+    get_filename_component(parent_path "${path_to_check}" DIRECTORY)
+    if(parent_path STREQUAL path_to_check)
+      break()
+    endif()
+    set(path_to_check "${parent_path}")
+  endwhile()
+  set(${result_var} FALSE PARENT_SCOPE)
+endfunction()
+
+function(
+  _mixxx_stem_model_file_matches
+  input_path
+  expected_size
+  expected_sha256
+  result_var
+)
+  set(${result_var} FALSE PARENT_SCOPE)
+  if(
+    IS_SYMLINK "${input_path}"
+    OR NOT EXISTS "${input_path}"
+    OR IS_DIRECTORY "${input_path}"
+  )
+    return()
+  endif()
+  file(SIZE "${input_path}" actual_size)
+  if(NOT actual_size EQUAL expected_size)
+    return()
+  endif()
+  file(SHA256 "${input_path}" actual_sha256)
+  if(NOT actual_sha256 STREQUAL expected_sha256)
+    return()
+  endif()
+  set(${result_var} TRUE PARENT_SCOPE)
+endfunction()
+
+function(_mixxx_stem_model_has_single_link input_path result_var)
+  set(${result_var} FALSE PARENT_SCOPE)
+  if(
+    IS_SYMLINK "${input_path}"
+    OR NOT EXISTS "${input_path}"
+    OR IS_DIRECTORY "${input_path}"
+  )
+    return()
+  endif()
+
+  if(APPLE)
+    execute_process(
+      COMMAND stat -f %l -- "${input_path}"
+      RESULT_VARIABLE stat_result
+      OUTPUT_VARIABLE link_count
+      ERROR_QUIET
+    )
+    string(STRIP "${link_count}" link_count)
+    if(stat_result EQUAL 0 AND link_count STREQUAL "1")
+      set(${result_var} TRUE PARENT_SCOPE)
+    endif()
+  elseif(UNIX)
+    execute_process(
+      COMMAND stat -c %h -- "${input_path}"
+      RESULT_VARIABLE stat_result
+      OUTPUT_VARIABLE link_count
+      ERROR_QUIET
+    )
+    string(STRIP "${link_count}" link_count)
+    if(stat_result EQUAL 0 AND link_count STREQUAL "1")
+      set(${result_var} TRUE PARENT_SCOPE)
+    endif()
+  elseif(WIN32)
+    execute_process(
+      COMMAND fsutil hardlink list "${input_path}"
+      RESULT_VARIABLE fsutil_result
+      OUTPUT_VARIABLE hardlink_list
+      ERROR_QUIET
+    )
+    string(REPLACE "\r\n" "\n" hardlink_list "${hardlink_list}")
+    string(REPLACE "\n" ";" hardlink_list "${hardlink_list}")
+    list(FILTER hardlink_list EXCLUDE REGEX "^[ \\t]*$")
+    list(LENGTH hardlink_list link_count)
+    if(fsutil_result EQUAL 0 AND link_count EQUAL 1)
+      set(${result_var} TRUE PARENT_SCOPE)
+    endif()
+  endif()
+endfunction()
+
+set(_mixxx_stem_model_path "@MIXXX_STEM_MODEL_STAGED_FILE@")
+set(_mixxx_stem_model_destination_dir "${CMAKE_INSTALL_PREFIX}/@MIXXX_INSTALL_DATADIR@/models")
+set(_mixxx_stem_model_destination_path "${_mixxx_stem_model_destination_dir}/@MIXXX_STEM_MODEL_NAME@")
+
+set(_mixxx_stem_model_path_has_symlink_component FALSE)
+_mixxx_stem_model_path_has_symlink_component(
+  "${_mixxx_stem_model_path}"
+  _mixxx_stem_model_path_has_symlink_component
+)
+if(
+  _mixxx_stem_model_path_has_symlink_component
+  OR IS_SYMLINK "${_mixxx_stem_model_path}"
+  OR NOT EXISTS "${_mixxx_stem_model_path}"
+  OR IS_DIRECTORY "${_mixxx_stem_model_path}"
+)
+  message(
+    FATAL_ERROR
+    "The staged Stemgen model is missing or contains a symlink component: ${_mixxx_stem_model_path}"
+  )
+endif()
+
+set(_mixxx_stem_model_matches FALSE)
+_mixxx_stem_model_file_matches(
+  "${_mixxx_stem_model_path}"
+  @MIXXX_STEM_MODEL_SIZE@
+  "@MIXXX_STEM_MODEL_SHA256@"
+  _mixxx_stem_model_matches
+)
+if(NOT _mixxx_stem_model_matches)
+  message(
+    FATAL_ERROR
+    "The staged Stemgen model does not match the verified model: ${_mixxx_stem_model_path}"
+  )
+endif()
+
+set(_mixxx_stem_model_destination_path_has_symlink_component FALSE)
+_mixxx_stem_model_path_has_symlink_component(
+  "${_mixxx_stem_model_destination_path}"
+  _mixxx_stem_model_destination_path_has_symlink_component
+)
+if(_mixxx_stem_model_destination_path_has_symlink_component)
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model path contains a symlink component: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+
+file(MAKE_DIRECTORY "${_mixxx_stem_model_destination_dir}")
+set(_mixxx_stem_model_destination_path_has_symlink_component FALSE)
+_mixxx_stem_model_path_has_symlink_component(
+  "${_mixxx_stem_model_destination_path}"
+  _mixxx_stem_model_destination_path_has_symlink_component
+)
+if(_mixxx_stem_model_destination_path_has_symlink_component)
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model path gained a symlink component while creating its parent: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+
+set(_mixxx_stem_model_lock_path "${_mixxx_stem_model_destination_dir}/.stemgen-model.lock")
+if(IS_SYMLINK "${_mixxx_stem_model_lock_path}")
+  message(
+    FATAL_ERROR
+    "The Stemgen model install lock must not be a symlink: ${_mixxx_stem_model_lock_path}"
+  )
+endif()
+file(
+  LOCK
+  "${_mixxx_stem_model_lock_path}"
+  GUARD PROCESS
+  TIMEOUT 60
+  RESULT_VARIABLE _mixxx_stem_model_lock_result
+)
+if(NOT _mixxx_stem_model_lock_result STREQUAL "0")
+  message(
+    FATAL_ERROR
+    "Could not acquire the cooperative Stemgen model install lock: ${_mixxx_stem_model_lock_result}"
+  )
+endif()
+
+# Recheck the destination only while holding the cooperative lock. Existing
+# correct files are immutable no-ops. Every other existing entry is preserved
+# and rejected, including hard-linked regular files. No backup is needed:
+# this script never moves or overwrites an existing destination.
+if(IS_SYMLINK "${_mixxx_stem_model_destination_path}")
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model destination must not be a symlink: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+if(IS_DIRECTORY "${_mixxx_stem_model_destination_path}")
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model destination is a directory: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+if(EXISTS "${_mixxx_stem_model_destination_path}")
+  set(_mixxx_stem_model_destination_has_single_link FALSE)
+  _mixxx_stem_model_has_single_link(
+    "${_mixxx_stem_model_destination_path}"
+    _mixxx_stem_model_destination_has_single_link
+  )
+  if(NOT _mixxx_stem_model_destination_has_single_link)
+    message(
+      FATAL_ERROR
+      "The installed Stemgen model destination must be a regular file with one hard link: ${_mixxx_stem_model_destination_path}"
+    )
+  endif()
+  set(_mixxx_stem_model_destination_matches FALSE)
+  _mixxx_stem_model_file_matches(
+    "${_mixxx_stem_model_destination_path}"
+    @MIXXX_STEM_MODEL_SIZE@
+    "@MIXXX_STEM_MODEL_SHA256@"
+    _mixxx_stem_model_destination_matches
+  )
+  if(_mixxx_stem_model_destination_matches)
+    message(STATUS "Reusing the existing verified Stemgen model: ${_mixxx_stem_model_destination_path}")
+    return()
+  endif()
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model destination does not match the verified model; refusing to replace it: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+
+get_filename_component(_mixxx_stem_model_name "${_mixxx_stem_model_destination_path}" NAME)
+string(RANDOM LENGTH 32 ALPHABET "0123456789abcdef" _mixxx_stem_model_nonce)
+set(
+  _mixxx_stem_model_temporary_path
+  "${_mixxx_stem_model_destination_dir}/.${_mixxx_stem_model_name}.${_mixxx_stem_model_nonce}.tmp"
+)
+if(
+  EXISTS "${_mixxx_stem_model_temporary_path}"
+  OR IS_SYMLINK "${_mixxx_stem_model_temporary_path}"
+)
+  message(
+    FATAL_ERROR
+    "The temporary Stemgen model destination already exists: ${_mixxx_stem_model_temporary_path}"
+  )
+endif()
+
+# The temporary pathname is owned by this invocation after COPY_FILE is
+# attempted. Cleanup is limited to that pathname and never touches an existing
+# destination or an unrecognized backup.
+set(_mixxx_stem_model_temporary_owned TRUE)
+file(
+  COPY_FILE
+  "${_mixxx_stem_model_path}"
+  "${_mixxx_stem_model_temporary_path}"
+  RESULT _mixxx_stem_model_copy_result
+)
+if(NOT _mixxx_stem_model_copy_result STREQUAL "0")
+  if(_mixxx_stem_model_temporary_owned)
+    file(REMOVE "${_mixxx_stem_model_temporary_path}")
+  endif()
+  message(
+    FATAL_ERROR
+    "Could not stage the Stemgen model in a temporary file: ${_mixxx_stem_model_copy_result}"
+  )
+endif()
+
+set(_mixxx_stem_model_temporary_matches FALSE)
+_mixxx_stem_model_file_matches(
+  "${_mixxx_stem_model_temporary_path}"
+  @MIXXX_STEM_MODEL_SIZE@
+  "@MIXXX_STEM_MODEL_SHA256@"
+  _mixxx_stem_model_temporary_matches
+)
+if(NOT _mixxx_stem_model_temporary_matches)
+  if(_mixxx_stem_model_temporary_owned)
+    file(REMOVE "${_mixxx_stem_model_temporary_path}")
+  endif()
+  message(
+    FATAL_ERROR
+    "The temporary Stemgen model did not match the verified model: ${_mixxx_stem_model_temporary_path}"
+  )
+endif()
+
+# A cooperative installer cannot change the destination while this process
+# holds the lock. Recheck anyway, and never use a failed rename as permission
+# to remove an entry we did not create.
+if(
+  IS_SYMLINK "${_mixxx_stem_model_destination_path}"
+  OR IS_DIRECTORY "${_mixxx_stem_model_destination_path}"
+  OR EXISTS "${_mixxx_stem_model_destination_path}"
+)
+  if(_mixxx_stem_model_temporary_owned)
+    file(REMOVE "${_mixxx_stem_model_temporary_path}")
+  endif()
+  message(
+    FATAL_ERROR
+    "The installed Stemgen model destination appeared before publication: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
+
+file(
+  RENAME
+  "${_mixxx_stem_model_temporary_path}"
+  "${_mixxx_stem_model_destination_path}"
+  RESULT _mixxx_stem_model_rename_result
+)
+if(NOT _mixxx_stem_model_rename_result STREQUAL "0")
+  if(_mixxx_stem_model_temporary_owned)
+    file(REMOVE "${_mixxx_stem_model_temporary_path}")
+  endif()
+  message(
+    FATAL_ERROR
+    "Could not publish the Stemgen model: ${_mixxx_stem_model_rename_result}"
+  )
+endif()
+set(_mixxx_stem_model_temporary_owned FALSE)
+
+set(_mixxx_stem_model_destination_has_single_link FALSE)
+_mixxx_stem_model_has_single_link(
+  "${_mixxx_stem_model_destination_path}"
+  _mixxx_stem_model_destination_has_single_link
+)
+set(_mixxx_stem_model_destination_matches FALSE)
+_mixxx_stem_model_file_matches(
+  "${_mixxx_stem_model_destination_path}"
+  @MIXXX_STEM_MODEL_SIZE@
+  "@MIXXX_STEM_MODEL_SHA256@"
+  _mixxx_stem_model_destination_matches
+)
+if(
+  NOT _mixxx_stem_model_destination_has_single_link
+  OR NOT _mixxx_stem_model_destination_matches
+)
+  message(
+    FATAL_ERROR
+    "The published Stemgen model failed post-publication verification: ${_mixxx_stem_model_destination_path}"
+  )
+endif()
