@@ -61,3 +61,24 @@ foreach(MIXXX_RUNTIME_DEPENDENCY IN LISTS MIXXX_RUNTIME_RESOLVED_DEPENDENCIES)
     FOLLOW_SYMLINK_CHAIN
   )
 endforeach()
+
+# ONNX Runtime loads its shared provider bridge with dlopen(), so it is not
+# visible to GET_RUNTIME_DEPENDENCIES. Keep the explicit fallback scoped to
+# the one provider required by the packaged ONNX Runtime.
+foreach(
+  MIXXX_RUNTIME_DEPENDENCY_DIRECTORY
+  IN
+  LISTS MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES
+)
+  set(
+    MIXXX_RUNTIME_ONNX_PROVIDER_LIBRARY
+    "${MIXXX_RUNTIME_DEPENDENCY_DIRECTORY}/libonnxruntime_providers_shared.so"
+  )
+  if(EXISTS "${MIXXX_RUNTIME_ONNX_PROVIDER_LIBRARY}")
+    file(
+      INSTALL "${MIXXX_RUNTIME_ONNX_PROVIDER_LIBRARY}"
+      DESTINATION "${CMAKE_INSTALL_PREFIX}/@CMAKE_INSTALL_LIBDIR@/mixxx"
+      FOLLOW_SYMLINK_CHAIN
+    )
+  endif()
+endforeach()

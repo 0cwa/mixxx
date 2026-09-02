@@ -1006,6 +1006,108 @@ EOF
     rm -rf -- "$test_root"
 }
 
+test_runtime_dependency_staging() {
+    local test_root
+    local dependency_directory
+    local project_directory
+    local build_directory
+    local executable
+    local install_directory
+    local output
+    local core_library
+    local core_target
+    local provider_bridge
+    local provider_bridge_target
+    local provider_cpu
+    local unrelated_library
+
+    test_root=$(mktemp -d "${TMPDIR:-/tmp}/mixxx-runtime-dependency-test.XXXXXX")
+    dependency_directory="$test_root/dependencies"
+    project_directory="$test_root/project"
+    build_directory="$test_root/build"
+    executable="$test_root/mixxx"
+    install_directory="$test_root/install"
+    output="$test_root/output"
+    core_library="$dependency_directory/libonnxruntime.so.1.26.0"
+    core_target="$dependency_directory/libonnxruntime.so.1"
+    provider_bridge="$dependency_directory/libonnxruntime_providers_shared.so"
+    provider_bridge_target="$provider_bridge.1.26.0"
+    provider_cpu="$dependency_directory/libonnxruntime_providers_cpu.so"
+    unrelated_library="$dependency_directory/libunrelated-runtime.so"
+
+    mkdir -p -- "$dependency_directory" "$project_directory"
+    printf '%s\n' 'void onnxruntime(void) {}' >"$test_root/core.c"
+    printf '%s\n' 'void provider(void) {}' >"$test_root/provider.c"
+    printf '%s\n' 'void unrelated(void) {}' >"$test_root/unrelated.c"
+    printf '%s\n' \
+        'extern void onnxruntime(void);' \
+        'int main(void) { onnxruntime(); return 0; }' >"$test_root/main.c"
+    cc -shared -fPIC -Wl,-soname,libonnxruntime.so.1 \
+        "$test_root/core.c" -o "$core_library"
+    ln -s -- "$(basename -- "$core_library")" "$core_target"
+    ln -s -- "$(basename -- "$core_target")" \
+        "$dependency_directory/libonnxruntime.so"
+    cc -shared -fPIC -Wl,-soname,libonnxruntime_providers_shared.so \
+        "$test_root/provider.c" -o "$provider_bridge_target"
+    ln -s -- "$(basename -- "$provider_bridge_target")" "$provider_bridge"
+    cc -shared -fPIC -Wl,-soname,libonnxruntime_providers_cpu.so \
+        "$test_root/provider.c" -o "$provider_cpu"
+    cc -shared -fPIC -Wl,-soname,libunrelated-runtime.so \
+        "$test_root/unrelated.c" -o "$unrelated_library"
+    cc "$test_root/main.c" -L"$dependency_directory" \
+        -Wl,-rpath,"$dependency_directory" -Wl,--no-as-needed \
+        -lonnxruntime -o "$executable"
+
+    cat >"$project_directory/CMakeLists.txt" <<EOF
+cmake_minimum_required(VERSION 3.24)
+project(mixxx_runtime_dependency_fixture NONE)
+set(MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES [==[${dependency_directory}]==])
+set(CMAKE_INSTALL_LIBDIR lib)
+set(MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT
+    "\${CMAKE_CURRENT_BINARY_DIR}/InstallMixxxRuntimeDependencies.cmake")
+configure_file(
+    [==[${repository_root}/cmake/InstallMixxxRuntimeDependencies.cmake.in]==]
+    "\${MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT}"
+    @ONLY
+)
+EOF
+    if ! cmake -S "$project_directory" -B "$build_directory" >"$output" 2>&1; then
+        cat "$output" >&2
+        fail 'runtime dependency fixture did not configure'
+    fi
+    if ! cmake \
+            -DCMAKE_INSTALL_PREFIX="$install_directory" \
+            -DMIXXX_RUNTIME_EXECUTABLE="$executable" \
+            -P "$build_directory/InstallMixxxRuntimeDependencies.cmake" \
+            >>"$output" 2>&1; then
+        cat "$output" >&2
+        fail 'runtime dependency fixture did not install'
+    fi
+
+    test -f "$install_directory/lib/mixxx/libonnxruntime.so.1.26.0" || \
+        fail 'runtime dependency staging omitted the ONNX Runtime core'
+    test -L "$install_directory/lib/mixxx/libonnxruntime.so.1" || \
+        fail 'runtime dependency staging omitted the core SONAME link'
+    test -f "$install_directory/lib/mixxx/libonnxruntime_providers_shared.so" || \
+        fail 'runtime dependency staging omitted the ONNX provider bridge'
+    test -L "$install_directory/lib/mixxx/libonnxruntime_providers_shared.so" || \
+        fail 'runtime dependency staging omitted the provider bridge link'
+    test -f "$install_directory/lib/mixxx/libonnxruntime_providers_shared.so.1.26.0" || \
+        fail 'runtime dependency staging omitted the provider bridge target'
+    test ! -e "$install_directory/lib/mixxx/libonnxruntime_providers_cpu.so" || \
+        fail 'runtime dependency staging copied an unneeded ONNX provider library'
+    test ! -e "$install_directory/lib/mixxx/libunrelated-runtime.so" || \
+        fail 'runtime dependency staging copied an unrelated library'
+    readelf -d "$executable" | grep -Fq \
+        'Shared library: [libonnxruntime.so.1]' || \
+        fail 'runtime dependency fixture did not link the ONNX Runtime core'
+    readelf -d "$install_directory/lib/mixxx/libonnxruntime_providers_shared.so" \
+        | grep -Fq 'Library soname: [libonnxruntime_providers_shared.so]' || \
+        fail 'installed ONNX provider bridge has no expected SONAME'
+
+    rm -rf -- "$test_root"
+}
+
 download_script="$repository_root/.github/scripts/download-stemgen-model.sh"
 model_pointer="$repository_root/models/htdemucs.onnx"
 
@@ -1019,6 +1121,7 @@ fi
 
 test_download_staging_safety
 test_cmake_install_staging_safety
+test_runtime_dependency_staging
 pointer_before=$(sha256sum "$model_pointer")
 if env -u MIXXX_STEM_MODEL_DIR "$download_script" >/dev/null 2>&1; then
     fail 'unparameterized model download unexpectedly succeeded'
