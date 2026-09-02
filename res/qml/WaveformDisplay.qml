@@ -179,6 +179,7 @@ Item {
 
         group: root.zoomGroup
         key: "waveform_zoom"
+        objectName: "waveformZoomControl"
 
         Component.onCompleted: {
             if (group == root.group) {
