@@ -558,7 +558,7 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
 
     // Process new messages from the reader thread before looking up
     // the first chunk and to update m_readableFrameIndexRange
-    process();
+    processPendingStatusUpdates();
 
     auto remainingFrameIndexRange =
             mixxx::IndexRange::forward(

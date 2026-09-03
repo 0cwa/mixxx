@@ -204,6 +204,30 @@ TEST_F(CachingReaderStatusQueueTest, ProcessLeavesUpdatesBeyondCallbackBudgetQue
     EXPECT_EQ(budget * 2, consumedUpdates(reader));
 }
 
+TEST_F(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget) {
+    CachingReader reader(
+            kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
+    const int budget = maxStatusUpdatesPerCallback();
+    reader.m_state.storeRelease(CachingReader::STATE_TRACK_LOADED);
+    reader.m_readableFrameIndexRange = mixxx::IndexRange::forward(0, 1);
+    for (int i = 0; i < budget * 2; ++i) {
+        auto* const pChunk = reader.m_chunks[i];
+        pChunk->init(i);
+        pChunk->giveToWorker();
+        auto update = ReaderStatusUpdate();
+        update.init(CHUNK_READ_DISCARDED, pChunk, mixxx::IndexRange());
+        ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&update, 1));
+    }
+
+    reader.process();
+    std::array<CSAMPLE, 2> buffer{};
+    EXPECT_EQ(CachingReader::ReadResult::UNAVAILABLE,
+            reader.read(
+                    0, buffer.size(), false, buffer.data(), mixxx::audio::ChannelCount::stereo()));
+    EXPECT_EQ(budget, consumedUpdates(reader));
+    EXPECT_EQ(budget, pendingUpdates(reader));
+}
+
 TEST_F(CachingReaderStatusQueueTest,
         TeardownDrainReclaimsQueuedChunksWithoutStateTransitions) {
     CachingReader reader(
@@ -214,6 +238,12 @@ TEST_F(CachingReaderStatusQueueTest,
     auto update = ReaderStatusUpdate();
     update.init(CHUNK_READ_SUCCESS, pChunk, mixxx::IndexRange::forward(0, 1));
     ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&update, 1));
+
+    reader.discardPendingStatusUpdates();
+    EXPECT_EQ(0, pendingUpdates(reader));
+    EXPECT_EQ(CachingReaderChunkForOwner::FREE, pChunk->getState());
+    EXPECT_EQ(-1, pChunk->getIndex());
+    EXPECT_EQ(CachingReader::STATE_IDLE, reader.m_state.loadAcquire());
 }
 
 class CachingReaderWorkerTest : public ::testing::Test {
@@ -257,7 +287,13 @@ TEST_F(CachingReaderWorkerTest,
     std::atomic<bool> completed{false};
     std::atomic<bool> published{true};
     std::thread loader([&] {
+#ifdef __STEM__
+        published.store(
+                worker.loadTrack(pTrack, mixxx::StemChannelSelection{}),
+                std::memory_order_release);
+#else
         published.store(worker.loadTrack(pTrack), std::memory_order_release);
+#endif
         completed.store(true, std::memory_order_release);
     });
 
@@ -656,6 +692,52 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogPreservesLongAlternatingContinuity) {
                         -1.0, kSamplesPerSegment));
     }
     EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+}
+
+TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowLeavesCursorAndOutputSafe) {
+    constexpr SINT kSamplesPerSegment = 10;
+    constexpr int kSegments =
+            static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 1;
+    m_pReadAheadManager->notifySeek(0);
+    for (int i = 0; i < kSegments; ++i) {
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    }
+
+    for (int i = 0; i < kSegments; ++i) {
+        SampleUtil::fill(m_pBuffer, 1.0f, kSamplesPerSegment);
+        const auto samplesRead = m_pReadAheadManager->getNextSamples(
+                i % 2 == 0 ? 1.0 : -1.0,
+                m_pBuffer,
+                kSamplesPerSegment,
+                mixxx::audio::ChannelCount::stereo());
+        if (i < kSegments - 1) {
+            EXPECT_EQ(kSamplesPerSegment, samplesRead);
+        } else {
+            EXPECT_EQ(0, samplesRead);
+            for (SINT sample = 0; sample < kSamplesPerSegment; ++sample) {
+                EXPECT_FLOAT_EQ(0.0f, m_pBuffer[sample]);
+            }
+        }
+    }
+
+    EXPECT_EQ(ReadAheadManager::kMaxReadAheadLogEntries,
+            m_pReader->readStartSamples().size());
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_DOUBLE_EQ(0.0,
+            m_pReadAheadManager->getFilePlaypositionFromLog(
+                    -1.0,
+                    kSamplesPerSegment *
+                            ReadAheadManager::kMaxReadAheadLogEntries));
+
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    EXPECT_EQ(kSamplesPerSegment,
+            m_pReadAheadManager->getNextSamples(
+                    1.0,
+                    m_pBuffer,
+                    kSamplesPerSegment,
+                    mixxx::audio::ChannelCount::stereo()));
 }
 
 TEST_F(ReadAheadManagerTest, TriggerOnJumpOrLoop) {

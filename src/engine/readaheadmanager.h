@@ -23,6 +23,8 @@ class RateControl;
 /// point.
 class ReadAheadManager {
   public:
+    static constexpr std::size_t kMaxReadAheadLogEntries = 4096;
+
     struct NextSamplesResult {
         SINT samplesRead;
         bool retryPending;
@@ -191,29 +193,35 @@ class ReadAheadManager {
         bool merge(const ReadLogEntry& other) {
             // Allow 0-length ReadLogEntry's to merge regardless of their
             // direction if they have the right start point.
-            if ((other.length() == 0 || direction() == other.direction()) &&
-                virtualPlaypositionEndNonInclusive == other.virtualPlaypositionStart) {
+            if (canMerge(other)) {
                 virtualPlaypositionEndNonInclusive =
                         other.virtualPlaypositionEndNonInclusive;
                 return true;
             }
             return false;
         }
+
+        bool canMerge(const ReadLogEntry& other) const {
+            return (other.length() == 0 || direction() == other.direction()) &&
+                    virtualPlaypositionEndNonInclusive == other.virtualPlaypositionStart;
+        }
     };
 
     /// virtualPlaypositionEnd is the first sample in the direction that was
     /// read that was NOT read as part of this log entry.
-    void addReadLogEntry(double virtualPlaypositionStart,
-                         double virtualPlaypositionEndNonInclusive);
+    bool canAddReadLogEntry(double virtualPlaypositionStart,
+            double virtualPlaypositionEndNonInclusive) const;
+    bool addReadLogEntry(double virtualPlaypositionStart,
+            double virtualPlaypositionEndNonInclusive);
 
     LoopingControl* m_pLoopingControl;
     CueControl* m_pCueControl;
     RateControl* m_pRateControl;
     // Read-ahead logging runs on the engine callback. Keep a fixed-size buffer
     // so direction changes never allocate in the callback. The limit is an
-    // explicit contract: overflowing it is a fatal programming error rather
-    // than silently producing an incorrect file position.
-    static constexpr std::size_t kMaxReadAheadLogEntries = 4096;
+    // explicit contract: when it is full, new reads return silence until old
+    // position mappings have been consumed rather than producing an incorrect
+    // file position.
     std::array<ReadLogEntry, kMaxReadAheadLogEntries> m_readAheadLog;
     std::size_t m_readAheadLogStart{0};
     std::size_t m_readAheadLogSize{0};
