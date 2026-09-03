@@ -6,15 +6,19 @@
 #include <QtDebug>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <thread>
 
 #include "control/controlobject.h"
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/cachingreader/cachingreaderchunk.h"
+#include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
 #include "test/mixxxtest.h"
 #include "util/assert.h"
 #include "util/defs.h"
+#include "util/fifo.h"
 #include "util/sample.h"
 
 namespace {
@@ -150,6 +154,90 @@ class LegacyPartialReader : public CachingReader {
         return CachingReader::ReadResult::PARTIALLY_AVAILABLE;
     }
 };
+
+class CachingReaderStatusQueueTest : public ::testing::Test {
+  protected:
+    static int maxStatusUpdatesPerCallback() {
+        return CachingReader::kMaxStatusUpdatesPerCallback;
+    }
+
+    static void enqueueTrackUnloadedUpdates(
+            CachingReader& reader, int count) {
+        auto update = ReaderStatusUpdate::trackUnloaded();
+        for (int i = 0; i < count; ++i) {
+            ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&update, 1));
+        }
+    }
+
+    static int pendingUpdates(const CachingReader& reader) {
+        return reader.m_readerStatusUpdateFIFO.readAvailable();
+    }
+
+    static int consumedUpdates(const CachingReader& reader) {
+        return reader.m_diagnosticStatusConsumed.loadAcquire();
+    }
+};
+
+TEST_F(CachingReaderStatusQueueTest, ProcessLeavesUpdatesBeyondCallbackBudgetQueued) {
+    CachingReader reader(
+            kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
+    const int budget = maxStatusUpdatesPerCallback();
+    const int queued = budget * 2 + 1;
+    enqueueTrackUnloadedUpdates(reader, queued);
+
+    ASSERT_EQ(queued, pendingUpdates(reader));
+    reader.process();
+    EXPECT_EQ(queued - budget, pendingUpdates(reader));
+    EXPECT_EQ(budget, consumedUpdates(reader));
+
+    reader.process();
+    EXPECT_EQ(1, pendingUpdates(reader));
+    EXPECT_EQ(budget * 2, consumedUpdates(reader));
+}
+
+class CachingReaderWorkerTest : public ::testing::Test {
+  protected:
+    static bool publishStatus(
+            CachingReaderWorker& worker, ReaderStatusUpdate update) {
+        return worker.publishStatus(update);
+    }
+};
+
+TEST_F(CachingReaderWorkerTest,
+        ShutdownReclaimsStatusChunkWhenStatusQueueIsFull) {
+    FIFO<CachingReaderChunkReadRequest> requestFIFO(1);
+    FIFO<ReaderStatusUpdate> statusFIFO(1);
+    auto queuedUpdate = ReaderStatusUpdate::trackUnloaded();
+    ASSERT_EQ(1, statusFIFO.write(&queuedUpdate, 1));
+
+    CachingReaderWorker worker(
+            kGroup,
+            &requestFIFO,
+            &statusFIFO,
+            mixxx::audio::ChannelCount::stereo());
+    mixxx::SampleBuffer chunkBuffer(1);
+    CachingReaderChunkForOwner chunk{
+            mixxx::SampleBuffer::WritableSlice(chunkBuffer)};
+    chunk.init(0);
+    chunk.giveToWorker();
+    auto pendingUpdate = ReaderStatusUpdate();
+    pendingUpdate.init(
+            CHUNK_READ_SUCCESS, &chunk, mixxx::IndexRange::forward(0, 1));
+
+    std::atomic<bool> published{true};
+    std::thread publisher([&] {
+        published.store(publishStatus(worker, pendingUpdate),
+                std::memory_order_release);
+    });
+    worker.quitWait();
+    publisher.join();
+
+    EXPECT_FALSE(published.load(std::memory_order_acquire));
+    EXPECT_EQ(CachingReaderChunkForOwner::READY, chunk.getState());
+    ReaderStatusUpdate preservedUpdate;
+    ASSERT_EQ(1, statusFIFO.read(&preservedUpdate, 1));
+    EXPECT_EQ(TRACK_UNLOADED, preservedUpdate.status);
+}
 
 TEST(CachingReaderRetryTest,
         LateChunkMissAcrossChunkBoundaryLeavesDestinationUntouched) {
@@ -469,6 +557,34 @@ TEST_F(ReadAheadManagerTest, NotifySeekCancelsPendingTriggerPlan) {
     ASSERT_GE(m_pReader->readStartSamples().size(), 2);
     EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
     EXPECT_EQ(20, m_pReader->readStartSamples()[1]);
+}
+
+TEST_F(ReadAheadManagerTest, ReadAheadLogPreservesLongAlternatingContinuity) {
+    constexpr int kSegments = 512;
+    constexpr SINT kSamplesPerSegment = 10;
+    m_pReadAheadManager->notifySeek(0);
+    for (int i = 0; i < kSegments; ++i) {
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    }
+
+    for (int i = 0; i < kSegments; ++i) {
+        const double rate = i % 2 == 0 ? 1.0 : -1.0;
+        EXPECT_EQ(kSamplesPerSegment,
+                m_pReadAheadManager->getNextSamples(
+                        rate,
+                        m_pBuffer,
+                        kSamplesPerSegment,
+                        mixxx::audio::ChannelCount::stereo()));
+    }
+
+    for (int i = 0; i < kSegments; ++i) {
+        const double expectedPosition = i % 2 == 0 ? 10.0 : 0.0;
+        EXPECT_DOUBLE_EQ(expectedPosition,
+                m_pReadAheadManager->getFilePlaypositionFromLog(
+                        -1.0, kSamplesPerSegment));
+    }
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
 }
 
 TEST_F(ReadAheadManagerTest, TriggerOnJumpOrLoop) {
