@@ -383,7 +383,7 @@ void ReadAheadManager::notifySeek(double seekPosition) {
     m_cacheMissExpected = true;
     m_readAheadLogStart = 0;
     m_readAheadLogSize = 0;
-    m_hasReadAheadLogOverflowEntry = false;
+    m_readAheadLogOverflowSize = 0;
 }
 
 void ReadAheadManager::hintReader(double dRate,
@@ -426,11 +426,14 @@ bool ReadAheadManager::canAddReadLogEntry(
         double virtualPlaypositionEndNonInclusive) const {
     ReadLogEntry newEntry(virtualPlaypositionStart,
             virtualPlaypositionEndNonInclusive);
-    if (m_hasReadAheadLogOverflowEntry) {
-        return m_readAheadLogOverflowEntry.canMerge(newEntry) ||
-                m_readAheadLogSize < m_readAheadLog.size();
+    if (m_readAheadLogOverflowSize > 0) {
+        const ReadLogEntry& last = m_readAheadLogOverflow
+                [m_readAheadLogOverflowSize - 1];
+        if (last.canMerge(newEntry)) {
+            return true;
+        }
     }
-    if (m_readAheadLogSize > 0) {
+    if (m_readAheadLogOverflowSize == 0 && m_readAheadLogSize > 0) {
         const ReadLogEntry& last =
                 m_readAheadLog[m_readAheadLogStart + m_readAheadLogSize - 1];
         if (last.canMerge(newEntry)) {
@@ -438,32 +441,42 @@ bool ReadAheadManager::canAddReadLogEntry(
         }
     }
     return m_readAheadLogSize < m_readAheadLog.size() ||
-            !m_hasReadAheadLogOverflowEntry;
+            m_readAheadLogOverflowSize < m_readAheadLogOverflow.size();
 }
 
 bool ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
         double virtualPlaypositionEndNonInclusive) {
     ReadLogEntry newEntry(virtualPlaypositionStart,
             virtualPlaypositionEndNonInclusive);
-    if (m_hasReadAheadLogOverflowEntry) {
-        if (m_readAheadLogOverflowEntry.merge(newEntry)) {
+    if (m_readAheadLogOverflowSize > 0) {
+        ReadLogEntry& last = m_readAheadLogOverflow
+                [m_readAheadLogOverflowSize - 1];
+        if (last.merge(newEntry)) {
             return true;
         }
-        if (m_readAheadLogSize == m_readAheadLog.size()) {
-            return false;
-        }
+
         if (m_readAheadLogStart > 0) {
-            std::move(m_readAheadLog.begin() + m_readAheadLogStart,
-                    m_readAheadLog.begin() +
-                            m_readAheadLogStart + m_readAheadLogSize,
-                    m_readAheadLog.begin());
+            for (std::size_t i = 0; i < m_readAheadLogSize; ++i) {
+                m_readAheadLog[i] = m_readAheadLog[m_readAheadLogStart + i];
+            }
             m_readAheadLogStart = 0;
         }
-        m_readAheadLog[m_readAheadLogSize] = m_readAheadLogOverflowEntry;
-        ++m_readAheadLogSize;
-        m_hasReadAheadLogOverflowEntry = false;
+
+        // Promote as many queued spill mappings as fit before appending the
+        // new mapping. This preserves their FIFO order when the main log has
+        // room but the spill queue still contains more than one entry.
+        while (m_readAheadLogSize < m_readAheadLog.size() &&
+                m_readAheadLogOverflowSize > 0) {
+            m_readAheadLog[m_readAheadLogSize] = m_readAheadLogOverflow[0];
+            ++m_readAheadLogSize;
+            for (std::size_t i = 1; i < m_readAheadLogOverflowSize; ++i) {
+                m_readAheadLogOverflow[i - 1] = m_readAheadLogOverflow[i];
+            }
+            --m_readAheadLogOverflowSize;
+        }
     }
-    if (m_readAheadLogSize > 0) {
+
+    if (m_readAheadLogOverflowSize == 0 && m_readAheadLogSize > 0) {
         ReadLogEntry& last =
                 m_readAheadLog[m_readAheadLogStart + m_readAheadLogSize - 1];
         if (last.merge(newEntry)) {
@@ -482,16 +495,17 @@ bool ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
     }
 
     const auto entryIndex = m_readAheadLogStart + m_readAheadLogSize;
-    if (entryIndex >= m_readAheadLog.size()) {
-        if (m_hasReadAheadLogOverflowEntry) {
-            return false;
-        }
-        m_readAheadLogOverflowEntry = newEntry;
-        m_hasReadAheadLogOverflowEntry = true;
+    if (entryIndex < m_readAheadLog.size()) {
+        m_readAheadLog[entryIndex] = newEntry;
+        ++m_readAheadLogSize;
         return true;
     }
-    m_readAheadLog[entryIndex] = newEntry;
-    ++m_readAheadLogSize;
+
+    if (m_readAheadLogOverflowSize == m_readAheadLogOverflow.size()) {
+        return false;
+    }
+    m_readAheadLogOverflow[m_readAheadLogOverflowSize] = newEntry;
+    ++m_readAheadLogOverflowSize;
     return true;
 }
 
@@ -503,7 +517,7 @@ double ReadAheadManager::getFilePlaypositionFromLog(
         return currentFilePlayposition;
     }
 
-    if (m_readAheadLogSize == 0 && !m_hasReadAheadLogOverflowEntry) {
+    if (m_readAheadLogSize == 0 && m_readAheadLogOverflowSize == 0) {
         // No log entries to read from.
         qDebug() << this << "No read ahead log entries to read from. Case not currently handled.";
         // TODO(rryan) log through a stats pipe eventually
@@ -511,11 +525,11 @@ double ReadAheadManager::getFilePlaypositionFromLog(
     }
 
     double filePlayposition = 0;
-    while ((m_readAheadLogSize > 0 || m_hasReadAheadLogOverflowEntry) &&
+    while ((m_readAheadLogSize > 0 || m_readAheadLogOverflowSize > 0) &&
             numConsumedSamples > 0) {
         ReadLogEntry& entry = m_readAheadLogSize > 0
                 ? m_readAheadLog[m_readAheadLogStart]
-                : m_readAheadLogOverflowEntry;
+                : m_readAheadLogOverflow[0];
         // Advance our idea of the current virtual playposition to this
         // ReadLogEntry's start position.
         filePlayposition = entry.advancePlayposition(&numConsumedSamples);
@@ -526,7 +540,10 @@ double ReadAheadManager::getFilePlaypositionFromLog(
                 ++m_readAheadLogStart;
                 --m_readAheadLogSize;
             } else {
-                m_hasReadAheadLogOverflowEntry = false;
+                for (std::size_t i = 1; i < m_readAheadLogOverflowSize; ++i) {
+                    m_readAheadLogOverflow[i - 1] = m_readAheadLogOverflow[i];
+                }
+                --m_readAheadLogOverflowSize;
             }
         }
     }
