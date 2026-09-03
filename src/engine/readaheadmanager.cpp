@@ -7,14 +7,9 @@
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
 #include "engine/controls/ratecontrol.h"
+#include "util/assert.h"
 #include "util/defs.h"
 #include "util/sample.h"
-
-namespace {
-
-constexpr std::size_t kInitialReadAheadLogCapacity = 256;
-
-} // namespace
 
 ReadAheadManager::ReadAheadManager()
         : m_pLoopingControl(nullptr),
@@ -25,7 +20,6 @@ ReadAheadManager::ReadAheadManager()
           m_pCrossFadeBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)),
           m_cacheMissCount(0),
           m_cacheMissExpected(false) {
-    m_readAheadLog.reserve(kInitialReadAheadLogCapacity);
     // For testing only: ReadAheadManagerMock
 }
 
@@ -40,7 +34,6 @@ ReadAheadManager::ReadAheadManager(CachingReader* pReader,
           m_pCrossFadeBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)),
           m_cacheMissCount(0),
           m_cacheMissExpected(false) {
-    m_readAheadLog.reserve(kInitialReadAheadLogCapacity);
     DEBUG_ASSERT(m_pLoopingControl != nullptr);
     DEBUG_ASSERT(m_pCueControl != nullptr);
     DEBUG_ASSERT(m_pReader != nullptr);
@@ -369,7 +362,6 @@ void ReadAheadManager::notifySeek(double seekPosition) {
     m_currentPosition = seekPosition;
     m_cacheMissCount = 0;
     m_cacheMissExpected = true;
-    m_readAheadLog.clear();
     m_readAheadLogStart = 0;
     m_readAheadLogSize = 0;
 }
@@ -432,14 +424,8 @@ void ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
     }
 
     const auto entryIndex = m_readAheadLogStart + m_readAheadLogSize;
-    if (entryIndex == m_readAheadLog.size()) {
-        // This is an exceptional path after the constructor reserve is
-        // exhausted. Growing retains all position state; silently evicting an
-        // old entry would make the file-position mapping incorrect.
-        m_readAheadLog.push_back(newEntry);
-    } else {
-        m_readAheadLog[entryIndex] = newEntry;
-    }
+    RELEASE_ASSERT(entryIndex < m_readAheadLog.size());
+    m_readAheadLog[entryIndex] = newEntry;
     ++m_readAheadLogSize;
 }
 
@@ -473,7 +459,6 @@ double ReadAheadManager::getFilePlaypositionFromLog(
     }
 
     if (m_readAheadLogSize == 0) {
-        m_readAheadLog.clear();
         m_readAheadLogStart = 0;
     }
 

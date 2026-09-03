@@ -1,8 +1,7 @@
 #pragma once
 
-#include <cstddef>
+#include <array>
 #include <gsl/pointers>
-#include <vector>
 
 #include "audio/frame.h"
 #include "engine/cachingreader/cachingreader.h"
@@ -153,8 +152,10 @@ class ReadAheadManager {
     /// An entry in the read log indicates the virtual playposition the read
     /// began at and the virtual playposition it ended at.
     struct ReadLogEntry {
-        double virtualPlaypositionStart;
-        double virtualPlaypositionEndNonInclusive;
+        double virtualPlaypositionStart{0};
+        double virtualPlaypositionEndNonInclusive{0};
+
+        ReadLogEntry() = default;
 
         ReadLogEntry(double virtualPlaypositionStart,
                      double virtualPlaypositionEndNonInclusive) {
@@ -208,12 +209,12 @@ class ReadAheadManager {
     LoopingControl* m_pLoopingControl;
     CueControl* m_pCueControl;
     RateControl* m_pRateControl;
-    // Read-ahead logging runs on the engine callback. Keep a reusable prefix
-    // and an index instead of allocating/deallocating a list node for every
-    // direction change or seek. If an unusual sequence exceeds the initial
-    // reserve, vector growth preserves the complete log rather than dropping
-    // position state.
-    std::vector<ReadLogEntry> m_readAheadLog;
+    // Read-ahead logging runs on the engine callback. Keep a fixed-size buffer
+    // so direction changes never allocate in the callback. The limit is an
+    // explicit contract: overflowing it is a fatal programming error rather
+    // than silently producing an incorrect file position.
+    static constexpr std::size_t kMaxReadAheadLogEntries = 4096;
+    std::array<ReadLogEntry, kMaxReadAheadLogEntries> m_readAheadLog;
     std::size_t m_readAheadLogStart{0};
     std::size_t m_readAheadLogSize{0};
     double m_currentPosition; // In absolute samples

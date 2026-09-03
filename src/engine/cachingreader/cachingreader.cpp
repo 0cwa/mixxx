@@ -120,11 +120,7 @@ CachingReader::CachingReader(const QString& group,
 CachingReader::~CachingReader() {
     m_diagnosticsTimer.stop();
     m_worker.quitWait();
-    // The worker may have published updates before shutdown. Drain them after
-    // the worker stopped so no chunk in the FIFO outlives its owner.
-    while (m_readerStatusUpdateFIFO.readAvailable() > 0) {
-        process();
-    }
+    discardPendingStatusUpdates();
     qDeleteAll(m_chunks);
 }
 
@@ -354,13 +350,13 @@ void CachingReader::newTrack(TrackPointer pTrack) {
 #endif
 }
 
-// Called from the engine thread
-void CachingReader::process() {
+void CachingReader::processPendingStatusUpdates() {
     ReaderStatusUpdate update;
     int updatesProcessed = 0;
-    while (updatesProcessed < kMaxStatusUpdatesPerCallback &&
+    while (m_statusUpdatesRemainingInCallback > 0 &&
             m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
         ++updatesProcessed;
+        --m_statusUpdatesRemainingInCallback;
         m_diagnosticStatusConsumed.fetchAndAddRelaxed(1);
         auto* pChunk = update.takeFromWorker();
         if (pChunk) {
@@ -435,6 +431,21 @@ void CachingReader::process() {
                     CachingReaderWorker::DiagnosticState::PublishingStatus) {
         m_worker.workReady();
     }
+}
+
+void CachingReader::discardPendingStatusUpdates() {
+    ReaderStatusUpdate update;
+    while (m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+        if (auto* const pChunk = update.takeFromWorker()) {
+            pChunk->free();
+        }
+    }
+}
+
+// Called from the engine thread
+void CachingReader::process() {
+    m_statusUpdatesRemainingInCallback = kMaxStatusUpdatesPerCallback;
+    processPendingStatusUpdates();
 }
 
 CachingReader::ReadResult CachingReader::read(SINT startSample,
@@ -566,7 +577,7 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
             for (SINT chunkIndex = firstChunkIndex;
                     chunkIndex <= lastChunkIndex;
                     ++chunkIndex) {
-                process();
+                processPendingStatusUpdates();
                 preflightFrameIndexRange = intersect(
                         preflightFrameIndexRange, m_readableFrameIndexRange);
                 if (preflightFrameIndexRange.empty()) {
@@ -647,7 +658,7 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
 
                 // Process new messages from the reader thread before looking up
                 // the next chunk
-                process();
+                processPendingStatusUpdates();
 
                 // m_readableFrameIndexRange might change with every read operation!
                 // On a cache miss audio data will be read from the audio source in

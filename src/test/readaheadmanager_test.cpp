@@ -16,6 +16,7 @@
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
 #include "test/mixxxtest.h"
+#include "track/track.h"
 #include "util/assert.h"
 #include "util/defs.h"
 #include "util/fifo.h"
@@ -176,6 +177,10 @@ class CachingReaderStatusQueueTest : public ::testing::Test {
     static int consumedUpdates(const CachingReader& reader) {
         return reader.m_diagnosticStatusConsumed.loadAcquire();
     }
+
+    static void processPendingStatusUpdates(CachingReader& reader) {
+        reader.processPendingStatusUpdates();
+    }
 };
 
 TEST_F(CachingReaderStatusQueueTest, ProcessLeavesUpdatesBeyondCallbackBudgetQueued) {
@@ -190,9 +195,25 @@ TEST_F(CachingReaderStatusQueueTest, ProcessLeavesUpdatesBeyondCallbackBudgetQue
     EXPECT_EQ(queued - budget, pendingUpdates(reader));
     EXPECT_EQ(budget, consumedUpdates(reader));
 
+    processPendingStatusUpdates(reader);
+    EXPECT_EQ(queued - budget, pendingUpdates(reader));
+    EXPECT_EQ(budget, consumedUpdates(reader));
+
     reader.process();
     EXPECT_EQ(1, pendingUpdates(reader));
     EXPECT_EQ(budget * 2, consumedUpdates(reader));
+}
+
+TEST_F(CachingReaderStatusQueueTest,
+        TeardownDrainReclaimsQueuedChunksWithoutStateTransitions) {
+    CachingReader reader(
+            kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
+    auto* const pChunk = reader.m_chunks.front();
+    pChunk->init(0);
+    pChunk->giveToWorker();
+    auto update = ReaderStatusUpdate();
+    update.init(CHUNK_READ_SUCCESS, pChunk, mixxx::IndexRange::forward(0, 1));
+    ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&update, 1));
 }
 
 class CachingReaderWorkerTest : public ::testing::Test {
@@ -202,6 +223,56 @@ class CachingReaderWorkerTest : public ::testing::Test {
         return worker.publishStatus(update);
     }
 };
+
+TEST_F(CachingReaderWorkerTest,
+        ShutdownPublicationFailureSuppressesLoadFailureSignal) {
+    FIFO<CachingReaderChunkReadRequest> requestFIFO(1);
+    FIFO<ReaderStatusUpdate> statusFIFO(1);
+    auto queuedUpdate = ReaderStatusUpdate::trackUnloaded();
+    ASSERT_EQ(1, statusFIFO.write(&queuedUpdate, 1));
+
+    CachingReaderWorker worker(
+            kGroup,
+            &requestFIFO,
+            &statusFIFO,
+            mixxx::audio::ChannelCount::stereo());
+    std::atomic<int> trackLoadingSignals{0};
+    std::atomic<int> trackLoadFailedSignals{0};
+    QObject::connect(
+            &worker,
+            &CachingReaderWorker::trackLoading,
+            [&trackLoadingSignals] {
+                trackLoadingSignals.fetch_add(1, std::memory_order_relaxed);
+            },
+            Qt::DirectConnection);
+    QObject::connect(
+            &worker,
+            &CachingReaderWorker::trackLoadFailed,
+            [&trackLoadFailedSignals] {
+                trackLoadFailedSignals.fetch_add(1, std::memory_order_relaxed);
+            },
+            Qt::DirectConnection);
+    const auto pTrack = Track::newTemporary(
+            QStringLiteral("/definitely/missing/mixxx-test-file.wav"));
+    std::atomic<bool> completed{false};
+    std::atomic<bool> published{true};
+    std::thread loader([&] {
+        published.store(worker.loadTrack(pTrack), std::memory_order_release);
+        completed.store(true, std::memory_order_release);
+    });
+
+    while (worker.diagnosticState() !=
+            CachingReaderWorker::DiagnosticState::PublishingStatus) {
+        std::this_thread::yield();
+    }
+    worker.quitWait();
+    loader.join();
+
+    EXPECT_TRUE(completed.load(std::memory_order_acquire));
+    EXPECT_FALSE(published.load(std::memory_order_acquire));
+    EXPECT_EQ(1, trackLoadingSignals.load(std::memory_order_relaxed));
+    EXPECT_EQ(0, trackLoadFailedSignals.load(std::memory_order_relaxed));
+}
 
 TEST_F(CachingReaderWorkerTest,
         ShutdownReclaimsStatusChunkWhenStatusQueueIsFull) {
