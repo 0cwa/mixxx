@@ -171,6 +171,46 @@ TEST_F(EngineBufferTest, StemProcessClearsOddOutputSentinel) {
     }
     EXPECT_EQ(output.back(), CSAMPLE_ZERO);
 }
+
+TEST_F(EngineBufferTest, StemProcessAcceptsMaximumBufferSize) {
+    addStemHandles();
+    for (auto& pGain : m_pChannel1->m_stemGain) {
+        pGain->set(1.0);
+    }
+    for (auto& pMute : m_pChannel1->m_stemMute) {
+        pMute->set(0.0);
+    }
+
+    constexpr std::size_t kBufferSize = kMaxEngineSamples;
+    constexpr CSAMPLE kSentinel = -7.0f;
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+    fillStemBuffer(&m_pChannel1->m_stemBuffer, 8, kBufferSize);
+
+    std::array<CSAMPLE, kBufferSize + 1> output;
+    std::fill(output.begin(), output.end(), kSentinel);
+    m_pChannel1->processStem(output.data(), kBufferSize);
+
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kBufferSize,
+            [](const CSAMPLE sample) { return sample == 10.0f; }));
+    EXPECT_EQ(output.back(), kSentinel);
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsOversizedBufferAndClearsSafePrefix) {
+    addStemHandles();
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), false);
+
+    constexpr std::size_t kBufferSize = kMaxEngineSamples + 1;
+    constexpr CSAMPLE kSentinel = -7.0f;
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), kSentinel);
+    m_pChannel1->process(output.data(), kBufferSize);
+
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kMaxEngineSamples,
+            [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
+    EXPECT_EQ(output.back(), kSentinel);
+}
 #endif
 
 TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {

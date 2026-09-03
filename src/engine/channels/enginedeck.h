@@ -94,6 +94,7 @@ class EngineDeck : public EngineChannel, public AudioDestination {
     FRIEND_TEST(EngineBufferTest, StemProcessClearsStemGainCacheMismatch);
     FRIEND_TEST(EngineBufferTest, StemProcessHandlesValidChannelCounts);
     FRIEND_TEST(EngineBufferTest, StemProcessClearsOddOutputSentinel);
+    FRIEND_TEST(EngineBufferTest, StemProcessAcceptsMaximumBufferSize);
     // Process multiple channels and mix them together into the passed buffer
     void processStem(CSAMPLE* pOutput, const std::size_t bufferSize);
 #endif
