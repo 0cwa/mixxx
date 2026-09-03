@@ -239,6 +239,19 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         *pRetryState = plan;
     }
 
+    const double readLogEnd = plan.inReverse
+            ? m_currentPosition - plan.samplesFromReader
+            : m_currentPosition + plan.samplesFromReader;
+    if (!canAddReadLogEntry(m_currentPosition, readLogEnd)) {
+        // Do not advance the cursor or expose samples without a corresponding
+        // file-position mapping. The caller will retry after older mappings
+        // have been consumed.
+        SampleUtil::clear(
+                pOutput,
+                retryOnCacheMiss ? plan.requestSamples : plan.samplesFromReader);
+        return {0, retryOnCacheMiss};
+    }
+
     const auto readResult = retryOnCacheMiss
             ? m_pReader->readWithRetry(
                       plan.startSample,
@@ -285,13 +298,19 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
     // Increment or decrement current read-ahead position
     // Mixing int and double here is desired, because the fractional frame should
     // be resist
+    if (!addReadLogEntry(m_currentPosition, readLogEnd)) {
+        // This is unreachable while the admission check and append remain
+        // adjacent on the engine thread. Keep the fallback safe if that
+        // invariant changes: discard the newly read samples and do not move
+        // the cursor without a mapping.
+        SampleUtil::clear(
+                pOutput,
+                retryOnCacheMiss ? plan.requestSamples : plan.samplesFromReader);
+        return {0, retryOnCacheMiss};
+    }
     if (plan.inReverse) {
-        addReadLogEntry(
-                m_currentPosition, m_currentPosition - plan.samplesFromReader);
         m_currentPosition -= plan.samplesFromReader;
     } else {
-        addReadLogEntry(
-                m_currentPosition, m_currentPosition + plan.samplesFromReader);
         m_currentPosition += plan.samplesFromReader;
     }
 
@@ -401,14 +420,30 @@ void ReadAheadManager::hintReader(double dRate,
 }
 
 // Not thread-save, call from engine thread only
-void ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
-                                       double virtualPlaypositionEndNonInclusive) {
+bool ReadAheadManager::canAddReadLogEntry(
+        double virtualPlaypositionStart,
+        double virtualPlaypositionEndNonInclusive) const {
     ReadLogEntry newEntry(virtualPlaypositionStart,
-                          virtualPlaypositionEndNonInclusive);
+            virtualPlaypositionEndNonInclusive);
     if (m_readAheadLogSize > 0) {
-        ReadLogEntry& last = m_readAheadLog[m_readAheadLogStart + m_readAheadLogSize - 1];
+        const ReadLogEntry& last =
+                m_readAheadLog[m_readAheadLogStart + m_readAheadLogSize - 1];
+        if (last.canMerge(newEntry)) {
+            return true;
+        }
+    }
+    return m_readAheadLogSize < m_readAheadLog.size();
+}
+
+bool ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
+        double virtualPlaypositionEndNonInclusive) {
+    ReadLogEntry newEntry(virtualPlaypositionStart,
+            virtualPlaypositionEndNonInclusive);
+    if (m_readAheadLogSize > 0) {
+        ReadLogEntry& last =
+                m_readAheadLog[m_readAheadLogStart + m_readAheadLogSize - 1];
         if (last.merge(newEntry)) {
-            return;
+            return true;
         }
     }
 
@@ -418,15 +453,17 @@ void ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
             std::move(m_readAheadLog.begin() + m_readAheadLogStart,
                     m_readAheadLog.begin() + nextIndex,
                     m_readAheadLog.begin());
-            m_readAheadLog.resize(m_readAheadLogSize);
             m_readAheadLogStart = 0;
         }
     }
 
     const auto entryIndex = m_readAheadLogStart + m_readAheadLogSize;
-    RELEASE_ASSERT(entryIndex < m_readAheadLog.size());
+    if (entryIndex >= m_readAheadLog.size()) {
+        return false;
+    }
     m_readAheadLog[entryIndex] = newEntry;
     ++m_readAheadLogSize;
+    return true;
 }
 
 // Not thread-save, call from engine thread only
