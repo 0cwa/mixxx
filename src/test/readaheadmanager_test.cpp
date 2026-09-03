@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 #include "control/controlobject.h"
@@ -229,6 +230,33 @@ TEST_F(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget) {
 }
 
 TEST_F(CachingReaderStatusQueueTest,
+        ProcessDiscardsChunkResultWhileTrackIsUnloading) {
+    CachingReader reader(
+            kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
+    reader.m_state.storeRelease(CachingReader::STATE_TRACK_UNLOADING);
+
+    auto* const pChunk = reader.allocateChunk(0);
+    ASSERT_NE(nullptr, pChunk);
+    pChunk->giveToWorker();
+    auto chunkUpdate = ReaderStatusUpdate();
+    chunkUpdate.init(
+            CHUNK_READ_SUCCESS, pChunk, mixxx::IndexRange::forward(0, 1));
+    ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&chunkUpdate, 1));
+
+    auto unloadUpdate = ReaderStatusUpdate::trackUnloaded();
+    ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&unloadUpdate, 1));
+
+    reader.process();
+
+    EXPECT_EQ(CachingReader::STATE_IDLE, reader.m_state.loadAcquire());
+    EXPECT_EQ(CachingReaderChunkForOwner::FREE, pChunk->getState());
+    EXPECT_EQ(-1, pChunk->getIndex());
+    EXPECT_EQ(nullptr, reader.lookupChunk(0));
+    EXPECT_EQ(nullptr, reader.m_mruCachingReaderChunk);
+    EXPECT_EQ(nullptr, reader.m_lruCachingReaderChunk);
+}
+
+TEST_F(CachingReaderStatusQueueTest,
         TeardownDrainReclaimsQueuedChunksWithoutStateTransitions) {
     CachingReader reader(
             kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
@@ -297,13 +325,21 @@ TEST_F(CachingReaderWorkerTest,
         completed.store(true, std::memory_order_release);
     });
 
-    while (worker.diagnosticState() !=
-            CachingReaderWorker::DiagnosticState::PublishingStatus) {
+    const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    bool reachedPublishingStatus = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (worker.diagnosticState() ==
+                CachingReaderWorker::DiagnosticState::PublishingStatus) {
+            reachedPublishingStatus = true;
+            break;
+        }
         std::this_thread::yield();
     }
     worker.quitWait();
     loader.join();
 
+    ASSERT_TRUE(reachedPublishingStatus);
     EXPECT_TRUE(completed.load(std::memory_order_acquire));
     EXPECT_FALSE(published.load(std::memory_order_acquire));
     EXPECT_EQ(1, trackLoadingSignals.load(std::memory_order_relaxed));
