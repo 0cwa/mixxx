@@ -720,6 +720,10 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
             CSAMPLE* buffer,
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount) override {
+        const int retryCall = m_iRetryReadCallCount++;
+        if (retryCall == m_iRetryPendingCall) {
+            return {0, true};
+        }
         return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
     }
 
@@ -736,7 +740,12 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
     void setReadBuffer(std::vector<CSAMPLE> buffer) {
         m_buffer = std::move(buffer);
         m_iReadPosition = 0;
+        m_iRetryReadCallCount = 0;
         m_readCalls.clear();
+    }
+
+    void setRetryPendingCall(int call) {
+        m_iRetryPendingCall = call;
     }
 
     int readCallCount() const {
@@ -775,6 +784,8 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
     size_t m_iReadSampleCountIndex = 0;
     SINT m_iSamplesRead = 0;
     int m_iReadCallCount = 0;
+    int m_iRetryReadCallCount = 0;
+    int m_iRetryPendingCall = -1;
     std::vector<ReadCall> m_readCalls;
 };
 
@@ -825,6 +836,14 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
         return m_pScaler->m_effectiveRate;
     }
 
+    bool inputRetryPending() const {
+        return m_pScaler->m_inputRetryPending;
+    }
+
+    double requestPosition() const {
+        return m_pScaler->m_request.position;
+    }
+
     SINT outputChunkConsumed() const {
         return m_pScaler->m_outputChunkConsumed;
     }
@@ -846,6 +865,36 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
     BufferWindowReadAheadManagerMock* m_pReadAhead = nullptr;
     EngineBufferScaleBungee* m_pScaler = nullptr;
 };
+
+TEST_F(EngineBufferScaleBungeeBufferWindowTest,
+        RetryPendingGrainKeepsOldRequestUntilBoundary) {
+    constexpr SINT kFeedFrames = 1 << 16;
+    constexpr SINT kFirstOutputSamples = 2048;
+    constexpr SINT kRetryOutputSamples = 1024;
+
+    m_pReadAhead->setReadBuffer(
+            std::vector<CSAMPLE>(kFeedFrames * 2, 0.25f));
+    m_pReadAhead->setRetryPendingCall(1);
+
+    double tempoRatio = 1.0;
+    double pitchRatio = 1.0;
+    m_pScaler->setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+
+    std::vector<CSAMPLE> firstOutput(kFirstOutputSamples);
+    EXPECT_DOUBLE_EQ(512.0,
+            m_pScaler->scaleBuffer(firstOutput.data(), kFirstOutputSamples));
+    ASSERT_TRUE(inputRetryPending());
+    ASSERT_DOUBLE_EQ(512.0, requestPosition());
+
+    tempoRatio = 3.0;
+    m_pScaler->setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+
+    std::vector<CSAMPLE> retryOutput(kRetryOutputSamples);
+    EXPECT_DOUBLE_EQ(512.0,
+            m_pScaler->scaleBuffer(retryOutput.data(), kRetryOutputSamples));
+    EXPECT_FALSE(inputRetryPending());
+    EXPECT_DOUBLE_EQ(1024.0, requestPosition());
+}
 
 TEST(EngineBufferScaleBungeePlaypositionAccountingTest,
         LeftoverOutputUsesOriginalChunkPositionDeltaAfterTempoChange) {

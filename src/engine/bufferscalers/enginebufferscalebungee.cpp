@@ -136,22 +136,28 @@ void EngineBufferScaleBungee::setScaleParameters(double base_rate,
     m_dTempoRatio = speedAbs;
     m_dPitchRatio = *pPitchRatio;
     const double requestedEffectiveRate = m_dBaseRate * m_dTempoRatio;
-    if (m_remainingOutputFrames <= 0) {
+    if (m_remainingOutputFrames <= 0 && !m_inputRetryPending) {
         m_effectiveRate = requestedEffectiveRate;
     }
 
     const double pitchScale = fabs(m_dBaseRate * *pPitchRatio);
-    if (util_isfinite(pitchScale) && pitchScale > 0.0) {
-        m_request.pitch = pitchScale;
-    } else {
-        m_request.pitch = 1.0;
-    }
+    const double requestedPitch =
+            util_isfinite(pitchScale) && pitchScale > 0.0 ? pitchScale : 1.0;
 
-    m_request.speed = m_bBackwards ? -requestedEffectiveRate : requestedEffectiveRate;
+    // A retry-pending grain has already been specified by Bungee. Keep its
+    // request unchanged through analyse/synthesise/next so a control update
+    // applies at the following grain boundary instead of changing the
+    // pending grain's phase advance.
+    if (!m_inputRetryPending) {
+        m_request.pitch = requestedPitch;
+        m_request.speed = m_bBackwards ? -requestedEffectiveRate : requestedEffectiveRate;
+    }
 
     if (wasBackwards != m_bBackwards) {
         completePendingGrainForReset();
         m_bResetNeeded = true;
+        m_request.pitch = requestedPitch;
+        m_request.speed = m_bBackwards ? -requestedEffectiveRate : requestedEffectiveRate;
     }
 }
 
@@ -431,7 +437,9 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
         return framesToCopy;
     }
 
-    m_effectiveRate = m_dBaseRate * m_dTempoRatio;
+    if (!m_inputRetryPending) {
+        m_effectiveRate = m_dBaseRate * m_dTempoRatio;
+    }
     const double signedEffectiveRate = (m_bBackwards ? -1.0 : 1.0) * m_effectiveRate;
 
     if (!m_inputRetryPending) {
@@ -510,6 +518,10 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     m_pStretcher->synthesiseGrain(m_outputChunk);
     m_pStretcher->next(m_request);
     m_request.speed = signedEffectiveRate;
+    const double pitchScale = fabs(m_dBaseRate * m_dPitchRatio);
+    m_request.pitch = util_isfinite(pitchScale) && pitchScale > 0.0
+            ? pitchScale
+            : 1.0;
 
     if (!hasValidOutputChunk()) {
         return 0;
@@ -525,6 +537,7 @@ SINT EngineBufferScaleBungee::processGrain(CSAMPLE* pOutputBuffer, SINT maxFrame
     m_remainingOutputFrames = m_outputChunk.frameCount - framesToCopy;
     if (m_remainingOutputFrames <= 0) {
         m_outputChunkConsumed = 0;
+        m_effectiveRate = m_dBaseRate * m_dTempoRatio;
     }
 
     return framesToCopy;
