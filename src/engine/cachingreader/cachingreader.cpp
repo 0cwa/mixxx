@@ -361,15 +361,15 @@ void CachingReader::processPendingStatusUpdates() {
         auto* pChunk = update.takeFromWorker();
         if (pChunk) {
             // Result of a read request (with a chunk)
-            DEBUG_ASSERT(atomicLoadRelaxed(m_state) != STATE_IDLE);
             DEBUG_ASSERT(
                     update.status == CHUNK_READ_SUCCESS ||
                     update.status == CHUNK_READ_EOF ||
                     update.status == CHUNK_READ_INVALID ||
                     update.status == CHUNK_READ_DISCARDED);
-            if (m_state.loadAcquire() == STATE_TRACK_LOADING) {
-                // Discard all results from pending read requests for the
-                // previous track before the next track has been loaded.
+            if (m_state.loadAcquire() != STATE_TRACK_LOADED) {
+                // Discard results from pending read requests while unloading,
+                // loading, or after the track has been unloaded. They belong
+                // to an obsolete track and must not repopulate the cache.
                 freeChunk(pChunk);
                 continue;
             }
