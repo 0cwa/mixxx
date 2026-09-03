@@ -606,6 +606,7 @@ TEST_F(EngineBufferScaleBungeeTest,
 
     std::vector<CSAMPLE> referenceFirst(kOutputSamplesBeforeRetry);
     std::vector<CSAMPLE> retriedFirst(kOutputSamplesBeforeRetry);
+    std::fill(retriedFirst.begin(), retriedFirst.end(), 0.125f);
     ASSERT_DOUBLE_EQ(kOutputFramesBeforeRetry,
             referenceScaler.scaleBuffer(
                     referenceFirst.data(), kOutputSamplesBeforeRetry));
@@ -1051,6 +1052,10 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
             m_pScaler->scaleBuffer(retryOutput.data(), kRetryOutputSamples));
     EXPECT_FALSE(inputRetryPending());
     EXPECT_DOUBLE_EQ(1024.0, requestPosition());
+
+    std::vector<CSAMPLE> nextOutput(kRetryOutputSamples);
+    EXPECT_DOUBLE_EQ(1536.0,
+            m_pScaler->scaleBuffer(nextOutput.data(), kRetryOutputSamples));
 }
 
 TEST(EngineBufferScaleBungeePlaypositionAccountingTest,
