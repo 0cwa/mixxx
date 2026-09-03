@@ -730,7 +730,7 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogPreservesLongAlternatingContinuity) {
     EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
 }
 
-TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversOnNextProductionRead) {
+TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversAfterDualOccupancy) {
     constexpr SINT kSamplesPerSegment = 10;
     constexpr int kSegments =
             static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 1;
@@ -754,9 +754,22 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversOnNextProductionRead) {
             m_pReader->readStartSamples().size());
     EXPECT_DOUBLE_EQ(kSamplesPerSegment, m_pReadAheadManager->getPlaypos());
 
+    // Both the main log and the first spill entry are occupied here. The next
+    // direction change must still produce audio before any mapping is
+    // consumed; that output is what lets the production path recover.
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    EXPECT_EQ(kSamplesPerSegment,
+            m_pReadAheadManager->getNextSamples(
+                    -1.0,
+                    m_pBuffer,
+                    kSamplesPerSegment,
+                    mixxx::audio::ChannelCount::stereo()));
+    EXPECT_EQ(kSegments + 1, m_pReader->readStartSamples().size());
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+
     // EngineBuffer consumes the mapping after producing a positive output
-    // buffer. This frees the oldest main-log entry without manually draining
-    // the boundary away.
+    // buffer. This normal consumption frees the oldest main-log entry.
     EXPECT_DOUBLE_EQ(kSamplesPerSegment,
             m_pReadAheadManager->getFilePlaypositionFromLog(
                     -1.0, kSamplesPerSegment));
@@ -769,7 +782,7 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversOnNextProductionRead) {
                     m_pBuffer,
                     kSamplesPerSegment,
                     mixxx::audio::ChannelCount::stereo()));
-    EXPECT_EQ(kSegments + 1, m_pReader->readStartSamples().size());
+    EXPECT_EQ(kSegments + 2, m_pReader->readStartSamples().size());
     EXPECT_DOUBLE_EQ(0.0,
             m_pReadAheadManager->getFilePlaypositionFromLog(
                     -1.0, kSamplesPerSegment));
