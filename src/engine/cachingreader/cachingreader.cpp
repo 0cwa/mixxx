@@ -120,6 +120,11 @@ CachingReader::CachingReader(const QString& group,
 CachingReader::~CachingReader() {
     m_diagnosticsTimer.stop();
     m_worker.quitWait();
+    // The worker may have published updates before shutdown. Drain them after
+    // the worker stopped so no chunk in the FIFO outlives its owner.
+    while (m_readerStatusUpdateFIFO.readAvailable() > 0) {
+        process();
+    }
     qDeleteAll(m_chunks);
 }
 
@@ -352,7 +357,10 @@ void CachingReader::newTrack(TrackPointer pTrack) {
 // Called from the engine thread
 void CachingReader::process() {
     ReaderStatusUpdate update;
-    while (m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+    int updatesProcessed = 0;
+    while (updatesProcessed < kMaxStatusUpdatesPerCallback &&
+            m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+        ++updatesProcessed;
         m_diagnosticStatusConsumed.fetchAndAddRelaxed(1);
         auto* pChunk = update.takeFromWorker();
         if (pChunk) {
@@ -416,6 +424,16 @@ void CachingReader::process() {
                 }
             }
         }
+    }
+
+    // A worker waiting for a free status-FIFO slot sleeps on this worker's
+    // semaphore. The normal scheduler will resume it after this callback has
+    // made room. Calling this only for a non-empty drain avoids scheduling an
+    // idle worker on every callback.
+    if (updatesProcessed > 0 &&
+            m_worker.diagnosticState() ==
+                    CachingReaderWorker::DiagnosticState::PublishingStatus) {
+        m_worker.workReady();
     }
 }
 

@@ -174,6 +174,8 @@ class CachingReaderWorker : public EngineWorker {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
+    friend class CachingReaderWorkerTest;
+
 #ifdef __STEM__
     struct NewTrackRequest {
         TrackPointer track;
@@ -199,7 +201,10 @@ class CachingReaderWorker : public EngineWorker {
 #endif
 
     void discardAllPendingRequests();
-    void publishStatus(const ReaderStatusUpdate& update);
+    // Publish without spinning when the callback-side FIFO is full. Returns
+    // false only during shutdown; an unpublished chunk is returned to the
+    // owner in that case.
+    bool publishStatus(ReaderStatusUpdate update);
 
     /// call to be prepare for new tracks
     /// Make sure engine has been stopped before

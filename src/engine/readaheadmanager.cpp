@@ -1,5 +1,7 @@
 #include "engine/readaheadmanager.h"
 
+#include <algorithm>
+
 #include "audio/frame.h"
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/controls/cuecontrol.h"
@@ -7,6 +9,12 @@
 #include "engine/controls/ratecontrol.h"
 #include "util/defs.h"
 #include "util/sample.h"
+
+namespace {
+
+constexpr std::size_t kInitialReadAheadLogCapacity = 256;
+
+} // namespace
 
 ReadAheadManager::ReadAheadManager()
         : m_pLoopingControl(nullptr),
@@ -17,6 +25,7 @@ ReadAheadManager::ReadAheadManager()
           m_pCrossFadeBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)),
           m_cacheMissCount(0),
           m_cacheMissExpected(false) {
+    m_readAheadLog.reserve(kInitialReadAheadLogCapacity);
     // For testing only: ReadAheadManagerMock
 }
 
@@ -31,6 +40,7 @@ ReadAheadManager::ReadAheadManager(CachingReader* pReader,
           m_pCrossFadeBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)),
           m_cacheMissCount(0),
           m_cacheMissExpected(false) {
+    m_readAheadLog.reserve(kInitialReadAheadLogCapacity);
     DEBUG_ASSERT(m_pLoopingControl != nullptr);
     DEBUG_ASSERT(m_pCueControl != nullptr);
     DEBUG_ASSERT(m_pReader != nullptr);
@@ -360,6 +370,8 @@ void ReadAheadManager::notifySeek(double seekPosition) {
     m_cacheMissCount = 0;
     m_cacheMissExpected = true;
     m_readAheadLog.clear();
+    m_readAheadLogStart = 0;
+    m_readAheadLogSize = 0;
 }
 
 void ReadAheadManager::hintReader(double dRate,
@@ -401,13 +413,34 @@ void ReadAheadManager::addReadLogEntry(double virtualPlaypositionStart,
                                        double virtualPlaypositionEndNonInclusive) {
     ReadLogEntry newEntry(virtualPlaypositionStart,
                           virtualPlaypositionEndNonInclusive);
-    if (m_readAheadLog.size() > 0) {
-        ReadLogEntry& last = m_readAheadLog.back();
+    if (m_readAheadLogSize > 0) {
+        ReadLogEntry& last = m_readAheadLog[m_readAheadLogStart + m_readAheadLogSize - 1];
         if (last.merge(newEntry)) {
             return;
         }
     }
-    m_readAheadLog.push_back(newEntry);
+
+    const auto nextIndex = m_readAheadLogStart + m_readAheadLogSize;
+    if (nextIndex == m_readAheadLog.size()) {
+        if (m_readAheadLogStart > 0) {
+            std::move(m_readAheadLog.begin() + m_readAheadLogStart,
+                    m_readAheadLog.begin() + nextIndex,
+                    m_readAheadLog.begin());
+            m_readAheadLog.resize(m_readAheadLogSize);
+            m_readAheadLogStart = 0;
+        }
+    }
+
+    const auto entryIndex = m_readAheadLogStart + m_readAheadLogSize;
+    if (entryIndex == m_readAheadLog.size()) {
+        // This is an exceptional path after the constructor reserve is
+        // exhausted. Growing retains all position state; silently evicting an
+        // old entry would make the file-position mapping incorrect.
+        m_readAheadLog.push_back(newEntry);
+    } else {
+        m_readAheadLog[entryIndex] = newEntry;
+    }
+    ++m_readAheadLogSize;
 }
 
 // Not thread-save, call from engine thread only
@@ -418,7 +451,7 @@ double ReadAheadManager::getFilePlaypositionFromLog(
         return currentFilePlayposition;
     }
 
-    if (m_readAheadLog.size() == 0) {
+    if (m_readAheadLogSize == 0) {
         // No log entries to read from.
         qDebug() << this << "No read ahead log entries to read from. Case not currently handled.";
         // TODO(rryan) log through a stats pipe eventually
@@ -426,16 +459,22 @@ double ReadAheadManager::getFilePlaypositionFromLog(
     }
 
     double filePlayposition = 0;
-    while (m_readAheadLog.size() > 0 && numConsumedSamples > 0) {
-        ReadLogEntry& entry = m_readAheadLog.front();
+    while (m_readAheadLogSize > 0 && numConsumedSamples > 0) {
+        ReadLogEntry& entry = m_readAheadLog[m_readAheadLogStart];
         // Advance our idea of the current virtual playposition to this
         // ReadLogEntry's start position.
         filePlayposition = entry.advancePlayposition(&numConsumedSamples);
 
         if (entry.length() == 0) {
             // This entry is empty now.
-            m_readAheadLog.pop_front();
+            ++m_readAheadLogStart;
+            --m_readAheadLogSize;
         }
+    }
+
+    if (m_readAheadLogSize == 0) {
+        m_readAheadLog.clear();
+        m_readAheadLogStart = 0;
     }
 
     return filePlayposition;

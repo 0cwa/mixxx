@@ -47,13 +47,27 @@ int CachingReaderWorker::diagnosticStatusCapacity() const {
     return m_pReaderStatusFIFO->capacity();
 }
 
-void CachingReaderWorker::publishStatus(const ReaderStatusUpdate& update) {
+bool CachingReaderWorker::publishStatus(ReaderStatusUpdate update) {
     const int previousState = m_diagnosticState.loadAcquire();
     m_diagnosticState.storeRelease(
             static_cast<int>(DiagnosticState::PublishingStatus));
-    m_pReaderStatusFIFO->writeBlocking(&update, 1);
-    m_diagnosticPublishedStatuses.fetchAndAddRelaxed(1);
+    while (!m_stop.loadAcquire()) {
+        if (m_pReaderStatusFIFO->write(&update, 1) == 1) {
+            m_diagnosticPublishedStatuses.fetchAndAddRelaxed(1);
+            m_diagnosticState.storeRelease(previousState);
+            return true;
+        }
+
+        // The callback wakes the worker after consuming status updates. This
+        // avoids burning a worker core while backpressure is active.
+        m_semaRun.acquire();
+    }
+
+    // The owner cannot process more updates after it has begun destruction.
+    // Return chunk ownership explicitly before abandoning this status update.
+    update.takeFromWorker();
     m_diagnosticState.storeRelease(previousState);
+    return false;
 }
 
 ReaderStatusUpdate CachingReaderWorker::processReadRequest(

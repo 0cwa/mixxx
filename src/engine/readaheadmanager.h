@@ -1,7 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <gsl/pointers>
-#include <list>
+#include <vector>
 
 #include "audio/frame.h"
 #include "engine/cachingreader/cachingreader.h"
@@ -207,7 +208,14 @@ class ReadAheadManager {
     LoopingControl* m_pLoopingControl;
     CueControl* m_pCueControl;
     RateControl* m_pRateControl;
-    std::list<ReadLogEntry> m_readAheadLog;
+    // Read-ahead logging runs on the engine callback. Keep a reusable prefix
+    // and an index instead of allocating/deallocating a list node for every
+    // direction change or seek. If an unusual sequence exceeds the initial
+    // reserve, vector growth preserves the complete log rather than dropping
+    // position state.
+    std::vector<ReadLogEntry> m_readAheadLog;
+    std::size_t m_readAheadLogStart{0};
+    std::size_t m_readAheadLogSize{0};
     double m_currentPosition; // In absolute samples
     CachingReader* m_pReader;
     CSAMPLE* m_pCrossFadeBuffer;
