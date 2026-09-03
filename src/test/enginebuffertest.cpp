@@ -15,6 +15,7 @@
 #include "test/mixxxtest.h"
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
+#include "util/defs.h"
 
 // In case any of the test in this file fail. You can use the audioplot.py tool
 // in the tools folder to visually compare the results of the enginebuffer
@@ -27,6 +28,14 @@ const QString kAppGroup = QStringLiteral("[App]");
 class EngineBufferTest : public MockedEngineBackendTest {};
 
 class EngineBufferE2ETest : public SignalPathTest {};
+
+#ifdef __STEM__
+TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
+    EXPECT_EQ(m_pChannel1->m_stemBuffer.size(),
+            static_cast<SINT>(kMaxEngineFrames *
+                    mixxx::kMaxEngineChannelInputCount));
+}
+#endif
 
 TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
     EngineBuffer* pEngineBuffer = m_pChannel1->getEngineBuffer();
