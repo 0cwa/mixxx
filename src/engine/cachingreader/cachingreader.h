@@ -172,6 +172,9 @@ class CachingReader : public QObject {
     // in the FIFO and are handled by a later callback.
     static constexpr int kMaxStatusUpdatesPerCallback = 4;
 
+    void processPendingStatusUpdates();
+    void discardPendingStatusUpdates();
+
     ReadResult readInternal(SINT startSample,
             SINT numSamples,
             bool reverse,
@@ -197,6 +200,10 @@ class CachingReader : public QObject {
     QAtomicInt m_diagnosticCacheMisses;
     QAtomicInt m_diagnosticLastFailedChunk;
     QAtomicInt m_diagnosticStatusConsumed;
+
+    // Reset by process() at the start of each audio callback. Calls made from
+    // readInternal() consume the same budget instead of starting a new one.
+    int m_statusUpdatesRemainingInCallback{kMaxStatusUpdatesPerCallback};
 
     // Accessed only by the QObject thread that owns the diagnostics timer.
     QTimer m_diagnosticsTimer;
