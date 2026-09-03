@@ -730,7 +730,7 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogPreservesLongAlternatingContinuity) {
     EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
 }
 
-TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowLeavesCursorAndOutputSafe) {
+TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversOnNextProductionRead) {
     constexpr SINT kSamplesPerSegment = 10;
     constexpr int kSegments =
             static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 1;
@@ -747,24 +747,19 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowLeavesCursorAndOutputSafe) {
                 m_pBuffer,
                 kSamplesPerSegment,
                 mixxx::audio::ChannelCount::stereo());
-        if (i < kSegments - 1) {
-            EXPECT_EQ(kSamplesPerSegment, samplesRead);
-        } else {
-            EXPECT_EQ(0, samplesRead);
-            for (SINT sample = 0; sample < kSamplesPerSegment; ++sample) {
-                EXPECT_FLOAT_EQ(0.0f, m_pBuffer[sample]);
-            }
-        }
+        EXPECT_EQ(kSamplesPerSegment, samplesRead);
     }
 
-    EXPECT_EQ(ReadAheadManager::kMaxReadAheadLogEntries,
+    EXPECT_EQ(kSegments,
             m_pReader->readStartSamples().size());
-    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
-    EXPECT_DOUBLE_EQ(0.0,
+    EXPECT_DOUBLE_EQ(kSamplesPerSegment, m_pReadAheadManager->getPlaypos());
+
+    // EngineBuffer consumes the mapping after producing a positive output
+    // buffer. This frees the oldest main-log entry without manually draining
+    // the boundary away.
+    EXPECT_DOUBLE_EQ(kSamplesPerSegment,
             m_pReadAheadManager->getFilePlaypositionFromLog(
-                    -1.0,
-                    kSamplesPerSegment *
-                            ReadAheadManager::kMaxReadAheadLogEntries));
+                    -1.0, kSamplesPerSegment));
 
     m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
     m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
@@ -774,6 +769,10 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowLeavesCursorAndOutputSafe) {
                     m_pBuffer,
                     kSamplesPerSegment,
                     mixxx::audio::ChannelCount::stereo()));
+    EXPECT_EQ(kSegments + 1, m_pReader->readStartSamples().size());
+    EXPECT_DOUBLE_EQ(0.0,
+            m_pReadAheadManager->getFilePlaypositionFromLog(
+                    -1.0, kSamplesPerSegment));
 }
 
 TEST_F(ReadAheadManagerTest, TriggerOnJumpOrLoop) {
