@@ -33,8 +33,10 @@ const QString kGroup = "[test]";
 
 class StubReader : public CachingReader {
   public:
-    StubReader()
-            : CachingReader(kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo()) {
+    explicit StubReader(
+            mixxx::audio::ChannelCount maxSupportedChannel =
+                    mixxx::audio::ChannelCount::stereo())
+            : CachingReader(kGroup, UserSettingsPointer(), maxSupportedChannel) {
     }
 
     CachingReader::ReadResult read(SINT startSample,
@@ -518,6 +520,15 @@ class StubLoopControl : public LoopingControl {
                 mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(target));
     }
 
+    void pushSampleValues(double trigger,
+            double target,
+            mixxx::audio::ChannelCount channelCount) {
+        m_triggerReturnValues.push_back(
+                mixxx::audio::FramePos::fromSamplePos(trigger, channelCount));
+        m_targetReturnValues.push_back(
+                mixxx::audio::FramePos::fromSamplePos(target, channelCount));
+    }
+
     int queryCount() const {
         return m_queryCount;
     }
@@ -655,6 +666,61 @@ TEST_F(ReadAheadManagerTest, SavedJump) {
                     1.0, m_pBuffer, 80, mixxx::audio::ChannelCount::stereo()));
 
     EXPECT_NEAR(86.5, m_pReadAheadManager->getPlaypos(), 1);
+}
+
+TEST_F(ReadAheadManagerTest, CrossfadeHandlesMaximumInterleavedRequest) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stem();
+    constexpr SINT kRequestSamples =
+            static_cast<SINT>(MAX_BUFFER_LEN) * kChannelCount;
+    constexpr SINT kCrossFadeSamples = kRequestSamples - kChannelCount;
+    constexpr SINT kTargetSample = kRequestSamples * 2;
+    constexpr SINT kTrackSamples = kRequestSamples * 3;
+    constexpr SINT kCrossFadeReadPosition = kRequestSamples + kChannelCount;
+    constexpr CSAMPLE kSentinel = -1.0f;
+
+    static_assert(kRequestSamples % kChannelCount == 0);
+    std::vector<CSAMPLE> output(kRequestSamples, kSentinel);
+
+    // Use the same maximum channel contract as a production stem reader.
+    m_pReader.reset(new StubReader(kChannelCount));
+    m_pReadAheadManager.reset(new ReadAheadManager(m_pReader.data(),
+            m_pLoopControl.data(),
+            m_pCueControl.data()));
+    m_pLoopControl->setFrameInfo(mixxx::audio::kStartFramePos,
+            mixxx::audio::FramePos::fromSamplePos(kTrackSamples, kChannelCount),
+            mixxx::audio::SampleRate(44100));
+    m_pReadAheadManager->notifySeek(0);
+    m_pLoopControl->pushSampleValues(kCrossFadeSamples,
+            kTargetSample,
+            kChannelCount);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    EXPECT_EQ(kCrossFadeSamples,
+            m_pReadAheadManager->getNextSamples(
+                    1.0, output.data(), kRequestSamples, kChannelCount));
+
+    ASSERT_EQ(2, m_pReader->readStartSamples().size());
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+    EXPECT_EQ(kCrossFadeReadPosition, m_pReader->readStartSamples()[1]);
+
+    const SINT crossFadeFrames = kCrossFadeSamples / kChannelCount;
+    const CSAMPLE_GAIN crossIncrement =
+            CSAMPLE_GAIN_ONE / CSAMPLE_GAIN(crossFadeFrames);
+    for (SINT frame = 0; frame < crossFadeFrames; ++frame) {
+        const CSAMPLE_GAIN crossMix = crossIncrement * frame;
+        for (SINT channel = 0; channel < kChannelCount; ++channel) {
+            const SINT sample = frame * kChannelCount + channel;
+            const CSAMPLE expected =
+                    static_cast<CSAMPLE>(sample + 1) *
+                            (CSAMPLE_GAIN_ONE - crossMix) +
+                    static_cast<CSAMPLE>(kCrossFadeReadPosition + sample + 1) *
+                            crossMix;
+            EXPECT_FLOAT_EQ(expected, output[sample]);
+        }
+    }
+    EXPECT_TRUE(std::all_of(output.begin() + kCrossFadeSamples,
+            output.end(),
+            [](CSAMPLE sample) { return sample == kSentinel; }));
 }
 
 TEST_F(ReadAheadManagerTest, RetryableCacheMissDoesNotAdvanceReadAheadPosition) {
