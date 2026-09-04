@@ -104,28 +104,43 @@ TEST_F(EngineBufferTest, StemProcessRejectsOddChannelLayout) {
 #endif
 }
 
-TEST_F(EngineBufferTest, StemProcessClearsStemVectorMismatch) {
-    TrackPointer pTrack = Track::newTemporary();
-    pTrack->setAudioProperties(
-            mixxx::audio::ChannelCount(4),
-            mixxx::audio::SampleRate(44100),
-            mixxx::audio::Bitrate(),
-            mixxx::Duration::fromSeconds(1));
+TEST_F(EngineBufferTest, StemProcessRejectsStemVectorMismatch) {
+    TrackPointer pTrack = createStemTrack(4);
     m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
 
+#ifdef MIXXX_DEBUG_ASSERTIONS_ENABLED
+    // A stem track requires the corresponding stem handles and controls to be
+    // registered before processStem() is called. This fixture intentionally
+    // omits them to verify the invalid-input boundary.
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->processStem(output.data(), output.size()),
+            "stemCount <= m_stems\\.size\\(\\)");
+#else
     std::array<CSAMPLE, kProcessBufferSize> output;
     std::fill(output.begin(), output.end(), 1.0f);
     m_pChannel1->processStem(output.data(), output.size());
 
     EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
 }
 
-TEST_F(EngineBufferTest, StemProcessClearsStemGainCacheMismatch) {
+TEST_F(EngineBufferTest, StemProcessRejectsStemGainCacheMismatch) {
     addStemHandles();
     ASSERT_EQ(m_pChannel1->m_stemsGainCache.size(), mixxx::kMaxSupportedStems);
     m_pChannel1->m_stemsGainCache.pop_back();
 
     m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+#ifdef MIXXX_DEBUG_ASSERTIONS_ENABLED
+    // The gain cache is maintained alongside the stem handles. This deliberate
+    // truncation verifies that processStem() rejects an inconsistent cache.
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->processStem(output.data(), output.size()),
+            "stemCount <= m_stemsGainCache\\.size\\(\\)");
+#else
     m_pChannel1->m_stemBuffer.fill(1.0f);
 
     std::array<CSAMPLE, kProcessBufferSize> output;
@@ -133,6 +148,7 @@ TEST_F(EngineBufferTest, StemProcessClearsStemGainCacheMismatch) {
     m_pChannel1->processStem(output.data(), output.size());
 
     EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
 }
 
 TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
