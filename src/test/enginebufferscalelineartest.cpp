@@ -58,8 +58,13 @@ class ReadAheadManagerMock : public ReadAheadManager {
 
         const SINT frame_samples = channelCount.value();
         EXPECT_GE(requested_samples, frame_samples);
+        EXPECT_LE(m_iReadPosition + frame_samples, m_iBufferSize);
+        if (m_iReadPosition + frame_samples > m_iBufferSize) {
+            ADD_FAILURE() << "One-frame recovery mock exhausted its deterministic source";
+            return 0;
+        }
         for (SINT i = 0; i < frame_samples; ++i) {
-            buffer[i] = m_pBuffer[m_iReadPosition++ % m_iBufferSize];
+            buffer[i] = m_pBuffer[m_iReadPosition++];
         }
         m_iSamplesRead += frame_samples;
         ++m_iOneFrameReadCalls;
@@ -411,7 +416,8 @@ TEST_F(EngineBufferScaleLinearTest, EmptyRefillNormalizesPartialReadRecovery) {
     SetRateNoLerp(1.25);
     // Distinct frames make skipped or duplicated recovery data observable.
     CSAMPLE readBuffer[] = {41.0, -41.0, 43.0, -43.0, 47.0, -47.0, 53.0, -53.0, 59.0, -59.0};
-    m_pReadAheadMock->setReadBuffer(readBuffer, 10);
+    m_pReadAheadMock->setReadBuffer(
+            readBuffer, sizeof(readBuffer) / sizeof(readBuffer[0]));
     m_pScaler->m_bufferIntSize = 4;
     m_pScaler->m_dNextFrame = 1.5;
     SampleUtil::fill(m_pScaler->m_bufferInt,
@@ -447,15 +453,22 @@ TEST_F(EngineBufferScaleLinearTest, EmptyRefillNormalizesPartialReadRecovery) {
     EXPECT_DOUBLE_EQ(kRecoveryFrames * 1.25, recoveryFrames);
     EXPECT_EQ(kRecoveryFrames + 1, m_pReadAheadMock->getOneFrameReadCalls());
     EXPECT_EQ((kRecoveryFrames + 1) * 2, m_pReadAheadMock->getSamplesRead());
-    EXPECT_FLOAT_EQ(0.0f, recoveryOutput[0]);
-    EXPECT_FLOAT_EQ(0.0f, recoveryOutput[1]);
-    EXPECT_FLOAT_EQ(11.75f, recoveryOutput[2]);
-    EXPECT_FLOAT_EQ(-11.75f, recoveryOutput[3]);
-    EXPECT_FLOAT_EQ(26.5f, recoveryOutput[4]);
-    EXPECT_FLOAT_EQ(-26.5f, recoveryOutput[5]);
-    EXPECT_FLOAT_EQ(44.25f, recoveryOutput[6]);
-    EXPECT_FLOAT_EQ(-44.25f, recoveryOutput[7]);
-    for (const CSAMPLE sample : recoveryOutput) {
-        EXPECT_NE(kStaleSample, sample);
+    const CSAMPLE expectedRecovery[] = {
+            0.0f,
+            0.0f,
+            44.0f,
+            -44.0f,
+            50.0f,
+            -50.0f,
+            57.5f,
+            -57.5f};
+    for (SINT i = 0; i < kRecoverySamples; ++i) {
+        // Exact values prove the recovery consumed the deterministic source
+        // frames in order, without retaining the stale fallback or duplicating
+        // an interpolated frame.
+        EXPECT_FLOAT_EQ(expectedRecovery[i], recoveryOutput[i]);
+        EXPECT_NE(kStaleSample, recoveryOutput[i]);
     }
+    EXPECT_NE(recoveryOutput[2], recoveryOutput[4]);
+    EXPECT_NE(recoveryOutput[4], recoveryOutput[6]);
 }

@@ -823,9 +823,21 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversAfterDualOccupancy) {
         EXPECT_FALSE(recoveredResult.retryPending);
         EXPECT_EQ(kSegments + i + 1,
                 m_pReader->readStartSamples().size());
-        EXPECT_GT(m_pBuffer[0], 0.0f);
-        EXPECT_DOUBLE_EQ(i % 2 == 0 ? kSamplesPerSegment : 0.0,
+        const double expectedFilePlayposition =
+                i % 2 == 0 ? kSamplesPerSegment : 0.0;
+        EXPECT_DOUBLE_EQ(expectedFilePlayposition, filePlayposition);
+        EXPECT_DOUBLE_EQ(expectedFilePlayposition,
                 m_pReadAheadManager->getPlaypos());
+
+        const SINT expectedReadStartSample =
+                i % 2 == 0 ? 0 : kSamplesPerSegment;
+        EXPECT_EQ(expectedReadStartSample,
+                m_pReader->readStartSamples().back());
+        for (SINT sample = 0; sample < kSamplesPerSegment; ++sample) {
+            EXPECT_FLOAT_EQ(
+                    static_cast<CSAMPLE>(expectedReadStartSample + sample + 1),
+                    m_pBuffer[sample]);
+        }
     }
 }
 
