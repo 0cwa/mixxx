@@ -1,6 +1,8 @@
 #pragma once
 
+#ifdef BUILD_TESTING
 #include <gtest/gtest_prod.h>
+#endif
 
 #include <QScopedPointer>
 
@@ -88,6 +90,7 @@ class EngineDeck : public EngineChannel, public AudioDestination {
 
   private:
 #ifdef __STEM__
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineBufferTest, StemBufferIsPreallocated);
     FRIEND_TEST(EngineBufferTest, StemProcessRejectsOddChannelLayout);
     FRIEND_TEST(EngineBufferTest, StemProcessRejectsStemVectorMismatch);
@@ -95,6 +98,7 @@ class EngineDeck : public EngineChannel, public AudioDestination {
     FRIEND_TEST(EngineBufferTest, StemProcessHandlesValidChannelCounts);
     FRIEND_TEST(EngineBufferTest, StemProcessClearsOddOutputSentinel);
     FRIEND_TEST(EngineBufferTest, StemProcessAcceptsMaximumBufferSize);
+#endif
     // Process multiple channels and mix them together into the passed buffer
     void processStem(CSAMPLE* pOutput, const std::size_t bufferSize);
 #endif
