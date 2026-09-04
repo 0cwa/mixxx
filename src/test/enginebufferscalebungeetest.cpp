@@ -640,14 +640,15 @@ TEST_F(EngineBufferScaleBungeeTest,
             m_pScaler->scaleBuffer(retriedFirst.data(), kOutputSamplesBeforeRetry));
 
     const auto& retryStarts = m_pReadAheadMock->retryReadSourcePositions();
+    const auto& retrySizes = m_pReadAheadMock->retryReadRequestedSamples();
     const auto& referenceStarts = referenceReadAhead.retryReadSourcePositions();
-    ASSERT_EQ(3u, retryStarts.size());
+    // A pending read stops this callback before the retry is attempted. The
+    // next scaleBuffer call below performs the third retry-aware request.
+    ASSERT_EQ(2u, retryStarts.size());
+    ASSERT_EQ(2u, retrySizes.size());
     ASSERT_EQ(2u, referenceStarts.size());
     EXPECT_EQ(referenceStarts[0], retryStarts[0]);
     EXPECT_EQ(referenceStarts[1], retryStarts[1]);
-    EXPECT_EQ(retryStarts[1], retryStarts[2])
-            << "A pending retry must request the same source range without "
-               "advancing the read cursor.";
 
     for (SINT sample = 0;
             sample < kOutputFramesInPendingGrain * kChannelCount;
@@ -675,6 +676,15 @@ TEST_F(EngineBufferScaleBungeeTest,
     ASSERT_DOUBLE_EQ(kOutputFramesInPendingGrain,
             referenceScaler.scaleBuffer(
                     referenceNew.data(), kOutputSamplesInPendingGrain));
+
+    ASSERT_EQ(3u, retryStarts.size());
+    ASSERT_EQ(3u, retrySizes.size());
+    EXPECT_EQ(retryStarts[1], retryStarts[2])
+            << "A pending retry must request the same source range without "
+               "advancing the read cursor.";
+    EXPECT_EQ(retrySizes[1], retrySizes[2]);
+    EXPECT_TRUE(m_pReadAheadMock->retryStateWasReused())
+            << "The retry must use the same caller-owned RetryState instance.";
 
     for (SINT sample = 0; sample < kOutputSamplesInPendingGrain; ++sample) {
         EXPECT_NEAR(referenceFirst[kOutputSamplesInPendingGrain + sample],
@@ -1146,11 +1156,12 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     EXPECT_DOUBLE_EQ(kChangedTempo, requestSpeed());
 
     const auto& readCalls = m_pReadAhead->readCalls();
-    ASSERT_GE(readCalls.size(), 4u);
+    // readCalls records successful underlying reads. The pending invocation
+    // is represented by the RetryState and is not an entry in this vector.
+    ASSERT_EQ(3u, readCalls.size());
     EXPECT_DOUBLE_EQ(kInitialTempo, readCalls[0].rate);
     EXPECT_DOUBLE_EQ(kInitialTempo, readCalls[1].rate);
-    EXPECT_DOUBLE_EQ(kInitialTempo, readCalls[2].rate);
-    EXPECT_DOUBLE_EQ(kChangedTempo, readCalls.back().rate);
+    EXPECT_DOUBLE_EQ(kChangedTempo, readCalls[2].rate);
 
     for (SINT sample = 0; sample < kRetryOutputSamples; ++sample) {
         EXPECT_NEAR(referenceNext[sample], nextOutput[sample], 1e-6)
