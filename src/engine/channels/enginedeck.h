@@ -89,7 +89,7 @@ class EngineDeck : public EngineChannel, public AudioDestination {
   private:
 #ifdef __STEM__
     FRIEND_TEST(EngineBufferTest, StemBufferIsPreallocated);
-    FRIEND_TEST(EngineBufferTest, StemProcessClearsOddChannelLayout);
+    FRIEND_TEST(EngineBufferTest, StemProcessRejectsOddChannelLayout);
     FRIEND_TEST(EngineBufferTest, StemProcessClearsStemVectorMismatch);
     FRIEND_TEST(EngineBufferTest, StemProcessClearsStemGainCacheMismatch);
     FRIEND_TEST(EngineBufferTest, StemProcessHandlesValidChannelCounts);
