@@ -1216,6 +1216,9 @@ void EngineBuffer::processTrackLocked(
 void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
     // Bail if we receive a buffer size with incomplete sample frames. Assert in debug builds.
     VERIFY_OR_DEBUG_ASSERT((bufferSize % m_channelCount) == 0) {
+        if (pOutput != nullptr) {
+            SampleUtil::clear(pOutput, bufferSize);
+        }
         return;
     }
     m_pReader->process();

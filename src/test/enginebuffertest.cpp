@@ -28,6 +28,19 @@ class EngineBufferTest : public MockedEngineBackendTest {};
 
 class EngineBufferE2ETest : public SignalPathTest {};
 
+#if !defined(MIXXX_DEBUG_ASSERTIONS_ENABLED)
+TEST_F(EngineBufferTest, ProcessClearsOutputForIncompleteFrames) {
+    constexpr std::size_t kBufferSize = 17;
+    constexpr CSAMPLE kPoison = -7.0f;
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), kPoison);
+
+    m_pChannel1->getEngineBuffer()->process(output.data(), kBufferSize);
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+#endif
+
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,
     // KeyunlockMode::ResetLockedKey resets the musical pitch.
