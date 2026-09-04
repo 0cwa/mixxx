@@ -153,6 +153,9 @@ class ReadAheadManager {
             SINT requestedSamples,
             mixxx::audio::ChannelCount channelCount);
 
+    // Internal precondition: requested_samples is nonnegative, whole-frame
+    // interleaved audio of at most MAX_BUFFER_LEN frames and
+    // kMaxEngineChannelInputCount channels (8).
     NextSamplesResult getNextSamplesInternal(double dRate,
             CSAMPLE* buffer,
             SINT requested_samples,
