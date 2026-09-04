@@ -338,6 +338,36 @@ bool containsGenerationMarker(std::span<const CSAMPLE> samples,
     return false;
 }
 
+bool allSamplesMatchGenerationMarker(std::span<const CSAMPLE> samples,
+        std::size_t generation) {
+    const CSAMPLE marker = markerForRead(generation);
+    if (samples.empty() || samples.size() % kChannels != 0) {
+        return false;
+    }
+    for (std::size_t sample = 0; sample < samples.size(); sample += kChannels) {
+        if (std::abs(samples[sample] - marker) >= 1e-5f ||
+                std::abs(samples[sample + 1] + marker) >= 1e-5f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::size_t countGenerationMarkers(const GenerationMarkedSource& source,
+        std::size_t firstObservation,
+        std::span<const CSAMPLE> samples) {
+    std::size_t count = 0;
+    for (std::size_t i = firstObservation;
+            i < source.readObservationCount;
+            ++i) {
+        if (containsGenerationMarker(samples,
+                    source.readObservations[i].generation)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 std::size_t findGenerationMarkedRead(
         const GenerationMarkedSource& source,
         std::size_t firstObservation,
@@ -1349,6 +1379,8 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
 TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     constexpr int kSetupStartFrame = 128;
     constexpr double kTempoRatio = 1.25;
+    constexpr int kPrimeCallbackFrames = kBufferFrames - 1;
+    constexpr SINT kPrimeCallbackSamples = kPrimeCallbackFrames * kChannels;
     constexpr std::size_t kReadLogCapacity =
             ReadAheadManager::kMaxReadAheadLogEntries + 2;
     constexpr SINT kForwardMappingSamples = kChannels * 2;
@@ -1384,12 +1416,13 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     g_recoverySource.resetReadObservations();
     std::array<CSAMPLE, kBufferSamples> primeOutput{};
 
-    // Prime the actual EngineBuffer/scaler once. The linear scaler retains its
-    // first read-ahead mapping internally; the manager then starts with one
-    // mapping that can be followed by the bounded alternating setup below.
+    // Prime the actual EngineBuffer/scaler once with a non-integral source
+    // consumption. The linear scaler retains a fractional tail of its first
+    // read-ahead mapping; the manager therefore starts with one deliberately
+    // partial mapping for the bounded alternating setup below.
     const std::size_t primeReadStart = g_recoverySource.readObservationCount;
-    pEngineBuffer->process(primeOutput.data(), primeOutput.size());
-    pEngineBuffer->postProcess(primeOutput.size());
+    pEngineBuffer->process(primeOutput.data(), kPrimeCallbackSamples);
+    pEngineBuffer->postProcess(kPrimeCallbackSamples);
 
     ReadAheadManager* const pReadAheadManager =
             pEngineBuffer->m_pReadAheadManager;
@@ -1397,9 +1430,13 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             static_cast<EngineBufferScale*>(pEngineBuffer->m_pScaleLinear));
     ASSERT_EQ(1u, pReadAheadManager->m_readAheadLogSize);
     ASSERT_EQ(0u, pReadAheadManager->m_readAheadLogOverflowSize);
+    ASSERT_DOUBLE_EQ(0.5,
+            pReadAheadManager
+                    ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
+                    .length());
     ASSERT_TRUE(std::all_of(
             primeOutput.begin(),
-            primeOutput.end(),
+            primeOutput.begin() + kPrimeCallbackSamples,
             [](CSAMPLE sample) { return sample != kStaleSample; }));
     const std::size_t primeRead = findGenerationMarkedRead(
             g_recoverySource, primeReadStart, primeOutput);
@@ -1435,6 +1472,20 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
         ASSERT_EQ(occupiedEntries + 1,
                 pReadAheadManager->m_readAheadLogSize +
                         pReadAheadManager->m_readAheadLogOverflowSize);
+        const bool newestEntryForward =
+                pReadAheadManager->m_readAheadLogOverflowSize > 0
+                ? pReadAheadManager
+                          ->m_readAheadLogOverflow
+                                  [pReadAheadManager
+                                                  ->m_readAheadLogOverflowSize -
+                                          1]
+                          .direction()
+                : pReadAheadManager
+                          ->m_readAheadLog[pReadAheadManager
+                                                   ->m_readAheadLogStart +
+                                  pReadAheadManager->m_readAheadLogSize - 1]
+                          .direction();
+        ASSERT_EQ(!reverse, newestEntryForward);
         reverse = !reverse;
         if (pReadAheadManager->m_readAheadLogSize ==
                         ReadAheadManager::kMaxReadAheadLogEntries &&
@@ -1500,6 +1551,9 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     const std::size_t recoveryRead = findGenerationMarkedRead(
             g_recoverySource, recoveryReadStart, recoveryOutput);
     ASSERT_NE(std::numeric_limits<std::size_t>::max(), recoveryRead);
+    ASSERT_EQ(recoveryReadStart + 1,
+            g_recoverySource.readObservationCount);
+    ASSERT_EQ(recoveryReadStart, recoveryRead);
     const auto& recoveryObservation =
             g_recoverySource.readObservations[recoveryRead];
     EXPECT_GT(recoveryObservation.generation, primeObservation.generation);
@@ -1507,7 +1561,10 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     EXPECT_EQ(recoveryObservation.startSample,
             static_cast<SINT>(readAheadPositionBefore));
     EXPECT_GT(recoveryObservation.numSamples, 0);
-    EXPECT_TRUE(containsGenerationMarker(
+    EXPECT_EQ(1u,
+            countGenerationMarkers(
+                    g_recoverySource, recoveryReadStart, recoveryOutput));
+    EXPECT_TRUE(allSamplesMatchGenerationMarker(
             recoveryOutput, recoveryObservation.generation));
     EXPECT_FALSE(containsGenerationMarker(
             recoveryOutput, primeObservation.generation));
