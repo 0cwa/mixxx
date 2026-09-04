@@ -552,6 +552,7 @@ class EngineBuffer : public EngineObject {
             BungeeRapidReconfigurationAndEngineChanges);
     FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
     FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
+    FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
     EngineBufferScale* m_pScaleVinyl;
     // Used for test scaler injection. Production selection is derived from the
     // single m_iKeylockEngine publication and fixed scaler members; Bungee is

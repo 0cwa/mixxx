@@ -30,6 +30,7 @@
 #ifdef __SIGNALSMITH__
 #include "engine/bufferscalers/enginebufferscalesignalsmith.h"
 #endif
+#include "engine/bufferscalers/enginebufferscalelinear.h"
 #include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/controls/enginecontrol.h"
@@ -143,12 +144,13 @@ struct DeterministicSource {
 
     DeterministicSource() {
         for (int frame = 0; frame < kTrackFrames; ++frame) {
-            const double phase = 0.017 * static_cast<double>(frame);
-            samples[frame * kChannels] = static_cast<CSAMPLE>(
-                    0.18 * std::sin(phase) + 0.07 * std::sin(phase * 0.37));
-            samples[frame * kChannels + 1] =
-                    static_cast<CSAMPLE>(0.16 * std::cos(phase * 0.71) -
-                            0.05 * std::sin(phase * 0.19));
+            // Encode the source frame generation in both channels. This makes
+            // a later successful read distinguishable from stale or repeated
+            // output without relying on timing or a waveform correlation.
+            const CSAMPLE generation = static_cast<CSAMPLE>(
+                    0.25 + 0.00001 * static_cast<double>(frame));
+            samples[frame * kChannels] = generation;
+            samples[frame * kChannels + 1] = -generation;
         }
 
         std::copy(kMarkerCode.begin(),
@@ -1230,13 +1232,15 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
 }
 
 TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
-    constexpr int kLoopFrames = 7;
-    constexpr double kTempoRatio = 0.1;
-    constexpr int kMaxCallbacks = 20;
+    constexpr int kSetupStartFrame = 128;
+    constexpr double kTempoRatio = 1.25;
     constexpr std::size_t kReadLogCapacity =
             ReadAheadManager::kMaxReadAheadLogEntries + 2;
-    constexpr std::size_t kMaxConsumedLogEntriesPerCallback =
-            static_cast<std::size_t>(kBufferFrames * kTempoRatio / kLoopFrames) + 1;
+    constexpr SINT kForwardMappingSamples = kChannels * 2;
+    constexpr SINT kReverseMappingSamples = kChannels;
+    constexpr int kFallbackCallbackFrames = kBufferFrames * 2;
+    constexpr int kFallbackCallbackSamples =
+            kFallbackCallbackFrames * kChannels;
     constexpr CSAMPLE kStaleSample = -12345.0f;
 
     TrackPointer track = Track::newTemporary();
@@ -1246,97 +1250,141 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             mixxx::audio::Bitrate(),
             mixxx::Duration::fromSeconds(kTrackSeconds));
 
-    // Keep this callback test on the always-available SoundTouch scaler. Its
-    // 0.1 tempo causes it to read substantially ahead of the output consumer,
-    // while the seven-frame loop makes every refill a separate mapping.
+    // Keep this callback test on the linear scaler. Disabling keylock while
+    // keeping pitch and tempo equal selects it independently of optional
+    // time-stretching engines.
     configureAlignmentControls(
             m_sGroup1, EngineBuffer::KeylockEngine::SoundTouch, kTempoRatio);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock")), 0.0);
     EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
     pEngineBuffer->loadFakeTrack(track, false);
-    pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
-    pEngineBuffer->setLoop(
-            mixxx::audio::FramePos(0),
-            mixxx::audio::FramePos(kLoopFrames),
-            true);
+    pEngineBuffer->seekExact(mixxx::audio::FramePos(kSetupStartFrame));
     ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
 
-    auto normalReadCount = []() {
-        return std::count_if(
-                g_source.readObservations.begin(),
-                g_source.readObservations.begin() +
-                        g_source.readObservationCount,
-                [](const DeterministicSource::ReadObservation& read) {
-                    return !read.reverse && read.startSample >= 0 &&
-                            read.numSamples == kLoopFrames * kChannels;
-                });
-    };
-
     g_source.resetReadObservations();
-    std::array<CSAMPLE, kBufferSamples> output{};
-    std::array<CSAMPLE, kBufferSamples> blockedOutput{};
-    bool sawCapacityBlock = false;
-    bool sawRecovery = false;
+    std::array<CSAMPLE, kBufferSamples> primeOutput{};
 
-    for (int callback = 0; callback < kMaxCallbacks; ++callback) {
-        const double playPosBefore = pEngineBuffer->getPlayPos().value();
-        const std::size_t readsBefore = normalReadCount();
-        std::fill(output.begin(), output.end(), kStaleSample);
+    // Prime the actual EngineBuffer/scaler once. The linear scaler retains its
+    // first read-ahead mapping internally; the manager then starts with one
+    // mapping that can be followed by the bounded alternating setup below.
+    pEngineBuffer->process(primeOutput.data(), primeOutput.size());
+    pEngineBuffer->postProcess(primeOutput.size());
 
-        // This is the real audio callback entry point. Do not call
-        // ReadAheadManager accounting directly: EngineBuffer must account for
-        // the scaler's result after consuming the queued mappings.
-        pEngineBuffer->process(output.data(), kBufferSamples);
-        pEngineBuffer->postProcess(kBufferSamples);
+    ReadAheadManager* const pReadAheadManager =
+            pEngineBuffer->m_pReadAheadManager;
+    ASSERT_EQ(pEngineBuffer->m_pScale,
+            static_cast<EngineBufferScale*>(pEngineBuffer->m_pScaleLinear));
+    ASSERT_EQ(1u, pReadAheadManager->m_readAheadLogSize);
+    ASSERT_EQ(0u, pReadAheadManager->m_readAheadLogOverflowSize);
+    ASSERT_TRUE(std::all_of(
+            primeOutput.begin(),
+            primeOutput.end(),
+            [](CSAMPLE sample) { return sample != kStaleSample; }));
+    const auto firstGenerationSample = [](std::span<const CSAMPLE> samples) {
+        for (std::size_t sample = 0; sample + 1 < samples.size(); sample += 2) {
+            if (samples[sample] > 0.25f && samples[sample + 1] < -0.25f) {
+                return samples[sample];
+            }
+        }
+        return CSAMPLE{-1.0f};
+    };
+    const CSAMPLE primeGeneration = firstGenerationSample(primeOutput);
+    ASSERT_GT(primeGeneration, 0.25f);
 
-        const double playPosAfter = pEngineBuffer->getPlayPos().value();
-        const std::size_t readsAfter = normalReadCount();
+    // Alternate directions so every request is a distinct mapping. Starting
+    // opposite the primed forward entry and ending reverse ensures the next
+    // forward scaler refill cannot merge with either spill entry.
+    bool reverse = pReadAheadManager
+                           ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
+                           .direction();
+    std::array<CSAMPLE, kForwardMappingSamples> mappingBuffer{};
+    for (std::size_t mapping = 0; mapping < kReadLogCapacity; ++mapping) {
+        const SINT requestedSamples =
+                reverse ? kReverseMappingSamples : kForwardMappingSamples;
+        std::fill(mappingBuffer.begin(), mappingBuffer.end(), kStaleSample);
+        ASSERT_EQ(requestedSamples,
+                pReadAheadManager->getNextSamples(
+                        reverse ? -1.0 : 1.0,
+                        mappingBuffer.data(),
+                        requestedSamples,
+                        mixxx::audio::ChannelCount::stereo()));
         ASSERT_TRUE(std::all_of(
-                output.begin(),
-                output.end(),
-                [](CSAMPLE sample) { return sample != kStaleSample; }))
-                << "callback left stale output samples";
-        EXPECT_GE(playPosAfter, 0.0);
-        EXPECT_LT(playPosAfter, static_cast<double>(kLoopFrames));
-
-        const double expectedPlayPosAfter = std::fmod(
-                playPosBefore + kBufferFrames * kTempoRatio,
-                kLoopFrames);
-        EXPECT_NEAR(playPosAfter, expectedPlayPosAfter, 1e-9)
-                << "EngineBuffer position did not consume the mapped output";
-
-        // Each counted read is one loop-sized, non-mergeable mapping. The
-        // callback can consume at most this many mappings at the configured
-        // tempo, so this lower bound proves main and both spill entries were
-        // occupied before the no-read callback.
-        const std::size_t minimumReadsForFullLog =
-                kReadLogCapacity +
-                static_cast<std::size_t>(callback) *
-                        kMaxConsumedLogEntriesPerCallback;
-        if (!sawCapacityBlock && readsBefore >= minimumReadsForFullLog &&
-                readsAfter == readsBefore) {
-            sawCapacityBlock = true;
-            blockedOutput = output;
-            EXPECT_NE(playPosBefore, playPosAfter);
-        } else if (sawCapacityBlock && !sawRecovery) {
-            ASSERT_GT(readsAfter, readsBefore)
-                    << "read-ahead capacity did not recover through EngineBuffer";
-            sawRecovery = true;
-            EXPECT_NE(playPosBefore, playPosAfter);
-            EXPECT_FALSE(std::all_of(
-                    output.begin(),
-                    output.end(),
-                    [](CSAMPLE sample) { return sample == 0.0f; }))
-                    << "recovery callback emitted only padding";
-            EXPECT_FALSE(std::equal(
-                    output.begin(), output.end(), blockedOutput.begin()))
-                    << "recovery callback repeated blocked output";
+                mappingBuffer.begin(),
+                mappingBuffer.begin() + requestedSamples,
+                [](CSAMPLE sample) { return sample != kStaleSample; }));
+        reverse = !reverse;
+        if (pReadAheadManager->m_readAheadLogSize ==
+                        ReadAheadManager::kMaxReadAheadLogEntries &&
+                pReadAheadManager->m_readAheadLogOverflowSize == 2) {
+            break;
         }
     }
 
-    EXPECT_TRUE(sawCapacityBlock)
-            << "the real callback path did not reach main+spill capacity";
-    EXPECT_TRUE(sawRecovery)
-            << "the real callback path did not recover after a bounded zero read";
+    ASSERT_EQ(ReadAheadManager::kMaxReadAheadLogEntries,
+            pReadAheadManager->m_readAheadLogSize);
+    ASSERT_EQ(2u, pReadAheadManager->m_readAheadLogOverflowSize);
+    ASSERT_FALSE(pReadAheadManager
+                    ->m_readAheadLogOverflow[1]
+                    .direction());
+
+    const std::size_t oldestLogStart = pReadAheadManager->m_readAheadLogStart;
+    const double oldestMappingFrames =
+            pReadAheadManager->m_readAheadLog[oldestLogStart].length() /
+            kChannels;
+    const double readAheadPositionBefore = pReadAheadManager->getPlaypos();
+    const double playPosBefore = pEngineBuffer->getPlayPos().value();
+    const std::size_t readsBeforeFallback = g_source.readObservationCount;
+
+    std::array<CSAMPLE, kFallbackCallbackSamples> blockedOutput{};
+    std::fill(blockedOutput.begin(), blockedOutput.end(), kStaleSample);
+    // This is the real callback path while the manager is full. The forward
+    // linear refill is non-mergeable with the reverse final spill mapping, so
+    // capacity fallback must return zero without calling the reader.
+    pEngineBuffer->process(blockedOutput.data(), blockedOutput.size());
+    pEngineBuffer->postProcess(blockedOutput.size());
+
+    const double playPosAfterFallback = pEngineBuffer->getPlayPos().value();
+    EXPECT_TRUE(std::all_of(
+            blockedOutput.begin(),
+            blockedOutput.end(),
+            [](CSAMPLE sample) { return sample != kStaleSample; }));
+    EXPECT_TRUE(std::all_of(
+            blockedOutput.begin(),
+            blockedOutput.end(),
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+    EXPECT_GT(playPosAfterFallback, playPosBefore);
+    EXPECT_GT(playPosAfterFallback - playPosBefore, oldestMappingFrames);
+    EXPECT_GT(pReadAheadManager->m_readAheadLogStart, oldestLogStart);
+    EXPECT_LT(pReadAheadManager->m_readAheadLogSize +
+                    pReadAheadManager->m_readAheadLogOverflowSize,
+            kReadLogCapacity);
+    EXPECT_DOUBLE_EQ(readAheadPositionBefore,
+            pReadAheadManager->getPlaypos());
+    EXPECT_EQ(readsBeforeFallback, g_source.readObservationCount);
+
+    const std::size_t readsBeforeRecovery = g_source.readObservationCount;
+    std::array<CSAMPLE, kFallbackCallbackSamples> recoveryOutput{};
+    std::fill(recoveryOutput.begin(), recoveryOutput.end(), kStaleSample);
+    pEngineBuffer->process(recoveryOutput.data(), recoveryOutput.size());
+    pEngineBuffer->postProcess(recoveryOutput.size());
+
+    ASSERT_GT(g_source.readObservationCount, readsBeforeRecovery);
+    ASSERT_TRUE(std::all_of(
+            recoveryOutput.begin(),
+            recoveryOutput.end(),
+            [](CSAMPLE sample) { return sample != kStaleSample; }));
+    const CSAMPLE recoveryGeneration = firstGenerationSample(recoveryOutput);
+    ASSERT_GT(recoveryGeneration, primeGeneration);
+    EXPECT_FALSE(std::all_of(
+            recoveryOutput.begin(),
+            recoveryOutput.end(),
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+    EXPECT_FALSE(std::equal(
+            recoveryOutput.begin(), recoveryOutput.end(), blockedOutput.begin()));
+    EXPECT_FALSE(std::equal(
+            recoveryOutput.begin(),
+            recoveryOutput.begin() + kBufferSamples,
+            primeOutput.begin()));
 }
 
 #ifdef __SIGNALSMITH__
