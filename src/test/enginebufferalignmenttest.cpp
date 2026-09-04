@@ -338,15 +338,40 @@ bool containsGenerationMarker(std::span<const CSAMPLE> samples,
     return false;
 }
 
-bool allSamplesMatchGenerationMarker(std::span<const CSAMPLE> samples,
-        std::size_t generation) {
-    const CSAMPLE marker = markerForRead(generation);
+bool allSamplesMatchObservedGenerationInterval(
+        const GenerationMarkedSource& source,
+        std::size_t firstObservation,
+        std::span<const CSAMPLE> samples) {
     if (samples.empty() || samples.size() % kChannels != 0) {
         return false;
     }
     for (std::size_t sample = 0; sample < samples.size(); sample += kChannels) {
-        if (std::abs(samples[sample] - marker) >= 1e-5f ||
-                std::abs(samples[sample + 1] + marker) >= 1e-5f) {
+        // The reader returns a constant marker for each exact observation.
+        // At a linear interpolation boundary, a frame may instead lie between
+        // the markers of two adjacent recovery observations.
+        bool matchesObservationInterval = false;
+        for (std::size_t observation = firstObservation;
+                observation < source.readObservationCount;
+                ++observation) {
+            const CSAMPLE intervalStart = markerForRead(
+                    source.readObservations[observation].generation);
+            const CSAMPLE intervalEnd = observation + 1 <
+                            source.readObservationCount
+                    ? markerForRead(
+                              source.readObservations[observation + 1]
+                                      .generation)
+                    : intervalStart;
+            const CSAMPLE lowerMarker = std::min(intervalStart, intervalEnd);
+            const CSAMPLE upperMarker = std::max(intervalStart, intervalEnd);
+            const CSAMPLE value = samples[sample];
+            if (value >= lowerMarker - 1e-5f &&
+                    value <= upperMarker + 1e-5f &&
+                    std::abs(samples[sample + 1] + value) < 1e-5f) {
+                matchesObservationInterval = true;
+                break;
+            }
+        }
+        if (!matchesObservationInterval) {
             return false;
         }
     }
@@ -1381,6 +1406,10 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     constexpr double kTempoRatio = 1.25;
     constexpr int kPrimeCallbackFrames = kBufferFrames - 1;
     constexpr SINT kPrimeCallbackSamples = kPrimeCallbackFrames * kChannels;
+    // The recovery callback needs one refill for its 2400 output frames at
+    // 1.25x. The retained one-frame interpolation tail may require one more
+    // reader observation to provide the boundary sample.
+    constexpr std::size_t kMaxRecoveryReadObservations = 2;
     constexpr std::size_t kReadLogCapacity =
             ReadAheadManager::kMaxReadAheadLogEntries + 2;
     constexpr SINT kForwardMappingSamples = kChannels * 2;
@@ -1536,14 +1565,16 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             pReadAheadManager->getPlaypos());
     EXPECT_EQ(readsBeforeFallback, g_recoverySource.readObservationCount);
 
-    const std::size_t readsBeforeRecovery = g_recoverySource.readObservationCount;
     std::array<CSAMPLE, kFallbackCallbackSamples> recoveryOutput{};
     std::fill(recoveryOutput.begin(), recoveryOutput.end(), kStaleSample);
     const std::size_t recoveryReadStart = g_recoverySource.readObservationCount;
     pEngineBuffer->process(recoveryOutput.data(), recoveryOutput.size());
     pEngineBuffer->postProcess(recoveryOutput.size());
 
-    ASSERT_GT(g_recoverySource.readObservationCount, readsBeforeRecovery);
+    const std::size_t recoveryReadCount =
+            g_recoverySource.readObservationCount - recoveryReadStart;
+    ASSERT_GT(recoveryReadCount, 0u);
+    ASSERT_LE(recoveryReadCount, kMaxRecoveryReadObservations);
     ASSERT_TRUE(std::all_of(
             recoveryOutput.begin(),
             recoveryOutput.end(),
@@ -1551,21 +1582,32 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     const std::size_t recoveryRead = findGenerationMarkedRead(
             g_recoverySource, recoveryReadStart, recoveryOutput);
     ASSERT_NE(std::numeric_limits<std::size_t>::max(), recoveryRead);
-    ASSERT_EQ(recoveryReadStart + 1,
-            g_recoverySource.readObservationCount);
-    ASSERT_EQ(recoveryReadStart, recoveryRead);
-    const auto& recoveryObservation =
-            g_recoverySource.readObservations[recoveryRead];
-    EXPECT_GT(recoveryObservation.generation, primeObservation.generation);
-    EXPECT_FALSE(recoveryObservation.reverse);
-    EXPECT_EQ(recoveryObservation.startSample,
-            static_cast<SINT>(readAheadPositionBefore));
-    EXPECT_GT(recoveryObservation.numSamples, 0);
-    EXPECT_EQ(1u,
-            countGenerationMarkers(
-                    g_recoverySource, recoveryReadStart, recoveryOutput));
-    EXPECT_TRUE(allSamplesMatchGenerationMarker(
-            recoveryOutput, recoveryObservation.generation));
+    for (std::size_t observation = recoveryReadStart;
+            observation < g_recoverySource.readObservationCount;
+            ++observation) {
+        const auto& recoveryObservation =
+                g_recoverySource.readObservations[observation];
+        EXPECT_GT(recoveryObservation.generation,
+                primeObservation.generation);
+        EXPECT_FALSE(recoveryObservation.reverse);
+        EXPECT_GT(recoveryObservation.numSamples, 0);
+        if (observation == recoveryReadStart) {
+            EXPECT_EQ(recoveryObservation.startSample,
+                    static_cast<SINT>(readAheadPositionBefore));
+        } else {
+            const auto& previousObservation =
+                    g_recoverySource.readObservations[observation - 1];
+            EXPECT_EQ(previousObservation.startSample +
+                            previousObservation.numSamples,
+                    recoveryObservation.startSample);
+        }
+    }
+    const std::size_t outputGenerationCount = countGenerationMarkers(
+            g_recoverySource, recoveryReadStart, recoveryOutput);
+    EXPECT_GE(outputGenerationCount, 1u);
+    EXPECT_LE(outputGenerationCount, recoveryReadCount);
+    EXPECT_TRUE(allSamplesMatchObservedGenerationInterval(
+            g_recoverySource, recoveryReadStart, recoveryOutput));
     EXPECT_FALSE(containsGenerationMarker(
             recoveryOutput, primeObservation.generation));
     EXPECT_FALSE(std::all_of(
