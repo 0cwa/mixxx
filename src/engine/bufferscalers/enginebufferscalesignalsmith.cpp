@@ -17,7 +17,7 @@ EngineBufferScaleSignalSmith::EngineBufferScaleSignalSmith(ReadAheadManager* pRe
           m_bufferPtrs(),
           m_outputBuffers(),
           m_outputBufferPtrs(),
-          m_interleavedBuffer(mixxx::kMaxSupportedStems * MAX_BUFFER_LEN),
+          m_interleavedBuffer(mixxx::kMaxEngineChannelInputCount * MAX_BUFFER_LEN),
           m_frameFractionalLeftover(0),
           m_expectedFrameLatency(0),
           m_currentFrameOffset(0),
