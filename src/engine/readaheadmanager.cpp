@@ -216,12 +216,39 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         RetryState* pRetryState) {
     // qDebug() << "getNextSamples:" << m_currentPosition << requested_samples;
 
-    const SINT requestSamples = requested_samples;
-    int modSamples = requested_samples % channelCount;
-    if (modSamples != 0) {
-        qDebug() << "ERROR: Non-aligned requested_samples to ReadAheadManager::getNextSamples";
-        requested_samples -= modSamples;
+    const auto rejectRequest = [pRetryState] {
+        if (pRetryState != nullptr) {
+            pRetryState->active = false;
+        }
+        return ReadAheadManager::NextSamplesResult{0, false};
+    };
+
+    // This is the audio-thread boundary for the internal interleaved buffers.
+    // Keep it before the modulo below so an invalid channel count cannot cause
+    // a division by zero. CachingReader's retry storage is sized for
+    // MAX_BUFFER_LEN frames in the reader's channel layout. The fixed
+    // crossfade storage additionally limits the maximum interleaved request
+    // across all supported layouts.
+    VERIFY_OR_DEBUG_ASSERT(pOutput != nullptr) {
+        return rejectRequest();
     }
+    VERIFY_OR_DEBUG_ASSERT(channelCount.isValid() &&
+            channelCount.value() <= mixxx::kMaxEngineChannelInputCount.value()) {
+        return rejectRequest();
+    }
+    const SINT maxRequestSamples =
+            static_cast<SINT>(MAX_BUFFER_LEN) *
+            static_cast<SINT>(channelCount.value());
+    VERIFY_OR_DEBUG_ASSERT(requested_samples >= 0 &&
+            requested_samples <= maxRequestSamples &&
+            requested_samples <= kMaxCrossFadeSamples) {
+        return rejectRequest();
+    }
+    VERIFY_OR_DEBUG_ASSERT(requested_samples % channelCount.value() == 0) {
+        return rejectRequest();
+    }
+
+    const SINT requestSamples = requested_samples;
     const bool inReverse = dRate < 0;
     const bool reusePendingRetry = retryOnCacheMiss && pRetryState &&
             pRetryState->matches(m_currentPosition,
@@ -237,10 +264,33 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
             : makeReadPlan(
                       inReverse, requestSamples, requested_samples, channelCount);
 
-    // Sanity checks.
-    VERIFY_OR_DEBUG_ASSERT(plan.samplesFromReader >= 0) {
-        qDebug() << "Need negative samples in ReadAheadManager::getNextSamples. Ignoring read";
-        return {0, false};
+    // Sanity checks. The first bounds protect CachingReader's fixed retry
+    // staging storage and the crossfade buffer at the read boundary below.
+    VERIFY_OR_DEBUG_ASSERT(plan.samplesFromReader >= 0 &&
+            plan.samplesFromReader <= maxRequestSamples &&
+            plan.samplesFromReader <= kMaxCrossFadeSamples) {
+        return rejectRequest();
+    }
+    // The crossfade source is a slice of the current output request. Check
+    // both buffers explicitly before using either pointer below.
+    VERIFY_OR_DEBUG_ASSERT(plan.crossFadeStart >= 0 &&
+            plan.crossFadeStart <= plan.samplesFromReader &&
+            plan.crossFadeSamples >= 0 &&
+            plan.crossFadeSamples <= kMaxCrossFadeSamples &&
+            plan.crossFadeSamples <=
+                    plan.samplesFromReader - plan.crossFadeStart) {
+        return rejectRequest();
+    }
+    SINT crossFadeOutputOffset = 0;
+    if (plan.crossFadeSamples > 0) {
+        crossFadeOutputOffset = SampleUtil::ceilPlayPosToFrameStart(
+                plan.crossFadeStart, channelCount);
+        VERIFY_OR_DEBUG_ASSERT(crossFadeOutputOffset >= 0 &&
+                crossFadeOutputOffset <= plan.samplesFromReader &&
+                plan.crossFadeSamples <=
+                        plan.samplesFromReader - crossFadeOutputOffset) {
+            return rejectRequest();
+        }
     }
 
     if (retryOnCacheMiss && pRetryState && !reusePendingRetry) {
@@ -353,7 +403,7 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
                 qDebug() << "ERROR: Couldn't get all needed samples for crossfade.";
                 // Cache miss - no samples written
                 SampleUtil::clear(
-                        m_pCrossFadeBuffer, plan.samplesFromReader);
+                        m_pCrossFadeBuffer, plan.crossFadeSamples);
                 // Set the cache miss flag to decide when to apply ramping
                 // after the following read attempts.
                 m_cacheMissCount++;
@@ -361,9 +411,7 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
 
             // do crossfade from the current buffer into the new loop beginning
             if (plan.samplesFromReader != 0) { // avoid division by zero
-                SampleUtil::linearCrossfadeBuffersOut(pOutput +
-                                SampleUtil::ceilPlayPosToFrameStart(
-                                        plan.crossFadeStart, channelCount),
+                SampleUtil::linearCrossfadeBuffersOut(pOutput + crossFadeOutputOffset,
                         m_pCrossFadeBuffer,
                         plan.crossFadeSamples,
                         channelCount);

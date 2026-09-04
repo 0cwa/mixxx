@@ -25,6 +25,14 @@ class RateControl;
 /// seeks or the current play position is invalidated somehow, the Engine must
 /// call notifySeek to inform the ReadAheadManager to reset itself to the seek
 /// point.
+/// The getNextSamples* methods are called on the engine thread and accept
+/// interleaved requests with a valid channel count from 1 through
+/// mixxx::kMaxEngineChannelInputCount. Requests must be non-negative,
+/// frame-aligned, and no longer than MAX_BUFFER_LEN frames in the supplied
+/// layout (MAX_BUFFER_LEN * channelCount interleaved samples). The fixed
+/// crossfade storage has capacity for MAX_BUFFER_LEN frames at the maximum
+/// channel count. Invalid requests are rejected as empty, non-retryable reads
+/// without modifying the output buffer.
 class ReadAheadManager {
   public:
     static constexpr std::size_t kMaxReadAheadLogEntries = 4096;

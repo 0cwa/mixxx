@@ -20,6 +20,7 @@
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
+#include "engine/engine.h"
 #include "test/mixxxtest.h"
 #include "track/track.h"
 #include "util/assert.h"
@@ -626,6 +627,33 @@ class ReadAheadManagerTest : public MixxxTest {
                 m_pCueControl.data()));
     }
 
+    void expectRequestRejected(SINT requestSamples,
+            mixxx::audio::ChannelCount channelCount) {
+        constexpr CSAMPLE kSentinel = -1.0f;
+        std::array<CSAMPLE, 2> output;
+        output.fill(kSentinel);
+        ReadAheadManager::RetryState retryState;
+        retryState.active = true;
+
+        const auto result = m_pReadAheadManager->getNextSamplesWithRetry(
+                1.0,
+                output.data(),
+                requestSamples,
+                channelCount,
+                retryState);
+
+        EXPECT_EQ(0, result.samplesRead);
+        EXPECT_FALSE(result.retryPending);
+        EXPECT_FALSE(retryState.active);
+        EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+            return sample == kSentinel;
+        }));
+        EXPECT_EQ(0, m_pLoopControl->queryCount());
+        EXPECT_EQ(0, m_pCueControl->queryCount());
+        EXPECT_TRUE(m_pReader->readStartSamples().isEmpty());
+    }
+
     ControlObject m_beatClosestCO;
     ControlObject m_beatNextCO;
     ControlObject m_beatPrevCO;
@@ -672,14 +700,13 @@ TEST_F(ReadAheadManagerTest, CrossfadeHandlesMaximumInterleavedRequest) {
     constexpr auto kChannelCount = mixxx::audio::ChannelCount::stem();
     constexpr SINT kRequestSamples =
             static_cast<SINT>(MAX_BUFFER_LEN) * kChannelCount;
-    constexpr SINT kCrossFadeSamples = kRequestSamples - kChannelCount;
     constexpr SINT kTargetSample = kRequestSamples * 2;
     constexpr SINT kTrackSamples = kRequestSamples * 3;
-    constexpr SINT kCrossFadeReadPosition = kRequestSamples + kChannelCount;
+    constexpr SINT kCrossFadeReadPosition = kRequestSamples;
     constexpr CSAMPLE kSentinel = -1.0f;
 
     static_assert(kRequestSamples % kChannelCount == 0);
-    std::vector<CSAMPLE> output(kRequestSamples, kSentinel);
+    std::vector<CSAMPLE> output(kRequestSamples + kChannelCount, kSentinel);
 
     // Use the same maximum channel contract as a production stem reader.
     m_pReader.reset(new StubReader(kChannelCount));
@@ -690,12 +717,12 @@ TEST_F(ReadAheadManagerTest, CrossfadeHandlesMaximumInterleavedRequest) {
             mixxx::audio::FramePos::fromSamplePos(kTrackSamples, kChannelCount),
             mixxx::audio::SampleRate(44100));
     m_pReadAheadManager->notifySeek(0);
-    m_pLoopControl->pushSampleValues(kCrossFadeSamples,
+    m_pLoopControl->pushSampleValues(kRequestSamples,
             kTargetSample,
             kChannelCount);
     m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
 
-    EXPECT_EQ(kCrossFadeSamples,
+    EXPECT_EQ(kRequestSamples,
             m_pReadAheadManager->getNextSamples(
                     1.0, output.data(), kRequestSamples, kChannelCount));
 
@@ -703,7 +730,7 @@ TEST_F(ReadAheadManagerTest, CrossfadeHandlesMaximumInterleavedRequest) {
     EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
     EXPECT_EQ(kCrossFadeReadPosition, m_pReader->readStartSamples()[1]);
 
-    const SINT crossFadeFrames = kCrossFadeSamples / kChannelCount;
+    const SINT crossFadeFrames = kRequestSamples / kChannelCount;
     const CSAMPLE_GAIN crossIncrement =
             CSAMPLE_GAIN_ONE / CSAMPLE_GAIN(crossFadeFrames);
     for (SINT frame = 0; frame < crossFadeFrames; ++frame) {
@@ -718,9 +745,32 @@ TEST_F(ReadAheadManagerTest, CrossfadeHandlesMaximumInterleavedRequest) {
             EXPECT_FLOAT_EQ(expected, output[sample]);
         }
     }
-    EXPECT_TRUE(std::all_of(output.begin() + kCrossFadeSamples,
+    EXPECT_TRUE(std::all_of(output.begin() + kRequestSamples,
             output.end(),
             [](CSAMPLE sample) { return sample == kSentinel; }));
+}
+
+TEST_F(ReadAheadManagerTest, RejectsInvalidChannelCounts) {
+    constexpr SINT kRequestSamples = 8;
+    const auto unsupportedChannelCount = mixxx::audio::ChannelCount::fromInt(
+            static_cast<int>(mixxx::kMaxEngineChannelInputCount.value()) + 1);
+    expectRequestRejected(kRequestSamples, mixxx::audio::ChannelCount{});
+    expectRequestRejected(kRequestSamples, unsupportedChannelCount);
+}
+
+TEST_F(ReadAheadManagerTest, RejectsInvalidSampleRequests) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+    constexpr SINT kMaxRequestSamples =
+            static_cast<SINT>(MAX_BUFFER_LEN) *
+            static_cast<SINT>(kChannelCount.value());
+
+    expectRequestRejected(-1, kChannelCount);
+    expectRequestRejected(3, kChannelCount);
+    // This is below the fixed maximum crossfade capacity. It proves the
+    // per-layout MAX_BUFFER_LEN bound that protects retry staging storage.
+    expectRequestRejected(
+            kMaxRequestSamples + static_cast<SINT>(kChannelCount.value()),
+            kChannelCount);
 }
 
 TEST_F(ReadAheadManagerTest, RetryableCacheMissDoesNotAdvanceReadAheadPosition) {
