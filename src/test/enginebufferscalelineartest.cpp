@@ -67,6 +67,10 @@ class ReadAheadManagerMock : public ReadAheadManager {
     SINT m_iSamplesRead;
 };
 
+} // namespace
+
+// Keep this fixture at file scope so FRIEND_TEST in the scaler header matches
+// the generated test class.
 class EngineBufferScaleLinearTest : public MixxxTest {
   protected:
     void SetUp() override {
@@ -371,5 +375,3 @@ TEST_F(EngineBufferScaleLinearTest, ZeroProgressRefillPreservesRebasedPosition) 
         AssertWholeBufferEquals(output, 0.0f, kOutputSamples);
     }
 }
-
-}  // namespace
