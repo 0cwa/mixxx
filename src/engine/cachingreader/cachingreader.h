@@ -10,7 +10,8 @@
 #include <QTimer>
 #include <QVarLengthArray>
 #include <QVector>
-#include <list>
+#include <array>
+#include <cstddef>
 
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "preferences/usersettings.h"
@@ -176,12 +177,15 @@ class CachingReader : public QObject {
     FRIEND_TEST(CachingReaderStatusQueueTest,
             ProcessDiscardsChunkResultWhileTrackIsUnloading);
     FRIEND_TEST(CachingReaderStatusQueueTest,
+            ProcessRecyclesChunkIntoFixedFreePool);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
             TeardownDrainReclaimsQueuedChunksWithoutStateTransitions);
 #endif
 
     // Keep callback-side status processing bounded. Unprocessed updates remain
     // in the FIFO and are handled by a later callback.
     static constexpr int kMaxStatusUpdatesPerCallback = 4;
+    static constexpr int kNumberOfCachedChunksInMemory = 80;
 
     void processPendingStatusUpdates();
     void discardPendingStatusUpdates();
@@ -260,9 +264,12 @@ class CachingReader : public QObject {
     // Keeps track of all CachingReaderChunks we've allocated.
     QVector<CachingReaderChunkForOwner*> m_chunks;
 
-    // List of free chunks. Linked list so that we have constant time insertions
-    // and deletions. Iteration is not necessary.
-    std::list<CachingReaderChunkForOwner*> m_freeChunks;
+    // Fixed-capacity FIFO of free chunks. It must not allocate when a chunk is
+    // recycled from the engine callback.
+    std::array<CachingReaderChunkForOwner*, kNumberOfCachedChunksInMemory>
+            m_freeChunks;
+    int m_freeChunkStart{0};
+    int m_freeChunkCount{0};
 
     // Keeps track of what CachingReaderChunks we've allocated and indexes them based on what
     // chunk number they are allocated to.
@@ -276,7 +283,8 @@ class CachingReader : public QObject {
     mixxx::SampleBuffer m_sampleBuffer;
 
     // Preallocated staging storage that preserves the caller's buffer until a
-    // retry read has completed atomically.
+    // retry read has completed atomically. Its size covers the largest
+    // MAX_BUFFER_LEN request for this reader's channel layout.
     mixxx::SampleBuffer m_retryReadBuffer;
 
     // The readable frame index range as reported by the worker.

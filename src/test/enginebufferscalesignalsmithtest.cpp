@@ -11,6 +11,7 @@
 #include "engine/bufferscalers/enginebufferscalesignalsmith.h"
 #include "engine/readaheadmanager.h"
 #include "test/mixxxtest.h"
+#include "util/defs.h"
 #include "util/sample.h"
 
 namespace {
@@ -28,16 +29,16 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
             CSAMPLE* pBuffer,
             SINT requestedSamples,
             mixxx::audio::ChannelCount channelCount) override {
-        EXPECT_EQ(channelCount, mixxx::audio::ChannelCount::stereo());
         m_rates.push_back(rate);
         m_requestedSamples += requestedSamples;
 
+        const SINT channels = channelCount.value();
         const SINT availableSamples = std::min(
                 requestedSamples,
                 std::max<SINT>(0, m_availableSamples - m_returnedSamples));
         for (SINT sample = 0; sample < availableSamples; ++sample) {
-            const SINT frame = (m_returnedSamples + sample) / kChannels;
-            const SINT channel = (m_returnedSamples + sample) % kChannels;
+            const SINT frame = (m_returnedSamples + sample) / channels;
+            const SINT channel = (m_returnedSamples + sample) % channels;
             pBuffer[sample] = static_cast<CSAMPLE>(
                     0.15 * std::sin(0.031 * frame + 0.17 * channel));
         }
@@ -126,7 +127,8 @@ ScaleRun run(EngineBufferScaleSignalSmith* pScaler,
         DeterministicReadAheadManager* pReadAhead,
         SINT outputFrames = kOutputFrames) {
     ScaleRun result;
-    result.output.resize(outputFrames * kChannels, 123.0f);
+    const SINT channels = pScaler->getOutputSignal().getChannelCount().value();
+    result.output.resize(outputFrames * channels, 123.0f);
     result.returnedSourceFrames = pScaler->scaleBuffer(
             result.output.data(), result.output.size());
     result.requestedSamples = pReadAhead->requestedSamples();
@@ -263,6 +265,26 @@ TEST(EngineBufferScaleSignalSmithTest, PrerollRateChangeFractionalAndRepeatable)
     for (std::size_t i = 0; i < fractional.output.size(); ++i) {
         EXPECT_NEAR(fractional.output[i], fractionalRepeat.output[i], 1e-6);
     }
+}
+
+TEST(EngineBufferScaleSignalSmithTest, SupportsMaximumStemInputRequest) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stem();
+    constexpr SINT kOutputFrames = static_cast<SINT>(MAX_BUFFER_LEN);
+    constexpr SINT kOutputSamples = kOutputFrames * kChannelCount.value();
+
+    DeterministicReadAheadManager readAhead;
+    EngineBufferScaleSignalSmith scaler(&readAhead);
+    scaler.setSignal(mixxx::audio::SampleRate(kSampleRate), kChannelCount);
+    setRate(&scaler, 1.0);
+
+    std::vector<CSAMPLE> output(kOutputSamples, 123.0f);
+    EXPECT_DOUBLE_EQ(kOutputFrames,
+            scaler.scaleBuffer(output.data(), output.size()));
+    ASSERT_FALSE(readAhead.retryRequestedSamples().empty());
+    EXPECT_EQ(kOutputSamples,
+            *std::max_element(readAhead.retryRequestedSamples().begin(),
+                    readAhead.retryRequestedSamples().end()));
+    EXPECT_TRUE(allFinite(output));
 }
 
 TEST(EngineBufferScaleSignalSmithTest, ResetReversePauseAndEofRemainFinite) {

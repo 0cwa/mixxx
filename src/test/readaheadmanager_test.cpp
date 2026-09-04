@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "control/controlobject.h"
 #ifdef __BUNGEE__
@@ -161,6 +162,24 @@ class LegacyPartialReader : public CachingReader {
         Q_UNUSED(channelCount);
         SampleUtil::clear(buffer, numSamples);
         return CachingReader::ReadResult::PARTIALLY_AVAILABLE;
+    }
+};
+
+class MaxStemRequestRetryReader final : public CachingReader {
+  public:
+    MaxStemRequestRetryReader()
+            : CachingReader(
+                      kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stem()) {
+    }
+
+  protected:
+    RetryReadResult readWithRetryHook(SINT,
+            SINT numSamples,
+            bool,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount) override {
+        SampleUtil::fill(buffer, 0.25f, numSamples);
+        return {CachingReader::ReadResult::AVAILABLE, false};
     }
 };
 
@@ -447,6 +466,43 @@ TEST(CachingReaderRetryTest, LegacyPartialReadIsAcceptedAsIntentionalPadding) {
     EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(), [](CSAMPLE sample) {
         return sample == 0.0f;
     }));
+}
+
+TEST(CachingReaderRetryTest, AcceptsMaximumStemRequest) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stem();
+    constexpr SINT kSampleCount = CachingReaderChunk::frames2samples(
+            static_cast<SINT>(MAX_BUFFER_LEN), kChannelCount);
+    std::vector<CSAMPLE> buffer(kSampleCount, -1.0f);
+
+    MaxStemRequestRetryReader reader;
+    EXPECT_EQ(CachingReader::ReadResult::AVAILABLE,
+            reader.readWithRetry(0,
+                    kSampleCount,
+                    false,
+                    buffer.data(),
+                    kChannelCount));
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(), [](CSAMPLE sample) {
+        return sample == 0.25f;
+    }));
+}
+
+TEST_F(CachingReaderStatusQueueTest, ProcessRecyclesChunkIntoFixedFreePool) {
+    CachingReader reader(
+            kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
+    const int initialFreeChunkCount = reader.m_freeChunkCount;
+    auto* const pChunk = reader.allocateChunk(0);
+    ASSERT_NE(nullptr, pChunk);
+    pChunk->giveToWorker();
+
+    auto update = ReaderStatusUpdate();
+    update.init(CHUNK_READ_INVALID, pChunk, mixxx::IndexRange());
+    ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&update, 1));
+    reader.m_state.storeRelease(CachingReader::STATE_TRACK_LOADED);
+
+    reader.process();
+
+    EXPECT_EQ(initialFreeChunkCount, reader.m_freeChunkCount);
+    EXPECT_EQ(CachingReaderChunkForOwner::FREE, pChunk->getState());
 }
 
 class StubLoopControl : public LoopingControl {
