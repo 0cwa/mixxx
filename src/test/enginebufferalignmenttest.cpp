@@ -129,13 +129,14 @@ CSAMPLE engineMarkerSample(int markerFrame, int channel) {
     return channel == 0 ? level : -level;
 }
 
-struct DeterministicSource {
-    struct ReadObservation {
-        SINT startSample = 0;
-        SINT numSamples = 0;
-        bool reverse = false;
-    };
+struct ReadObservation {
+    SINT startSample = 0;
+    SINT numSamples = 0;
+    bool reverse = false;
+    std::size_t generation = 0;
+};
 
+struct DeterministicSource {
     static constexpr std::size_t kMaxReadObservations = 65536;
 
     std::array<CSAMPLE, kTrackFrames * kChannels> samples{};
@@ -144,13 +145,12 @@ struct DeterministicSource {
 
     DeterministicSource() {
         for (int frame = 0; frame < kTrackFrames; ++frame) {
-            // Encode the source frame generation in both channels. This makes
-            // a later successful read distinguishable from stale or repeated
-            // output without relying on timing or a waveform correlation.
-            const CSAMPLE generation = static_cast<CSAMPLE>(
-                    0.25 + 0.00001 * static_cast<double>(frame));
-            samples[frame * kChannels] = generation;
-            samples[frame * kChannels + 1] = -generation;
+            const double phase = 0.017 * static_cast<double>(frame);
+            samples[frame * kChannels] = static_cast<CSAMPLE>(
+                    0.18 * std::sin(phase) + 0.07 * std::sin(phase * 0.37));
+            samples[frame * kChannels + 1] =
+                    static_cast<CSAMPLE>(0.16 * std::cos(phase * 0.71) -
+                            0.05 * std::sin(phase * 0.19));
         }
 
         std::copy(kMarkerCode.begin(),
@@ -176,16 +176,80 @@ struct DeterministicSource {
     }
 };
 
-DeterministicSource g_source;
+CSAMPLE markerForRead(std::size_t readGeneration) {
+    return static_cast<CSAMPLE>(
+            0.25 + 0.0001 * static_cast<double>(readGeneration));
+}
+
+class GenerationMarkedSource {
+  public:
+    static constexpr std::size_t kMaxReadObservations = 65536;
+
+    mutable std::array<ReadObservation, kMaxReadObservations> readObservations{};
+    mutable std::size_t readObservationCount = 0;
+    mutable std::size_t generation = 0;
+
+    void resetReadObservations() const {
+        readObservationCount = 0;
+        generation = 0;
+    }
+
+    CachingReader::ReadResult read(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount) const {
+        if (numSamples == 0) {
+            return CachingReader::ReadResult::AVAILABLE;
+        }
+
+        const std::size_t readGeneration = ++generation;
+        if (readObservationCount < readObservations.size()) {
+            readObservations[readObservationCount++] =
+                    ReadObservation{startSample,
+                            numSamples,
+                            reverse,
+                            readGeneration};
+        }
+
+        const SINT sourceStart = reverse ? startSample - numSamples : startSample;
+        const SINT sourceEnd = sourceStart + numSamples;
+        const SINT sourceSize = kTrackFrames * kChannels;
+        if (channelCount != mixxx::audio::ChannelCount::stereo() ||
+                sourceStart < 0 || sourceEnd > sourceSize) {
+            SampleUtil::clear(buffer, numSamples);
+            return CachingReader::ReadResult::PARTIALLY_AVAILABLE;
+        }
+
+        // Every reader call gets a unique constant stereo marker. The marker
+        // survives linear interpolation and ties recovered output to one
+        // exact ReadObservation instead of to an absolute-position heuristic.
+        const CSAMPLE marker = markerForRead(readGeneration);
+        for (SINT sample = 0; sample < numSamples; ++sample) {
+            buffer[sample] = sample % kChannels == 0 ? marker : -marker;
+        }
+        return CachingReader::ReadResult::AVAILABLE;
+    }
+};
+
+struct DeterministicReaderContext {
+    DeterministicSource normalSource;
+    GenerationMarkedSource recoverySource;
+    bool useRecoverySource = false;
+};
+
+DeterministicReaderContext g_readerContext;
+DeterministicSource& g_source = g_readerContext.normalSource;
+GenerationMarkedSource& g_recoverySource = g_readerContext.recoverySource;
 
 class DeterministicCachingReader final : public CachingReader {
   public:
     DeterministicCachingReader(const QString& group,
             UserSettingsPointer pConfig,
             mixxx::audio::ChannelCount maxSupportedChannel,
-            const DeterministicSource* pSource)
+            const DeterministicReaderContext* pContext)
             : CachingReader(group, pConfig, maxSupportedChannel),
-              m_pSource(pSource) {
+              m_pContext(pContext) {
     }
 
     CachingReader::ReadResult read(SINT startSample,
@@ -197,14 +261,21 @@ class DeterministicCachingReader final : public CachingReader {
             return CachingReader::ReadResult::AVAILABLE;
         }
 
-        m_pSource->recordRead(startSample, numSamples, reverse);
+        if (m_pContext->useRecoverySource) {
+            return m_pContext->recoverySource.read(
+                    startSample, numSamples, reverse, buffer, channelCount);
+        }
+
+        const DeterministicSource* const pSource =
+                &m_pContext->normalSource;
+        pSource->recordRead(startSample, numSamples, reverse);
 
         // This test only enables forward playback. Keep the implementation
         // exact for both directions so an accidental reverse request cannot
         // silently turn into a different source sequence.
         const SINT sourceStart = reverse ? startSample - numSamples : startSample;
         const SINT sourceEnd = sourceStart + numSamples;
-        const SINT sourceSize = static_cast<SINT>(m_pSource->samples.size());
+        const SINT sourceSize = static_cast<SINT>(pSource->samples.size());
         if (channelCount != mixxx::audio::ChannelCount::stereo() ||
                 sourceStart < 0 || sourceEnd > sourceSize) {
             SampleUtil::clear(buffer, numSamples);
@@ -212,19 +283,19 @@ class DeterministicCachingReader final : public CachingReader {
         }
 
         if (!reverse) {
-            std::copy_n(m_pSource->samples.data() + sourceStart,
+            std::copy_n(pSource->samples.data() + sourceStart,
                     numSamples,
                     buffer);
         } else {
             for (SINT sample = 0; sample < numSamples; ++sample) {
-                buffer[sample] = m_pSource->samples[sourceEnd - sample - 1];
+                buffer[sample] = pSource->samples[sourceEnd - sample - 1];
             }
         }
         return CachingReader::ReadResult::AVAILABLE;
     }
 
   private:
-    const DeterministicSource* const m_pSource;
+    const DeterministicReaderContext* const m_pContext;
 };
 
 CachingReader* makeDeterministicReader(const QString& group,
@@ -235,7 +306,51 @@ CachingReader* makeDeterministicReader(const QString& group,
             group,
             pConfig,
             maxSupportedChannel,
-            static_cast<const DeterministicSource*>(pContext));
+            static_cast<const DeterministicReaderContext*>(pContext));
+}
+
+class RecoverySourceScope {
+  public:
+    explicit RecoverySourceScope(DeterministicReaderContext* pContext)
+            : m_pContext(pContext),
+              m_previous(pContext->useRecoverySource) {
+        m_pContext->useRecoverySource = true;
+    }
+
+    ~RecoverySourceScope() {
+        m_pContext->useRecoverySource = m_previous;
+    }
+
+  private:
+    DeterministicReaderContext* const m_pContext;
+    const bool m_previous;
+};
+
+bool containsGenerationMarker(std::span<const CSAMPLE> samples,
+        std::size_t generation) {
+    const CSAMPLE marker = markerForRead(generation);
+    for (std::size_t sample = 0; sample + 1 < samples.size(); sample += 2) {
+        if (std::abs(samples[sample] - marker) < 1e-5f &&
+                std::abs(samples[sample + 1] + marker) < 1e-5f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::size_t findGenerationMarkedRead(
+        const GenerationMarkedSource& source,
+        std::size_t firstObservation,
+        std::span<const CSAMPLE> samples) {
+    for (std::size_t i = firstObservation;
+            i < source.readObservationCount;
+            ++i) {
+        if (containsGenerationMarker(samples,
+                    source.readObservations[i].generation)) {
+            return i;
+        }
+    }
+    return std::numeric_limits<std::size_t>::max();
 }
 
 bool matchesMarker(const CSAMPLE* pSamples) {
@@ -868,7 +983,7 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
     static void SetUpTestSuite() {
         EngineBuffer::setTestReaderFactory(
                 &makeDeterministicReader,
-                &g_source);
+                &g_readerContext);
     }
 
     static void TearDownTestSuite() {
@@ -1243,6 +1358,11 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             kFallbackCallbackFrames * kChannels;
     constexpr CSAMPLE kStaleSample = -12345.0f;
 
+    // Existing alignment tests use the normal waveform fixture. This test
+    // temporarily selects a separate source that labels every reader call so
+    // recovery output can be tied to the exact read that produced it.
+    RecoverySourceScope recoverySourceScope(&g_readerContext);
+
     TrackPointer track = Track::newTemporary();
     track->setAudioProperties(
             mixxx::kEngineChannelOutputCount,
@@ -1261,12 +1381,13 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     pEngineBuffer->seekExact(mixxx::audio::FramePos(kSetupStartFrame));
     ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
 
-    g_source.resetReadObservations();
+    g_recoverySource.resetReadObservations();
     std::array<CSAMPLE, kBufferSamples> primeOutput{};
 
     // Prime the actual EngineBuffer/scaler once. The linear scaler retains its
     // first read-ahead mapping internally; the manager then starts with one
     // mapping that can be followed by the bounded alternating setup below.
+    const std::size_t primeReadStart = g_recoverySource.readObservationCount;
     pEngineBuffer->process(primeOutput.data(), primeOutput.size());
     pEngineBuffer->postProcess(primeOutput.size());
 
@@ -1280,25 +1401,24 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             primeOutput.begin(),
             primeOutput.end(),
             [](CSAMPLE sample) { return sample != kStaleSample; }));
-    const auto firstGenerationSample = [](std::span<const CSAMPLE> samples) {
-        for (std::size_t sample = 0; sample + 1 < samples.size(); sample += 2) {
-            if (samples[sample] > 0.25f && samples[sample + 1] < -0.25f) {
-                return samples[sample];
-            }
-        }
-        return CSAMPLE{-1.0f};
-    };
-    const CSAMPLE primeGeneration = firstGenerationSample(primeOutput);
-    ASSERT_GT(primeGeneration, 0.25f);
+    const std::size_t primeRead = findGenerationMarkedRead(
+            g_recoverySource, primeReadStart, primeOutput);
+    ASSERT_NE(std::numeric_limits<std::size_t>::max(), primeRead);
+    const auto& primeObservation = g_recoverySource.readObservations[primeRead];
 
     // Alternate directions so every request is a distinct mapping. Starting
     // opposite the primed forward entry and ending reverse ensures the next
     // forward scaler refill cannot merge with either spill entry.
-    bool reverse = pReadAheadManager
-                           ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
-                           .direction();
+    const bool primedForward = pReadAheadManager
+                                       ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
+                                       .direction();
+    ASSERT_TRUE(primedForward);
+    bool reverse = !primedForward;
     std::array<CSAMPLE, kForwardMappingSamples> mappingBuffer{};
     for (std::size_t mapping = 0; mapping < kReadLogCapacity; ++mapping) {
+        const std::size_t occupiedEntries =
+                pReadAheadManager->m_readAheadLogSize +
+                pReadAheadManager->m_readAheadLogOverflowSize;
         const SINT requestedSamples =
                 reverse ? kReverseMappingSamples : kForwardMappingSamples;
         std::fill(mappingBuffer.begin(), mappingBuffer.end(), kStaleSample);
@@ -1312,6 +1432,9 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
                 mappingBuffer.begin(),
                 mappingBuffer.begin() + requestedSamples,
                 [](CSAMPLE sample) { return sample != kStaleSample; }));
+        ASSERT_EQ(occupiedEntries + 1,
+                pReadAheadManager->m_readAheadLogSize +
+                        pReadAheadManager->m_readAheadLogOverflowSize);
         reverse = !reverse;
         if (pReadAheadManager->m_readAheadLogSize ==
                         ReadAheadManager::kMaxReadAheadLogEntries &&
@@ -1333,7 +1456,7 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             kChannels;
     const double readAheadPositionBefore = pReadAheadManager->getPlaypos();
     const double playPosBefore = pEngineBuffer->getPlayPos().value();
-    const std::size_t readsBeforeFallback = g_source.readObservationCount;
+    const std::size_t readsBeforeFallback = g_recoverySource.readObservationCount;
 
     std::array<CSAMPLE, kFallbackCallbackSamples> blockedOutput{};
     std::fill(blockedOutput.begin(), blockedOutput.end(), kStaleSample);
@@ -1360,21 +1483,34 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             kReadLogCapacity);
     EXPECT_DOUBLE_EQ(readAheadPositionBefore,
             pReadAheadManager->getPlaypos());
-    EXPECT_EQ(readsBeforeFallback, g_source.readObservationCount);
+    EXPECT_EQ(readsBeforeFallback, g_recoverySource.readObservationCount);
 
-    const std::size_t readsBeforeRecovery = g_source.readObservationCount;
+    const std::size_t readsBeforeRecovery = g_recoverySource.readObservationCount;
     std::array<CSAMPLE, kFallbackCallbackSamples> recoveryOutput{};
     std::fill(recoveryOutput.begin(), recoveryOutput.end(), kStaleSample);
+    const std::size_t recoveryReadStart = g_recoverySource.readObservationCount;
     pEngineBuffer->process(recoveryOutput.data(), recoveryOutput.size());
     pEngineBuffer->postProcess(recoveryOutput.size());
 
-    ASSERT_GT(g_source.readObservationCount, readsBeforeRecovery);
+    ASSERT_GT(g_recoverySource.readObservationCount, readsBeforeRecovery);
     ASSERT_TRUE(std::all_of(
             recoveryOutput.begin(),
             recoveryOutput.end(),
             [](CSAMPLE sample) { return sample != kStaleSample; }));
-    const CSAMPLE recoveryGeneration = firstGenerationSample(recoveryOutput);
-    ASSERT_GT(recoveryGeneration, primeGeneration);
+    const std::size_t recoveryRead = findGenerationMarkedRead(
+            g_recoverySource, recoveryReadStart, recoveryOutput);
+    ASSERT_NE(std::numeric_limits<std::size_t>::max(), recoveryRead);
+    const auto& recoveryObservation =
+            g_recoverySource.readObservations[recoveryRead];
+    EXPECT_GT(recoveryObservation.generation, primeObservation.generation);
+    EXPECT_FALSE(recoveryObservation.reverse);
+    EXPECT_EQ(recoveryObservation.startSample,
+            static_cast<SINT>(readAheadPositionBefore));
+    EXPECT_GT(recoveryObservation.numSamples, 0);
+    EXPECT_TRUE(containsGenerationMarker(
+            recoveryOutput, recoveryObservation.generation));
+    EXPECT_FALSE(containsGenerationMarker(
+            recoveryOutput, primeObservation.generation));
     EXPECT_FALSE(std::all_of(
             recoveryOutput.begin(),
             recoveryOutput.end(),
