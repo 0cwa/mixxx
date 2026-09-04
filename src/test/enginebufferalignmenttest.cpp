@@ -1479,7 +1479,7 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
                                        ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
                                        .direction();
     ASSERT_TRUE(primedForward);
-    bool reverse = !primedForward;
+    bool reverse = primedForward;
     std::array<CSAMPLE, kForwardMappingSamples> mappingBuffer{};
     for (std::size_t mapping = 0; mapping < kReadLogCapacity; ++mapping) {
         const std::size_t occupiedEntries =
@@ -1561,6 +1561,7 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
     EXPECT_LT(pReadAheadManager->m_readAheadLogSize +
                     pReadAheadManager->m_readAheadLogOverflowSize,
             kReadLogCapacity);
+    EXPECT_EQ(2u, pReadAheadManager->m_readAheadLogOverflowSize);
     EXPECT_DOUBLE_EQ(readAheadPositionBefore,
             pReadAheadManager->getPlaypos());
     EXPECT_EQ(readsBeforeFallback, g_recoverySource.readObservationCount);
