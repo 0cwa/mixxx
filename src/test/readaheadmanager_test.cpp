@@ -306,6 +306,7 @@ TEST_F(CachingReaderWorkerTest,
     QObject::connect(
             &worker,
             &CachingReaderWorker::trackLoading,
+            &worker,
             [&trackLoadingSignals] {
                 trackLoadingSignals.fetch_add(1, std::memory_order_relaxed);
             },
@@ -313,7 +314,8 @@ TEST_F(CachingReaderWorkerTest,
     QObject::connect(
             &worker,
             &CachingReaderWorker::trackLoadFailed,
-            [&trackLoadFailedSignals] {
+            &worker,
+            [&trackLoadFailedSignals](TrackPointer, const QString&) {
                 trackLoadFailedSignals.fetch_add(1, std::memory_order_relaxed);
             },
             Qt::DirectConnection);

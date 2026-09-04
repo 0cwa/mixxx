@@ -1,5 +1,7 @@
 #pragma once
 
+#include <gtest/gtest_prod.h>
+
 #include <QAtomicInt>
 #include <QHash>
 #include <QList>
@@ -167,6 +169,11 @@ class CachingReader : public QObject {
 
   private:
     friend class CachingReaderStatusQueueTest;
+    FRIEND_TEST(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            ProcessDiscardsChunkResultWhileTrackIsUnloading);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            TeardownDrainReclaimsQueuedChunksWithoutStateTransitions);
 
     // Keep callback-side status processing bounded. Unprocessed updates remain
     // in the FIFO and are handled by a later callback.
