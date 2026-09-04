@@ -240,8 +240,8 @@ TEST_F(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget) {
     reader.m_state.storeRelease(CachingReader::STATE_TRACK_LOADED);
     reader.m_readableFrameIndexRange = mixxx::IndexRange::forward(0, 1);
     for (int i = 0; i < budget * 2; ++i) {
-        auto* const pChunk = reader.m_chunks[i];
-        pChunk->init(i);
+        auto* const pChunk = reader.allocateChunk(i);
+        ASSERT_NE(nullptr, pChunk);
         pChunk->giveToWorker();
         auto update = ReaderStatusUpdate();
         update.init(CHUNK_READ_DISCARDED, pChunk, mixxx::IndexRange());
@@ -505,6 +505,52 @@ TEST_F(CachingReaderStatusQueueTest, ProcessRecyclesChunkIntoFixedFreePool) {
 
     EXPECT_EQ(initialFreeChunkCount, reader.m_freeChunkCount);
     EXPECT_EQ(CachingReaderChunkForOwner::FREE, pChunk->getState());
+}
+
+TEST_F(CachingReaderStatusQueueTest, RecyclesChunksAcrossFreePoolWraparound) {
+    CachingReader reader(
+            kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo());
+    reader.m_state.storeRelease(CachingReader::STATE_TRACK_LOADED);
+    const int poolSize = static_cast<int>(reader.m_chunks.size());
+    const int budget = maxStatusUpdatesPerCallback();
+    const int queued = poolSize - 1;
+    std::vector<CachingReaderChunkForOwner*> allocatedChunks;
+    allocatedChunks.reserve(queued);
+
+    for (int i = 0; i < queued; ++i) {
+        auto* const pChunk = reader.allocateChunk(i);
+        ASSERT_NE(nullptr, pChunk);
+        pChunk->giveToWorker();
+        auto update = ReaderStatusUpdate();
+        update.init(CHUNK_READ_DISCARDED, pChunk, mixxx::IndexRange());
+        ASSERT_EQ(1, reader.m_readerStatusUpdateFIFO.write(&update, 1));
+        allocatedChunks.push_back(pChunk);
+    }
+
+    EXPECT_EQ(1, reader.m_freeChunkCount);
+    EXPECT_EQ(poolSize - 1, reader.m_freeChunkStart);
+
+    reader.process();
+    EXPECT_EQ(queued - budget, pendingUpdates(reader));
+    EXPECT_EQ(budget, consumedUpdates(reader));
+    while (pendingUpdates(reader) > 0) {
+        reader.process();
+    }
+
+    EXPECT_EQ(poolSize, reader.m_freeChunkCount);
+    EXPECT_EQ(poolSize - 1, reader.m_freeChunkStart);
+
+    auto* const firstFreeChunk = reader.m_freeChunks[reader.m_freeChunkStart];
+    EXPECT_EQ(firstFreeChunk, reader.allocateChunk(poolSize));
+    for (int i = 0; i < queued; ++i) {
+        EXPECT_EQ(allocatedChunks[i], reader.allocateChunk(poolSize + i + 1));
+    }
+
+    reader.freeChunk(firstFreeChunk);
+    for (auto* const pChunk : allocatedChunks) {
+        reader.freeChunk(pChunk);
+    }
+    EXPECT_EQ(poolSize, reader.m_freeChunkCount);
 }
 
 class StubLoopControl : public LoopingControl {

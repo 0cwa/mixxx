@@ -179,6 +179,8 @@ class CachingReader : public QObject {
     FRIEND_TEST(CachingReaderStatusQueueTest,
             ProcessRecyclesChunkIntoFixedFreePool);
     FRIEND_TEST(CachingReaderStatusQueueTest,
+            RecyclesChunksAcrossFreePoolWraparound);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
             TeardownDrainReclaimsQueuedChunksWithoutStateTransitions);
 #endif
 
