@@ -1,6 +1,8 @@
 #pragma once
 
+#ifdef BUILD_TESTING
 #include <gtest/gtest_prod.h>
+#endif
 
 #include <QAtomicInt>
 #include <QHash>
@@ -169,11 +171,13 @@ class CachingReader : public QObject {
 
   private:
     friend class CachingReaderStatusQueueTest;
+#ifdef BUILD_TESTING
     FRIEND_TEST(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget);
     FRIEND_TEST(CachingReaderStatusQueueTest,
             ProcessDiscardsChunkResultWhileTrackIsUnloading);
     FRIEND_TEST(CachingReaderStatusQueueTest,
             TeardownDrainReclaimsQueuedChunksWithoutStateTransitions);
+#endif
 
     // Keep callback-side status processing bounded. Unprocessed updates remain
     // in the FIFO and are handled by a later callback.
