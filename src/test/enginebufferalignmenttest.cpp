@@ -35,6 +35,7 @@
 #include "engine/controls/enginecontrol.h"
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
+#include "engine/readaheadmanager.h"
 #include "test/signalpathtest.h"
 #include "track/track.h"
 #include "util/performancetimer.h"
@@ -134,7 +135,7 @@ struct DeterministicSource {
         bool reverse = false;
     };
 
-    static constexpr std::size_t kMaxReadObservations = 4096;
+    static constexpr std::size_t kMaxReadObservations = 65536;
 
     std::array<CSAMPLE, kTrackFrames * kChannels> samples{};
     mutable std::array<ReadObservation, kMaxReadObservations> readObservations{};
@@ -1226,6 +1227,116 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
     EXPECT_TRUE(allChecksPassed)
             << "first divergent clock=" << firstDivergentClock
             << "; failure trace=" << kTracePath.toStdString();
+}
+
+TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
+    constexpr int kLoopFrames = 7;
+    constexpr double kTempoRatio = 0.1;
+    constexpr int kMaxCallbacks = 20;
+    constexpr std::size_t kReadLogCapacity =
+            ReadAheadManager::kMaxReadAheadLogEntries + 2;
+    constexpr std::size_t kMaxConsumedLogEntriesPerCallback =
+            static_cast<std::size_t>(kBufferFrames * kTempoRatio / kLoopFrames) + 1;
+    constexpr CSAMPLE kStaleSample = -12345.0f;
+
+    TrackPointer track = Track::newTemporary();
+    track->setAudioProperties(
+            mixxx::kEngineChannelOutputCount,
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(kTrackSeconds));
+
+    // Keep this callback test on the always-available SoundTouch scaler. Its
+    // 0.1 tempo causes it to read substantially ahead of the output consumer,
+    // while the seven-frame loop makes every refill a separate mapping.
+    configureAlignmentControls(
+            m_sGroup1, EngineBuffer::KeylockEngine::SoundTouch, kTempoRatio);
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->loadFakeTrack(track, false);
+    pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
+    pEngineBuffer->setLoop(
+            mixxx::audio::FramePos(0),
+            mixxx::audio::FramePos(kLoopFrames),
+            true);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+
+    auto normalReadCount = []() {
+        return std::count_if(
+                g_source.readObservations.begin(),
+                g_source.readObservations.begin() +
+                        g_source.readObservationCount,
+                [](const DeterministicSource::ReadObservation& read) {
+                    return !read.reverse && read.startSample >= 0 &&
+                            read.numSamples == kLoopFrames * kChannels;
+                });
+    };
+
+    g_source.resetReadObservations();
+    std::array<CSAMPLE, kBufferSamples> output{};
+    std::array<CSAMPLE, kBufferSamples> blockedOutput{};
+    bool sawCapacityBlock = false;
+    bool sawRecovery = false;
+
+    for (int callback = 0; callback < kMaxCallbacks; ++callback) {
+        const double playPosBefore = pEngineBuffer->getPlayPos().value();
+        const std::size_t readsBefore = normalReadCount();
+        std::fill(output.begin(), output.end(), kStaleSample);
+
+        // This is the real audio callback entry point. Do not call
+        // ReadAheadManager accounting directly: EngineBuffer must account for
+        // the scaler's result after consuming the queued mappings.
+        pEngineBuffer->process(output.data(), kBufferSamples);
+        pEngineBuffer->postProcess(kBufferSamples);
+
+        const double playPosAfter = pEngineBuffer->getPlayPos().value();
+        const std::size_t readsAfter = normalReadCount();
+        ASSERT_TRUE(std::all_of(
+                output.begin(),
+                output.end(),
+                [](CSAMPLE sample) { return sample != kStaleSample; }))
+                << "callback left stale output samples";
+        EXPECT_GE(playPosAfter, 0.0);
+        EXPECT_LT(playPosAfter, static_cast<double>(kLoopFrames));
+
+        const double expectedPlayPosAfter = std::fmod(
+                playPosBefore + kBufferFrames * kTempoRatio,
+                kLoopFrames);
+        EXPECT_NEAR(playPosAfter, expectedPlayPosAfter, 1e-9)
+                << "EngineBuffer position did not consume the mapped output";
+
+        // Each counted read is one loop-sized, non-mergeable mapping. The
+        // callback can consume at most this many mappings at the configured
+        // tempo, so this lower bound proves main and both spill entries were
+        // occupied before the no-read callback.
+        const std::size_t minimumReadsForFullLog =
+                kReadLogCapacity +
+                static_cast<std::size_t>(callback) *
+                        kMaxConsumedLogEntriesPerCallback;
+        if (!sawCapacityBlock && readsBefore >= minimumReadsForFullLog &&
+                readsAfter == readsBefore) {
+            sawCapacityBlock = true;
+            blockedOutput = output;
+            EXPECT_NE(playPosBefore, playPosAfter);
+        } else if (sawCapacityBlock && !sawRecovery) {
+            ASSERT_GT(readsAfter, readsBefore)
+                    << "read-ahead capacity did not recover through EngineBuffer";
+            sawRecovery = true;
+            EXPECT_NE(playPosBefore, playPosAfter);
+            EXPECT_FALSE(std::all_of(
+                    output.begin(),
+                    output.end(),
+                    [](CSAMPLE sample) { return sample == 0.0f; }))
+                    << "recovery callback emitted only padding";
+            EXPECT_FALSE(std::equal(
+                    output.begin(), output.end(), blockedOutput.begin()))
+                    << "recovery callback repeated blocked output";
+        }
+    }
+
+    EXPECT_TRUE(sawCapacityBlock)
+            << "the real callback path did not reach main+spill capacity";
+    EXPECT_TRUE(sawRecovery)
+            << "the real callback path did not recover after a bounded zero read";
 }
 
 #ifdef __SIGNALSMITH__
