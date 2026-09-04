@@ -1,6 +1,8 @@
 #pragma once
 
+#ifdef BUILD_TESTING
 #include <gtest/gtest_prod.h>
+#endif
 
 #include <QAtomicInt>
 #include <QAtomicPointer>
@@ -384,7 +386,9 @@ class EngineBuffer : public EngineObject {
     void processSyncRequests();
     void processSeek(bool paused);
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
+#endif
     bool previousBufferSeek() const {
         return m_previousBufferSeek;
     }
@@ -413,6 +417,7 @@ class EngineBuffer : public EngineObject {
     friend class LoopingControlTest;
 
     LoopingControl* m_pLoopingControl; // used for tests
+#ifdef BUILD_TESTING
     FRIEND_TEST(LoopingControlTest, LoopScale_HalvesLoop);
     FRIEND_TEST(SyncControlTest, TestDetermineBpmMultiplier);
     FRIEND_TEST(EngineSyncTest, HalfDoubleBpmTest);
@@ -423,6 +428,7 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineSyncTest, BeatMapQuantizePlay);
     FRIEND_TEST(EngineBufferTest, ScalerNoTransport);
     FRIEND_TEST(EngineBufferTest, FractionalPlayposClampsToTrackBounds);
+#endif
     EngineSync* m_pEngineSync;
     SyncControl* m_pSyncControl;
     VinylControlControl* m_pVinylControlControl;
@@ -430,8 +436,10 @@ class EngineBuffer : public EngineObject {
     BpmControl* m_pBpmControl;
     KeyControl* m_pKeyControl;
     ClockControl* m_pClockControl;
+#ifdef BUILD_TESTING
     FRIEND_TEST(CueControlTest, SeekOnSetCueCDJ);
     FRIEND_TEST(CueControlTest, SeekOnSetCuePlay);
+#endif
     CueControl* m_pCueControl;
     Seek30Control* m_pSeek30Control{nullptr};
 
@@ -539,6 +547,7 @@ class EngineBuffer : public EngineObject {
     // Object used to perform waveform scaling (sample rate conversion).  These
     // three pointers may be reassigned depending on configuration and tests.
     EngineBufferScale* m_pScale;
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineBufferTest, SlowRubberBand);
     FRIEND_TEST(EngineBufferTest, ResetPitchAdjustUsesLinear);
     FRIEND_TEST(EngineBufferTest, VinylScalerRampZero);
@@ -553,6 +562,7 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
     FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
     FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
+#endif
     EngineBufferScale* m_pScaleVinyl;
     // Used for test scaler injection. Production selection is derived from the
     // single m_iKeylockEngine publication and fixed scaler members; Bungee is
