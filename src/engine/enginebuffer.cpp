@@ -1611,8 +1611,12 @@ void EngineBuffer::processWithChannelLayout(
         const std::size_t bufferSize,
         mixxx::audio::ChannelCount callbackChannelCount) {
     // Bail if we receive a buffer size with incomplete sample frames. Assert in debug builds.
-    VERIFY_OR_DEBUG_ASSERT(callbackChannelCount.isValid() &&
-            (bufferSize % callbackChannelCount) == 0) {
+    const bool validBuffer = callbackChannelCount.isValid() &&
+            (bufferSize % callbackChannelCount) == 0;
+    VERIFY_OR_DEBUG_ASSERT(validBuffer) {
+        if (pOutput != nullptr) {
+            SampleUtil::clear(pOutput, bufferSize);
+        }
         return;
     }
 #ifdef __BUNGEE__

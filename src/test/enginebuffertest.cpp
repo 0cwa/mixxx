@@ -331,6 +331,32 @@ TEST_F(EngineBufferTest, StemProcessRejectsOversizedBufferAndClearsSafePrefix) {
     EXPECT_EQ(output.back(), kSentinel);
 #endif
 }
+
+#if !defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) || !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+TEST_F(EngineBufferTest, ProcessWithChannelLayoutClearsInvalidOutput) {
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    constexpr std::size_t kValidSampleCount = 16;
+    constexpr std::size_t kNonDivisibleSampleCount = kValidSampleCount + 1;
+    constexpr CSAMPLE kPoison = -7.0f;
+    std::array<CSAMPLE, kNonDivisibleSampleCount> output;
+
+    std::fill(output.begin(), output.end(), kPoison);
+    m_pChannel1->getEngineBuffer()->processWithChannelLayout(
+            output.data(), kValidSampleCount, mixxx::audio::ChannelCount());
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kValidSampleCount,
+            [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
+
+    std::fill(output.begin(), output.end(), kPoison);
+    m_pChannel1->getEngineBuffer()->processWithChannelLayout(
+            output.data(),
+            kNonDivisibleSampleCount,
+            mixxx::audio::ChannelCount::stereo());
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+#endif
 #endif
 
 TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
