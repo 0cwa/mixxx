@@ -327,7 +327,9 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                 const SINT remainingOutputFrames =
                         getOutputSignal().samples2frames(buf_size - i);
                 SampleUtil::clear(&buf[i], buf_size - i);
-                m_dCurrentFrame = m_dNextFrame;
+                // m_dCurrentFrame and startFrame were rebased above when the
+                // old internal buffer was replaced. Keep that adjusted
+                // coordinate for the remaining output frames.
                 m_dNextFrame = m_dCurrentFrame +
                         remainingOutputFrames * rate_add +
                         rate_delta_abs * remainingOutputFrames *

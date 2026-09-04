@@ -324,4 +324,52 @@ TEST_F(EngineBufferScaleLinearTest, RepeatedZeroRefillsAreBounded) {
     SampleUtil::free(pOutput);
 }
 
+TEST_F(EngineBufferScaleLinearTest, ZeroProgressRefillPreservesRebasedPosition) {
+    constexpr SINT kInternalBufferFrames = 2;
+    constexpr SINT kOutputFrames = 4;
+    constexpr SINT kOutputSamples = kOutputFrames * 2;
+    constexpr double kInitialNextFrame = 1.5;
+    constexpr double kExpectedCurrentFrame = -0.5;
+    constexpr double kExpectedNextFrame = 7.5;
+
+    SetRateNoLerp(2.0);
+
+    // Start with a partial internal buffer and a fractional position that
+    // needs the next frame from a refill. Two zero reads model the bounded
+    // no-progress result returned when read-ahead capacity is full.
+    m_pScaler->m_bufferIntSize = kInternalBufferFrames * 2;
+    m_pScaler->m_dNextFrame = kInitialNextFrame;
+    SampleUtil::fill(m_pScaler->m_bufferInt,
+            1.0f,
+            m_pScaler->m_bufferIntSize);
+
+    EXPECT_CALL(*m_pReadAheadMock, getNextSamples(_, _, _, _))
+            .Times(4)
+            .WillRepeatedly(Return(0));
+
+    for (const double rate : {2.0, -2.0}) {
+        if (rate < 0) {
+            SetRateNoLerp(rate);
+            m_pScaler->m_bufferIntSize = kInternalBufferFrames * 2;
+            m_pScaler->m_dNextFrame = kInitialNextFrame;
+            SampleUtil::fill(m_pScaler->m_bufferInt,
+                    1.0f,
+                    m_pScaler->m_bufferIntSize);
+        }
+
+        CSAMPLE output[kOutputSamples];
+        FillBuffer(output, 1.0f, kOutputSamples);
+
+        const double framesRead = m_pScaler->scaleBuffer(
+                output, kOutputSamples);
+
+        EXPECT_DOUBLE_EQ(kOutputFrames * 2.0, framesRead);
+        EXPECT_DOUBLE_EQ(kExpectedCurrentFrame, m_pScaler->m_dCurrentFrame);
+        EXPECT_DOUBLE_EQ(kExpectedNextFrame, m_pScaler->m_dNextFrame);
+        EXPECT_EQ(0, m_pScaler->m_bufferIntSize);
+        EXPECT_EQ(0, m_pReadAheadMock->getSamplesRead());
+        AssertWholeBufferEquals(output, 0.0f, kOutputSamples);
+    }
+}
+
 }  // namespace
