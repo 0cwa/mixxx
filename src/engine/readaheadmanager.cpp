@@ -243,13 +243,17 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
             ? m_currentPosition - plan.samplesFromReader
             : m_currentPosition + plan.samplesFromReader;
     if (!canAddReadLogEntry(m_currentPosition, readLogEnd)) {
-        // Do not advance the cursor or expose samples without a corresponding
-        // file-position mapping. The caller will retry after older mappings
-        // have been consumed.
+        // Read-ahead capacity is not a cache miss. Report a bounded empty read
+        // so scalers can pad their output and EngineBuffer can consume older
+        // mappings. Keeping retryPending set here would leave grain scalers
+        // retrying this same request forever because no reader call was made.
         SampleUtil::clear(
                 pOutput,
                 retryOnCacheMiss ? plan.requestSamples : plan.samplesFromReader);
-        return {0, retryOnCacheMiss};
+        if (pRetryState) {
+            pRetryState->active = false;
+        }
+        return {0, false};
     }
 
     const auto readResult = retryOnCacheMiss
@@ -306,7 +310,10 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         SampleUtil::clear(
                 pOutput,
                 retryOnCacheMiss ? plan.requestSamples : plan.samplesFromReader);
-        return {0, retryOnCacheMiss};
+        if (pRetryState) {
+            pRetryState->active = false;
+        }
+        return {0, false};
     }
     if (plan.inReverse) {
         m_currentPosition -= plan.samplesFromReader;

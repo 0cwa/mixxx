@@ -305,4 +305,23 @@ TEST_F(EngineBufferScaleLinearTest, TestRepeatedScaleCalls) {
     SampleUtil::free(pOutput);
 }
 
+TEST_F(EngineBufferScaleLinearTest, RepeatedZeroRefillsAreBounded) {
+    SetRateNoLerp(2.0);
+
+    EXPECT_CALL(*m_pReadAheadMock, getNextSamples(_, _, _, _))
+            .Times(2)
+            .WillRepeatedly(Return(0));
+
+    CSAMPLE* pOutput = SampleUtil::alloc(kiLinearScaleReadAheadLength);
+    FillBuffer(pOutput, 1.0f, kiLinearScaleReadAheadLength);
+
+    const double framesRead =
+            m_pScaler->scaleBuffer(pOutput, kiLinearScaleReadAheadLength);
+
+    EXPECT_GT(framesRead, 0.0);
+    AssertWholeBufferEquals(pOutput, 0.0f, kiLinearScaleReadAheadLength);
+
+    SampleUtil::free(pOutput);
+}
+
 }  // namespace

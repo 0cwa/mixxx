@@ -11,6 +11,9 @@
 #include <thread>
 
 #include "control/controlobject.h"
+#ifdef __BUNGEE__
+#include "engine/bufferscalers/enginebufferscalebungee.h"
+#endif
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/cachingreader/cachingreaderchunk.h"
 #include "engine/cachingreader/cachingreaderworker.h"
@@ -44,7 +47,9 @@ class StubReader : public CachingReader {
         if (!m_readAvailable) {
             return CachingReader::ReadResult::UNAVAILABLE;
         }
-        SampleUtil::clear(buffer, numSamples);
+        for (SINT i = 0; i < numSamples; ++i) {
+            buffer[i] = static_cast<CSAMPLE>(startSample + i + 1);
+        }
         return CachingReader::ReadResult::AVAILABLE;
     }
 
@@ -68,7 +73,9 @@ class StubReader : public CachingReader {
         if (!m_readAvailable) {
             return {CachingReader::ReadResult::UNAVAILABLE, true};
         }
-        SampleUtil::clear(buffer, numSamples);
+        for (SINT i = 0; i < numSamples; ++i) {
+            buffer[i] = static_cast<CSAMPLE>(startSample + i + 1);
+        }
         return {CachingReader::ReadResult::AVAILABLE, false};
     }
 
@@ -733,7 +740,7 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogPreservesLongAlternatingContinuity) {
 TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversAfterDualOccupancy) {
     constexpr SINT kSamplesPerSegment = 10;
     constexpr int kSegments =
-            static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 1;
+            static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 2;
     m_pReadAheadManager->notifySeek(0);
     for (int i = 0; i < kSegments; ++i) {
         m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
@@ -752,41 +759,143 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversAfterDualOccupancy) {
 
     EXPECT_EQ(kSegments,
             m_pReader->readStartSamples().size());
-    EXPECT_DOUBLE_EQ(kSamplesPerSegment, m_pReadAheadManager->getPlaypos());
-
-    // Both the main log and the first spill entry are occupied here. The next
-    // direction change must still produce audio before any mapping is
-    // consumed; that output is what lets the production path recover.
-    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
-    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
-    EXPECT_EQ(kSamplesPerSegment,
-            m_pReadAheadManager->getNextSamples(
-                    -1.0,
-                    m_pBuffer,
-                    kSamplesPerSegment,
-                    mixxx::audio::ChannelCount::stereo()));
-    EXPECT_EQ(kSegments + 1, m_pReader->readStartSamples().size());
     EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
 
-    // EngineBuffer consumes the mapping after producing a positive output
-    // buffer. This normal consumption frees the oldest main-log entry.
-    EXPECT_DOUBLE_EQ(kSamplesPerSegment,
-            m_pReadAheadManager->getFilePlaypositionFromLog(
-                    -1.0, kSamplesPerSegment));
-
+    // The main log and both spill entries are occupied here. A third
+    // non-contiguous request is a bounded empty read, not a cache retry: no
+    // reader call or cursor movement is allowed, and the destination must not
+    // retain stale samples.
     m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
     m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
-    EXPECT_EQ(kSamplesPerSegment,
-            m_pReadAheadManager->getNextSamples(
+    SampleUtil::fill(m_pBuffer, -1.0f, kSamplesPerSegment);
+    const auto blockedResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0,
+            m_pBuffer,
+            kSamplesPerSegment,
+            mixxx::audio::ChannelCount::stereo());
+    EXPECT_EQ(0, blockedResult.samplesRead);
+    EXPECT_FALSE(blockedResult.retryPending);
+    EXPECT_EQ(kSegments, m_pReader->readStartSamples().size());
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+    for (SINT sample = 0; sample < kSamplesPerSegment; ++sample) {
+        EXPECT_FLOAT_EQ(0.0f, m_pBuffer[sample]);
+    }
+
+    // Repeating the same full-queue request must remain bounded and must not
+    // turn the capacity condition into a permanent caller-owned retry.
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    SampleUtil::fill(m_pBuffer, -1.0f, kSamplesPerSegment);
+    const auto repeatedBlockedResult =
+            m_pReadAheadManager->getNextSamplesWithRetry(
                     1.0,
                     m_pBuffer,
                     kSamplesPerSegment,
-                    mixxx::audio::ChannelCount::stereo()));
-    EXPECT_EQ(kSegments + 2, m_pReader->readStartSamples().size());
-    EXPECT_DOUBLE_EQ(0.0,
-            m_pReadAheadManager->getFilePlaypositionFromLog(
-                    -1.0, kSamplesPerSegment));
+                    mixxx::audio::ChannelCount::stereo());
+    EXPECT_EQ(0, repeatedBlockedResult.samplesRead);
+    EXPECT_FALSE(repeatedBlockedResult.retryPending);
+    EXPECT_EQ(kSegments, m_pReader->readStartSamples().size());
+    EXPECT_TRUE(std::all_of(m_pBuffer,
+            m_pBuffer + kSamplesPerSegment,
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+
+    // This is the same public position-consumption path EngineBuffer uses
+    // after a positive output buffer; it releases one mapping without any
+    // test-only queue manipulation. Each following third read must recover,
+    // preserve the alternating source order, and write fresh reader data.
+    double filePlayposition = -1.0;
+    for (int i = 0; i < 4; ++i) {
+        filePlayposition = m_pReadAheadManager->getFilePlaypositionFromLog(
+                filePlayposition, kSamplesPerSegment);
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+        const double rate = i % 2 == 0 ? 1.0 : -1.0;
+        SampleUtil::fill(m_pBuffer, -1.0f, kSamplesPerSegment);
+        const auto recoveredResult =
+                m_pReadAheadManager->getNextSamplesWithRetry(
+                        rate,
+                        m_pBuffer,
+                        kSamplesPerSegment,
+                        mixxx::audio::ChannelCount::stereo());
+        EXPECT_EQ(kSamplesPerSegment, recoveredResult.samplesRead);
+        EXPECT_FALSE(recoveredResult.retryPending);
+        EXPECT_EQ(kSegments + i + 1,
+                m_pReader->readStartSamples().size());
+        EXPECT_GT(m_pBuffer[0], 0.0f);
+        EXPECT_DOUBLE_EQ(i % 2 == 0 ? kSamplesPerSegment : 0.0,
+                m_pReadAheadManager->getPlaypos());
+    }
 }
+
+#ifdef __BUNGEE__
+TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversThroughBungeeConsumer) {
+    constexpr SINT kSamplesPerSegment = 10;
+    constexpr int kSegments =
+            static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 2;
+    constexpr SINT kOutputFrames = 1024;
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+
+    m_pReadAheadManager->notifySeek(0);
+    for (int i = 0; i < kSegments; ++i) {
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    }
+
+    for (int i = 0; i < kSegments; ++i) {
+        EXPECT_EQ(kSamplesPerSegment,
+                m_pReadAheadManager->getNextSamples(
+                        i % 2 == 0 ? 1.0 : -1.0,
+                        m_pBuffer,
+                        kSamplesPerSegment,
+                        kChannelCount));
+    }
+    ASSERT_EQ(kSegments, m_pReader->readStartSamples().size());
+
+    // Keep the controls available for the real scaler calls below. The
+    // scaler may need more than one grain to fill an output callback.
+    for (int i = 0; i < 128; ++i) {
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    }
+
+    EngineBufferScaleBungee scaler(m_pReadAheadManager.data());
+    scaler.setSignal(mixxx::audio::SampleRate(44100), kChannelCount);
+    double tempoRatio = 1.0;
+    double pitchRatio = 1.0;
+    scaler.setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+
+    std::array<CSAMPLE, kOutputFrames * 2> output;
+    mixxx::audio::FramePos filePosition =
+            mixxx::audio::FramePos::fromSamplePos(0, kChannelCount);
+    const int readCallsBeforeCapacityRecovery =
+            m_pReader->readStartSamples().size();
+
+    auto renderAndAccount = [&]() {
+        SampleUtil::fill(output.data(), -1.0f, static_cast<SINT>(output.size()));
+        const double framesRead = scaler.scaleBuffer(
+                output.data(), static_cast<SINT>(output.size()));
+        EXPECT_GT(framesRead, 0.0);
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+            return sample != -1.0f;
+        }));
+
+        // This is the exact public accounting call made by EngineBuffer. It
+        // consumes the source mappings represented by the positive scaler
+        // result and, in turn, frees capacity for the next read.
+        filePosition = m_pReadAheadManager->getFilePlaypositionFromLog(
+                filePosition, framesRead, kChannelCount);
+        return framesRead;
+    };
+
+    renderAndAccount();
+    EXPECT_EQ(readCallsBeforeCapacityRecovery,
+            m_pReader->readStartSamples().size());
+
+    renderAndAccount();
+    EXPECT_GT(m_pReader->readStartSamples().size(),
+            readCallsBeforeCapacityRecovery);
+}
+#endif
 
 TEST_F(ReadAheadManagerTest, TriggerOnJumpOrLoop) {
     m_pReadAheadManager->notifySeek(0);

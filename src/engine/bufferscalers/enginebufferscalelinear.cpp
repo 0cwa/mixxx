@@ -248,6 +248,7 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
     double rate_add = fabs(rate_old);
     const double rate_delta_abs =
             rate_old < 0 || rate_new < 0 ? -rate_delta : rate_delta;
+    int read_failed_count = 0;
 
     // Hot frame loop
     while (i < buf_size) {
@@ -282,6 +283,7 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                 SampleUtil::copy(m_floorSample.data(), &m_bufferInt[sampleCount], chCount);
             }
 
+            bool input_available = true;
             do {
                 SINT oldBufferFrames = getOutputSignal().samples2frames(m_bufferIntSize);
                 if (unscaled_frames_needed == 0) {
@@ -299,6 +301,14 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                         m_bufferInt,
                         samples_to_read,
                         getOutputSignal().getChannelCount());
+                if (m_bufferIntSize == 0) {
+                    if (++read_failed_count > 1) {
+                        input_available = false;
+                        break;
+                    }
+                } else {
+                    read_failed_count = 0;
+                }
                 // Note we may get 0 samples once if we just hit a loop trigger,
                 // e.g. when reloop_toggle jumps back to loop_in, or when
                 // moving a loop causes the play position to be moved along.
@@ -312,6 +322,19 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
 
                 sampleCount = getOutputSignal().frames2samples(currentFrameFloor);
             } while (sampleCount + 2 * chCount - 1 >= m_bufferIntSize);
+
+            if (!input_available) {
+                const SINT remainingOutputFrames =
+                        getOutputSignal().samples2frames(buf_size - i);
+                SampleUtil::clear(&buf[i], buf_size - i);
+                m_dCurrentFrame = m_dNextFrame;
+                m_dNextFrame = m_dCurrentFrame +
+                        remainingOutputFrames * rate_add +
+                        rate_delta_abs * remainingOutputFrames *
+                                (remainingOutputFrames - 1) / 2.0;
+                m_floorSampleOld.clear();
+                break;
+            }
 
             // Now that the buffer is up to date, we can get the value of the sample
             // at the floor of our position.
