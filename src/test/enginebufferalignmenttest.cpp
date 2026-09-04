@@ -1498,9 +1498,14 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
                 mappingBuffer.begin(),
                 mappingBuffer.begin() + requestedSamples,
                 [](CSAMPLE sample) { return sample != kStaleSample; }));
-        ASSERT_EQ(occupiedEntries + 1,
+        const std::size_t entriesAfterMapping =
                 pReadAheadManager->m_readAheadLogSize +
-                        pReadAheadManager->m_readAheadLogOverflowSize);
+                pReadAheadManager->m_readAheadLogOverflowSize;
+        // A successful read may merge with a retained boundary entry, so it
+        // can add either zero or one log entry. Never allow accounting to
+        // lose entries or advance by more than the one request made here.
+        ASSERT_GE(entriesAfterMapping, occupiedEntries);
+        ASSERT_LE(entriesAfterMapping, occupiedEntries + 1);
         const bool newestEntryForward =
                 pReadAheadManager->m_readAheadLogOverflowSize > 0
                 ? pReadAheadManager
