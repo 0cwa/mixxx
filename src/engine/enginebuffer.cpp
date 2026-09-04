@@ -257,6 +257,7 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_slipQuitAndAdopt(0),
           m_bPlayAfterLoading(false),
           m_channelCount(mixxx::kEngineChannelOutputCount),
+          m_iChannelCount(mixxx::kEngineChannelOutputCount.value()),
           m_pCrossfadeBuffer(SampleUtil::alloc(
                   kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount)),
           m_bCrossfadeReady(false),
@@ -593,8 +594,16 @@ void EngineBuffer::bindWorkers(EngineWorkerScheduler* pWorkerScheduler) {
 #endif
 }
 
+bool EngineBuffer::isScalerLayoutCompatible(
+        const EngineBufferScale* pScale,
+        mixxx::audio::ChannelCount callbackChannelCount) const {
+    return pScale != nullptr &&
+            pScale->getOutputSignal().getChannelCount() == callbackChannelCount;
+}
+
 void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
-        const std::size_t bufferSize) {
+        const std::size_t bufferSize,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     // MUST ACQUIRE THE PAUSE MUTEX BEFORE CALLING THIS METHOD
 
     // When no time-stretching or pitch-shifting is needed we use our own linear
@@ -628,7 +637,7 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
                     pSelectedBungeeState->sampleRate ==
                             static_cast<int>(m_sampleRate.value()) &&
                     pSelectedBungeeState->channelCount ==
-                            static_cast<int>(m_channelCount.value())) {
+                            static_cast<int>(callbackChannelCount.value())) {
                 keylock_scale = pSelectedBungeeState->pScaler;
             }
             // Keep using the already prepared scaler until the worker publishes
@@ -656,13 +665,15 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
             // Crossfade if we are not paused.
             // If we start from zero a ramping gain is
             // applied later
-            readToCrossfadeBuffer(bufferSize);
+            readToCrossfadeBuffer(bufferSize, callbackChannelCount);
         }
         if (!keylock_scale) {
             keylock_scale = vinyl_scale;
         }
         m_pScale = keylock_scale;
-        m_pScale->clear();
+        if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+            m_pScale->clear();
+        }
         m_keylockEngine = static_cast<int>(keylockEngine);
 #ifdef __BUNGEE__
         m_pBungeeStateForCallback = pSelectedBungeeState;
@@ -677,10 +688,12 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
         if (m_speed_old != 0.0) {
             // Crossfade if we are not paused
             // (for slow speeds below 0.1 the vinyl_scale is used)
-            readToCrossfadeBuffer(bufferSize);
+            readToCrossfadeBuffer(bufferSize, callbackChannelCount);
         }
         m_pScale = vinyl_scale;
-        m_pScale->clear();
+        if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+            m_pScale->clear();
+        }
 #ifdef __BUNGEE__
         m_pBungeeStateForCallback = pSelectedBungeeState;
 #endif
@@ -770,20 +783,31 @@ void EngineBuffer::requestSyncMode(SyncMode mode) {
     }
 }
 
-void EngineBuffer::readToCrossfadeBuffer(const std::size_t bufferSize) {
+bool EngineBuffer::readToCrossfadeBuffer(
+        const std::size_t bufferSize,
+        mixxx::audio::ChannelCount callbackChannelCount) {
+    if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        SampleUtil::clear(m_pCrossfadeBuffer, bufferSize);
+        m_bCrossfadeReady = true;
+        return false;
+    }
     if (!m_bCrossfadeReady) {
         // Read buffer, as if there where no parameter change
         // (Must be called only once per callback)
         m_pScale->scaleBuffer(m_pCrossfadeBuffer, bufferSize);
         // Restore the original position that was lost due to scaleBuffer() above
-        m_pReadAheadManager->notifySeek(m_playPos.toSamplePos(m_channelCount));
+        m_pReadAheadManager->notifySeek(
+                m_playPos.toSamplePos(callbackChannelCount));
         m_bCrossfadeReady = true;
      }
+     return true;
 }
 
 // WARNING: This method is not thread safe and must not be called from outside
 // the engine callback!
-void EngineBuffer::setNewPlaypos(mixxx::audio::FramePos position) {
+void EngineBuffer::setNewPlaypos(
+        mixxx::audio::FramePos position,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     if (kLogger.traceEnabled()) {
         kLogger.trace() << "setNewPlaypos" << m_group << position;
     }
@@ -793,11 +817,14 @@ void EngineBuffer::setNewPlaypos(mixxx::audio::FramePos position) {
     if (m_rate_old != 0.0) {
         // Before seeking, read extra buffer for crossfading
         // this also sets m_pReadAheadManager to newpos
-        readToCrossfadeBuffer(m_lastBufferSize);
+        readToCrossfadeBuffer(m_lastBufferSize, callbackChannelCount);
     } else {
-        m_pReadAheadManager->notifySeek(m_playPos.toSamplePos(m_channelCount));
+        m_pReadAheadManager->notifySeek(
+                m_playPos.toSamplePos(callbackChannelCount));
     }
-    m_pScale->clear();
+    if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        m_pScale->clear();
+    }
 
     // Ensures that the playpos slider gets updated in next process call
     m_samplesSinceLastIndicatorUpdate = 1000000;
@@ -896,6 +923,8 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
         // CachingReaderChunk::bufferSampleFrames
         m_channelCount = mixxx::audio::ChannelCount::stereo();
     }
+
+    m_iChannelCount.storeRelease(m_channelCount.value());
 
 #ifdef __BUNGEE__
     requestBungeeConfiguration(
@@ -1236,7 +1265,10 @@ void EngineBuffer::slipQuitAndAdopt() {
 }
 
 void EngineBuffer::processTrackLocked(
-        CSAMPLE* pOutput, const std::size_t bufferSize, mixxx::audio::SampleRate sampleRate) {
+        CSAMPLE* pOutput,
+        const std::size_t bufferSize,
+        mixxx::audio::SampleRate sampleRate,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     ScopedTimer t(QStringLiteral("EngineBuffer::process_pauselock"));
 
     m_trackSampleRateOld = mixxx::audio::SampleRate::fromDouble(m_pTrackSampleRate->get());
@@ -1264,17 +1296,18 @@ void EngineBuffer::processTrackLocked(
     bool is_reverse = false;
 
     // Update the slipped position and seek to it if slip mode was disabled.
-    processSlip(bufferSize);
+    processSlip(bufferSize, callbackChannelCount);
 
     // Note: This may affect the m_playPos, play, scaler and crossfade buffer
-    processSeek(paused);
+    processSeek(paused, callbackChannelCount);
 
     // speed is the ratio between track-time and real-time
     // (1.0 being normal rate. 2.0 plays at 2x speed -- 2 track seconds
     // pass for every 1 real second). Depending on whether
     // keylock is enabled, this is applied to either the rate or the tempo.
     std::size_t outputBufferSize = bufferSize;
-    int stereoPairCount = m_channelCount / mixxx::audio::ChannelCount::stereo();
+    int stereoPairCount = callbackChannelCount /
+            mixxx::audio::ChannelCount::stereo();
     // The speed is calculated out of the buffer size for the stereo channel
     // output, after mixing multi channel (stem) together
     if (stereoPairCount > 1) {
@@ -1342,12 +1375,15 @@ void EngineBuffer::processTrackLocked(
     if (speed != 0.0 || is_scratching) {
         // Do not switch scaler when we have no transport, except when we start scratching.
         enableIndependentPitchTempoScaling(useIndependentPitchAndTempoScaling,
-                bufferSize);
+                bufferSize,
+                callbackChannelCount);
     } else if (m_speed_old != 0) {
         // we are stopping, collect samples for fade out
-        readToCrossfadeBuffer(bufferSize);
+        readToCrossfadeBuffer(bufferSize, callbackChannelCount);
         // Clear the scaler information
-        m_pScale->clear();
+        if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+            m_pScale->clear();
+        }
     }
 
     // How speed/tempo/pitch are related:
@@ -1406,9 +1442,11 @@ void EngineBuffer::processTrackLocked(
                        m_reverse_old != is_reverse)) { // no pitch change when reversing
             //XXX: Trying to force RAMAN to read from correct
             //     playpos when rate changes direction - Albert
-            readToCrossfadeBuffer(bufferSize);
+            readToCrossfadeBuffer(bufferSize, callbackChannelCount);
             // Clear the scaler information
-            m_pScale->clear();
+            if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+                m_pScale->clear();
+            }
         }
 
         m_baserate_old = baseSampleRate;
@@ -1464,6 +1502,13 @@ void EngineBuffer::processTrackLocked(
 
     m_rate_old = rate;
 
+    // The callback layout is immutable for this processing pass. Never let a
+    // scaler configured for another layout interpret this buffer.
+    if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        SampleUtil::clear(pOutput, bufferSize);
+        return;
+    }
+
     // If the buffer is not paused, then scale the audio.
     if (!bCurBufferPaused) {
         // Perform scaling of Reader buffer into buffer.
@@ -1481,7 +1526,7 @@ void EngineBuffer::processTrackLocked(
         } else {
             // Adjust filepos_play by the amount we processed.
             m_playPos = m_pReadAheadManager->getFilePlaypositionFromLog(
-                    m_playPos, framesRead, m_channelCount);
+                    m_playPos, framesRead, callbackChannelCount);
         }
         // Note: The last buffer of a track is padded with silence.
         // This silence is played together with the last samples in the last
@@ -1490,10 +1535,17 @@ void EngineBuffer::processTrackLocked(
         // and fills the buffer with samples from the other end of the track.
 
         if (m_bCrossfadeReady) {
+            if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+                SampleUtil::clear(pOutput, bufferSize);
+                return;
+            }
             // Bring pOutput with the new parameters in and fade out the old one,
             // stored with the old parameters in m_pCrossfadeBuffer
             SampleUtil::linearCrossfadeBuffersIn(
-                    pOutput, m_pCrossfadeBuffer, bufferSize, m_channelCount);
+                    pOutput,
+                    m_pCrossfadeBuffer,
+                    bufferSize,
+                    callbackChannelCount);
         }
         // Note: we do not fade here if we pass the end or the start of
         // the track in reverse direction
@@ -1547,12 +1599,20 @@ void EngineBuffer::processTrackLocked(
 
     // Give the Reader hints as to which chunks of the current song we
     // really care about. It will try very hard to keep these in memory
-    hintReader(rate);
+    hintReader(rate, callbackChannelCount);
 }
 
 void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
+    processWithChannelLayout(pOutput, bufferSize, getChannelCount());
+}
+
+void EngineBuffer::processWithChannelLayout(
+        CSAMPLE* pOutput,
+        const std::size_t bufferSize,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     // Bail if we receive a buffer size with incomplete sample frames. Assert in debug builds.
-    VERIFY_OR_DEBUG_ASSERT((bufferSize % m_channelCount) == 0) {
+    VERIFY_OR_DEBUG_ASSERT(callbackChannelCount.isValid() &&
+            (bufferSize % callbackChannelCount) == 0) {
         return;
     }
 #ifdef __BUNGEE__
@@ -1565,7 +1625,6 @@ void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
     m_pBungeeStateForCallback = m_pBungeeCallbackState.load(
             std::memory_order_seq_cst);
 #endif
-    m_pReader->process();
     // Steps:
     // - Lookup new reader information
     // - Calculate current rate
@@ -1581,17 +1640,56 @@ void EngineBuffer::process(CSAMPLE* pOutput, const std::size_t bufferSize) {
     // If the sample rate has changed, force Rubberband to reset so that
     // it doesn't reallocate when the user engages keylock during playback.
     // We do this even if rubberband is not active.
-    m_pScaleLinear->setSignal(m_sampleRate, m_channelCount);
-    m_pScaleST->setSignal(m_sampleRate, m_channelCount);
+    m_pScaleLinear->setSignal(m_sampleRate, callbackChannelCount);
+    m_pScaleST->setSignal(m_sampleRate, callbackChannelCount);
 #ifdef __RUBBERBAND__
-    m_pScaleRB->setSignal(m_sampleRate, m_channelCount);
+    m_pScaleRB->setSignal(m_sampleRate, callbackChannelCount);
 #endif
 #ifdef __SIGNALSMITH__
-    m_pScaleSignalSmith->setSignal(m_sampleRate, m_channelCount);
+    m_pScaleSignalSmith->setSignal(m_sampleRate, callbackChannelCount);
 #endif
 
+#ifdef __BUNGEE__
+    // A track-load publication can change the callback layout before the
+    // worker publishes its replacement. Prefer a matching published Bungee
+    // scaler, then the matching vinyl scaler, and otherwise write a complete
+    // silent buffer without touching the reader or a stale scaler.
+    if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        auto* pPublishedState = m_pBungeePublishedState.load(
+                std::memory_order_seq_cst);
+        const auto selectedKeylockEngine = static_cast<KeylockEngine>(
+                m_iKeylockEngine.loadAcquire());
+        if (selectedKeylockEngine == KeylockEngine::Bungee &&
+                pPublishedState &&
+                pPublishedState->sampleRate ==
+                        static_cast<int>(m_sampleRate.value()) &&
+                isScalerLayoutCompatible(
+                        pPublishedState->pScaler, callbackChannelCount)) {
+            m_pScale = pPublishedState->pScaler;
+            m_pBungeeStateForCallback = pPublishedState;
+            m_bScalerChanged = true;
+        } else if (isScalerLayoutCompatible(
+                           m_pScaleVinyl, callbackChannelCount)) {
+            m_pScale = m_pScaleVinyl;
+            m_bScalerChanged = true;
+        }
+    }
+
+    if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        SampleUtil::clear(pOutput, bufferSize);
+        m_pSyncControl->updateAudible();
+        m_lastBufferSize = bufferSize;
+        m_bCrossfadeReady = false;
+        finishBungeeCallback();
+        return;
+    }
+#endif
+
+    m_pReader->process();
+
     if (isTrackLoaded() && m_pause.tryLock()) {
-        processTrackLocked(pOutput, bufferSize, m_sampleRate);
+        processTrackLocked(
+                pOutput, bufferSize, m_sampleRate, callbackChannelCount);
         // release the pauselock
         m_pause.unlock();
     } else {
@@ -1678,7 +1776,9 @@ void EngineBuffer::finishBungeeCallback() {
 }
 #endif
 
-void EngineBuffer::processSlip(std::size_t bufferSize) {
+void EngineBuffer::processSlip(
+        std::size_t bufferSize,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     // Do a single read from m_bSlipEnabled so we don't run in to race conditions.
     bool enabled = m_pSlipButton->toBool();
     if (enabled != m_bSlipEnabledProcessing) {
@@ -1706,8 +1806,9 @@ void EngineBuffer::processSlip(std::size_t bufferSize) {
         // TODO: Check if we can replace `bufferSize` with the number of
         // frames per buffer in most engine method signatures to avoid this
         // back and forth calculations.
-        const std::size_t bufferFrameCount = bufferSize / m_channelCount;
-        DEBUG_ASSERT(bufferFrameCount * m_channelCount == bufferSize);
+        const std::size_t bufferFrameCount =
+                bufferSize / callbackChannelCount;
+        DEBUG_ASSERT(bufferFrameCount * callbackChannelCount == bufferSize);
         const mixxx::audio::FrameDiff_t slipDelta =
                 static_cast<mixxx::audio::FrameDiff_t>(bufferFrameCount) * m_dSlipRate;
         // Simulate looping if a regular loop is active
@@ -1755,7 +1856,9 @@ void EngineBuffer::processSyncRequests() {
     }
 }
 
-void EngineBuffer::processSeek(bool paused) {
+void EngineBuffer::processSeek(
+        bool paused,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     m_previousBufferSeek = false;
 
     const QueuedSeek queuedSeek = m_queuedSeek.getValue();
@@ -1824,7 +1927,7 @@ void EngineBuffer::processSeek(bool paused) {
         if (kLogger.traceEnabled()) {
             kLogger.trace() << "processSeek" << getGroup() << "Seek to" << position;
         }
-        setNewPlaypos(position);
+        setNewPlaypos(position, callbackChannelCount);
         m_previousBufferSeek = true;
     }
     // Reset the m_queuedSeek value after it has been processed in
@@ -1964,9 +2067,12 @@ void EngineBuffer::updateIndicators(double speed, std::size_t bufferSize) {
     m_pClockControl->updateIndicators(speed * m_baserate_old, m_playPos, m_sampleRate);
 }
 
-void EngineBuffer::hintReader(const double dRate) {
+void EngineBuffer::hintReader(
+        const double dRate,
+        mixxx::audio::ChannelCount callbackChannelCount) {
     m_hintList.clear();
-    m_pReadAheadManager->hintReader(dRate, &m_hintList, m_channelCount);
+    m_pReadAheadManager->hintReader(
+            dRate, &m_hintList, callbackChannelCount);
 
     //if slipping, hint about virtual position so we're ready for it
     if (m_bSlipEnabledProcessing) {

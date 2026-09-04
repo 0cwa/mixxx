@@ -12,6 +12,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -23,6 +25,7 @@
 #include "engine/enginebuffer.h"
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
+#include "track/track.h"
 
 // Helper: scan a span for NaN / Inf.
 static bool spanHasInvalidSamples(std::span<const CSAMPLE> buf) {
@@ -33,6 +36,141 @@ static bool spanHasInvalidSamples(std::span<const CSAMPLE> buf) {
     }
     return false;
 }
+
+#ifdef __STEM__
+namespace {
+constexpr std::size_t kLayoutTransitionFrames = 256;
+constexpr std::size_t kStereoSamples = kLayoutTransitionFrames * 2;
+constexpr CSAMPLE kPoison = 12345.0f;
+
+class LayoutTestScaler final : public MockScaler {
+  public:
+    void resetCalls() {
+        m_scaleBufferCalls = 0;
+    }
+
+    double scaleBuffer(CSAMPLE* pOutput, SINT bufferSize) override {
+        ++m_scaleBufferCalls;
+        std::fill_n(pOutput, bufferSize, 1.0f);
+        return bufferSize /
+                getOutputSignal().getChannelCount();
+    }
+
+    int scaleBufferCalls() const {
+        return m_scaleBufferCalls;
+    }
+
+  private:
+    int m_scaleBufferCalls = 0;
+};
+} // namespace
+
+class EngineBufferBungeeLayoutTest : public BaseSignalPathTest {
+  protected:
+    static TrackPointer makeTrack(mixxx::audio::ChannelCount channelCount) {
+        auto pTrack = Track::newTemporary();
+        pTrack->setAudioProperties(
+                channelCount,
+                mixxx::audio::SampleRate(44100),
+                mixxx::audio::Bitrate(),
+                mixxx::Duration::fromSeconds(60));
+        pTrack->trySetBpm(128.0);
+        return pTrack;
+    }
+
+    static bool hasOnlyFiniteNonPoisonSamples(
+            std::span<const CSAMPLE> samples) {
+        return std::all_of(samples.begin(), samples.end(), [](CSAMPLE sample) {
+            return std::isfinite(sample) && sample != kPoison;
+        });
+    }
+
+    void addStemHandles() {
+        for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; ++stemIdx) {
+            const auto stemHandleGroup = m_pEngineMixer->registerChannelGroup(
+                    EngineDeck::getGroupForStem(m_pChannel1->getGroup(), stemIdx));
+            m_pChannel1->addStemHandle(stemHandleGroup);
+        }
+    }
+
+    void warmScaler(EngineBuffer* pEngineBuffer,
+            LayoutTestScaler* pScaler,
+            mixxx::audio::ChannelCount channelCount,
+            std::size_t outputBufferSize) {
+        pScaler->setSignal(mixxx::audio::SampleRate(44100), channelCount);
+        pEngineBuffer->setScalerForTest(pScaler, pScaler);
+        ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+        std::array<CSAMPLE, kStereoSamples> output;
+        std::fill(output.begin(), output.end(), kPoison);
+        pScaler->resetCalls();
+        m_pChannel1->process(output.data(), outputBufferSize);
+        ASSERT_GT(pScaler->scaleBufferCalls(), 0);
+        ASSERT_TRUE(hasOnlyFiniteNonPoisonSamples(
+                std::span<const CSAMPLE>(output.data(), outputBufferSize)));
+    }
+
+    void assertStaleLayoutIsCleared(EngineBuffer* pEngineBuffer,
+            LayoutTestScaler* pScaler,
+            TrackPointer pNewTrack,
+            mixxx::audio::ChannelCount oldChannelCount,
+            mixxx::audio::ChannelCount newChannelCount,
+            std::size_t outputBufferSize) {
+        pEngineBuffer->loadFakeTrack(pNewTrack, true);
+        ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+        ASSERT_EQ(pEngineBuffer->getChannelCount(), newChannelCount);
+        ASSERT_EQ(pScaler->getOutputSignal().getChannelCount(), oldChannelCount);
+
+        std::array<CSAMPLE, kStereoSamples> output;
+        std::fill(output.begin(), output.end(), kPoison);
+        pScaler->resetCalls();
+        const double playPosBefore = pEngineBuffer->getPlayPos().value();
+        m_pChannel1->process(output.data(), outputBufferSize);
+        const double playPosAfter = pEngineBuffer->getPlayPos().value();
+
+        ASSERT_EQ(pScaler->scaleBufferCalls(), 0);
+        ASSERT_TRUE(hasOnlyFiniteNonPoisonSamples(
+                std::span<const CSAMPLE>(output.data(), outputBufferSize)));
+        ASSERT_GE(playPosAfter, playPosBefore);
+    }
+};
+
+TEST_F(EngineBufferBungeeLayoutTest, StaleScalerLayoutIsClearedBothDirections) {
+    const auto pStereoTrack = makeTrack(mixxx::audio::ChannelCount::stereo());
+    const auto pStemTrack = makeTrack(mixxx::audio::ChannelCount::stem());
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    LayoutTestScaler scaler;
+
+    // The injected scaler models the already-published Bungee scaler. Its
+    // signal is deliberately left at the old layout across each track load.
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock_engine")),
+            static_cast<double>(EngineBuffer::KeylockEngine::Bungee));
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock")), 1.0);
+    addStemHandles();
+
+    pEngineBuffer->loadFakeTrack(pStereoTrack, true);
+    warmScaler(pEngineBuffer,
+            &scaler,
+            mixxx::audio::ChannelCount::stereo(),
+            kStereoSamples);
+    assertStaleLayoutIsCleared(pEngineBuffer,
+            &scaler,
+            pStemTrack,
+            mixxx::audio::ChannelCount::stereo(),
+            mixxx::audio::ChannelCount::stem(),
+            kStereoSamples);
+
+    warmScaler(pEngineBuffer,
+            &scaler,
+            mixxx::audio::ChannelCount::stem(),
+            kStereoSamples);
+    assertStaleLayoutIsCleared(pEngineBuffer,
+            &scaler,
+            pStereoTrack,
+            mixxx::audio::ChannelCount::stem(),
+            mixxx::audio::ChannelCount::stereo(),
+            kStereoSamples);
+}
+#endif // __STEM__
 
 // EngineBufferBungeeTest — fixture that selects the real Bungee scaler.
 //

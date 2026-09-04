@@ -101,6 +101,9 @@ class EngineDeck : public EngineChannel, public AudioDestination {
 #endif
     // Process multiple channels and mix them together into the passed buffer
     void processStem(CSAMPLE* pOutput, const std::size_t bufferSize);
+    void processStem(CSAMPLE* pOutput,
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 #endif
 
     std::vector<ChannelHandleAndGroup> m_stems;

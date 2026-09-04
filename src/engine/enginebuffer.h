@@ -150,7 +150,8 @@ class EngineBuffer : public EngineObject {
     // Return the current rate (not thread-safe)
     double getSpeed() const;
     mixxx::audio::ChannelCount getChannelCount() const {
-        return m_channelCount;
+        return mixxx::audio::ChannelCount(
+                static_cast<uint8_t>(m_iChannelCount.loadAcquire()));
     }
     mixxx::audio::FramePos getPlayPos() const {
         return m_playPos;
@@ -178,7 +179,11 @@ class EngineBuffer : public EngineObject {
 
     // The process methods all run in the audio callback.
     void process(CSAMPLE* pOut, const std::size_t bufferSize) override;
-    void processSlip(std::size_t bufferSize);
+    void processWithChannelLayout(CSAMPLE* pOut,
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
+    void processSlip(std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
     void postProcessLocalBpm();
     void postProcess(const std::size_t bufferSize);
 
@@ -364,11 +369,13 @@ class EngineBuffer : public EngineObject {
     void addControl(EngineControl* pControl);
 
     void enableIndependentPitchTempoScaling(bool bEnable,
-            const std::size_t bufferSize);
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     void updateIndicators(double rate, std::size_t bufferSize);
 
-    void hintReader(const double rate);
+    void hintReader(const double rate,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     double fractionalPlayposFromAbsolute(double position);
 
@@ -378,13 +385,16 @@ class EngineBuffer : public EngineObject {
     // Read one buffer from the current scaler into the crossfade buffer.  Used
     // for transitioning from one scaler to another, or reseeking a scaler
     // to prevent pops.
-    void readToCrossfadeBuffer(const std::size_t bufferSize);
+    bool readToCrossfadeBuffer(const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     // Reset buffer playpos and set file playpos.
-    void setNewPlaypos(mixxx::audio::FramePos playpos);
+    void setNewPlaypos(mixxx::audio::FramePos playpos,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     void processSyncRequests();
-    void processSeek(bool paused);
+    void processSeek(bool paused,
+            mixxx::audio::ChannelCount callbackChannelCount);
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
 #ifdef BUILD_TESTING
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
@@ -404,7 +414,11 @@ class EngineBuffer : public EngineObject {
 #endif
     void processTrackLocked(CSAMPLE* pOutput,
             const std::size_t bufferSize,
-            mixxx::audio::SampleRate sampleRate);
+            mixxx::audio::SampleRate sampleRate,
+            mixxx::audio::ChannelCount callbackChannelCount);
+    bool isScalerLayoutCompatible(
+            const EngineBufferScale* pScale,
+            mixxx::audio::ChannelCount callbackChannelCount) const;
 
     // Holds the name of the control group
     const QString m_group;
@@ -632,6 +646,9 @@ class EngineBuffer : public EngineObject {
 
     // The current channel count of the loaded track
     mixxx::audio::ChannelCount m_channelCount;
+    // Published atomically when m_channelCount changes. Audio callbacks take
+    // one acquire snapshot and pass it through the processing path.
+    QAtomicInt m_iChannelCount;
 
     TrackPointer m_pCurrentTrack;
 #ifdef __SCALER_DEBUG__

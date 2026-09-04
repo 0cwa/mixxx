@@ -241,6 +241,8 @@ TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
         pDeck->getEngineBuffer()->loadFakeTrack(
                 createStemTrack(channelCount), true);
         scaler.setChannelCount(channelCount);
+        scaler.setSignal(mixxx::audio::SampleRate(44100),
+                mixxx::audio::ChannelCount(channelCount));
         scaler.clear();
         std::fill(output.begin(), output.end(), 1.0f);
         pDeck->processStem(output.data(), output.size());
@@ -265,6 +267,8 @@ TEST_F(EngineBufferTest, StemProcessClearsOddOutputSentinel) {
     constexpr std::size_t kAlignedBufferSize = kBufferSize - 1;
     m_pChannel1->getEngineBuffer()->loadFakeTrack(
             createStemTrack(kChannelCount), true);
+    m_pMockScaleVinyl1->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount(kChannelCount));
     fillStemBuffer(
             &m_pChannel1->m_stemBuffer, kChannelCount, kAlignedBufferSize);
 
@@ -290,6 +294,8 @@ TEST_F(EngineBufferTest, StemProcessAcceptsMaximumBufferSize) {
     constexpr std::size_t kBufferSize = kMaxEngineSamples;
     constexpr CSAMPLE kSentinel = -7.0f;
     m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+    m_pMockScaleVinyl1->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount(8));
     fillStemBuffer(&m_pChannel1->m_stemBuffer, 8, kBufferSize);
 
     std::array<CSAMPLE, kBufferSize + 1> output;
