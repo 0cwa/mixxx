@@ -45,6 +45,27 @@ class ReadAheadManagerMock : public ReadAheadManager {
         return requested_samples;
     }
 
+    SINT getNextSamplesOneFrame(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount) {
+        Q_UNUSED(dRate);
+        bool hasBuffer = m_pBuffer != NULL;
+        EXPECT_TRUE(hasBuffer);
+        if (!hasBuffer) {
+            return 0;
+        }
+
+        const SINT frame_samples = channelCount.value();
+        EXPECT_GE(requested_samples, frame_samples);
+        for (SINT i = 0; i < frame_samples; ++i) {
+            buffer[i] = m_pBuffer[m_iReadPosition++ % m_iBufferSize];
+        }
+        m_iSamplesRead += frame_samples;
+        ++m_iOneFrameReadCalls;
+        return frame_samples;
+    }
+
     void setReadBuffer(CSAMPLE* pBuffer, SINT iBufferSize) {
         m_pBuffer = pBuffer;
         m_iBufferSize = iBufferSize;
@@ -53,6 +74,10 @@ class ReadAheadManagerMock : public ReadAheadManager {
 
     int getSamplesRead() {
         return m_iSamplesRead;
+    }
+
+    int getOneFrameReadCalls() {
+        return m_iOneFrameReadCalls;
     }
 
     MOCK_METHOD4(getNextSamples,
@@ -65,6 +90,7 @@ class ReadAheadManagerMock : public ReadAheadManager {
     SINT m_iBufferSize;
     SINT m_iReadPosition;
     SINT m_iSamplesRead;
+    int m_iOneFrameReadCalls = 0;
 };
 
 } // namespace
@@ -334,7 +360,6 @@ TEST_F(EngineBufferScaleLinearTest, ZeroProgressRefillPreservesRebasedPosition) 
     constexpr SINT kOutputSamples = kOutputFrames * 2;
     constexpr double kInitialNextFrame = 1.5;
     constexpr double kExpectedCurrentFrame = -0.5;
-    constexpr double kExpectedNextFrame = 7.5;
 
     SetRateNoLerp(2.0);
 
@@ -369,9 +394,68 @@ TEST_F(EngineBufferScaleLinearTest, ZeroProgressRefillPreservesRebasedPosition) 
 
         EXPECT_DOUBLE_EQ(kOutputFrames * 2.0, framesRead);
         EXPECT_DOUBLE_EQ(kExpectedCurrentFrame, m_pScaler->m_dCurrentFrame);
-        EXPECT_DOUBLE_EQ(kExpectedNextFrame, m_pScaler->m_dNextFrame);
+        EXPECT_DOUBLE_EQ(0.0, m_pScaler->m_dNextFrame);
         EXPECT_EQ(0, m_pScaler->m_bufferIntSize);
         EXPECT_EQ(0, m_pReadAheadMock->getSamplesRead());
         AssertWholeBufferEquals(output, 0.0f, kOutputSamples);
+    }
+}
+
+TEST_F(EngineBufferScaleLinearTest, EmptyRefillNormalizesPartialReadRecovery) {
+    constexpr SINT kFallbackFrames = 1024;
+    constexpr SINT kFallbackSamples = kFallbackFrames * 2;
+    constexpr SINT kRecoveryFrames = 4;
+    constexpr SINT kRecoverySamples = kRecoveryFrames * 2;
+    constexpr CSAMPLE kStaleSample = 1234.0;
+
+    SetRateNoLerp(1.25);
+    // Distinct frames make skipped or duplicated recovery data observable.
+    CSAMPLE readBuffer[] = {41.0, -41.0, 43.0, -43.0, 47.0, -47.0, 53.0, -53.0, 59.0, -59.0};
+    m_pReadAheadMock->setReadBuffer(readBuffer, 10);
+    m_pScaler->m_bufferIntSize = 4;
+    m_pScaler->m_dNextFrame = 1.5;
+    SampleUtil::fill(m_pScaler->m_bufferInt,
+            99.0f,
+            m_pScaler->m_bufferIntSize);
+
+    EXPECT_CALL(*m_pReadAheadMock, getNextSamples(_, _, _, _))
+            .WillOnce(Return(0))
+            .WillOnce(Return(0))
+            .WillRepeatedly(Invoke(
+                    m_pReadAheadMock, &ReadAheadManagerMock::getNextSamplesOneFrame));
+
+    CSAMPLE* pFallbackOutput = SampleUtil::alloc(kFallbackSamples);
+    FillBuffer(pFallbackOutput, kStaleSample, kFallbackSamples);
+    const double fallbackFrames =
+            m_pScaler->scaleBuffer(pFallbackOutput, kFallbackSamples);
+
+    EXPECT_DOUBLE_EQ(kFallbackFrames * 1.25, fallbackFrames);
+    AssertWholeBufferEquals(pFallbackOutput, 0.0f, kFallbackSamples);
+    EXPECT_DOUBLE_EQ(-0.5, m_pScaler->m_dCurrentFrame);
+    EXPECT_DOUBLE_EQ(0.0, m_pScaler->m_dNextFrame);
+    EXPECT_EQ(0, m_pScaler->m_bufferIntSize);
+    SampleUtil::free(pFallbackOutput);
+
+    CSAMPLE recoveryOutput[kRecoverySamples];
+    FillBuffer(recoveryOutput, kStaleSample, kRecoverySamples);
+    const double recoveryFrames =
+            m_pScaler->scaleBuffer(recoveryOutput, kRecoverySamples);
+
+    // A partial read is fresh source data, not an empty-buffer retry. The
+    // normalized coordinate lets this four-frame recovery complete after the
+    // five one-frame reads needed to establish interpolation provenance.
+    EXPECT_DOUBLE_EQ(kRecoveryFrames * 1.25, recoveryFrames);
+    EXPECT_EQ(kRecoveryFrames + 1, m_pReadAheadMock->getOneFrameReadCalls());
+    EXPECT_EQ((kRecoveryFrames + 1) * 2, m_pReadAheadMock->getSamplesRead());
+    EXPECT_FLOAT_EQ(0.0f, recoveryOutput[0]);
+    EXPECT_FLOAT_EQ(0.0f, recoveryOutput[1]);
+    EXPECT_FLOAT_EQ(11.75f, recoveryOutput[2]);
+    EXPECT_FLOAT_EQ(-11.75f, recoveryOutput[3]);
+    EXPECT_FLOAT_EQ(26.5f, recoveryOutput[4]);
+    EXPECT_FLOAT_EQ(-26.5f, recoveryOutput[5]);
+    EXPECT_FLOAT_EQ(44.25f, recoveryOutput[6]);
+    EXPECT_FLOAT_EQ(-44.25f, recoveryOutput[7]);
+    for (const CSAMPLE sample : recoveryOutput) {
+        EXPECT_NE(kStaleSample, sample);
     }
 }

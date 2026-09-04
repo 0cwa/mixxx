@@ -249,6 +249,8 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
     const double rate_delta_abs =
             rate_old < 0 || rate_new < 0 ? -rate_delta : rate_delta;
     int read_failed_count = 0;
+    double frames_read_after_empty_fallback = 0.0;
+    bool empty_fallback = false;
 
     // Hot frame loop
     while (i < buf_size) {
@@ -330,10 +332,17 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                 // m_dCurrentFrame and startFrame were rebased above when the
                 // old internal buffer was replaced. Keep that adjusted
                 // coordinate for the remaining output frames.
-                m_dNextFrame = m_dCurrentFrame +
+                const double fallbackNextFrame = m_dCurrentFrame +
                         remainingOutputFrames * rate_add +
                         rate_delta_abs * remainingOutputFrames *
                                 (remainingOutputFrames - 1) / 2.0;
+                frames_read_after_empty_fallback = fallbackNextFrame - startFrame;
+                // The output block advances the source timeline, but the
+                // internal buffer is empty. Start the next callback at the
+                // new buffer origin instead of making it discard partial
+                // reads until they reach the old source coordinate.
+                m_dNextFrame = 0.0;
+                empty_fallback = true;
                 m_floorSampleOld.clear();
                 break;
             }
@@ -371,5 +380,6 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
 
     SampleUtil::clear(&buf[i], buf_size - i);
 
-    return m_dNextFrame - startFrame;
+    return empty_fallback ? frames_read_after_empty_fallback
+                          : m_dNextFrame - startFrame;
 }
