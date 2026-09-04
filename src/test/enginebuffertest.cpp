@@ -78,20 +78,25 @@ TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
                     mixxx::kMaxEngineChannelInputCount));
 }
 
-TEST_F(EngineBufferTest, StemProcessClearsOddChannelLayout) {
-    TrackPointer pTrack = Track::newTemporary();
-    pTrack->setAudioProperties(
-            mixxx::audio::ChannelCount(3),
-            mixxx::audio::SampleRate(44100),
-            mixxx::audio::Bitrate(),
-            mixxx::Duration::fromSeconds(1));
-    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+TEST_F(EngineBufferTest, StemProcessRejectsOddChannelLayout) {
+    TrackPointer pTrack = createStemTrack(3);
 
+#ifdef MIXXX_DEBUG_ASSERTIONS_ENABLED
+    // Odd multichannel layouts are rejected while loading. processStem() is
+    // only called after this boundary and therefore cannot receive one in a
+    // valid engine callback.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false),
+            "DEBUG ASSERT");
+#else
     std::array<CSAMPLE, kProcessBufferSize> output;
     std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
     m_pChannel1->processStem(output.data(), output.size());
 
     EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
 }
 
 TEST_F(EngineBufferTest, StemProcessClearsStemVectorMismatch) {
