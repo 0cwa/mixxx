@@ -2,6 +2,7 @@
 
 #include <QLocale>
 #include <QMetaEnum>
+#include <QSignalBlocker>
 
 #include "control/controlpushbutton.h"
 #include "library/dao/analysisdao.h"
@@ -74,12 +75,8 @@ DlgPrefWaveform::DlgPrefWaveform(
     // Sort the combobox items alphabetically
     waveformTypeComboBox->model()->sort(0);
 
-    // Populate zoom options.
-    for (int i = static_cast<int>(WaveformWidgetRenderer::s_waveformMinZoom);
-            i <= static_cast<int>(WaveformWidgetRenderer::s_waveformMaxZoom);
-            i++) {
-        defaultZoomComboBox->addItem(QString::number(100 / static_cast<double>(i), 'f', 1) + " %");
-    }
+    updateMaxZoomOutOptions();
+    updateDefaultZoomOptions();
 
     m_pOverviewStereoControl = std::make_unique<ControlObject>(
             ConfigKey(kWaveformGroup,
@@ -173,6 +170,10 @@ DlgPrefWaveform::DlgPrefWaveform(
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
             &DlgPrefWaveform::slotSetDefaultZoom);
+    connect(maxZoomOutComboBox,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this,
+            &DlgPrefWaveform::slotSetMaxZoomOut);
     connect(synchronizeZoomCheckBox,
             &QCheckBox::clicked,
             this,
@@ -231,6 +232,22 @@ DlgPrefWaveform::DlgPrefWaveform(
             &QCheckBox::toggled,
             this,
             &DlgPrefWaveform::slotSetUntilMarkShowTime);
+    connect(untilMarkShowHotCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowHotCues);
+    connect(untilMarkShowMemoryCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowMemoryCues);
+    connect(untilMarkShowIntroCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowIntroCues);
+    connect(untilMarkShowOutroCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowOutroCues);
     connect(untilMarkAlignComboBox,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
@@ -343,14 +360,18 @@ void DlgPrefWaveform::slotUpdate() {
     lowVisualGain->setValue(factory->getVisualGain(BandIndex::Low));
     midVisualGain->setValue(factory->getVisualGain(BandIndex::Mid));
     highVisualGain->setValue(factory->getVisualGain(BandIndex::High));
-    // Round zoom to int to get a default zoom index.
-    defaultZoomComboBox->setCurrentIndex(static_cast<int>(factory->getDefaultZoom()) - 1);
+    updateMaxZoomOutOptions();
+    updateDefaultZoomOptions();
     playMarkerPositionSlider->setValue(static_cast<int>(factory->getPlayMarkerPosition() * 100));
     beatGridAlphaSpinBox->setValue(factory->getBeatGridAlpha());
     beatGridAlphaSlider->setValue(factory->getBeatGridAlpha());
 
     untilMarkShowBeatsCheckBox->setChecked(factory->getUntilMarkShowBeats());
     untilMarkShowTimeCheckBox->setChecked(factory->getUntilMarkShowTime());
+    untilMarkShowHotCuesCheckBox->setChecked(factory->getUntilMarkShowHotCues());
+    untilMarkShowMemoryCuesCheckBox->setChecked(factory->getUntilMarkShowMemoryCues());
+    untilMarkShowIntroCuesCheckBox->setChecked(factory->getUntilMarkShowIntroCues());
+    untilMarkShowOutroCuesCheckBox->setChecked(factory->getUntilMarkShowOutroCues());
     untilMarkAlignComboBox->setCurrentIndex(
             WaveformWidgetFactory::toUntilMarkAlignIndex(
                     factory->getUntilMarkAlign()));
@@ -434,8 +455,18 @@ void DlgPrefWaveform::slotResetToDefaults() {
     midVisualGain->setValue(WaveformWidgetFactory::getVisualGainDefault(BandIndex::Mid));
     highVisualGain->setValue(WaveformWidgetFactory::getVisualGainDefault(BandIndex::High));
 
-    // Default zoom level is 3 in WaveformWidgetFactory.
-    defaultZoomComboBox->setCurrentIndex(3 + 1);
+    // Restore the legacy defaults. Use item data because the combo index is
+    // zero-based while the zoom factor starts at one.
+    const int defaultMaxZoomOutIndex = maxZoomOutComboBox->findData(
+            WaveformWidgetRenderer::s_waveformDefaultMaxZoom);
+    if (defaultMaxZoomOutIndex != -1) {
+        maxZoomOutComboBox->setCurrentIndex(defaultMaxZoomOutIndex);
+    }
+    const int defaultZoomIndex = defaultZoomComboBox->findData(
+            WaveformWidgetRenderer::s_waveformDefaultZoom);
+    if (defaultZoomIndex != -1) {
+        defaultZoomComboBox->setCurrentIndex(defaultZoomIndex);
+    }
 
     synchronizeZoomCheckBox->setChecked(true);
 
@@ -634,6 +665,7 @@ void DlgPrefWaveform::updateEnableUntilMark() {
 #endif
     untilMarkShowBeatsCheckBox->setEnabled(enabled);
     untilMarkShowTimeCheckBox->setEnabled(enabled);
+    untilMarkCueTypesGroupBox->setEnabled(enabled);
     // Disable the beats/time options if neither beats nor time is enabled
     bool beatsOrTimeEnabled = untilMarkShowBeatsCheckBox->isChecked() ||
             untilMarkShowTimeCheckBox->isChecked();
@@ -656,9 +688,53 @@ void DlgPrefWaveform::updateWaveformGeneralOptionsEnabled() {
     beatGridAlphaSpinBox->setEnabled(enabled);
     playMarkerPositionSlider->setEnabled(enabled);
     defaultZoomComboBox->setEnabled(enabled);
+    maxZoomOutComboBox->setEnabled(enabled);
     synchronizeZoomCheckBox->setEnabled(enabled);
     updateWaveformGainEnabled();
     updateStemOptionsEnabled();
+}
+
+void DlgPrefWaveform::updateDefaultZoomOptions() {
+    WaveformWidgetFactory* factory = WaveformWidgetFactory::instance();
+    const QSignalBlocker blocker(defaultZoomComboBox);
+    defaultZoomComboBox->clear();
+    for (int i = static_cast<int>(WaveformWidgetRenderer::s_waveformMinZoom);
+            i <= factory->getMaxZoomOut();
+            ++i) {
+        defaultZoomComboBox->addItem(
+                QString::number(100 / static_cast<double>(i), 'f', 1) + " %", i);
+    }
+    const double defaultZoom = factory->getDefaultZoom();
+    int defaultZoomIndex = defaultZoomComboBox->findData(defaultZoom);
+    if (defaultZoomIndex == -1) {
+        defaultZoomIndex = defaultZoomComboBox->count();
+        defaultZoomComboBox->addItem(
+                QString::number(100 / defaultZoom, 'f', 1) + " %", defaultZoom);
+    }
+    defaultZoomComboBox->setCurrentIndex(defaultZoomIndex);
+}
+
+void DlgPrefWaveform::updateMaxZoomOutOptions() {
+    constexpr int kMaxZoomOutStep = 10;
+    const auto* factory = WaveformWidgetFactory::instance();
+    const QSignalBlocker blocker(maxZoomOutComboBox);
+    maxZoomOutComboBox->clear();
+    for (int maxZoomOut =
+                    static_cast<int>(WaveformWidgetRenderer::s_waveformDefaultMaxZoom);
+            maxZoomOut <= 100;
+            maxZoomOut += kMaxZoomOutStep) {
+        maxZoomOutComboBox->addItem(
+                QString::number(100 / static_cast<double>(maxZoomOut), 'f', 1) + " %",
+                maxZoomOut);
+    }
+    const double maxZoomOut = factory->getMaxZoomOut();
+    int maxZoomOutIndex = maxZoomOutComboBox->findData(maxZoomOut);
+    if (maxZoomOutIndex == -1) {
+        maxZoomOutIndex = maxZoomOutComboBox->count();
+        maxZoomOutComboBox->addItem(
+                QString::number(100 / maxZoomOut, 'f', 1) + " %", maxZoomOut);
+    }
+    maxZoomOutComboBox->setCurrentIndex(maxZoomOutIndex);
 }
 
 void DlgPrefWaveform::updateStemOptionsEnabled() {
@@ -700,7 +776,14 @@ void DlgPrefWaveform::slotSetWaveformOverviewType() {
 }
 
 void DlgPrefWaveform::slotSetDefaultZoom(int index) {
-    WaveformWidgetFactory::instance()->setDefaultZoom(index + 1);
+    WaveformWidgetFactory::instance()->setDefaultZoom(
+            defaultZoomComboBox->itemData(index).toDouble());
+}
+
+void DlgPrefWaveform::slotSetMaxZoomOut(int index) {
+    WaveformWidgetFactory::instance()->setMaxZoomOut(
+            maxZoomOutComboBox->itemData(index).toDouble());
+    updateDefaultZoomOptions();
 }
 
 void DlgPrefWaveform::slotSetZoomSynchronization(bool checked) {
@@ -778,6 +861,22 @@ void DlgPrefWaveform::slotSetUntilMarkShowTime(bool checked) {
     updateEnableUntilMark();
 }
 
+void DlgPrefWaveform::slotSetUntilMarkShowHotCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowHotCues(checked);
+}
+
+void DlgPrefWaveform::slotSetUntilMarkShowMemoryCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowMemoryCues(checked);
+}
+
+void DlgPrefWaveform::slotSetUntilMarkShowIntroCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowIntroCues(checked);
+}
+
+void DlgPrefWaveform::slotSetUntilMarkShowOutroCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowOutroCues(checked);
+}
+
 void DlgPrefWaveform::slotSetUntilMarkAlign(int index) {
     WaveformWidgetFactory::instance()->setUntilMarkAlign(
             WaveformWidgetFactory::toUntilMarkAlign(index));
@@ -809,6 +908,10 @@ void DlgPrefWaveform::slotStemDisplayMode(int index) {
 }
 
 void DlgPrefWaveform::calculateCachedWaveformDiskUsage() {
+    if (!m_pLibrary) {
+        return;
+    }
+
     AnalysisDao analysisDao(m_pConfig);
     QSqlDatabase dbConnection = mixxx::DbConnectionPooled(m_pLibrary->dbConnectionPool());
     size_t numBytes = analysisDao.getDiskUsageInBytes(dbConnection, AnalysisDao::TYPE_WAVEFORM) +

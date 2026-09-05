@@ -46,6 +46,7 @@ class DlgPrefWaveform : public DlgPreferencePage, public Ui::DlgPrefWaveformDlg 
     }
 #endif
     void slotSetDefaultZoom(int index);
+    void slotSetMaxZoomOut(int index);
     void slotSetZoomSynchronization(bool checked);
     void slotSetVisualGainAll(double gain);
     void slotSetVisualGainLow(double gain);
@@ -57,6 +58,10 @@ class DlgPrefWaveform : public DlgPreferencePage, public Ui::DlgPrefWaveformDlg 
     void slotSetPlayMarkerPosition(int position);
     void slotSetUntilMarkShowBeats(bool checked);
     void slotSetUntilMarkShowTime(bool checked);
+    void slotSetUntilMarkShowHotCues(bool checked);
+    void slotSetUntilMarkShowMemoryCues(bool checked);
+    void slotSetUntilMarkShowIntroCues(bool checked);
+    void slotSetUntilMarkShowOutroCues(bool checked);
     void slotSetUntilMarkAlign(int index);
     void slotSetUntilMarkTextPointSize(int value);
     void slotSetUntilMarkTextHeightLimit(int index);
@@ -83,6 +88,8 @@ class DlgPrefWaveform : public DlgPreferencePage, public Ui::DlgPrefWaveformDlg 
     void updateWaveformGeneralOptionsEnabled();
     void updateWaveformGainEnabled();
     void updateStemOptionsEnabled();
+    void updateDefaultZoomOptions();
+    void updateMaxZoomOutOptions();
 
     std::unique_ptr<ControlPushButton> m_pTypeControl;
     std::unique_ptr<ControlObject> m_pOverviewMinuteMarkersControl;

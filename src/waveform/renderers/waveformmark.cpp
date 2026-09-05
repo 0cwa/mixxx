@@ -76,28 +76,31 @@ float overlappingMarkerIncrement(const float labelRectHeight, const float breadt
 #define FOO
 
 bool isShowUntilNextPositionControl(const QString& positionControl) {
-    // To identify which markers are included in the beat/time until next marker
-    // display, in addition to the hotcues
-#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
-    using namespace Qt::Literals::StringLiterals;
-    constexpr std::array list = {"cue_point"_L1,
-            "intro_start_position"_L1,
-            "intro_end_position"_L1,
-            "outro_start_position"_L1,
-            "outro_end_position"_L1};
-#else
-    const std::array list = {QLatin1String{"cue_point"},
-            QLatin1String{"intro_start_position"},
-            QLatin1String{"intro_end_position"},
-            QLatin1String{"outro_start_position"},
-            QLatin1String{"outro_end_position"}};
-#endif
-    return std::any_of(list.cbegin(), list.cend(), [positionControl](auto& view) {
-        return view == positionControl;
-    });
+    return WaveformMark::countdownCategoryForPositionControl(positionControl) ==
+            WaveformMark::CountdownCategory::MemoryCue;
 }
 
 } // anonymous namespace
+
+WaveformMark::CountdownCategory WaveformMark::countdownCategoryForPositionControl(
+        const QString& positionControl,
+        int hotCue) {
+    if (hotCue != Cue::kNoHotCue) {
+        return CountdownCategory::HotCue;
+    }
+    if (positionControl == QStringLiteral("memory_cue")) {
+        return CountdownCategory::MemoryCue;
+    }
+    if (positionControl == QStringLiteral("intro_start_position") ||
+            positionControl == QStringLiteral("intro_end_position")) {
+        return CountdownCategory::IntroCue;
+    }
+    if (positionControl == QStringLiteral("outro_start_position") ||
+            positionControl == QStringLiteral("outro_end_position")) {
+        return CountdownCategory::OutroCue;
+    }
+    return CountdownCategory::None;
+}
 
 WaveformMark::WaveformMark(
         const QString& group,
@@ -130,11 +133,13 @@ WaveformMark::WaveformMark(
           m_statusCO{},
           m_iPriority(priority),
           m_iHotCue(hotCue),
+          m_countdownCategory{},
           m_showUntilNext{} {
     QString positionControl = aPositionControl;
     QString endPositionControl;
     QString typeControl;
     QString statusControl;
+    m_countdownCategory = countdownCategoryForPositionControl(aPositionControl, hotCue);
     if (hotCue != Cue::kNoHotCue) {
         QString hotcueNumber = QString::number(hotCue + 1);
         positionControl = QStringLiteral("hotcue_%1_position").arg(hotcueNumber);
@@ -196,6 +201,7 @@ WaveformMark::WaveformMark(const QString& group,
           m_level{},
           m_iPriority(priority),
           m_iHotCue(hotCue),
+          m_countdownCategory{},
           m_showUntilNext{} {
     QString positionControl;
     QString endPositionControl;
@@ -211,6 +217,7 @@ WaveformMark::WaveformMark(const QString& group,
         positionControl = context.selectString(node, "Control");
         m_showUntilNext = isShowUntilNextPositionControl(positionControl);
     }
+    m_countdownCategory = countdownCategoryForPositionControl(positionControl, hotCue);
 
     if (!positionControl.isEmpty()) {
         m_pPositionCO = std::make_unique<ControlProxy>(group, positionControl);

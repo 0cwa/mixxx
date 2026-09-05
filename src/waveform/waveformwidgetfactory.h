@@ -171,6 +171,10 @@ class WaveformWidgetFactory : public QObject,
 
     void setUntilMarkShowBeats(bool value);
     void setUntilMarkShowTime(bool value);
+    void setUntilMarkShowHotCues(bool value);
+    void setUntilMarkShowMemoryCues(bool value);
+    void setUntilMarkShowIntroCues(bool value);
+    void setUntilMarkShowOutroCues(bool value);
     void setUntilMarkAlign(Qt::Alignment align);
     void setUntilMarkTextPointSize(int value);
     void setUntilMarkTextHeightLimit(float value);
@@ -185,6 +189,18 @@ class WaveformWidgetFactory : public QObject,
     }
     bool getUntilMarkShowTime() const {
         return m_untilMarkShowTime;
+    }
+    bool getUntilMarkShowHotCues() const {
+        return m_untilMarkShowHotCues;
+    }
+    bool getUntilMarkShowMemoryCues() const {
+        return m_untilMarkShowMemoryCues;
+    }
+    bool getUntilMarkShowIntroCues() const {
+        return m_untilMarkShowIntroCues;
+    }
+    bool getUntilMarkShowOutroCues() const {
+        return m_untilMarkShowOutroCues;
     }
     Qt::Alignment getUntilMarkAlign() const {
         return m_untilMarkAlign;
@@ -223,6 +239,11 @@ class WaveformWidgetFactory : public QObject,
   public:
     void setDefaultZoom(double zoom);
     double getDefaultZoom() const { return m_defaultZoom;}
+
+    void setMaxZoomOut(double maxZoomOut);
+    double getMaxZoomOut() const {
+        return m_maxZoomOut;
+    }
 
     void setZoomSync(bool sync);
     int isZoomSync() const { return m_zoomSync;}
@@ -266,9 +287,14 @@ class WaveformWidgetFactory : public QObject,
 
     void overviewScalingChanged();
     void visualGainChanged(double allChannelGain, double lowGain, double midGain, double highGain);
+    void maxZoomOutChanged(double maxZoomOut);
 
     void untilMarkShowBeatsChanged(bool value);
     void untilMarkShowTimeChanged(bool value);
+    void untilMarkShowHotCuesChanged(bool value);
+    void untilMarkShowMemoryCuesChanged(bool value);
+    void untilMarkShowIntroCuesChanged(bool value);
+    void untilMarkShowOutroCuesChanged(bool value);
     void untilMarkAlignChanged(Qt::Alignment align);
     void untilMarkTextPointSizeChanged(int value);
     void untilMarkTextHeightLimitChanged(float value);
@@ -296,6 +322,7 @@ class WaveformWidgetFactory : public QObject,
   private:
     void renderSelf();
     void swapSelf();
+    void setMaxZoomOutInternal(double maxZoomOut, bool persistDefaultZoom);
 
     void addHandle(
             QHash<WaveformWidgetType::Type, QList<WaveformWidgetBackend>>&
@@ -331,12 +358,17 @@ class WaveformWidgetFactory : public QObject,
     int m_frameRate;
     int m_endOfTrackWarningTime;
     double m_defaultZoom;
+    double m_maxZoomOut;
     bool m_zoomSync;
     double m_visualGain[BandCount];
     bool m_overviewNormalized;
 
     bool m_untilMarkShowBeats;
     bool m_untilMarkShowTime;
+    bool m_untilMarkShowHotCues;
+    bool m_untilMarkShowMemoryCues;
+    bool m_untilMarkShowIntroCues;
+    bool m_untilMarkShowOutroCues;
     Qt::Alignment m_untilMarkAlign;
     int m_untilMarkTextPointSize;
     float m_untilMarkTextHeightLimit;
