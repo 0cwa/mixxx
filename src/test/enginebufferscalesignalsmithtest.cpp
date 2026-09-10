@@ -39,8 +39,12 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
         for (SINT sample = 0; sample < availableSamples; ++sample) {
             const SINT frame = (m_returnedSamples + sample) / channels;
             const SINT channel = (m_returnedSamples + sample) % channels;
+            const double phase = m_useTone
+                    ? 2.0 * 3.14159265358979323846 * m_toneFrequencyHz *
+                            static_cast<double>(frame) / m_toneSampleRate
+                    : 0.031 * static_cast<double>(frame);
             pBuffer[sample] = static_cast<CSAMPLE>(
-                    0.15 * std::sin(0.031 * frame + 0.17 * channel));
+                    0.15 * std::sin(phase + 0.17 * channel));
         }
         m_returnedSamples += availableSamples;
         return availableSamples;
@@ -64,6 +68,12 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
 
     void setAvailableSamples(SINT samples) {
         m_availableSamples = samples;
+    }
+
+    void setTone(double frequencyHz, double sampleRate) {
+        m_useTone = true;
+        m_toneFrequencyHz = frequencyHz;
+        m_toneSampleRate = sampleRate;
     }
 
     void resetStats() {
@@ -108,6 +118,9 @@ class DeterministicReadAheadManager final : public ReadAheadManager {
     int m_retryReadCallCount = 0;
     int m_retryPendingCall = -1;
     std::vector<SINT> m_retryRequestedSamples;
+    bool m_useTone = false;
+    double m_toneFrequencyHz = 440.0;
+    double m_toneSampleRate = kSampleRate;
 };
 
 struct ScaleRun {
@@ -140,6 +153,38 @@ bool allFinite(const std::vector<CSAMPLE>& samples) {
     return std::all_of(samples.begin(), samples.end(), [](CSAMPLE sample) {
         return std::isfinite(sample);
     });
+}
+
+double estimateFrequency(const std::vector<CSAMPLE>& interleavedSamples,
+        SINT sampleRate) {
+    std::vector<double> risingZeroCrossings;
+    const SINT frameCount = interleavedSamples.size() / kChannels;
+    for (SINT frame = 1; frame < frameCount; ++frame) {
+        const double previous = interleavedSamples[(frame - 1) * kChannels];
+        const double current = interleavedSamples[frame * kChannels];
+        if (previous <= 0.0 && current > 0.0) {
+            const double fraction = -previous / (current - previous);
+            risingZeroCrossings.push_back(static_cast<double>(frame - 1) + fraction);
+        }
+    }
+    if (risingZeroCrossings.size() < 2) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double span = risingZeroCrossings.back() - risingZeroCrossings.front();
+    return static_cast<double>(sampleRate) *
+            static_cast<double>(risingZeroCrossings.size() - 1) / span;
+}
+
+std::vector<CSAMPLE> collectTone(EngineBufferScaleSignalSmith* pScaler,
+        DeterministicReadAheadManager* pReadAhead,
+        int callbackCount) {
+    std::vector<CSAMPLE> output;
+    output.reserve(callbackCount * kOutputSamples);
+    for (int callback = 0; callback < callbackCount; ++callback) {
+        const auto result = run(pScaler, pReadAhead);
+        output.insert(output.end(), result.output.begin(), result.output.end());
+    }
+    return output;
 }
 
 } // namespace
@@ -322,6 +367,44 @@ TEST(EngineBufferScaleSignalSmithTest, ResetReversePauseAndEofRemainFinite) {
     EXPECT_TRUE(allFinite(output));
     EXPECT_LE(readAhead.returnedSamples(), readAhead.requestedSamples());
     EXPECT_EQ(readAhead.returnedSamples(), kOutputSamples / 2);
+}
+
+TEST(EngineBufferScaleSignalSmithTest, PreservesPitchThroughSampleRateConversion) {
+    constexpr double kToneHz = 440.0;
+    constexpr double kSourceSampleRate = 44100.0;
+    constexpr double kOutputSampleRate = 48000.0;
+    constexpr double kBaseRate = kSourceSampleRate / kOutputSampleRate;
+    constexpr double kTempoRatio = 0.73;
+    const double semitoneRatio = std::pow(2.0, 1.0 / 12.0);
+
+    struct ToneCase {
+        double pitchRatio;
+        double expectedFrequency;
+    };
+    const ToneCase toneCases[] = {
+            {1.0, kToneHz},
+            {semitoneRatio, kToneHz * semitoneRatio}};
+
+    for (const auto& toneCase : toneCases) {
+        DeterministicReadAheadManager readAhead;
+        readAhead.setTone(kToneHz, kSourceSampleRate);
+        EngineBufferScaleSignalSmith scaler(&readAhead);
+        scaler.setSignal(mixxx::audio::SampleRate(kOutputSampleRate),
+                mixxx::audio::ChannelCount::stereo());
+
+        double tempoRatio = kTempoRatio;
+        double pitchRatio = toneCase.pitchRatio;
+        scaler.setScaleParameters(kBaseRate, &tempoRatio, &pitchRatio);
+        const auto output = collectTone(&scaler, &readAhead, 40);
+        const auto steadyWindow = std::vector<CSAMPLE>(
+                output.end() - 8 * kOutputSamples, output.end());
+
+        ASSERT_FALSE(readAhead.rates().empty());
+        EXPECT_DOUBLE_EQ(kBaseRate * kTempoRatio, readAhead.rates().front());
+        EXPECT_NEAR(toneCase.expectedFrequency,
+                estimateFrequency(steadyWindow, kOutputSampleRate),
+                toneCase.expectedFrequency * 0.005);
+    }
 }
 
 #endif // __SIGNALSMITH__
