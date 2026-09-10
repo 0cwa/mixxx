@@ -389,7 +389,9 @@ TEST(EngineBufferScaleSignalSmithTest, PreservesPitchThroughSampleRateConversion
         DeterministicReadAheadManager readAhead;
         readAhead.setTone(kToneHz, kSourceSampleRate);
         EngineBufferScaleSignalSmith scaler(&readAhead);
-        scaler.setSignal(mixxx::audio::SampleRate(kOutputSampleRate),
+        scaler.setSignal(mixxx::audio::SampleRate(
+                                 static_cast<mixxx::audio::SampleRate::value_t>(
+                                         kOutputSampleRate)),
                 mixxx::audio::ChannelCount::stereo());
 
         double tempoRatio = kTempoRatio;
@@ -402,7 +404,7 @@ TEST(EngineBufferScaleSignalSmithTest, PreservesPitchThroughSampleRateConversion
         ASSERT_FALSE(readAhead.rates().empty());
         EXPECT_DOUBLE_EQ(kBaseRate * kTempoRatio, readAhead.rates().front());
         EXPECT_NEAR(toneCase.expectedFrequency,
-                estimateFrequency(steadyWindow, kOutputSampleRate),
+                estimateFrequency(steadyWindow, static_cast<SINT>(kOutputSampleRate)),
                 toneCase.expectedFrequency * 0.005);
     }
 }
