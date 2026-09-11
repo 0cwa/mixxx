@@ -228,13 +228,15 @@ QList<TrackId> TrackDAO::resolveTrackIds(
         DEBUG_ASSERT(!"Failed query");
     }
 
+    bool tracksTransactionFinished = true;
     if (flags & ResolveTrackIdFlag::AddMissing) {
         // Prepare to add tracks to the database.
         // This also begins an SQL transaction.
         addTracksPrepare();
 
         // Any tracks not already in the database need to be added.
-        query.prepare("SELECT location FROM playlist_import "
+        query.prepare(
+                "SELECT location FROM playlist_import "
                 "WHERE NOT EXISTS (SELECT location FROM track_locations "
                 "WHERE playlist_import.location = track_locations.location)");
         if (!query.exec()) {
@@ -248,7 +250,7 @@ QList<TrackId> TrackDAO::resolveTrackIds(
         }
 
         // Finish adding tracks to the database.
-        addTracksFinish();
+        tracksTransactionFinished = addTracksFinish();
     }
 
     query.prepare(
@@ -288,6 +290,10 @@ QList<TrackId> TrackDAO::resolveTrackIds(
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         DEBUG_ASSERT(!"Failed query");
+    }
+
+    if (!tracksTransactionFinished) {
+        return {};
     }
 
     return trackIds;
@@ -544,23 +550,41 @@ void TrackDAO::addTracksPrepare() {
             "WHERE location=:location");
 }
 
-void TrackDAO::addTracksFinish(bool rollback) {
+bool TrackDAO::addTracksFinish(bool rollback, Track* pTrack) {
+    const bool hadTransaction = m_pTransaction != nullptr;
+    const QSet<TrackId> addedTrackIds = m_tracksAddedSet;
+    const bool resetTrackId = pTrack && addedTrackIds.contains(pTrack->getId());
+
+    bool success = true;
     if (m_pTransaction) {
         if (rollback) {
-            m_pTransaction->rollback();
-            m_tracksAddedSet.clear();
+            success = m_pTransaction->rollback();
         } else {
-            m_pTransaction->commit();
+            success = m_pTransaction->commit();
         }
     }
+
+    if ((rollback || !success) && !addedTrackIds.isEmpty()) {
+        GlobalTrackCacheLocker cacheLocker;
+        for (const auto& trackId : addedTrackIds) {
+            cacheLocker.purgeTrackId(trackId);
+        }
+    }
+    if (resetTrackId) {
+        pTrack->resetId();
+    }
+
     m_pQueryTrackLocationInsert.reset();
     m_pQueryTrackLocationSelect.reset();
     m_pQueryLibraryInsert.reset();
     m_pQueryLibrarySelect.reset();
     m_pTransaction.reset();
 
-    emit tracksAdded(m_tracksAddedSet);
+    if (hadTransaction && !rollback && success) {
+        emit tracksAdded(addedTrackIds);
+    }
     m_tracksAddedSet.clear();
+    return success;
 }
 
 namespace {
@@ -1770,11 +1794,10 @@ bool TrackDAO::updateTrack(const Track& track) const {
             track.getWaveformSummary());
     m_cueDao.saveTrackCues(
             trackId, track.getCuePoints());
-    transaction.commit();
+    return transaction.commit();
 
     // kLogger.debug() << "Update track in database took: " <<
     // time.elapsed().formatMillisWithUnit(); time.start();
-    return true;
 }
 
 // Make sure that `directory` in in track_locations table is indeed a
@@ -2323,9 +2346,10 @@ TrackPointer TrackDAO::getOrAddTrack(
     bool unremove = true;
     const TrackPointer pAddedTrack = addTracksAddFile(trackRef.getLocation(), unremove);
     bool rollback = !pAddedTrack;
-    addTracksFinish(rollback);
-    if (!pAddedTrack) {
-        return pAddedTrack;
+    const bool tracksTransactionFinished =
+            addTracksFinish(rollback, pAddedTrack.get());
+    if (!tracksTransactionFinished || !pAddedTrack) {
+        return {};
     }
     if (pAlreadyInLibrary) {
         *pAlreadyInLibrary = false;

@@ -1,15 +1,90 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlDriver>
+#include <QSqlQuery>
+#include <cstring>
+
+#ifdef __SQLITE3__
+#include <sqlite3.h>
+#endif // __SQLITE3__
+
 #include "test/librarytest.h"
 #include "track/globaltrackcache.h"
 #include "track/track.h"
+#include "util/assert.h"
 
 using ::testing::UnorderedElementsAre;
 
 class TrackDAOTest : public LibraryTest {
 };
 
+namespace {
+
+#ifdef __SQLITE3__
+struct CommitFailureState {
+    bool commitDenied{false};
+};
+
+int denySqliteCommit(
+        void* pContext,
+        int actionCode,
+        const char* pFirstArgument,
+        const char*,
+        const char*,
+        const char*) {
+    if (actionCode == SQLITE_TRANSACTION && pFirstArgument != nullptr &&
+            std::strcmp(pFirstArgument, "COMMIT") == 0) {
+        static_cast<CommitFailureState*>(pContext)->commitDenied = true;
+        return SQLITE_DENY;
+    }
+    return SQLITE_OK;
+}
+
+class SqliteAuthorizerGuard final {
+  public:
+    SqliteAuthorizerGuard(
+            sqlite3* pHandle,
+            decltype(&denySqliteCommit) callback,
+            void* pContext)
+            : m_pHandle(pHandle),
+              m_installResult(sqlite3_set_authorizer(pHandle, callback, pContext)) {
+    }
+
+    ~SqliteAuthorizerGuard() {
+        if (m_pHandle) {
+            const int restoreResult =
+                    sqlite3_set_authorizer(m_pHandle, nullptr, nullptr);
+            DEBUG_ASSERT(restoreResult == SQLITE_OK);
+        }
+    }
+
+    int installResult() const {
+        return m_installResult;
+    }
+
+  private:
+    sqlite3* m_pHandle;
+    int m_installResult;
+};
+
+sqlite3* sqliteHandle(const QSqlDatabase& database) {
+    if (!database.driver()) {
+        return nullptr;
+    }
+    const QVariant handleVariant = database.driver()->handle();
+    if (!handleVariant.isValid() ||
+            std::strcmp(handleVariant.typeName(), "sqlite3*") != 0) {
+        return nullptr;
+    }
+    const auto* handle = static_cast<sqlite3* const*>(handleVariant.constData());
+    return handle ? *handle : nullptr;
+}
+#endif // __SQLITE3__
+
+} // anonymous namespace
 
 TEST_F(TrackDAOTest, detectMovedTracks) {
     TrackDAO& trackDAO = internalCollection()->getTrackDAO();
@@ -158,4 +233,158 @@ TEST_F(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly) {
             << "fs_deleted must be preserved for a file no longer in the directory";
     EXPECT_EQ(1, readQuery.value(1).toInt())
             << "needs_verification must remain set so verifyRemainingTracks can confirm deletion";
+}
+
+TEST_F(TrackDAOTest, saveTrackCommitFailureKeepsTrackDirty) {
+#ifndef __SQLITE3__
+    GTEST_SKIP() << "SQLite3 C API is unavailable (__SQLITE3__ is not defined)";
+#else
+    TrackDAO& trackDAO = internalCollection()->getTrackDAO();
+    TrackPointer pTrack = Track::newTemporary(
+            QDir(QDir::tempPath()),
+            QStringLiteral("commit-failure.mp3"));
+    pTrack->setTitle(QStringLiteral("before"));
+    pTrack->setDuration(60);
+
+    trackDAO.addTracksPrepare();
+    const TrackId trackId = trackDAO.addTracksAddTrack(pTrack, false);
+    ASSERT_TRUE(trackId.isValid());
+    ASSERT_TRUE(trackDAO.addTracksFinish());
+    pTrack->markClean();
+    pTrack->setTitle(QStringLiteral("after"));
+    ASSERT_TRUE(pTrack->isDirty());
+
+    const QSqlDatabase database = dbConnection();
+    sqlite3* handle = sqliteHandle(database);
+    ASSERT_NE(handle, nullptr);
+    CommitFailureState failureState;
+    {
+        SqliteAuthorizerGuard authorizer(handle, denySqliteCommit, &failureState);
+        ASSERT_EQ(SQLITE_OK, authorizer.installResult());
+
+        const bool saved = trackDAO.saveTrack(pTrack.get());
+
+        EXPECT_FALSE(saved);
+        EXPECT_TRUE(failureState.commitDenied);
+        EXPECT_TRUE(pTrack->isDirty());
+    }
+
+    QSqlQuery query(database);
+    ASSERT_TRUE(query.prepare(
+            QStringLiteral("SELECT title FROM library WHERE id=:track_id")));
+    query.bindValue(QStringLiteral(":track_id"), trackId.toVariant());
+    ASSERT_TRUE(query.exec());
+    ASSERT_TRUE(query.next());
+    EXPECT_EQ(QStringLiteral("before"), query.value(0).toString());
+#endif // __SQLITE3__
+}
+
+TEST_F(TrackDAOTest, addTracksFinishCommitFailureDoesNotPublish) {
+#ifndef __SQLITE3__
+    GTEST_SKIP() << "SQLite3 C API is unavailable (__SQLITE3__ is not defined)";
+#else
+    TrackDAO& trackDAO = internalCollection()->getTrackDAO();
+    TrackPointer pTrack = Track::newTemporary(
+            QDir(QDir::tempPath()),
+            QStringLiteral("add-commit-failure.mp3"));
+    pTrack->setDuration(60);
+
+    QSignalSpy tracksAddedSpy(&trackDAO, &TrackDAO::tracksAdded);
+    ASSERT_TRUE(tracksAddedSpy.isValid());
+
+    const QSqlDatabase database = dbConnection();
+    sqlite3* handle = sqliteHandle(database);
+    ASSERT_NE(handle, nullptr);
+    CommitFailureState failureState;
+    TrackId trackId;
+    bool finished = true;
+    {
+        SqliteAuthorizerGuard authorizer(handle, denySqliteCommit, &failureState);
+        ASSERT_EQ(SQLITE_OK, authorizer.installResult());
+
+        trackDAO.addTracksPrepare();
+        trackId = trackDAO.addTracksAddTrack(pTrack, false);
+        ASSERT_TRUE(trackId.isValid());
+        finished = trackDAO.addTracksFinish(false, pTrack.get());
+    }
+
+    EXPECT_FALSE(finished);
+    EXPECT_TRUE(failureState.commitDenied);
+    EXPECT_EQ(0, tracksAddedSpy.count());
+    EXPECT_FALSE(pTrack->getId().isValid());
+    EXPECT_FALSE(GlobalTrackCacheLocker().lookupTrackById(trackId));
+
+    QSqlQuery query(database);
+    ASSERT_TRUE(query.prepare(
+            QStringLiteral("SELECT COUNT(*) FROM library WHERE id=:track_id")));
+    query.bindValue(QStringLiteral(":track_id"), trackId.toVariant());
+    ASSERT_TRUE(query.exec());
+    ASSERT_TRUE(query.next());
+    EXPECT_EQ(0, query.value(0).toInt());
+#endif // __SQLITE3__
+}
+
+TEST_F(TrackDAOTest, getOrAddTrackCommitFailureReturnsNull) {
+#ifndef __SQLITE3__
+    GTEST_SKIP() << "SQLite3 C API is unavailable (__SQLITE3__ is not defined)";
+#else
+    const QString trackLocation =
+            QDir(QDir::tempPath())
+                    .filePath(QStringLiteral("get-or-add-commit-failure.mp3"));
+    const TrackRef trackRef = TrackRef::fromFilePath(trackLocation);
+    TrackDAO& trackDAO = internalCollection()->getTrackDAO();
+
+    const QSqlDatabase database = dbConnection();
+    sqlite3* handle = sqliteHandle(database);
+    ASSERT_NE(handle, nullptr);
+    CommitFailureState failureState;
+    {
+        SqliteAuthorizerGuard authorizer(handle, denySqliteCommit, &failureState);
+        ASSERT_EQ(SQLITE_OK, authorizer.installResult());
+
+        EXPECT_FALSE(trackCollectionManager()->getOrAddTrack(trackRef));
+        EXPECT_TRUE(failureState.commitDenied);
+    }
+
+    EXPECT_FALSE(trackDAO.getAllTrackLocations().contains(trackLocation));
+
+    const TrackPointer pRetryTrack =
+            trackCollectionManager()->getOrAddTrack(trackRef);
+    ASSERT_TRUE(pRetryTrack);
+    EXPECT_TRUE(pRetryTrack->getId().isValid());
+#endif // __SQLITE3__
+}
+
+TEST_F(TrackDAOTest, resolveTrackIdsCommitFailureReturnsEmpty) {
+#ifndef __SQLITE3__
+    GTEST_SKIP() << "SQLite3 C API is unavailable (__SQLITE3__ is not defined)";
+#else
+    const QString trackLocation =
+            QDir(QDir::tempPath())
+                    .filePath(QStringLiteral("resolve-commit-failure.mp3"));
+    TrackDAO& trackDAO = internalCollection()->getTrackDAO();
+
+    const QSqlDatabase database = dbConnection();
+    sqlite3* handle = sqliteHandle(database);
+    ASSERT_NE(handle, nullptr);
+    CommitFailureState failureState;
+    {
+        SqliteAuthorizerGuard authorizer(handle, denySqliteCommit, &failureState);
+        ASSERT_EQ(SQLITE_OK, authorizer.installResult());
+
+        const QList<TrackId> trackIds =
+                trackCollectionManager()->resolveTrackIdsFromLocations(
+                        QList<QString>{trackLocation});
+        EXPECT_TRUE(trackIds.isEmpty());
+        EXPECT_TRUE(failureState.commitDenied);
+    }
+
+    EXPECT_FALSE(trackDAO.getAllTrackLocations().contains(trackLocation));
+
+    const QList<TrackId> retryTrackIds =
+            trackCollectionManager()->resolveTrackIdsFromLocations(
+                    QList<QString>{trackLocation});
+    ASSERT_EQ(1, retryTrackIds.size());
+    EXPECT_TRUE(retryTrackIds.first().isValid());
+#endif // __SQLITE3__
 }

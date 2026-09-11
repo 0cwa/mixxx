@@ -141,6 +141,8 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     friend class TrackCollection;
     friend class TrackAnalysisScheduler;
     FRIEND_TEST(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly);
+    FRIEND_TEST(TrackDAOTest, addTracksFinishCommitFailureDoesNotPublish);
+    FRIEND_TEST(TrackDAOTest, saveTrackCommitFailureKeepsTrackDirty);
 
     QString findLastTimeAddedToHistory(TrackId trackId) const;
 
@@ -169,7 +171,9 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     TrackPointer addTracksAddFile(
             const QString& filePath,
             bool unremove);
-    void addTracksFinish(bool rollback = false);
+    // pTrack is the caller-owned track that may not be present in the global
+    // cache and therefore needs its provisional ID reset on rollback.
+    bool addTracksFinish(bool rollback = false, Track* pTrack = nullptr);
 
     bool updateTrack(const Track& track) const;
 

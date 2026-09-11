@@ -440,20 +440,29 @@ void LibraryScanner::slotFinishUnhashedScan() {
 
     // Finish adding the tracks -- rollback the transaction if the scan did not
     // finish cleanly and the user did not cancel the transaction.
-    m_trackDao.addTracksFinish(!m_scannerGlobal->shouldCancel() &&
-                               !bScanFinishedCleanly);
+    const bool tracksTransactionFinished = m_trackDao.addTracksFinish(
+            !m_scannerGlobal->shouldCancel() &&
+            !bScanFinishedCleanly);
+    if (!tracksTransactionFinished) {
+        kLogger.warning() << "Failed to finish adding scanned tracks";
+    }
 
-    if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
+    if (tracksTransactionFinished && !m_scannerGlobal->shouldCancel() &&
+            bScanFinishedCleanly) {
         cleanUpScan();
     }
 
-    if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
+    if (tracksTransactionFinished && !m_scannerGlobal->shouldCancel() &&
+            bScanFinishedCleanly) {
         const auto dbConnection = mixxx::DbConnectionPooled(m_pDbConnectionPool);
         updateQueryPlannerStatisticsForDatabase(dbConnection);
     }
 
-    if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
+    if (tracksTransactionFinished && !m_scannerGlobal->shouldCancel() &&
+            bScanFinishedCleanly) {
         kLogger.debug() << "Scan finished cleanly";
+    } else if (!tracksTransactionFinished) {
+        kLogger.warning() << "Scan did not finish cleanly because tracks could not be committed";
     } else {
         kLogger.debug() << "Scan cancelled";
     }

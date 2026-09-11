@@ -603,6 +603,8 @@ TrackId TrackCollection::addTrack(
 
     m_trackDao.addTracksPrepare();
     const auto trackId = m_trackDao.addTracksAddTrack(pTrack, unremove);
-    m_trackDao.addTracksFinish(!trackId.isValid());
-    return trackId;
+    const bool tracksTransactionFinished = m_trackDao.addTracksFinish(
+            !trackId.isValid(),
+            pTrack.get());
+    return tracksTransactionFinished ? trackId : TrackId();
 }
