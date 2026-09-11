@@ -22,7 +22,11 @@ const mixxx::Logger kLogger("MixxxDb");
 
 const QString kType = QStringLiteral("QSQLITE");
 
-const QString kConnectOptions = QStringLiteral("QSQLITE_OPEN_URI");
+// The scanner and UI/cache saver can write to the same SQLite database from
+// different connections. Wait briefly for transient writer contention instead
+// of returning SQLITE_BUSY immediately.
+const QString kConnectOptions =
+        QStringLiteral("QSQLITE_OPEN_URI;QSQLITE_BUSY_TIMEOUT=5000");
 
 const QString kUriPrefix = QStringLiteral("file://");
 
