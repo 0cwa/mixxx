@@ -613,7 +613,9 @@ AudibleMarkerComparison compareAudibleMarkers(
     double targetVariance = 0.0;
     for (int frame = 0; frame < kEngineMarkerFrames; ++frame) {
         for (int channel = 0; channel < kChannels; ++channel) {
-            const double sourceSample = source[(sourceMarker.outputFrame + frame) * kChannels + channel];
+            const double sourceSample =
+                    source[(sourceMarker.outputFrame + frame) * kChannels +
+                            channel];
             const double targetSample =
                     target[(commonFrame + frame) * kChannels + channel];
             const double sourceDelta = sourceSample - sourceMean;
