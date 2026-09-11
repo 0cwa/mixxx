@@ -9,7 +9,9 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QSaveFile>
+#include <QTest>
 #include <QTextStream>
 #include <algorithm>
 #include <array>
@@ -562,6 +564,78 @@ MarkerSimilarity findBestEngineMarkerSimilarity(
         }
     }
     return best;
+}
+
+struct AudibleMarkerComparison {
+    int sourceFrame = -1;
+    int targetFrame = -1;
+    int commonFrame = -1;
+    int lag = 0;
+    double slope = 0.0;
+    double correlation = -1.0;
+};
+
+AudibleMarkerComparison compareAudibleMarkers(
+        std::span<const CSAMPLE> source,
+        std::span<const CSAMPLE> target) {
+    const MarkerSimilarity sourceMarker = findBestEngineMarkerSimilarity(source);
+    const MarkerSimilarity targetMarker = findBestEngineMarkerSimilarity(target);
+    if (sourceMarker.outputFrame < 0 || targetMarker.outputFrame < 0) {
+        return {};
+    }
+
+    const int sourceEnd = sourceMarker.outputFrame + kEngineMarkerFrames;
+    // Use the source marker as the unshifted phase reference. The target's
+    // best independent match is retained only to measure and report lag.
+    const int commonFrame = sourceMarker.outputFrame;
+    const int targetEnd = commonFrame + kEngineMarkerFrames;
+    if (sourceEnd > static_cast<int>(source.size() / kChannels) ||
+            targetEnd > static_cast<int>(target.size() / kChannels)) {
+        return {};
+    }
+
+    double sourceMean = 0.0;
+    double targetMean = 0.0;
+    const int sampleCount = kEngineMarkerFrames * kChannels;
+    for (int frame = 0; frame < kEngineMarkerFrames; ++frame) {
+        for (int channel = 0; channel < kChannels; ++channel) {
+            sourceMean += source[(sourceMarker.outputFrame + frame) * kChannels +
+                    channel];
+            targetMean += target[(commonFrame + frame) * kChannels +
+                    channel];
+        }
+    }
+    sourceMean /= sampleCount;
+    targetMean /= sampleCount;
+
+    double covariance = 0.0;
+    double sourceVariance = 0.0;
+    double targetVariance = 0.0;
+    for (int frame = 0; frame < kEngineMarkerFrames; ++frame) {
+        for (int channel = 0; channel < kChannels; ++channel) {
+            const double sourceSample = source[(sourceMarker.outputFrame + frame) * kChannels + channel];
+            const double targetSample =
+                    target[(commonFrame + frame) * kChannels + channel];
+            const double sourceDelta = sourceSample - sourceMean;
+            const double targetDelta = targetSample - targetMean;
+            covariance += sourceDelta * targetDelta;
+            sourceVariance += sourceDelta * sourceDelta;
+            targetVariance += targetDelta * targetDelta;
+        }
+    }
+
+    AudibleMarkerComparison comparison;
+    comparison.sourceFrame = sourceMarker.outputFrame;
+    comparison.targetFrame = targetMarker.outputFrame;
+    comparison.commonFrame = commonFrame;
+    comparison.lag = targetMarker.outputFrame - sourceMarker.outputFrame;
+    comparison.slope = sourceVariance > 0.0
+            ? covariance / sourceVariance
+            : 0.0;
+    comparison.correlation = sourceVariance > 0.0 && targetVariance > 0.0
+            ? covariance / std::sqrt(sourceVariance * targetVariance)
+            : 0.0;
+    return comparison;
 }
 
 #if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
@@ -2384,5 +2458,180 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
                 "BungeeStretchedMarkerTracksEnginePosition");
     }
     EXPECT_NEAR(pixel.playheadPixel, pixel.markerPixel, 1.0);
+}
+
+TEST_F(EngineBufferAlignmentTest, BungeeCloneMarkersAreCallbackOrderIndependent) {
+    // Both decks run at rate 1.0 from the same track and each scenario emits
+    // one output buffer per callback. The clone must therefore have zero
+    // audible-frame lag; no compensation is expected or allowed here.
+    constexpr int kCloneMarkerLagTolerance = 0;
+
+    struct Scenario {
+        bool sourceFirst;
+        bool quantize;
+    };
+    constexpr std::array<Scenario, 4> kScenarios = {{
+            {true, false},
+            {false, false},
+            {true, true},
+            {false, true},
+    }};
+
+    for (const Scenario scenario : kScenarios) {
+        configureAlignmentControls(
+                m_sGroup1, EngineBuffer::KeylockEngine::Bungee, 1.0);
+        configureAlignmentControls(
+                m_sGroup2, EngineBuffer::KeylockEngine::Bungee, 1.0);
+        ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("quantize")),
+                scenario.quantize);
+        ControlObject::set(ConfigKey(m_sGroup2, QStringLiteral("quantize")),
+                scenario.quantize);
+
+        // Use a path-backed track so the asynchronous clone worker can load
+        // it. The deterministic reader still supplies the test samples,
+        // while a pathless loadFakeTrack() would fail in the worker.
+        const TrackPointer track = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        track->setAudioProperties(
+                mixxx::kEngineChannelOutputCount,
+                mixxx::audio::SampleRate(kSampleRate),
+                mixxx::audio::Bitrate(),
+                mixxx::Duration::fromSeconds(kTrackSeconds));
+        EngineBuffer* const pSource = m_pChannel1->getEngineBuffer();
+        EngineBuffer* const pTarget = m_pChannel2->getEngineBuffer();
+
+        m_pMixerDeck1->slotLoadTrack(track,
+#ifdef __STEM__
+                mixxx::StemChannelSelection(),
+#endif
+                true);
+        ProcessBuffer();
+        QTRY_VERIFY_WITH_TIMEOUT(
+                pSource->isTrackLoaded() && pSource->getLoadedTrack() == track,
+                2000);
+        pSource->seekExact(mixxx::audio::kStartFramePos);
+        m_pMixerDeck2->slotCloneFromGroup(m_sGroup1);
+
+        std::array<CSAMPLE, kBufferSamples> sourceOutput{};
+        std::array<CSAMPLE, kBufferSamples> targetOutput{};
+        std::vector<CSAMPLE> sourceEmitted;
+        std::vector<CSAMPLE> targetEmitted;
+        sourceEmitted.reserve(kBufferSamples * 100);
+        targetEmitted.reserve(kBufferSamples * 100);
+
+        auto processDeck = [&](EngineDeck* pDeck,
+                                   std::vector<CSAMPLE>* pEmitted,
+                                   std::array<CSAMPLE, kBufferSamples>* pOutput) {
+            pDeck->process(pOutput->data(), kBufferSamples);
+            pDeck->postProcess(kBufferSamples);
+            pEmitted->insert(pEmitted->end(), pOutput->begin(), pOutput->end());
+        };
+
+        // Loading completes asynchronously, and the clone seek is consumed by
+        // the first engine callback after loading. Wait for both facts rather
+        // than assuming a callback count or sleeping for a fixed interval.
+        QTRY_VERIFY_WITH_TIMEOUT(
+                pTarget->isTrackLoaded() && pTarget->getLoadedTrack() == track,
+                2000);
+
+        auto processInOrder = [&]() {
+            if (scenario.sourceFirst) {
+                processDeck(m_pChannel1,
+                        &sourceEmitted,
+                        &sourceOutput);
+                processDeck(m_pChannel2,
+                        &targetEmitted,
+                        &targetOutput);
+            } else {
+                processDeck(m_pChannel2,
+                        &targetEmitted,
+                        &targetOutput);
+                processDeck(m_pChannel1,
+                        &sourceEmitted,
+                        &sourceOutput);
+            }
+            QCoreApplication::processEvents();
+        };
+
+        QElapsedTimer readinessTimer;
+        readinessTimer.start();
+        bool cloneReady = false;
+        while (!cloneReady && readinessTimer.elapsed() < 2000) {
+            processInOrder();
+            const auto targetPlayPos = pTarget->getExactPlayPos();
+            cloneReady = pTarget->isTrackLoaded() &&
+                    targetPlayPos.isValid() &&
+                    targetPlayPos.value() > 0;
+        }
+        ASSERT_TRUE(cloneReady)
+                << "cloned target did not reach a valid post-clone position";
+
+        // Discard the readiness buffers. Compare only once both engines have
+        // emitted the same deterministic marker in their steady-state output.
+        sourceEmitted.clear();
+        targetEmitted.clear();
+        QElapsedTimer measurementTimer;
+        measurementTimer.start();
+        AudibleMarkerComparison comparison;
+        while ((comparison.sourceFrame < 0 || comparison.targetFrame < 0 ||
+                       comparison.correlation < 0.9) &&
+                measurementTimer.elapsed() < 4000) {
+            processInOrder();
+            comparison = compareAudibleMarkers(sourceEmitted, targetEmitted);
+        }
+
+        qWarning() << "Bungee clone marker scenario sourceFirst="
+                   << scenario.sourceFirst << "quantize=" << scenario.quantize
+                   << "sourceFrame=" << comparison.sourceFrame
+                   << "targetFrame=" << comparison.targetFrame
+                   << "commonFrame=" << comparison.commonFrame
+                   << "lag=" << comparison.lag
+                   << "slope=" << comparison.slope
+                   << "correlation=" << comparison.correlation;
+        ASSERT_GE(comparison.sourceFrame, 0)
+                << "source frame=" << comparison.sourceFrame
+                << ", target best frame=" << comparison.targetFrame
+                << ", common frame=" << comparison.commonFrame
+                << ", measured lag=" << comparison.lag
+                << ", correlation=" << comparison.correlation
+                << ", slope=" << comparison.slope;
+        ASSERT_GE(comparison.targetFrame, 0)
+                << "source frame=" << comparison.sourceFrame
+                << ", target best frame=" << comparison.targetFrame
+                << ", common frame=" << comparison.commonFrame
+                << ", measured lag=" << comparison.lag
+                << ", correlation=" << comparison.correlation
+                << ", slope=" << comparison.slope;
+        ASSERT_LE(std::abs(comparison.lag), kCloneMarkerLagTolerance)
+                << "clone marker lag exceeded the exact-phase tolerance; "
+                   "source frame="
+                << comparison.sourceFrame
+                << ", target best frame=" << comparison.targetFrame
+                << ", common frame=" << comparison.commonFrame
+                << ", measured lag=" << comparison.lag
+                << ", correlation=" << comparison.correlation
+                << ", slope=" << comparison.slope;
+        ASSERT_GT(comparison.correlation, 0.9)
+                << "source frame=" << comparison.sourceFrame
+                << ", target best frame=" << comparison.targetFrame
+                << ", common frame=" << comparison.commonFrame
+                << ", measured lag=" << comparison.lag
+                << ", correlation=" << comparison.correlation
+                << ", slope=" << comparison.slope;
+        EXPECT_NEAR(comparison.slope, 1.0, 0.1)
+                << "source frame=" << comparison.sourceFrame
+                << ", target best frame=" << comparison.targetFrame
+                << ", common frame=" << comparison.commonFrame
+                << ", measured lag=" << comparison.lag
+                << ", correlation=" << comparison.correlation
+                << ", slope=" << comparison.slope;
+        EXPECT_GT(comparison.correlation, 0.9)
+                << "source frame=" << comparison.sourceFrame
+                << ", target best frame=" << comparison.targetFrame
+                << ", common frame=" << comparison.commonFrame
+                << ", measured lag=" << comparison.lag
+                << ", correlation=" << comparison.correlation
+                << ", slope=" << comparison.slope;
+    }
 }
 #endif
