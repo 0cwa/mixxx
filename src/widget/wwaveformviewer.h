@@ -50,6 +50,7 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
 #endif
 
   protected:
+    bool event(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -58,6 +59,7 @@ class WWaveformViewer : public WWidget, public TrackDropTarget {
     void onZoomChange(double zoom);
 
   private:
+    void cancelMouseInteraction();
     void setWaveformWidget(WaveformWidgetAbstract* waveformWidget);
     WaveformWidgetAbstract* getWaveformWidget() {
         return m_waveformWidget;

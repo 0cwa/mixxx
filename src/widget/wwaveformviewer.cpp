@@ -2,6 +2,7 @@
 
 #include <QDragEnterEvent>
 #include <QEvent>
+#include <QGuiApplication>
 
 #include "control/controlproxy.h"
 #include "moc_wwaveformviewer.cpp"
@@ -177,7 +178,7 @@ void WWaveformViewer::mouseMoveEvent(QMouseEvent* event) {
     }
 }
 
-void WWaveformViewer::mouseReleaseEvent(QMouseEvent* /*event*/) {
+void WWaveformViewer::cancelMouseInteraction() {
     if (m_bScratching) {
         m_pScratchPositionEnable->set(0.0);
         m_bScratching = false;
@@ -190,6 +191,17 @@ void WWaveformViewer::mouseReleaseEvent(QMouseEvent* /*event*/) {
 
     // Set the cursor back to an arrow.
     setCursor(Qt::ArrowCursor);
+}
+
+void WWaveformViewer::mouseReleaseEvent(QMouseEvent* /*event*/) {
+    cancelMouseInteraction();
+}
+
+bool WWaveformViewer::event(QEvent* event) {
+    if (event->type() == QEvent::WindowDeactivate) {
+        cancelMouseInteraction();
+    }
+    return WWidget::event(event);
 }
 
 void WWaveformViewer::wheelEvent(QWheelEvent* event) {
@@ -215,6 +227,12 @@ bool WWaveformViewer::handleDragAndDropEventFromWindow(QEvent* pEvent) {
 }
 
 void WWaveformViewer::leaveEvent(QEvent*) {
+    // A release outside the widget can arrive as a Leave without a release
+    // event. Keep the drag alive while the button is still down; the later
+    // Leave then cancels it after the release.
+    if (QGuiApplication::mouseButtons() == Qt::NoButton) {
+        cancelMouseInteraction();
+    }
     if (m_pHoveredMark) {
         unhighlightMark(m_pHoveredMark);
         m_pHoveredMark = nullptr;

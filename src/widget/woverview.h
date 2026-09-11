@@ -45,7 +45,7 @@ class WOverview : public WWidget, public TrackDropTarget {
     void cloneDeck(const QString& sourceGroup, const QString& targetGroup) override;
 
   protected:
-
+    bool event(QEvent* event) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
@@ -73,6 +73,7 @@ class WOverview : public WWidget, public TrackDropTarget {
     void slotScalingChanged();
 
   private:
+    void cancelMouseInteraction();
     // Append the waveform overview pixmap according to available data
     // in waveform
     bool drawNextPixmapPart();

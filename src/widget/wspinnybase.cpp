@@ -61,6 +61,7 @@ WSpinnyBase::WSpinnyBase(
           m_dRotationsPerSecond(MIXXX_VINYL_SPEED_33_NUM / 60),
           m_bClampFailedWarning(false),
           m_bGhostPlayback(false),
+          m_bMouseDown(false),
           m_pPlayer(pPlayer),
           m_pCoverMenu(make_parented<WCoverArtMenu>(this)),
           m_pDlgCoverArt(make_parented<DlgCoverArtFullSize>(this, pPlayer, m_pCoverMenu)) {
@@ -97,6 +98,7 @@ WSpinnyBase::WSpinnyBase(
 }
 
 WSpinnyBase::~WSpinnyBase() {
+    cancelMouseInteraction();
 #ifdef __VINYLCONTROL__
     m_pVCManager->removeSignalQualityListener(this);
 #endif
@@ -566,6 +568,7 @@ void WSpinnyBase::mousePressEvent(QMouseEvent* e) {
         m_iStartMouseY = y;
 
         QApplication::setOverrideCursor(QCursor(Qt::ClosedHandCursor));
+        m_bMouseDown = true;
 
         // Coordinates from center of widget
         double c_x = x - width() / 2;
@@ -594,11 +597,18 @@ void WSpinnyBase::mousePressEvent(QMouseEvent* e) {
     }
 }
 
+void WSpinnyBase::cancelMouseInteraction() {
+    if (m_bMouseDown) {
+        QApplication::restoreOverrideCursor();
+        m_bMouseDown = false;
+    }
+    m_pScratchToggle.set(0.0);
+    m_iFullRotations = 0;
+}
+
 void WSpinnyBase::mouseReleaseEvent(QMouseEvent* e) {
     if (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) {
-        QApplication::restoreOverrideCursor();
-        m_pScratchToggle.set(0.0);
-        m_iFullRotations = 0;
+        cancelMouseInteraction();
     }
 }
 
@@ -627,10 +637,18 @@ void WSpinnyBase::hideEvent(QHideEvent* event) {
 }
 
 bool WSpinnyBase::event(QEvent* pEvent) {
-    if (pEvent->type() == QEvent::ToolTip) {
+    if (pEvent->type() == QEvent::WindowDeactivate) {
+        cancelMouseInteraction();
+    } else if (pEvent->type() == QEvent::ToolTip) {
         updateTooltip();
     }
     return WGLWidget::event(pEvent);
+}
+
+void WSpinnyBase::leaveEvent(QEvent* /*event*/) {
+    if (QApplication::mouseButtons() == Qt::NoButton) {
+        cancelMouseInteraction();
+    }
 }
 
 bool WSpinnyBase::handleDragAndDropEventFromWindow(QEvent* pEvent) {

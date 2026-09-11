@@ -613,6 +613,21 @@ void WOverview::mouseReleaseEvent(QMouseEvent* e) {
     }
 }
 
+void WOverview::cancelMouseInteraction() {
+    m_iPickupPos = m_iPlayPos;
+    m_bLeftClickDragging = false;
+    m_bTimeRulerActive = false;
+    unsetCursor();
+    update();
+}
+
+bool WOverview::event(QEvent* event) {
+    if (event->type() == QEvent::WindowDeactivate) {
+        cancelMouseInteraction();
+    }
+    return WWidget::event(event);
+}
+
 void WOverview::mousePressEvent(QMouseEvent* e) {
     //qDebug() << "WOverview::mousePressEvent" << e->pos();
     mouseMoveEvent(e);
@@ -708,9 +723,7 @@ void WOverview::leaveEvent(QEvent* pEvent) {
     if (!m_pCueMenuPopup->isVisible()) {
         m_pHoveredMark.clear();
     }
-    m_bLeftClickDragging = false;
-    m_bTimeRulerActive = false;
-    update();
+    cancelMouseInteraction();
 }
 
 void WOverview::paintEvent(QPaintEvent* pEvent) {

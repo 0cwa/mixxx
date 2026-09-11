@@ -78,6 +78,7 @@ class WSpinnyBase : public WGLWidget,
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     bool event(QEvent* pEvent) override;
+    void leaveEvent(QEvent* event) override;
 
     // TrackDropTarget:
     bool handleDragAndDropEventFromWindow(QEvent* pEvent) override;
@@ -91,6 +92,7 @@ class WSpinnyBase : public WGLWidget,
     bool shouldDrawVinylQuality() const;
 
   private:
+    void cancelMouseInteraction();
     virtual void draw() = 0;
     virtual void coverChanged() = 0;
 
@@ -150,6 +152,7 @@ class WSpinnyBase : public WGLWidget,
     double m_dRotationsPerSecond;
     bool m_bClampFailedWarning;
     bool m_bGhostPlayback;
+    bool m_bMouseDown;
 
     BaseTrackPlayer* m_pPlayer;
     parented_ptr<WCoverArtMenu> m_pCoverMenu;

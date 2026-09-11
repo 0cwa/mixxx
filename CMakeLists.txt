@@ -3023,6 +3023,7 @@ if(BUILD_TESTING)
     src/test/wmemorycuebutton_test.cpp
     src/test/wpushbutton_test.cpp
     src/test/waveformmarkset_test.cpp
+    src/test/widget_mouse_cancellation_test.cpp
     src/test/wwidgetstack_test.cpp
     src/util/moc_included_test.cpp
     src/test/helpers/log_test.cpp
