@@ -278,7 +278,7 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
     static const double kDefaultRateRange;
     static const double kDefaultRateDir;
     static const double kRateRangeDivisor;
-    static const int kProcessBufferSize;
+    static constexpr int kProcessBufferSize = 1024;
 };
 
 class SignalPathTest : public BaseSignalPathTest {

@@ -50,6 +50,18 @@ class allshader::WaveformRenderMark : public ::WaveformRenderMarkBase,
     void setUntilMarkShowTime(bool untilMarkShowTime) {
         m_untilMarkShowTime = untilMarkShowTime;
     }
+    void setUntilMarkShowHotCues(bool untilMarkShowHotCues) {
+        m_untilMarkShowHotCues = untilMarkShowHotCues;
+    }
+    void setUntilMarkShowMemoryCues(bool untilMarkShowMemoryCues) {
+        m_untilMarkShowMemoryCues = untilMarkShowMemoryCues;
+    }
+    void setUntilMarkShowIntroCues(bool untilMarkShowIntroCues) {
+        m_untilMarkShowIntroCues = untilMarkShowIntroCues;
+    }
+    void setUntilMarkShowOutroCues(bool untilMarkShowOutroCues) {
+        m_untilMarkShowOutroCues = untilMarkShowOutroCues;
+    }
     void setUntilMarkAlign(Qt::Alignment untilMarkAlign) {
         m_untilMarkAlign = untilMarkAlign;
     }
@@ -102,6 +114,10 @@ class allshader::WaveformRenderMark : public ::WaveformRenderMarkBase,
 
     bool m_untilMarkShowBeats;
     bool m_untilMarkShowTime;
+    bool m_untilMarkShowHotCues;
+    bool m_untilMarkShowMemoryCues;
+    bool m_untilMarkShowIntroCues;
+    bool m_untilMarkShowOutroCues;
     Qt::Alignment m_untilMarkAlign;
     int m_untilMarkTextSize;
     float m_untilMarkTextHeightLimit;

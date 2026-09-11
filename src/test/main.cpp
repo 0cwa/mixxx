@@ -12,6 +12,10 @@ int main(int argc, char **argv) {
         qputenv("QT_QPA_PLATFORM", QByteArray("offscreen"));
     }
 
+    // Select the style before QApplication and QQmlEngine are created. This
+    // keeps QML tests independent of the platform style selected by CI.
+    qputenv("QT_QUICK_CONTROLS_STYLE", QByteArray("Basic"));
+
     // We never want to popup error dialogs when running tests.
     ErrorDialogHandler::setEnabled(false);
 

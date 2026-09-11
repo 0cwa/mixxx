@@ -4,10 +4,13 @@
 #include <QApplication>
 #include <QWheelEvent>
 
+#include "control/controlobject.h"
 #include "rendergraph/engine.h"
 #include "rendergraph/opacitynode.h"
 #include "waveform/renderers/allshader/waveformrenderbackground.h"
 #include "waveform/renderers/allshader/waveformrenderbeat.h"
+#include "waveform/renderers/allshader/waveformrenderdownbeat.h"
+#include "waveform/renderers/allshader/waveformrenderdownbeat16.h"
 #include "waveform/renderers/allshader/waveformrendererendoftrack.h"
 #include "waveform/renderers/allshader/waveformrendererfiltered.h"
 #include "waveform/renderers/allshader/waveformrendererhsv.h"
@@ -19,6 +22,7 @@
 #include "waveform/renderers/allshader/waveformrenderertextured.h"
 #include "waveform/renderers/allshader/waveformrendermark.h"
 #include "waveform/renderers/allshader/waveformrendermarkrange.h"
+#include "waveform/renderers/allshader/waveformrendermemorycues.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "waveform/widgets/allshader/moc_waveformwidget.cpp"
 
@@ -60,6 +64,15 @@ WaveformWidget::WaveformWidget(QWidget* parent,
         pOpacityNode->appendChildNode(std::unique_ptr<rendergraph::BaseNode>(pNode));
     }
     pOpacityNode->appendChildNode(addRendererNode<WaveformRenderBeat>());
+
+    auto pDownBeatOpacityNode = std::make_unique<rendergraph::OpacityNode>();
+    pDownBeatOpacityNode->appendChildNode(addRendererNode<WaveformRenderDownBeat>());
+    // Draw 16-beat markers after 4-beat markers so m_color2 wins where they overlap.
+    pDownBeatOpacityNode->appendChildNode(addRendererNode<WaveformRenderDownBeat16>());
+    m_pDownBeatOpacityNode = pOpacityNode->appendChildNode(std::move(pDownBeatOpacityNode));
+    m_pDownBeatOpacityNode->setOpacity(m_downBeatOpacity);
+    pOpacityNode->appendChildNode(addRendererNode<WaveformRenderMemoryCues>());
+
     m_pWaveformRenderMark = pOpacityNode->appendChildNode(addRendererNode<WaveformRenderMark>());
 
     // if the added signal renderer supports slip, we add it again, now for
@@ -93,6 +106,12 @@ WaveformWidget::WaveformWidget(QWidget* parent,
     m_pOpacityNode = pTopNode->appendChildNode(std::move(pOpacityNode));
 
     m_pEngine = std::make_unique<rendergraph::Engine>(std::move(pTopNode));
+
+    connect(
+            ControlObject::getControl(ConfigKey(group, "toggle_downbeats_marker")),
+            &ControlObject::valueChanged,
+            this,
+            &WaveformWidget::toggleDownBeatVisibility);
 }
 
 WaveformWidget::~WaveformWidget() {
@@ -200,6 +219,14 @@ void WaveformWidget::wheelEvent(QWheelEvent* pEvent) {
 void WaveformWidget::leaveEvent(QEvent* pEvent) {
     QApplication::sendEvent(parentWidget(), pEvent);
     pEvent->accept();
+}
+
+void WaveformWidget::toggleDownBeatVisibility() {
+    if (m_pDownBeatOpacityNode) {
+        m_downBeatOpacity = (m_downBeatOpacity > 0.0f) ? 0.0f : 1.0f;
+        m_pDownBeatOpacityNode->setOpacity(m_downBeatOpacity);
+        update();
+    }
 }
 
 /* static */

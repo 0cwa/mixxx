@@ -85,6 +85,30 @@ Select from different types of displays for the waveform, which differ primarily
         </widget>
        </item>
       </layout>
+    </item>
+
+     <item row="3" column="0">
+      <widget class="QLabel" name="maxZoomOutLabel">
+       <property name="toolTip">
+        <string>Allow the waveform zoom to show more of the track at once.</string>
+       </property>
+       <property name="text">
+        <string>Maximum zoom-out level</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+       </property>
+       <property name="buddy">
+        <cstring>maxZoomOutComboBox</cstring>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="1" colspan="4">
+      <widget class="QComboBox" name="maxZoomOutComboBox">
+       <property name="toolTip">
+        <string>Allow the waveform to show more of the track at once.</string>
+       </property>
+      </widget>
      </item>
 
      <item row="4" column="0">
@@ -495,7 +519,59 @@ Select from different types of displays for the waveform, which differ primarily
      </item>
 
      <item row="12" column="1" colspan="4">
-      <layout class="QHBoxLayout" name="marker_option_layout">
+      <layout class="QVBoxLayout" name="untilMarkOptionsLayout">
+       <item>
+        <widget class="QGroupBox" name="untilMarkCueTypesGroupBox">
+         <property name="title">
+          <string>Count down to</string>
+         </property>
+         <layout class="QGridLayout" name="untilMarkCueTypesLayout">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="untilMarkShowHotCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Hot Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Hot Cue markers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QCheckBox" name="untilMarkShowMemoryCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Memory Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Memory Cue markers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="untilMarkShowIntroCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Intro Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Intro Cue markers</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QCheckBox" name="untilMarkShowOutroCuesCheckBox">
+            <property name="toolTip">
+             <string>Include Outro Cue markers when choosing the next countdown marker.</string>
+            </property>
+            <property name="text">
+             <string>Outro Cue markers</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <layout class="QHBoxLayout" name="marker_option_layout">
        <item>
         <layout class="QVBoxLayout" name="marker_options_placement_layout">
          <item>
@@ -575,7 +651,9 @@ Select from different types of displays for the waveform, which differ primarily
         </layout>
        </item>
 
-      </layout><!-- marker_option_layout -->
+        </layout><!-- marker_option_layout -->
+       </item>
+      </layout><!-- untilMarkOptionsLayout -->
      </item>
 
      <item row="13" column="1" colspan="4">
@@ -908,6 +986,7 @@ Select from different types of displays for the waveform overview, which differ 
   <tabstop>useAccelerationCheckBox</tabstop>
   <tabstop>splitLeftRightCheckBox</tabstop>
   <tabstop>highDetailCheckBox</tabstop>
+  <tabstop>maxZoomOutComboBox</tabstop>
   <tabstop>frameRateSlider</tabstop>
   <tabstop>frameRateSpinBox</tabstop>
   <tabstop>endOfTrackWarningTimeSlider</tabstop>
@@ -923,6 +1002,10 @@ Select from different types of displays for the waveform overview, which differ 
   <tabstop>highVisualGain</tabstop>
   <tabstop>untilMarkShowBeatsCheckBox</tabstop>
   <tabstop>untilMarkShowTimeCheckBox</tabstop>
+  <tabstop>untilMarkShowHotCuesCheckBox</tabstop>
+  <tabstop>untilMarkShowMemoryCuesCheckBox</tabstop>
+  <tabstop>untilMarkShowIntroCuesCheckBox</tabstop>
+  <tabstop>untilMarkShowOutroCuesCheckBox</tabstop>
   <tabstop>untilMarkAlignComboBox</tabstop>
   <tabstop>untilMarkTextPointSizeSpinBox</tabstop>
   <tabstop>untilMarkTextHeightLimitComboBox</tabstop>

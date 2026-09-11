@@ -2,6 +2,7 @@
 
 #include <Qt>
 
+#include "control/controlobject.h"
 #include "library/basetracktablemodel.h"
 #include "library/library.h"
 #include "library/library_prefs.h"
@@ -9,6 +10,8 @@
 #include "preferences/colorpalettesettings.h"
 #include "preferences/constants.h"
 #include "util/color/predefinedcolorpalettes.h"
+#include "waveform/renderers/waveformwidgetrenderer.h"
+#include "waveform/waveformwidgetfactory.h"
 
 #define PROPERTY_IMPL_GETTER(GROUP, KEY, TYPE, NAME, DEFAULT) \
     TYPE QmlConfigProxy::NAME() const {                       \
@@ -61,6 +64,7 @@ const QString kSeratoEnabled = QStringLiteral("ShowSeratoLibrary");
 const QString kZoomSynchronizationKey = QStringLiteral("ZoomSynchronization");
 const QString kOverviewNormalizedKey = QStringLiteral("OverviewNormalized");
 const QString kDefaultZoomKey = QStringLiteral("DefaultZoom");
+const QString kMaxZoomOutKey = QStringLiteral("MaxZoomOut");
 const QString kPlayMarkerPositionKey = QStringLiteral("PlayMarkerPosition");
 const QString kUntilMarkShowBeatsKey = QStringLiteral("UntilMarkShowBeats");
 const QString kUntilMarkShowTimeKey = QStringLiteral("UntilMarkShowTime");
@@ -74,7 +78,6 @@ const QString kBeatGridAlphaKey = QStringLiteral("beatGridAlpha");
 const QString kEndOfTrackWarningTimeKey = QStringLiteral("EndOfTrackWarningTime");
 const QString kWaveformTypeKey = QStringLiteral("WaveformType");
 const QString kWaveformOptionsKey = QStringLiteral("waveform_options");
-
 // Library group
 const QString kTooltipsKey = QStringLiteral("Tooltips");
 const QString kInhibitScreensaverKey = QStringLiteral("InhibitScreensaver");
@@ -129,6 +132,19 @@ QmlConfigProxy::QmlConfigProxy(
         : QmlConfigProxyBase(pParent),
           m_pConfig(pConfig) {
     QmlConfigProxyBase::s_pInstance = this;
+    if (WaveformWidgetFactory::isCreated()) {
+        connect(WaveformWidgetFactory::instance(),
+                &WaveformWidgetFactory::maxZoomOutChanged,
+                this,
+                [this](double) { emit waveformMaxZoomOutChanged(); });
+    } else {
+        const double maxZoomOut = waveformMaxZoomOut();
+        WaveformWidgetRenderer::setWaveformMaxZoom(maxZoomOut);
+        const ConfigKey maxZoomOutKey(kWaveformGroup, kMaxZoomOutKey);
+        if (ControlObject::exists(maxZoomOutKey)) {
+            ControlObject::set(maxZoomOutKey, maxZoomOut);
+        }
+    }
 }
 
 QmlConfigProxy::~QmlConfigProxy() {
@@ -227,6 +243,37 @@ void QmlConfigProxy::set_useAcceleration(bool value) {
 PROPERTY_IMPL(kWaveformGroup, kZoomSynchronizationKey, bool, waveformZoomSynchronization, true);
 PROPERTY_IMPL(kWaveformGroup, kOverviewNormalizedKey, bool, waveformOverviewNormalized, true);
 PROPERTY_IMPL(kWaveformGroup, kDefaultZoomKey, double, waveformDefaultZoom, 3);
+double QmlConfigProxy::waveformMaxZoomOut() const {
+    if (WaveformWidgetFactory::isCreated()) {
+        return WaveformWidgetFactory::instance()->getMaxZoomOut();
+    }
+    bool ok = false;
+    const double configuredValue =
+            m_pConfig->getValueString(ConfigKey(kWaveformGroup, kMaxZoomOutKey))
+                    .toDouble(&ok);
+    return WaveformWidgetRenderer::clampWaveformMaxZoom(
+            ok ? configuredValue : WaveformWidgetRenderer::s_waveformDefaultMaxZoom);
+}
+
+void QmlConfigProxy::set_waveformMaxZoomOut(double value) {
+    if (WaveformWidgetFactory::isCreated()) {
+        WaveformWidgetFactory::instance()->setMaxZoomOut(value);
+        return;
+    }
+
+    const double clampedValue = WaveformWidgetRenderer::clampWaveformMaxZoom(value);
+    WaveformWidgetRenderer::setWaveformMaxZoom(clampedValue);
+    const ConfigKey maxZoomOutKey(kWaveformGroup, kMaxZoomOutKey);
+    if (ControlObject::exists(maxZoomOutKey)) {
+        ControlObject::set(maxZoomOutKey, clampedValue);
+    }
+    setConfigValueAndNotify<double>(
+            kWaveformGroup,
+            kMaxZoomOutKey,
+            clampedValue,
+            WaveformWidgetRenderer::s_waveformDefaultMaxZoom,
+            &QmlConfigProxy::waveformMaxZoomOutChanged);
+}
 PROPERTY_IMPL(kWaveformGroup, kPlayMarkerPositionKey, double, waveformPlayMarkerPosition, 0.5);
 PROPERTY_IMPL(kWaveformGroup, kUntilMarkShowBeatsKey, bool, waveformUntilMarkShowBeats, false);
 PROPERTY_IMPL(kWaveformGroup, kUntilMarkShowTimeKey, bool, waveformUntilMarkShowTime, false);

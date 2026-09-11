@@ -2,8 +2,11 @@
 
 #include <QAtomicInt>
 #include <QtDebug>
+#include <limits>
+#include <utility>
 
 #include "analyzer/analyzersilence.h"
+#include "engine/controls/seek30control.h"
 #include "moc_cachingreaderworker.cpp"
 #include "sources/soundsourceproxy.h"
 #include "track/track.h"
@@ -31,7 +34,40 @@ CachingReaderWorker::CachingReaderWorker(
           m_tag(QString("CachingReaderWorker %1").arg(m_group)),
           m_pChunkReadRequestFIFO(pChunkReadRequestFIFO),
           m_pReaderStatusFIFO(pReaderStatusFIFO),
-          m_maxSupportedChannel(maxSupportedChannel) {
+          m_maxSupportedChannel(maxSupportedChannel),
+          m_diagnosticState(static_cast<int>(DiagnosticState::Waiting)),
+          m_diagnosticActiveChunk(-1),
+          m_diagnosticLastCompletedChunk(-1),
+          m_diagnosticCompletedRequests(0),
+          m_diagnosticDequeuedRequests(0),
+          m_diagnosticPublishedStatuses(0) {
+}
+
+int CachingReaderWorker::diagnosticStatusCapacity() const {
+    return m_pReaderStatusFIFO->capacity();
+}
+
+bool CachingReaderWorker::publishStatus(ReaderStatusUpdate update) {
+    const int previousState = m_diagnosticState.loadAcquire();
+    m_diagnosticState.storeRelease(
+            static_cast<int>(DiagnosticState::PublishingStatus));
+    while (!m_stop.loadAcquire()) {
+        if (m_pReaderStatusFIFO->write(&update, 1) == 1) {
+            m_diagnosticPublishedStatuses.fetchAndAddRelaxed(1);
+            m_diagnosticState.storeRelease(previousState);
+            return true;
+        }
+
+        // The callback wakes the worker after consuming status updates. This
+        // avoids burning a worker core while backpressure is active.
+        m_semaRun.acquire();
+    }
+
+    // The owner cannot process more updates after it has begun destruction.
+    // Return chunk ownership explicitly before abandoning this status update.
+    update.takeFromWorker();
+    m_diagnosticState.storeRelease(previousState);
+    return false;
 }
 
 ReaderStatusUpdate CachingReaderWorker::processReadRequest(
@@ -113,6 +149,67 @@ void CachingReaderWorker::newTrack(TrackPointer pTrack) {
     workReady();
 }
 
+void CachingReaderWorker::setSeek30Control(Seek30Control* pControl) {
+    m_pSeek30Control.store(pControl, std::memory_order_release);
+}
+
+void CachingReaderWorker::updateSeek30Track(TrackPointer pNewTrack) {
+    m_seek30State.trackLoaded(std::move(pNewTrack));
+    m_seek30Generation.store(
+            m_seek30State.generation(), std::memory_order_release);
+}
+
+bool CachingReaderWorker::enqueueSeek30Command(Seek30Operation operation) {
+    const Seek30Command command{
+            operation,
+            m_seek30Generation.load(std::memory_order_acquire)};
+    if (!m_seek30CommandMailbox.tryPush(command)) {
+        recordSeek30CommandOverflow();
+        return false;
+    }
+    workReady();
+    return true;
+}
+
+void CachingReaderWorker::recordSeek30CommandOverflow() {
+    auto count = m_seek30CommandOverflowCount.load(std::memory_order_relaxed);
+    while (count != std::numeric_limits<std::uint64_t>::max() &&
+            !m_seek30CommandOverflowCount.compare_exchange_weak(
+                    count,
+                    count + 1,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+    }
+}
+
+void CachingReaderWorker::processSeek30Commands() {
+    Seek30Control* const pControl =
+            m_pSeek30Control.load(std::memory_order_acquire);
+    if (!pControl) {
+        return;
+    }
+
+    Seek30Command command;
+    if (!m_seek30CommandMailbox.tryPop(&command)) {
+        return;
+    }
+
+    auto inputs = pControl->seek30WorkerInputs();
+    do {
+        if (command.generation != m_seek30State.generation()) {
+            continue;
+        }
+
+        const auto target = m_seek30State.process(command, inputs);
+        if (target.position.isValid()) {
+            inputs.currentPosition = target.position;
+            auto publishedTarget = target;
+            publishedTarget.sequence = ++m_seek30TargetSequence;
+            pControl->publishSeekTarget(publishedTarget);
+        }
+    } while (m_seek30CommandMailbox.tryPop(&command));
+}
+
 void CachingReaderWorker::run() {
     // the id of this thread, for debugging purposes
     static auto lastId = QAtomicInt(0);
@@ -125,6 +222,9 @@ void CachingReaderWorker::run() {
         // Request is initialized by reading from FIFO
         CachingReaderChunkReadRequest request;
         if (m_newTrackAvailable.loadAcquire()) {
+            m_diagnosticState.storeRelease(
+                    static_cast<int>(DiagnosticState::LoadingTrack));
+            m_diagnosticActiveChunk.storeRelease(-1);
 #ifdef __STEM__
             NewTrackRequest pLoadTrack;
 #else
@@ -138,38 +238,65 @@ void CachingReaderWorker::run() {
 #ifdef __STEM__
             if (pLoadTrack.track) {
                 // in this case the engine is still running with the old track
-                loadTrack(pLoadTrack.track, pLoadTrack.stemMask);
+                if (!loadTrack(pLoadTrack.track, pLoadTrack.stemMask)) {
+                    break;
+                }
 #else
             if (pLoadTrack) {
                 // in this case the engine is still running with the old track
-                loadTrack(pLoadTrack);
+                if (!loadTrack(pLoadTrack)) {
+                    break;
+                }
 #endif
             } else {
                 // here, the engine is already stopped
-                unloadTrack();
+                if (!unloadTrack()) {
+                    break;
+                }
             }
-        } else if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
-            // Read the requested chunk and send the result
-            const ReaderStatusUpdate update = processReadRequest(request);
-            m_pReaderStatusFIFO->writeBlocking(&update, 1);
+            processSeek30Commands();
         } else {
-            Event::end(m_tag);
-            m_semaRun.acquire();
-            Event::start(m_tag);
+            processSeek30Commands();
+            if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
+                m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
+                // Read the requested chunk and send the result. Publish only
+                // primitive progress snapshots for off-thread diagnostics.
+                const int chunkIndex = request.chunk->getIndex();
+                m_diagnosticActiveChunk.storeRelease(chunkIndex);
+                m_diagnosticState.storeRelease(
+                        static_cast<int>(DiagnosticState::Decoding));
+                const ReaderStatusUpdate update = processReadRequest(request);
+                m_diagnosticLastCompletedChunk.storeRelease(chunkIndex);
+                m_diagnosticCompletedRequests.fetchAndAddRelaxed(1);
+                m_diagnosticActiveChunk.storeRelease(-1);
+                if (!publishStatus(update)) {
+                    break;
+                }
+            } else {
+                m_diagnosticActiveChunk.storeRelease(-1);
+                m_diagnosticState.storeRelease(
+                        static_cast<int>(DiagnosticState::Waiting));
+                Event::end(m_tag);
+                m_semaRun.acquire();
+                Event::start(m_tag);
+            }
         }
     }
 }
 
-void CachingReaderWorker::discardAllPendingRequests() {
+bool CachingReaderWorker::discardAllPendingRequests() {
+    bool allPublished = true;
     CachingReaderChunkReadRequest request;
     while (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
+        m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
         const auto update = ReaderStatusUpdate::readDiscarded(request.chunk);
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        allPublished = publishStatus(update) && allPublished;
     }
+    return allPublished;
 }
 
-void CachingReaderWorker::closeAudioSource() {
-    discardAllPendingRequests();
+bool CachingReaderWorker::closeAudioSource() {
+    const bool allPublished = discardAllPendingRequests();
 
     if (m_pAudioSource) {
         // Closes open file handles of the old track.
@@ -180,26 +307,42 @@ void CachingReaderWorker::closeAudioSource() {
     // This function has to be called with the engine stopped only
     // to avoid collecting new requests for the old track
     DEBUG_ASSERT(!m_pChunkReadRequestFIFO->readAvailable());
+    return allPublished;
 }
 
-void CachingReaderWorker::unloadTrack() {
-    closeAudioSource();
+bool CachingReaderWorker::unloadTrack() {
+    if (!closeAudioSource()) {
+        return false;
+    }
+    updateSeek30Track(TrackPointer());
 
     const auto update = ReaderStatusUpdate::trackUnloaded();
-    m_pReaderStatusFIFO->writeBlocking(&update, 1);
+    return publishStatus(update);
 }
 
 #ifdef __STEM__
-void CachingReaderWorker::loadTrack(
+bool CachingReaderWorker::loadTrack(
         const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask) {
 #else
-void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
+bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
 #endif
+    if (m_stop.loadAcquire()) {
+        return false;
+    }
     // This emit is directly connected and returns synchronized
     // after the engine has been stopped.
     emit trackLoading();
+    if (m_stop.loadAcquire()) {
+        return false;
+    }
 
-    closeAudioSource();
+    // Keep TrackPointer and cue ownership on this worker even when the
+    // EngineBuffer's unload notification originates from another thread.
+    updateSeek30Track(TrackPointer());
+
+    if (!closeAudioSource()) {
+        return false;
+    }
 
     if (!pTrack->getFileInfo().checkFileExists()) {
         kLogger.warning()
@@ -207,11 +350,13 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                 << "File not found"
                 << pTrack->getFileInfo();
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        if (!publishStatus(update) || m_stop.loadAcquire()) {
+            return false;
+        }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be found.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
-        return;
+        return true;
     }
 
     mixxx::AudioSource::OpenParams config;
@@ -226,11 +371,13 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                 << "Failed to open file"
                 << pTrack->getFileInfo();
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        if (!publishStatus(update) || m_stop.loadAcquire()) {
+            return false;
+        }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be loaded.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
-        return;
+        return true;
     }
 
     // It is critical that the audio source doesn't contain more channels than
@@ -241,7 +388,9 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                     m_maxSupportedChannel) {
         m_pAudioSource.reset(); // Close open file handles
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        if (!publishStatus(update) || m_stop.loadAcquire()) {
+            return false;
+        }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be loaded because it contains %2 "
                    "channels, and only 1 to %3 are supported.")
@@ -249,7 +398,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                                 QString::number(m_pAudioSource->getSignalInfo()
                                                         .getChannelCount()),
                                 QString::number(m_maxSupportedChannel)));
-        return;
+        return true;
     }
 
     // Initially assume that the complete content offered by audio source
@@ -262,12 +411,16 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
                 << "Failed to open empty file"
                 << pTrack->getFileInfo();
         const auto update = ReaderStatusUpdate::trackUnloaded();
-        m_pReaderStatusFIFO->writeBlocking(&update, 1);
+        if (!publishStatus(update) || m_stop.loadAcquire()) {
+            return false;
+        }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' is empty and could not be loaded.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation())));
-        return;
+        return true;
     }
+
+    updateSeek30Track(pTrack);
 
     // Adjust the internal buffer
     const SINT tempReadBufferSize =
@@ -280,7 +433,9 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
     const auto update =
             ReaderStatusUpdate::trackLoaded(
                     m_pAudioSource->frameIndexRange());
-    m_pReaderStatusFIFO->writeBlocking(&update, 1);
+    if (!publishStatus(update) || m_stop.loadAcquire()) {
+        return false;
+    }
 
     // Emit that the track is loaded.
 
@@ -301,6 +456,7 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
             m_pAudioSource->getSignalInfo().getSampleRate(),
             m_pAudioSource->getSignalInfo().getChannelCount(),
             mixxx::audio::FramePos(m_pAudioSource->frameLength()));
+    return true;
 }
 
 void CachingReaderWorker::quitWait() {

@@ -28,6 +28,7 @@
 #include "util/performancetimer.h"
 #include "util/timer.h"
 #include "waveform/guitick.h"
+#include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/sharedglcontext.h"
 #include "waveform/visualsmanager.h"
 #include "waveform/vsyncthread.h"
@@ -84,9 +85,19 @@ const ConfigKey kEndOfTrackWarningKey = ConfigKey(
         kWaveformGroup, QStringLiteral("EndOfTrackWarningTime"));
 const ConfigKey kDefaultZoomKey =
         ConfigKey(kWaveformGroup, QStringLiteral("DefaultZoom"));
+const ConfigKey kMaxZoomOutKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("MaxZoomOut"));
 const ConfigKey kFrameRateKey =
         ConfigKey(kWaveformGroup, QStringLiteral("FrameRate"));
 const ConfigKey kVSyncKey = ConfigKey(kWaveformGroup, QStringLiteral("VSync"));
+const ConfigKey kUntilMarkShowHotCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_hot_cues"));
+const ConfigKey kUntilMarkShowMemoryCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_memory_cues"));
+const ConfigKey kUntilMarkShowIntroCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_intro_cues"));
+const ConfigKey kUntilMarkShowOutroCuesKey =
+        ConfigKey(kWaveformGroup, QStringLiteral("cue_countdown_outro_cues"));
 
 ConfigKey visualGainKey(int index) {
     return ConfigKey(kWaveformGroup, QStringLiteral("VisualGain_") + QString::number(index));
@@ -131,10 +142,15 @@ WaveformWidgetFactory::WaveformWidgetFactory()
           m_frameRate(60),
           m_endOfTrackWarningTime(30),
           m_defaultZoom(WaveformWidgetRenderer::s_waveformDefaultZoom),
+          m_maxZoomOut(WaveformWidgetRenderer::s_waveformDefaultMaxZoom),
           m_zoomSync(true),
           m_overviewNormalized(kOverviewNormalizedDefault),
           m_untilMarkShowBeats(false),
           m_untilMarkShowTime(false),
+          m_untilMarkShowHotCues(false),
+          m_untilMarkShowMemoryCues(true),
+          m_untilMarkShowIntroCues(false),
+          m_untilMarkShowOutroCues(false),
           m_untilMarkAlign(Qt::AlignVCenter),
           m_untilMarkTextPointSize(24),
           m_untilMarkTextHeightLimit(toUntilMarkTextHeightLimit(0)),
@@ -398,6 +414,12 @@ bool WaveformWidgetFactory::setConfig(UserSettingsPointer config) {
         m_config->setValue(kEndOfTrackWarningKey, m_endOfTrackWarningTime);
     }
 
+    double maxZoomOut = m_config->getValueString(kMaxZoomOutKey).toDouble(&ok);
+    if (!ok) {
+        maxZoomOut = WaveformWidgetRenderer::s_waveformDefaultMaxZoom;
+    }
+    setMaxZoomOutInternal(maxZoomOut, false);
+
     double defaultZoom = m_config->getValueString(kDefaultZoomKey).toDouble(&ok);
     if (ok) {
         setDefaultZoom(defaultZoom);
@@ -460,6 +482,39 @@ bool WaveformWidgetFactory::setConfig(UserSettingsPointer config) {
         m_config->setValue(ConfigKey(kWaveformGroup, QStringLiteral("UntilMarkShowTime")),
                 m_untilMarkShowTime);
     }
+
+    const auto loadCueCountdownPreference = [this](
+                                                    const ConfigKey& key,
+                                                    bool defaultValue,
+                                                    bool& value,
+                                                    auto signal) {
+        const bool exists = m_config->exists(key);
+        value = m_config->getValue(key, defaultValue);
+        if (!exists) {
+            m_config->setValue(key, value);
+        }
+        emit(this->*signal)(value);
+    };
+    loadCueCountdownPreference(
+            kUntilMarkShowHotCuesKey,
+            false,
+            m_untilMarkShowHotCues,
+            &WaveformWidgetFactory::untilMarkShowHotCuesChanged);
+    loadCueCountdownPreference(
+            kUntilMarkShowMemoryCuesKey,
+            true,
+            m_untilMarkShowMemoryCues,
+            &WaveformWidgetFactory::untilMarkShowMemoryCuesChanged);
+    loadCueCountdownPreference(
+            kUntilMarkShowIntroCuesKey,
+            false,
+            m_untilMarkShowIntroCues,
+            &WaveformWidgetFactory::untilMarkShowIntroCuesChanged);
+    loadCueCountdownPreference(
+            kUntilMarkShowOutroCuesKey,
+            false,
+            m_untilMarkShowOutroCues,
+            &WaveformWidgetFactory::untilMarkShowOutroCuesChanged);
 
     setUntilMarkAlign(toUntilMarkAlign(
             m_config->getValue(ConfigKey(kWaveformGroup, QStringLiteral("UntilMarkAlign")),
@@ -719,14 +774,51 @@ bool WaveformWidgetFactory::setWidgetTypeFromHandle(int handleIndex, bool force)
 }
 
 void WaveformWidgetFactory::setDefaultZoom(double zoom) {
-    m_defaultZoom = math_clamp(zoom, WaveformWidgetRenderer::s_waveformMinZoom,
-                               WaveformWidgetRenderer::s_waveformMaxZoom);
+    m_defaultZoom = math_clamp(zoom, WaveformWidgetRenderer::s_waveformMinZoom, m_maxZoomOut);
     if (m_config) {
         m_config->setValue(kDefaultZoomKey, m_defaultZoom);
     }
 
     for (const auto& holder : std::as_const(m_waveformWidgetHolders)) {
         holder.m_waveformViewer->setZoom(m_defaultZoom);
+    }
+}
+
+void WaveformWidgetFactory::setMaxZoomOut(double maxZoomOut) {
+    setMaxZoomOutInternal(maxZoomOut, true);
+}
+
+void WaveformWidgetFactory::setMaxZoomOutInternal(
+        double maxZoomOut, bool persistDefaultZoom) {
+    const double newMaxZoomOut =
+            WaveformWidgetRenderer::clampWaveformMaxZoom(maxZoomOut);
+    const bool maxZoomOutChanged = newMaxZoomOut != m_maxZoomOut;
+    WaveformWidgetRenderer::setWaveformMaxZoom(newMaxZoomOut);
+    if (ControlObject::exists(kMaxZoomOutKey)) {
+        ControlObject::set(kMaxZoomOutKey, newMaxZoomOut);
+    }
+    m_maxZoomOut = newMaxZoomOut;
+
+    m_defaultZoom = math_clamp(m_defaultZoom,
+            WaveformWidgetRenderer::s_waveformMinZoom,
+            m_maxZoomOut);
+
+    if (m_config) {
+        m_config->setValue(kMaxZoomOutKey, m_maxZoomOut);
+        if (persistDefaultZoom) {
+            m_config->setValue(kDefaultZoomKey, m_defaultZoom);
+        }
+    }
+
+    for (const auto& holder : std::as_const(m_waveformWidgetHolders)) {
+        holder.m_waveformViewer->setZoom(
+                math_clamp(holder.m_waveformWidget->getZoom(),
+                        WaveformWidgetRenderer::s_waveformMinZoom,
+                        m_maxZoomOut));
+    }
+
+    if (maxZoomOutChanged) {
+        emit this->maxZoomOutChanged(m_maxZoomOut);
     }
 }
 
@@ -1461,6 +1553,38 @@ void WaveformWidgetFactory::setUntilMarkShowTime(bool value) {
                 m_untilMarkShowTime);
     }
     emit untilMarkShowTimeChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowHotCues(bool value) {
+    m_untilMarkShowHotCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowHotCuesKey, value);
+    }
+    emit untilMarkShowHotCuesChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowMemoryCues(bool value) {
+    m_untilMarkShowMemoryCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowMemoryCuesKey, value);
+    }
+    emit untilMarkShowMemoryCuesChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowIntroCues(bool value) {
+    m_untilMarkShowIntroCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowIntroCuesKey, value);
+    }
+    emit untilMarkShowIntroCuesChanged(value);
+}
+
+void WaveformWidgetFactory::setUntilMarkShowOutroCues(bool value) {
+    m_untilMarkShowOutroCues = value;
+    if (m_config) {
+        m_config->setValue(kUntilMarkShowOutroCuesKey, value);
+    }
+    emit untilMarkShowOutroCuesChanged(value);
 }
 
 void WaveformWidgetFactory::setUntilMarkAlign(Qt::Alignment align) {

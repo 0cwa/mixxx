@@ -1,10 +1,16 @@
 #pragma once
 
+#ifdef BUILD_TESTING
 #include <gtest/gtest_prod.h>
+#endif
 
 #include <QAtomicInt>
+#include <QAtomicPointer>
 #include <QMutex>
+#include <atomic>
+#include <cstdint>
 #include <initializer_list>
+#include <memory>
 
 #include "audio/frame.h"
 #include "audio/types.h"
@@ -23,7 +29,7 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
-//for the writer
+// for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
 #include <QTextStream>
@@ -39,6 +45,7 @@ class VinylControlControl;
 class LoopingControl;
 class ClockControl;
 class CueControl;
+class Seek30Control;
 class ReadAheadManager;
 class ControlObject;
 class ControlProxy;
@@ -47,6 +54,21 @@ class ControlPotmeter;
 class EngineBufferScale;
 class EngineBufferScaleLinear;
 class EngineBufferScaleST;
+#ifdef __BUNGEE__
+class EngineBufferScaleBungee;
+struct EngineBufferBungeePublishedState {
+    // Immutable after publication. The scaler is owned by the worker that
+    // published this state; callbacks hold the state alive through the
+    // callback reader/acknowledgement protocol in EngineBuffer.
+    EngineBufferScaleBungee* pScaler;
+    int sampleRate;
+    int channelCount;
+};
+class EngineBufferBungeeWorker;
+#endif
+#ifdef __SIGNALSMITH__
+class EngineBufferScaleSignalSmith;
+#endif
 class EngineSync;
 class EngineWorkerScheduler;
 class VisualPlayPosition;
@@ -90,6 +112,12 @@ class EngineBuffer : public EngineObject {
         RubberBandFiner = 2,
         RubberBandR3ShortWindow = 3,
 #endif
+#ifdef __BUNGEE__
+        Bungee = 4,
+#endif
+#ifdef __SIGNALSMITH__
+        SignalSmith = 5,
+#endif
     };
     Q_ENUM(KeylockEngine);
 
@@ -100,6 +128,12 @@ class EngineBuffer : public EngineObject {
             KeylockEngine::RubberBandFaster,
             KeylockEngine::RubberBandFiner,
             KeylockEngine::RubberBandR3ShortWindow,
+#endif
+#ifdef __BUNGEE__
+            KeylockEngine::Bungee,
+#endif
+#ifdef __SIGNALSMITH__
+            KeylockEngine::SignalSmith,
 #endif
     };
 
@@ -116,7 +150,8 @@ class EngineBuffer : public EngineObject {
     // Return the current rate (not thread-safe)
     double getSpeed() const;
     mixxx::audio::ChannelCount getChannelCount() const {
-        return m_channelCount;
+        return mixxx::audio::ChannelCount(
+                static_cast<uint8_t>(m_iChannelCount.loadAcquire()));
     }
     mixxx::audio::FramePos getPlayPos() const {
         return m_playPos;
@@ -144,7 +179,11 @@ class EngineBuffer : public EngineObject {
 
     // The process methods all run in the audio callback.
     void process(CSAMPLE* pOut, const std::size_t bufferSize) override;
-    void processSlip(std::size_t bufferSize);
+    void processWithChannelLayout(CSAMPLE* pOut,
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
+    void processSlip(std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
     void postProcessLocalBpm();
     void postProcess(const std::size_t bufferSize);
 
@@ -171,6 +210,24 @@ class EngineBuffer : public EngineObject {
             EngineBufferScale* pScaleVinyl,
             EngineBufferScale* pScaleKeylock);
 
+#ifdef BUILD_TESTING
+    // Installs a factory used only while constructing EngineBuffers in tests.
+    // The returned reader becomes owned by the EngineBuffer and is deleted by
+    // its destructor. The factory is consulted during construction only, so
+    // installing or clearing it must happen outside the audio callback and
+    // while no test is concurrently constructing an EngineBuffer. The
+    // registration itself is serialized, but callers must keep the context
+    // alive until all EngineBuffers created through the factory are destroyed.
+    // Passing nullptr restores the production CachingReader construction path.
+    using TestReaderFactory = CachingReader* (*)(const QString& group,
+            UserSettingsPointer pConfig,
+            mixxx::audio::ChannelCount maxSupportedChannel,
+            void* pContext);
+    static void setTestReaderFactory(
+            TestReaderFactory factory,
+            void* pContext = nullptr);
+#endif
+
     // For injection of fake tracks.
     void loadFakeTrack(TrackPointer pTrack, bool bPlay);
 
@@ -185,12 +242,20 @@ class EngineBuffer : public EngineObject {
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
                 return tr("Rubberband R3 MW (slow, highest quality)");
             }
-            [[fallthrough]];
+            return tr("Rubberband (fast, medium quality)");
         case KeylockEngine::RubberBandR3ShortWindow:
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
                 return tr("Rubberband R3 SW (fast, high quality)");
             }
-            [[fallthrough]];
+            return tr("Rubberband (fast, medium quality)");
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            return tr("Bungee (high quality)");
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return tr("Signalsmith Stretch (experimental)");
 #endif
         default:
 #ifdef __RUBBERBAND__
@@ -211,6 +276,14 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::RubberBandFiner:
         case KeylockEngine::RubberBandR3ShortWindow:
             return EngineBufferScaleRubberBand::isEngineFinerAvailable();
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            return true;
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return true;
 #endif
         default:
             return false;
@@ -278,6 +351,9 @@ class EngineBuffer : public EngineObject {
             mixxx::audio::FramePos trackNumFrame);
     void slotTrackLoadFailed(TrackPointer pTrack,
             const QString& reason);
+#ifdef __BUNGEE__
+    void slotSampleRateChanged(double sampleRate);
+#endif
     // Fired when passthrough mode is enabled or disabled.
     void slotPassthroughChanged(double v);
     void slotUpdatedTrackBeats();
@@ -293,13 +369,15 @@ class EngineBuffer : public EngineObject {
     void addControl(EngineControl* pControl);
 
     void enableIndependentPitchTempoScaling(bool bEnable,
-            const std::size_t bufferSize);
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     void updateIndicators(double rate, std::size_t bufferSize);
 
-    void hintReader(const double rate);
+    void hintReader(const double rate,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
-    double fractionalPlayposFromAbsolute(mixxx::audio::FramePos position);
+    double fractionalPlayposFromAbsolute(double position);
 
     void doSeekFractional(double fractionalPos, enum SeekRequest seekType);
     void doSeekPlayPos(mixxx::audio::FramePos position, enum SeekRequest seekType);
@@ -307,23 +385,40 @@ class EngineBuffer : public EngineObject {
     // Read one buffer from the current scaler into the crossfade buffer.  Used
     // for transitioning from one scaler to another, or reseeking a scaler
     // to prevent pops.
-    void readToCrossfadeBuffer(const std::size_t bufferSize);
+    bool readToCrossfadeBuffer(const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     // Reset buffer playpos and set file playpos.
-    void setNewPlaypos(mixxx::audio::FramePos playpos);
+    void setNewPlaypos(mixxx::audio::FramePos playpos,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     void processSyncRequests();
-    void processSeek(bool paused);
+    void processSeek(bool paused,
+            mixxx::audio::ChannelCount callbackChannelCount);
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
+#endif
     bool previousBufferSeek() const {
         return m_previousBufferSeek;
     }
     bool updateIndicatorsAndModifyPlay(bool newPlay, bool oldPlay);
     void notifyTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
+#ifdef __BUNGEE__
+    // Publishes a Bungee configuration request. Preparation and replacement
+    // happen in EngineBufferBungeeWorker, never in the audio callback.
+    void requestBungeeConfiguration(
+            mixxx::audio::SampleRate sampleRate,
+            mixxx::audio::ChannelCount channelCount);
+    void finishBungeeCallback();
+#endif
     void processTrackLocked(CSAMPLE* pOutput,
             const std::size_t bufferSize,
-            mixxx::audio::SampleRate sampleRate);
+            mixxx::audio::SampleRate sampleRate,
+            mixxx::audio::ChannelCount callbackChannelCount);
+    bool isScalerLayoutCompatible(
+            const EngineBufferScale* pScale,
+            mixxx::audio::ChannelCount callbackChannelCount) const;
 
     // Holds the name of the control group
     const QString m_group;
@@ -336,6 +431,7 @@ class EngineBuffer : public EngineObject {
     friend class LoopingControlTest;
 
     LoopingControl* m_pLoopingControl; // used for tests
+#ifdef BUILD_TESTING
     FRIEND_TEST(LoopingControlTest, LoopScale_HalvesLoop);
     FRIEND_TEST(SyncControlTest, TestDetermineBpmMultiplier);
     FRIEND_TEST(EngineSyncTest, HalfDoubleBpmTest);
@@ -345,6 +441,8 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInLeaderChange);
     FRIEND_TEST(EngineSyncTest, BeatMapQuantizePlay);
     FRIEND_TEST(EngineBufferTest, ScalerNoTransport);
+    FRIEND_TEST(EngineBufferTest, FractionalPlayposClampsToTrackBounds);
+#endif
     EngineSync* m_pEngineSync;
     SyncControl* m_pSyncControl;
     VinylControlControl* m_pVinylControlControl;
@@ -352,9 +450,12 @@ class EngineBuffer : public EngineObject {
     BpmControl* m_pBpmControl;
     KeyControl* m_pKeyControl;
     ClockControl* m_pClockControl;
+#ifdef BUILD_TESTING
     FRIEND_TEST(CueControlTest, SeekOnSetCueCDJ);
     FRIEND_TEST(CueControlTest, SeekOnSetCuePlay);
+#endif
     CueControl* m_pCueControl;
+    Seek30Control* m_pSeek30Control{nullptr};
 
     QList<EngineControl*> m_engineControls;
 
@@ -435,6 +536,11 @@ class EngineBuffer : public EngineObject {
     ControlPotmeter* m_playposSlider;
     ControlProxy* m_pSampleRate;
     ControlProxy* m_pKeylockEngine;
+    // The selected keylock engine is the publication gate for the fixed
+    // scalers. For Bungee, the callback resolves the scaler from the
+    // immutable worker-published state after acquiring this value.
+    QAtomicInt m_iKeylockEngine;
+    int m_keylockEngine;
     ControlPushButton* m_pKeylock;
     ControlProxy* m_pReplayGain;
 
@@ -455,16 +561,27 @@ class EngineBuffer : public EngineObject {
     // Object used to perform waveform scaling (sample rate conversion).  These
     // three pointers may be reassigned depending on configuration and tests.
     EngineBufferScale* m_pScale;
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineBufferTest, SlowRubberBand);
     FRIEND_TEST(EngineBufferTest, ResetPitchAdjustUsesLinear);
     FRIEND_TEST(EngineBufferTest, VinylScalerRampZero);
     FRIEND_TEST(EngineBufferTest, ReadFadeOut);
     FRIEND_TEST(EngineBufferTest, RateTempTest);
     FRIEND_TEST(EngineBufferTest, RatePermTest);
+    FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
+    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
+    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
+    FRIEND_TEST(EngineBufferBungeeTest,
+            BungeeRapidReconfigurationAndEngineChanges);
+    FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
+    FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
+    FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
+#endif
     EngineBufferScale* m_pScaleVinyl;
-    // The keylock engine is configurable, so it could flip flop between
-    // ScaleST and ScaleRB during a single callback.
-    EngineBufferScale* volatile m_pScaleKeylock;
+    // Used for test scaler injection. Production selection is derived from the
+    // single m_iKeylockEngine publication and fixed scaler members; Bungee is
+    // resolved from m_pBungeePublishedState.
+    QAtomicPointer<EngineBufferScale> m_pScaleKeylock;
 
     // Object used for vinyl-style interpolation scaling of the audio
     EngineBufferScaleLinear* m_pScaleLinear;
@@ -472,6 +589,34 @@ class EngineBuffer : public EngineObject {
     EngineBufferScaleST* m_pScaleST;
 #ifdef __RUBBERBAND__
     EngineBufferScaleRubberBand* m_pScaleRB;
+#endif
+#ifdef __BUNGEE__
+    friend class EngineBufferBungeeWorker;
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,
+            "Bungee configuration publication must not use a callback lock");
+    static_assert(std::atomic<EngineBufferBungeePublishedState*>::is_always_lock_free,
+            "Bungee state publication must not use a callback lock");
+    static_assert(std::atomic<int>::is_always_lock_free,
+            "Bungee callback ownership must not use a callback lock");
+    // Worker-owned Bungee scaler and immutable publication state.
+    std::unique_ptr<EngineBufferBungeeWorker> m_pBungeeWorker;
+    std::atomic<EngineBufferBungeePublishedState*> m_pBungeePublishedState{
+            nullptr};
+    std::atomic<EngineBufferBungeePublishedState*> m_pBungeeCallbackState{
+            nullptr};
+    std::atomic<int> m_iBungeeCallbackReaders{0};
+    // Updated by the callback only while it owns a reader slot. Its value is
+    // acknowledged to the worker at the end of each callback.
+    EngineBufferBungeePublishedState* m_pBungeeStateForCallback{nullptr};
+    // Sample rate and channel count are packed so the worker never observes
+    // a mixed request while a control and track-load notification are being
+    // published. The generation separately tells the worker whether a
+    // replacement became stale while it was being prepared.
+    std::atomic<uint64_t> m_iBungeeConfiguration{0};
+    QAtomicInt m_iBungeeConfigurationGeneration;
+#endif
+#ifdef __SIGNALSMITH__
+    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 
     // Indicates whether the scaler has changed since the last process()
@@ -501,6 +646,9 @@ class EngineBuffer : public EngineObject {
 
     // The current channel count of the loaded track
     mixxx::audio::ChannelCount m_channelCount;
+    // Published atomically when m_channelCount changes. Audio callbacks take
+    // one acquire snapshot and pass it through the processing path.
+    QAtomicInt m_iChannelCount;
 
     TrackPointer m_pCurrentTrack;
 #ifdef __SCALER_DEBUG__

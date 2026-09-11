@@ -1,11 +1,14 @@
 #include "engine/cachingreader/cachingreader.h"
 
 #include <QtDebug>
+#include <algorithm>
 
+#include "engine/controls/seek30control.h"
 #include "moc_cachingreader.cpp"
 #include "util/assert.h"
 #include "util/compatibility/qatomic.h"
 #include "util/counter.h"
+#include "util/defs.h"
 #include "util/logger.h"
 #include "util/sample.h"
 
@@ -33,14 +36,14 @@ constexpr SINT kDefaultHintFrames = 1024;
 // (kNumberOfCachedChunksInMemory = 1, 2, 3, ...) for testing purposes
 // to verify that the MRU/LRU cache works as expected. Even though
 // massive drop outs are expected to occur Mixxx should run reliably!
-constexpr SINT kNumberOfCachedChunksInMemory = 80;
-
 } // anonymous namespace
 
 CachingReader::CachingReader(const QString& group,
         UserSettingsPointer config,
         mixxx::audio::ChannelCount maxSupportedChannel)
         : m_pConfig(config),
+          m_retryOnCacheMiss(false),
+          m_group(group),
           // Limit the number of in-flight requests to the worker. This should
           // prevent to overload the worker when it is not able to fetch those
           // requests from the FIFO timely. Otherwise outdated requests pile up
@@ -55,11 +58,22 @@ CachingReader::CachingReader(const QString& group,
           // allocated chunks, because the worker use writeBlocking(). Otherwise
           // the worker could get stuck in a hot loop!!!
           m_readerStatusUpdateFIFO(kNumberOfCachedChunksInMemory),
+          m_diagnosticSubmitAttempts(0),
+          m_diagnosticSubmitFailures(0),
+          m_diagnosticCacheMisses(0),
+          m_diagnosticLastFailedChunk(-1),
+          m_diagnosticStatusConsumed(0),
+          m_lastReportedSubmitFailures(0),
+          m_lastReportedCacheMisses(0),
+          m_lastReportedWorkerProgress(0),
+          m_lastReportedActiveChunk(-1),
+          m_diagnosticEpisodeActive(false),
           m_state(STATE_IDLE),
           m_mruCachingReaderChunk(nullptr),
           m_lruCachingReaderChunk(nullptr),
           m_sampleBuffer(CachingReaderChunk::kFrames * maxSupportedChannel *
                   kNumberOfCachedChunksInMemory),
+          m_retryReadBuffer(MAX_BUFFER_LEN * maxSupportedChannel),
           m_worker(group,
                   &m_chunkReadRequestFIFO,
                   &m_readerStatusUpdateFIFO,
@@ -76,7 +90,7 @@ CachingReader::CachingReader(const QString& group,
                                 CachingReaderChunk::kFrames * maxSupportedChannel * i,
                                 CachingReaderChunk::kFrames * maxSupportedChannel));
         m_chunks.push_back(c);
-        m_freeChunks.push_back(c);
+        m_freeChunks[m_freeChunkCount++] = c;
     }
 
     // Forward signals from worker
@@ -91,11 +105,115 @@ CachingReader::CachingReader(const QString& group,
             Qt::DirectConnection);
 
     m_worker.start(QThread::HighPriority);
+
+    // Format and emit diagnostics from this object's thread, never from the
+    // realtime engine callback.
+    m_diagnosticsTimer.setInterval(5000);
+    connect(&m_diagnosticsTimer,
+            &QTimer::timeout,
+            this,
+            &CachingReader::reportDiagnostics);
+    m_diagnosticsTimer.start();
 }
 
 CachingReader::~CachingReader() {
+    m_diagnosticsTimer.stop();
     m_worker.quitWait();
+    discardPendingStatusUpdates();
     qDeleteAll(m_chunks);
+}
+
+void CachingReader::setSeek30Control(Seek30Control* pControl) {
+    m_worker.setSeek30Control(pControl);
+    if (pControl) {
+        pControl->setWorker(&m_worker);
+    }
+}
+
+void CachingReader::reportDiagnostics() {
+    const int submitAttempts = m_diagnosticSubmitAttempts.loadAcquire();
+    const int submitFailures = m_diagnosticSubmitFailures.loadAcquire();
+    const int cacheMisses = m_diagnosticCacheMisses.loadAcquire();
+    const int workerProgress = m_worker.diagnosticCompletedRequests();
+    const int activeChunk = m_worker.diagnosticActiveChunk();
+    const auto workerState = m_worker.diagnosticState();
+    const int requestPending = std::max(0,
+            submitAttempts - submitFailures -
+                    m_worker.diagnosticDequeuedRequests());
+    const int requestCapacity = m_chunkReadRequestFIFO.capacity();
+    const int statusPending = std::max(0,
+            m_worker.diagnosticPublishedStatuses() -
+                    m_diagnosticStatusConsumed.loadAcquire());
+    const int statusCapacity = m_worker.diagnosticStatusCapacity();
+
+    const int newSubmitFailures = submitFailures - m_lastReportedSubmitFailures;
+    const int newCacheMisses = cacheMisses - m_lastReportedCacheMisses;
+    const bool statusBackpressure =
+            workerState == CachingReaderWorker::DiagnosticState::PublishingStatus &&
+            statusPending >= statusCapacity;
+    const bool decoderStall =
+            workerState == CachingReaderWorker::DiagnosticState::Decoding &&
+            activeChunk >= 0 && activeChunk == m_lastReportedActiveChunk &&
+            workerProgress == m_lastReportedWorkerProgress;
+    if (newSubmitFailures == 0 && newCacheMisses == 0 &&
+            !statusBackpressure && !decoderStall) {
+        if (m_diagnosticEpisodeActive) {
+            kLogger.info() << m_group
+                           << "CachingReader diagnostics recovered:"
+                           << "request FIFO" << requestPending << "/"
+                           << requestCapacity << "status FIFO" << statusPending
+                           << "/" << statusCapacity << "worker progress"
+                           << workerProgress;
+            m_diagnosticEpisodeActive = false;
+        }
+        m_lastReportedWorkerProgress = workerProgress;
+        m_lastReportedActiveChunk = activeChunk;
+        return;
+    }
+
+    const char* stateName = "waiting";
+    switch (workerState) {
+    case CachingReaderWorker::DiagnosticState::Waiting:
+        break;
+    case CachingReaderWorker::DiagnosticState::LoadingTrack:
+        stateName = "loading-track";
+        break;
+    case CachingReaderWorker::DiagnosticState::Decoding:
+        stateName = "decoding";
+        break;
+    case CachingReaderWorker::DiagnosticState::PublishingStatus:
+        stateName = "publishing-status";
+        break;
+    }
+
+    const char* classification = "cache-miss";
+    if (statusBackpressure) {
+        classification = "status-backpressure";
+    } else if (decoderStall) {
+        classification = "decoder-stall-suspected";
+    } else if (newSubmitFailures > 0) {
+        classification = "request-saturation";
+    }
+
+    kLogger.warning() << m_group << "CachingReader diagnostics:"
+                      << classification << "request FIFO" << requestPending << "/"
+                      << requestCapacity << "status FIFO" << statusPending << "/"
+                      << statusCapacity << "submit attempts" << submitAttempts
+                      << "new submit failures" << newSubmitFailures
+                      << "total submit failures" << submitFailures
+                      << "new cache misses" << newCacheMisses
+                      << "total cache misses" << cacheMisses << "last failed chunk"
+                      << m_diagnosticLastFailedChunk.loadAcquire() << "worker state"
+                      << stateName << "active chunk" << activeChunk
+                      << "last completed chunk"
+                      << m_worker.diagnosticLastCompletedChunk() << "worker progress"
+                      << workerProgress;
+
+    m_diagnosticEpisodeActive = true;
+    m_lastReportedSubmitFailures = submitFailures;
+    m_lastReportedCacheMisses = cacheMisses;
+    m_lastReportedWorkerProgress = workerProgress;
+    m_lastReportedActiveChunk = activeChunk;
 }
 
 void CachingReader::freeChunkFromList(CachingReaderChunkForOwner* pChunk) {
@@ -103,7 +221,14 @@ void CachingReader::freeChunkFromList(CachingReaderChunkForOwner* pChunk) {
             &m_mruCachingReaderChunk,
             &m_lruCachingReaderChunk);
     pChunk->free();
-    m_freeChunks.push_back(pChunk);
+    VERIFY_OR_DEBUG_ASSERT(m_freeChunkCount < static_cast<int>(m_freeChunks.size())) {
+        return;
+    }
+    const int insertIndex =
+            (m_freeChunkStart + m_freeChunkCount) %
+            static_cast<int>(m_freeChunks.size());
+    m_freeChunks[insertIndex] = pChunk;
+    ++m_freeChunkCount;
 }
 
 void CachingReader::freeChunk(CachingReaderChunkForOwner* pChunk) {
@@ -138,11 +263,13 @@ void CachingReader::freeAllChunks() {
 }
 
 CachingReaderChunkForOwner* CachingReader::allocateChunk(SINT chunkIndex) {
-    if (m_freeChunks.empty()) {
+    if (m_freeChunkCount == 0) {
         return nullptr;
     }
-    CachingReaderChunkForOwner* pChunk = m_freeChunks.front();
-    m_freeChunks.pop_front();
+    CachingReaderChunkForOwner* pChunk = m_freeChunks[m_freeChunkStart];
+    m_freeChunkStart =
+            (m_freeChunkStart + 1) % static_cast<int>(m_freeChunks.size());
+    --m_freeChunkCount;
 
     pChunk->init(chunkIndex);
 
@@ -231,22 +358,26 @@ void CachingReader::newTrack(TrackPointer pTrack) {
 #endif
 }
 
-// Called from the engine thread
-void CachingReader::process() {
+void CachingReader::processPendingStatusUpdates() {
     ReaderStatusUpdate update;
-    while (m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+    int updatesProcessed = 0;
+    while (m_statusUpdatesRemainingInCallback > 0 &&
+            m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+        ++updatesProcessed;
+        --m_statusUpdatesRemainingInCallback;
+        m_diagnosticStatusConsumed.fetchAndAddRelaxed(1);
         auto* pChunk = update.takeFromWorker();
         if (pChunk) {
             // Result of a read request (with a chunk)
-            DEBUG_ASSERT(atomicLoadRelaxed(m_state) != STATE_IDLE);
             DEBUG_ASSERT(
                     update.status == CHUNK_READ_SUCCESS ||
                     update.status == CHUNK_READ_EOF ||
                     update.status == CHUNK_READ_INVALID ||
                     update.status == CHUNK_READ_DISCARDED);
-            if (m_state.loadAcquire() == STATE_TRACK_LOADING) {
-                // Discard all results from pending read requests for the
-                // previous track before the next track has been loaded.
+            if (m_state.loadAcquire() != STATE_TRACK_LOADED) {
+                // Discard results from pending read requests while unloading,
+                // loading, or after the track has been unloaded. They belong
+                // to an obsolete track and must not repopulate the cache.
                 freeChunk(pChunk);
                 continue;
             }
@@ -298,6 +429,31 @@ void CachingReader::process() {
             }
         }
     }
+
+    // A worker waiting for a free status-FIFO slot sleeps on this worker's
+    // semaphore. The normal scheduler will resume it after this callback has
+    // made room. Calling this only for a non-empty drain avoids scheduling an
+    // idle worker on every callback.
+    if (updatesProcessed > 0 &&
+            m_worker.diagnosticState() ==
+                    CachingReaderWorker::DiagnosticState::PublishingStatus) {
+        m_worker.workReady();
+    }
+}
+
+void CachingReader::discardPendingStatusUpdates() {
+    ReaderStatusUpdate update;
+    while (m_readerStatusUpdateFIFO.read(&update, 1) == 1) {
+        if (auto* const pChunk = update.takeFromWorker()) {
+            pChunk->free();
+        }
+    }
+}
+
+// Called from the engine thread
+void CachingReader::process() {
+    m_statusUpdatesRemainingInCallback = kMaxStatusUpdatesPerCallback;
+    processPendingStatusUpdates();
 }
 
 CachingReader::ReadResult CachingReader::read(SINT startSample,
@@ -305,6 +461,60 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
         bool reverse,
         CSAMPLE* buffer,
         mixxx::audio::ChannelCount channelCount) {
+    return readInternal(startSample,
+            numSamples,
+            reverse,
+            buffer,
+            channelCount,
+            m_retryOnCacheMiss);
+}
+
+CachingReader::ReadResult CachingReader::readWithRetry(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount) {
+    VERIFY_OR_DEBUG_ASSERT(numSamples >= 0 &&
+            numSamples <= m_retryReadBuffer.size()) {
+        return ReadResult::UNAVAILABLE;
+    }
+    VERIFY_OR_DEBUG_ASSERT(buffer) {
+        return ReadResult::UNAVAILABLE;
+    }
+
+    DEBUG_ASSERT(!m_retryOnCacheMiss);
+    m_retryOnCacheMiss = true;
+    const auto retryResult = readWithRetryHook(startSample,
+            numSamples,
+            reverse,
+            m_retryReadBuffer.data(),
+            channelCount);
+    m_retryOnCacheMiss = false;
+
+    if (retryResult.retryPending ||
+            retryResult.result == ReadResult::UNAVAILABLE) {
+        return ReadResult::UNAVAILABLE;
+    }
+    SampleUtil::copy(buffer, m_retryReadBuffer.data(), numSamples);
+    return retryResult.result;
+}
+
+CachingReader::RetryReadResult CachingReader::readWithRetryHook(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount) {
+    const auto result = read(
+            startSample, numSamples, reverse, buffer, channelCount);
+    return {result, result == ReadResult::UNAVAILABLE};
+}
+
+CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount,
+        bool retryOnCacheMiss) {
     // Check for bad inputs
     // Refuse to read from an invalid position
     VERIFY_OR_DEBUG_ASSERT(startSample % channelCount == 0) {
@@ -332,7 +542,6 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
                 << "buffer =" << buffer;
         return ReadResult::UNAVAILABLE;
     }
-
     // If no track is loaded, don't do anything.
     if (atomicLoadRelaxed(m_state) != STATE_TRACK_LOADED) {
         return ReadResult::UNAVAILABLE;
@@ -357,13 +566,49 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
 
     // Process new messages from the reader thread before looking up
     // the first chunk and to update m_readableFrameIndexRange
-    process();
+    processPendingStatusUpdates();
 
     auto remainingFrameIndexRange =
             mixxx::IndexRange::forward(
                     CachingReaderChunk::samples2frames(sample, channelCount),
                     CachingReaderChunk::samples2frames(numSamples, channelCount));
     DEBUG_ASSERT(!remainingFrameIndexRange.empty());
+
+    if (retryOnCacheMiss) {
+        auto preflightFrameIndexRange =
+                intersect(remainingFrameIndexRange, m_readableFrameIndexRange);
+        if (!preflightFrameIndexRange.empty()) {
+            const SINT firstChunkIndex =
+                    CachingReaderChunk::indexForFrame(preflightFrameIndexRange.start());
+            SINT lastChunkIndex =
+                    CachingReaderChunk::indexForFrame(preflightFrameIndexRange.end() - 1);
+            for (SINT chunkIndex = firstChunkIndex;
+                    chunkIndex <= lastChunkIndex;
+                    ++chunkIndex) {
+                processPendingStatusUpdates();
+                preflightFrameIndexRange = intersect(
+                        preflightFrameIndexRange, m_readableFrameIndexRange);
+                if (preflightFrameIndexRange.empty()) {
+                    break;
+                }
+                lastChunkIndex = CachingReaderChunk::indexForFrame(
+                        preflightFrameIndexRange.end() - 1);
+                if (lastChunkIndex < chunkIndex) {
+                    break;
+                }
+
+                const CachingReaderChunkForOwner* const pChunk =
+                        lookupChunkAndFreshen(chunkIndex);
+                if (!pChunk ||
+                        pChunk->getState() != CachingReaderChunkForOwner::READY) {
+                    DEBUG_ASSERT(!pChunk ||
+                            pChunk->getState() ==
+                                    CachingReaderChunkForOwner::READ_PENDING);
+                    return ReadResult::UNAVAILABLE;
+                }
+            }
+        }
+    }
 
     auto result = ReadResult::AVAILABLE;
     if (!intersect(remainingFrameIndexRange, m_readableFrameIndexRange).empty()) {
@@ -421,7 +666,7 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
 
                 // Process new messages from the reader thread before looking up
                 // the next chunk
-                process();
+                processPendingStatusUpdates();
 
                 // m_readableFrameIndexRange might change with every read operation!
                 // On a cache miss audio data will be read from the audio source in
@@ -470,6 +715,7 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
                     DEBUG_ASSERT(!pChunk ||
                             (pChunk->getState() == CachingReaderChunkForOwner::READ_PENDING));
                     Counter("CachingReader::read(): Failed to read chunk on cache miss")++;
+                    m_diagnosticCacheMisses.fetchAndAddRelaxed(1);
                     if (kLogger.traceEnabled()) {
                         kLogger.trace()
                                 << "Cache miss for chunk with index"
@@ -600,11 +846,13 @@ void CachingReader::hintAndMaybeWake(const HintVector& hintList) {
                             << "Requesting read of chunk"
                             << request.chunk;
                 }
+                m_diagnosticSubmitAttempts.fetchAndAddRelaxed(1);
                 if (m_chunkReadRequestFIFO.write(&request, 1) != 1) {
-                    kLogger.warning()
-                            << "Failed to submit read request for chunk"
-                            << chunkIndex;
-                    // Revoke the chunk from the worker and free it
+                    m_diagnosticLastFailedChunk.storeRelease(chunkIndex);
+                    m_diagnosticSubmitFailures.fetchAndAddRelaxed(1);
+                    // Revoke the chunk from the worker and free it. The
+                    // diagnostics timer reports this failure off the realtime
+                    // callback thread at a bounded rate.
                     pChunk->takeFromWorker();
                     freeChunk(pChunk);
                 }

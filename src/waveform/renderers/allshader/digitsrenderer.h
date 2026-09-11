@@ -34,6 +34,7 @@ class allshader::DigitsRenderNode : public rendergraph::GeometryNode {
     float height() const;
 
   private:
+    float stringWidth(const QString& s) const;
     float addVertices(rendergraph::TexturedVertexUpdater& vertexUpdater,
             float x,
             float y,
