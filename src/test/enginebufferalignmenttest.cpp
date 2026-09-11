@@ -2522,9 +2522,12 @@ TEST_F(EngineBufferAlignmentTest, BungeeCloneMarkersAreCallbackOrderIndependent)
         targetEmitted.reserve(kBufferSamples * 100);
 
         auto processDeck = [&](EngineDeck* pDeck,
-                                   std::vector<CSAMPLE>* pEmitted,
                                    std::array<CSAMPLE, kBufferSamples>* pOutput) {
             pDeck->process(pOutput->data(), kBufferSamples);
+        };
+        auto postProcessDeck = [&](EngineDeck* pDeck,
+                                       std::vector<CSAMPLE>* pEmitted,
+                                       std::array<CSAMPLE, kBufferSamples>* pOutput) {
             pDeck->postProcess(kBufferSamples);
             pEmitted->insert(pEmitted->end(), pOutput->begin(), pOutput->end());
         };
@@ -2539,16 +2542,24 @@ TEST_F(EngineBufferAlignmentTest, BungeeCloneMarkersAreCallbackOrderIndependent)
         auto processInOrder = [&]() {
             if (scenario.sourceFirst) {
                 processDeck(m_pChannel1,
-                        &sourceEmitted,
                         &sourceOutput);
                 processDeck(m_pChannel2,
+                        &targetOutput);
+                postProcessDeck(m_pChannel1,
+                        &sourceEmitted,
+                        &sourceOutput);
+                postProcessDeck(m_pChannel2,
                         &targetEmitted,
                         &targetOutput);
             } else {
                 processDeck(m_pChannel2,
-                        &targetEmitted,
                         &targetOutput);
                 processDeck(m_pChannel1,
+                        &sourceOutput);
+                postProcessDeck(m_pChannel2,
+                        &targetEmitted,
+                        &targetOutput);
+                postProcessDeck(m_pChannel1,
                         &sourceEmitted,
                         &sourceOutput);
             }
