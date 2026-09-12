@@ -3,6 +3,8 @@
 #include <QtDebug>
 
 #include "moc_seek30control.cpp"
+#include "track/cue.h"
+#include "track/track.h"
 
 void Seek30Control::trackLoaded(TrackPointer pNewTrack) {
     m_pLoadedTrack = pNewTrack;
