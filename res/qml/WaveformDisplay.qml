@@ -184,7 +184,20 @@ Item {
             if (group == root.group) {
                 value = Mixxx.Config.waveformDefaultZoom
             }
+            root.clampZoomToMax();
         }
+    }
+    function clampZoomToMax() {
+        if (zoomControl.value > Mixxx.Config.waveformMaxZoomOut) {
+            zoomControl.value = Mixxx.Config.waveformMaxZoomOut;
+        }
+    }
+    Connections {
+        function onWaveformMaxZoomOutChanged() {
+            root.clampZoomToMax();
+        }
+
+        target: Mixxx.Config
     }
     MouseArea {
         property point mouseAnchor: Qt.point(0, 0)

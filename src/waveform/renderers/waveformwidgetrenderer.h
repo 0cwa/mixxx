@@ -1,5 +1,6 @@
 #pragma once
 
+#include "control/controlvalue.h"
 #include "track/track_decl.h"
 #include "util/class.h"
 #include "waveform/renderers/waveformmark.h"
@@ -22,7 +23,7 @@ class Context;
 class WaveformWidgetRenderer {
   public:
     static const double s_waveformMinZoom;
-    static double s_waveformMaxZoom;
+    static ControlValueAtomic<double> s_waveformMaxZoom;
     static const double s_waveformDefaultMaxZoom;
     static const double s_waveformDefaultZoom;
     static const double s_defaultPlayMarkerPosition;
