@@ -55,11 +55,21 @@
 #ifdef __STEM__
 #include "widget/wtrackstemmenu.h"
 #endif
+#ifdef __STEM_CONVERSION__
+#include "stems/dlgstemconversion.h"
+#include "stems/stemconversionmanager.h"
+#include "widget/dlgstemconversionoptions.h"
+#endif
+
+#ifdef __STEM_CONVERSION__
+QPointer<StemConversionManager> WTrackMenu::s_pStemConversionManager;
+#endif
 
 constexpr WTrackMenu::Features WTrackMenu::kDeckTrackMenuFeatures;
 
 namespace {
 const QString kAppGroup = QStringLiteral("[App]");
+constexpr int kMaxFilesToOpenInBrowser = 10;
 
 const QString samplerTrString(int i) {
     return QObject::tr("Sampler %1").arg(i);
@@ -131,6 +141,12 @@ WTrackMenu::WTrackMenu(
     createActions();
     setupActions();
 }
+
+#ifdef __STEM_CONVERSION__
+void WTrackMenu::setStemConversionManager(StemConversionManager* pManager) {
+    s_pStemConversionManager = pManager;
+}
+#endif
 
 WTrackMenu::~WTrackMenu() {
     // ~QPointer() needs the definition of the wrapped type
@@ -592,6 +608,14 @@ void WTrackMenu::createActions() {
                 &QAction::triggered,
                 this,
                 &WTrackMenu::slotReanalyzeWithVariableTempo);
+
+#ifdef __STEM_CONVERSION__
+        m_pConvertToStemsAction = make_parented<QAction>(tr("Convert to Stems"), this);
+        connect(m_pConvertToStemsAction,
+                &QAction::triggered,
+                this,
+                &WTrackMenu::slotConvertToStems);
+#endif
     }
 
     // This action is only usable when m_deckGroup is set. That is true only
@@ -767,6 +791,13 @@ void WTrackMenu::setupActions() {
         m_pAnalyzeMenu->addAction(m_pReanalyzeAction);
         m_pAnalyzeMenu->addAction(m_pReanalyzeConstBpmAction);
         m_pAnalyzeMenu->addAction(m_pReanalyzeVarBpmAction);
+
+#ifdef __STEM_CONVERSION__
+        // Add separator and Convert to Stems action
+        m_pAnalyzeMenu->addSeparator();
+        m_pAnalyzeMenu->addAction(m_pConvertToStemsAction);
+#endif
+
         addMenu(m_pAnalyzeMenu);
     }
 
@@ -1422,7 +1453,6 @@ const QModelIndexList& WTrackMenu::getTrackIndices() const {
 void WTrackMenu::slotOpenInFileBrowser() {
     const auto trackRefs = getTrackRefs();
     // Warn when opening many files to prevent system hangs
-    constexpr int kMaxFilesToOpenInBrowser = 10;
     if (getTrackCount() > kMaxFilesToOpenInBrowser) {
         QMessageBox::StandardButton reply = QMessageBox::question(
                 nullptr,
@@ -1823,6 +1853,76 @@ void WTrackMenu::slotReanalyzeWithVariableTempo() {
     options.useFixedTempo = false;
     addToAnalysis(options);
 }
+
+#ifdef __STEM_CONVERSION__
+void WTrackMenu::slotConvertToStems() {
+    if (!s_pStemConversionManager) {
+        qWarning() << "Stem conversion manager is not initialized";
+        return;
+    }
+
+    TrackPointerList tracks = getTrackPointers();
+    if (tracks.isEmpty()) {
+        qWarning() << "No tracks selected for stem conversion";
+        return;
+    }
+
+    // Get track path from the menu's first selected track
+    const TrackPointer pTrack = getFirstTrackPointer();
+    if (!pTrack) {
+        return;
+    }
+
+    // Show options dialog first to let user select resolution
+    DlgStemConversionOptions optionsDialog(pTrack->getLocation(), this);
+    if (optionsDialog.exec() != QDialog::Accepted) {
+        // User cancelled the dialog
+        return;
+    }
+
+    // Get selected resolution from dialog
+    auto dialogResolution = optionsDialog.getSelectedResolution();
+
+    // Convert DlgStemConversionOptions::Resolution to StemConverter::Resolution
+    StemConverter::Resolution converterResolution;
+    if (dialogResolution == DlgStemConversionOptions::Resolution::High) {
+        converterResolution = StemConverter::Resolution::High;
+    } else {
+        converterResolution = StemConverter::Resolution::Low;
+    }
+
+    if (getTrackCount() > kMaxFilesToOpenInBrowser) {
+        const QMessageBox::StandardButton reply = QMessageBox::question(
+                nullptr,
+                tr("Convert Many Tracks to Stems"),
+                tr("You are about to queue %n tracks for stem conversion. "
+                   "This may take a long time. Are you sure you want to continue?",
+                        "",
+                        getTrackCount()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+        if (reply != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    // Queue all selected tracks for conversion with the selected resolution
+    for (const auto& track : tracks) {
+        if (track) {
+            s_pStemConversionManager->convertTrack(track, converterResolution);
+        }
+    }
+
+    // Open the conversion dialog (modeless - non-blocking)
+    if (!m_pStemConversionDialog) {
+        m_pStemConversionDialog =
+                make_parented<DlgStemConversion>(s_pStemConversionManager, this);
+    }
+    m_pStemConversionDialog->show();
+    m_pStemConversionDialog->raise();
+    m_pStemConversionDialog->activateWindow();
+}
+#endif
 
 void WTrackMenu::slotLockBpm() {
     lockBpm(true);
