@@ -52,4 +52,6 @@ class EngineBufferScaleLinear : public EngineBufferScale  {
 
     FRIEND_TEST(EngineBufferScaleLinearTest,
             ZeroProgressRefillPreservesRebasedPosition);
+    FRIEND_TEST(EngineBufferScaleLinearTest,
+            EmptyRefillNormalizesPartialReadRecovery);
 };
