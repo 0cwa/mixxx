@@ -5,16 +5,17 @@
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QUrl>
+#include <gsl/pointers>
 #include <memory>
-#include <vector>
 
-#include "control/controlobject.h"
+#include "control/controlindicatortimer.h"
 #include "effects/effectsmanager.h"
 #include "engine/channelhandle.h"
 #include "engine/enginemixer.h"
 #include "mixer/playermanager.h"
 #include "qml/qmlconfigproxy.h"
 #include "qml/qmlplayermanagerproxy.h"
+#include "soundio/soundmanager.h"
 #include "test/mixxxtest.h"
 
 namespace {
@@ -73,8 +74,17 @@ Item {
                 m_testEffectsManager.get(),
                 m_testChannelHandleFactory,
                 false);
+        m_testSoundManager = std::make_unique<SoundManager>(config(), m_testEngineMixer.get());
+        m_testControlIndicatorTimer = std::make_unique<mixxx::ControlIndicatorTimer>();
+        m_testEngineMixer->registerNonEngineChannelSoundIO(
+                gsl::make_not_null(m_testSoundManager.get()));
         m_testPlayerManager = std::make_shared<PlayerManager>(
-                config(), nullptr, m_testEffectsManager.get(), m_testEngineMixer.get());
+                config(),
+                m_testSoundManager.get(),
+                m_testEffectsManager.get(),
+                m_testEngineMixer.get());
+        m_testPlayerManager->addConfiguredDecks();
+        m_testEffectsManager->setup();
         mixxx::qml::QmlPlayerManagerProxy::registerPlayerManager(m_testPlayerManager);
 
         QQmlComponent component(&m_engine);
@@ -87,9 +97,12 @@ Item {
     property var configProxy: Mixxx.Config
 
     WaveformDisplay {
+        id: waveformDisplay
         objectName: "waveformDisplay"
         group: "[Channel1]"
     }
+
+    property alias waveformZoomControl: waveformDisplay.zoomControlProxy
 }
 )",
                 QUrl::fromLocalFile(QStringLiteral(
@@ -105,7 +118,8 @@ Item {
     }
 
     static QObject* findMaxZoomOutInput(QObject* root) {
-        for (QObject* child : root->findChildren<QObject*>()) {
+        const auto children = root->findChildren<QObject*>();
+        for (QObject* child : children) {
             if (child->property("suffix").toString() == QStringLiteral("x") &&
                     child->property("min").toDouble() == 10.0 &&
                     child->property("max").toDouble() == 100.0) {
@@ -115,17 +129,9 @@ Item {
         return nullptr;
     }
 
-    static QObject* findControlProxy(QObject* root, const QString& key) {
-        for (QObject* child : root->findChildren<QObject*>()) {
-            if (child->property("key").toString() == key) {
-                return child;
-            }
-        }
-        return nullptr;
-    }
-
     static QObject* findButton(QObject* root, const QString& text) {
-        for (QObject* child : root->findChildren<QObject*>()) {
+        const auto children = root->findChildren<QObject*>();
+        for (QObject* child : children) {
             if (child->property("text").toString() == text) {
                 return child;
             }
@@ -141,9 +147,11 @@ Item {
         return QMetaObject::invokeMethod(button, "pressed");
     }
 
+    std::unique_ptr<mixxx::ControlIndicatorTimer> m_testControlIndicatorTimer;
     std::shared_ptr<ChannelHandleFactory> m_testChannelHandleFactory;
     std::unique_ptr<EffectsManager> m_testEffectsManager;
     std::unique_ptr<EngineMixer> m_testEngineMixer;
+    std::unique_ptr<SoundManager> m_testSoundManager;
     std::shared_ptr<PlayerManager> m_testPlayerManager;
     QQmlEngine m_engine;
     std::unique_ptr<QObject> m_root;
@@ -185,24 +193,20 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 }
 
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
-    std::vector<std::unique_ptr<ControlObject>> controls;
-    for (const auto& key : {QStringLiteral("rate_ratio"),
-                 QStringLiteral("total_gain"),
-                 QStringLiteral("track_samples"),
-                 QStringLiteral("waveform_zoom")}) {
-        controls.emplace_back(std::make_unique<ControlObject>(
-                ConfigKey(QStringLiteral("[Channel1]"), key)));
-    }
-
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = findControlProxy(waveformDisplay, QStringLiteral("waveform_zoom"));
+    QObject* zoomControl = m_root->property("waveformZoomControl").value<QObject*>();
     ASSERT_NE(nullptr, zoomControl);
-    zoomControl->setProperty("value", 50.0);
-    EXPECT_DOUBLE_EQ(50.0, zoomControl->property("value").toDouble());
+    EXPECT_EQ(QStringLiteral("waveform_zoom"), zoomControl->property("key").toString());
 
     QObject* configProxy = m_root->property("configProxy").value<QObject*>();
     ASSERT_NE(nullptr, configProxy);
+    configProxy->setProperty("waveformMaxZoomOut", 100.0);
+    application()->processEvents();
+
+    zoomControl->setProperty("value", 50.0);
+    EXPECT_DOUBLE_EQ(50.0, zoomControl->property("value").toDouble());
+
     configProxy->setProperty("waveformMaxZoomOut", 20.0);
     application()->processEvents();
     EXPECT_DOUBLE_EQ(20.0, zoomControl->property("value").toDouble());

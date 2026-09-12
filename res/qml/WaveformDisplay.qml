@@ -16,6 +16,7 @@ Item {
     required property string group
     property bool splitStemTracks: false
     readonly property string zoomGroup: Mixxx.Config.waveformZoomSynchronization ? "[Channel1]" : group
+    property alias zoomControlProxy: zoomControl
 
     MixxxControls.WaveformDisplay {
         anchors.fill: parent
