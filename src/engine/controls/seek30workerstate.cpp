@@ -102,7 +102,7 @@ void Seek30WorkerState::createMemoryCueAt(
 
     constexpr double kEpsilon = 0.5;
     const double currentPosition = position.toEngineSamplePos();
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (pCue) {
             const double cuePosition = pCue->getStartAndEndPosition()
                                                .startPosition
@@ -126,7 +126,7 @@ void Seek30WorkerState::clearCurrent(
         const mixxx::audio::FramePos& currentPosition) {
     constexpr double kEpsilon = 0.5;
     const double current = currentPosition.toEngineSamplePos();
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (pCue) {
             const double cuePosition = pCue->getStartAndEndPosition()
                                                .startPosition
@@ -163,7 +163,7 @@ void Seek30WorkerState::clearNext(
         const mixxx::audio::FramePos& currentPosition) {
     constexpr double kEpsilon = 0.5;
     const double current = currentPosition.toEngineSamplePos();
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (pCue) {
             const double cuePosition = pCue->getStartAndEndPosition()
                                                .startPosition
@@ -186,7 +186,7 @@ void Seek30WorkerState::clearNearest(const Seek30WorkerInputs& inputs) {
     const double tolerance = inputs.sampleRate.toDouble();
     CuePointer pNearestCue;
     double nearestDistance = std::numeric_limits<double>::max() / 2.0;
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (!pCue) {
             continue;
         }
@@ -216,7 +216,7 @@ Seek30SeekTarget Seek30WorkerState::seekNext(
         const Seek30WorkerInputs& inputs) {
     const double current = inputs.currentPosition.toEngineSamplePos();
     constexpr double kEpsilon = 0.5;
-    for (const auto& pCue : m_memoryCues) {
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
         if (pCue) {
             const auto cuePosition = pCue->getStartAndEndPosition().startPosition;
             if (cuePosition.toEngineSamplePos() - current > kEpsilon) {
