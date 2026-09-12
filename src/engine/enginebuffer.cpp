@@ -18,6 +18,7 @@
 #include "engine/controls/loopingcontrol.h"
 #include "engine/controls/quantizecontrol.h"
 #include "engine/controls/ratecontrol.h"
+#include "engine/controls/seek30control.h"
 #include "engine/enginemixer.h"
 #include "engine/readaheadmanager.h"
 #include "engine/sync/enginesync.h"
@@ -244,6 +245,10 @@ EngineBuffer::EngineBuffer(const QString& group,
     // Create the cue controller
     m_pCueControl = new CueControl(group, pConfig);
     addControl(m_pCueControl);
+
+    // Create the 30s seek control
+    m_pSeek30Control = new Seek30Control(group, pConfig);
+    addControl(m_pSeek30Control);
 
     connect(m_pLoopingControl,
             &LoopingControl::loopReset,
