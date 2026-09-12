@@ -1,0 +1,12 @@
+name: stemgen-model
+buildsystem: simple
+# Keep the downloaded model out of the source checkout and final destination.
+# The Mixxx module passes this staging path to CMake, which verifies the exact
+# size and digest before installing the model under share/mixxx/models.
+build-commands:
+  - install -Dm644 htdemucs.onnx ${FLATPAK_DEST}/share/mixxx/stemgen-model/htdemucs.onnx
+sources:
+  - type: file
+    url: https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx
+    sha256: db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d
+    dest-filename: htdemucs.onnx

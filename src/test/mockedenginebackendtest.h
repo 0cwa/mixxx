@@ -83,6 +83,11 @@ class MockedEngineBackendTest : public BaseSignalPathTest {
     }
 
     ~MockedEngineBackendTest() override {
+        m_pPreview1.reset();
+        m_pMixerDeck3.reset();
+        m_pMixerDeck2.reset();
+        m_pMixerDeck1.reset();
+        m_pEngineMixer.reset();
         delete m_pMockScaleVinyl1;
         delete m_pMockScaleVinyl2;
         delete m_pMockScaleVinyl3;

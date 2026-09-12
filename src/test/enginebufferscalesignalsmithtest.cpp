@@ -175,6 +175,28 @@ double estimateFrequency(const std::vector<CSAMPLE>& interleavedSamples,
             static_cast<double>(risingZeroCrossings.size() - 1) / span;
 }
 
+double rms(const std::vector<CSAMPLE>& interleavedSamples) {
+    double sumSquares = 0.0;
+    const SINT frameCount = interleavedSamples.size() / kChannels;
+    for (SINT frame = 0; frame < frameCount; ++frame) {
+        const double sample = interleavedSamples[frame * kChannels];
+        sumSquares += sample * sample;
+    }
+    return std::sqrt(sumSquares / static_cast<double>(frameCount));
+}
+
+double maxAdjacentDifference(const std::vector<CSAMPLE>& interleavedSamples) {
+    double maxDifference = 0.0;
+    const SINT frameCount = interleavedSamples.size() / kChannels;
+    for (SINT frame = 1; frame < frameCount; ++frame) {
+        maxDifference = std::max(maxDifference,
+                std::fabs(static_cast<double>(
+                        interleavedSamples[frame * kChannels] -
+                        interleavedSamples[(frame - 1) * kChannels])));
+    }
+    return maxDifference;
+}
+
 std::vector<CSAMPLE> collectTone(EngineBufferScaleSignalSmith* pScaler,
         DeterministicReadAheadManager* pReadAhead,
         int callbackCount) {
@@ -405,6 +427,90 @@ TEST(EngineBufferScaleSignalSmithTest, PreservesPitchThroughSampleRateConversion
         EXPECT_DOUBLE_EQ(kBaseRate * kTempoRatio, readAhead.rates().front());
         EXPECT_NEAR(toneCase.expectedFrequency,
                 estimateFrequency(steadyWindow, static_cast<SINT>(kOutputSampleRate)),
+                toneCase.expectedFrequency * 0.005);
+    }
+}
+
+TEST(EngineBufferScaleSignalSmithTest, TonePitchAndLatencyWindows) {
+    constexpr double kToneHz = 440.0;
+    constexpr double kToneAmplitude = 0.15;
+    constexpr double kSourceSampleRate = 44100.0;
+    constexpr SINT kOutputSampleRate = 48000;
+    constexpr double kBaseRate = kSourceSampleRate / kOutputSampleRate;
+    constexpr double kTempoRatio = 0.73;
+    const double kSemitoneRatio = std::pow(2.0, 1.0 / 12.0);
+
+    struct ToneCase {
+        double baseRate;
+        double tempoRatio;
+        double pitchRatio;
+        double sourceSampleRate;
+        double expectedFrequency;
+    };
+    const ToneCase toneCases[] = {
+            // Non-unity source/output sample-rate conversion with unity pitch.
+            {kBaseRate, kTempoRatio, 1.0, kSourceSampleRate, kToneHz},
+            // Combined sample-rate conversion and one-semitone pitch shift.
+            {kBaseRate,
+                    kTempoRatio,
+                    kSemitoneRatio,
+                    kSourceSampleRate,
+                    kToneHz * kSemitoneRatio},
+            // One-semitone pitch shift without sample-rate conversion.
+            {1.0, kTempoRatio, kSemitoneRatio, kOutputSampleRate, kToneHz * kSemitoneRatio},
+            // Tempo-only change, preserving the original pitch.
+            {1.0, kTempoRatio, 1.0, kOutputSampleRate, kToneHz}};
+
+    for (const auto& toneCase : toneCases) {
+        DeterministicReadAheadManager readAhead;
+        readAhead.setTone(kToneHz, toneCase.sourceSampleRate);
+        EngineBufferScaleSignalSmith scaler(&readAhead);
+        scaler.setSignal(mixxx::audio::SampleRate(kOutputSampleRate),
+                mixxx::audio::ChannelCount::stereo());
+
+        double tempoRatio = toneCase.tempoRatio;
+        double pitchRatio = toneCase.pitchRatio;
+        scaler.setScaleParameters(toneCase.baseRate, &tempoRatio, &pitchRatio);
+        const auto output = collectTone(&scaler, &readAhead, 40);
+
+        const auto firstWindow = std::vector<CSAMPLE>(
+                output.begin(), output.begin() + kOutputSamples);
+        const auto steadyWindow = std::vector<CSAMPLE>(
+                output.end() - 8 * kOutputSamples, output.end());
+        const double firstFrequency = estimateFrequency(
+                firstWindow, kOutputSampleRate);
+        const double steadyFrequency = estimateFrequency(
+                steadyWindow, kOutputSampleRate);
+        const double firstWindowAmplitude = rms(firstWindow);
+        const double firstWindowMaxStep = maxAdjacentDifference(firstWindow);
+        const double firstToSecondWindowJump = std::fabs(static_cast<double>(
+                output[kOutputSamples] - output[kOutputSamples - kChannels]));
+        ASSERT_FALSE(readAhead.rates().empty());
+        GTEST_LOG_(INFO) << "Signalsmith tone case baseRate=" << toneCase.baseRate
+                         << " tempoRatio=" << tempoRatio
+                         << " pitchRatio=" << pitchRatio
+                         << " firstWindowHz=" << firstFrequency
+                         << " steadyStateHz=" << steadyFrequency
+                         << " firstWindowRms=" << firstWindowAmplitude
+                         << " firstWindowMaxStep=" << firstWindowMaxStep
+                         << " firstToSecondWindowJump=" << firstToSecondWindowJump
+                         << " firstReadRate=" << readAhead.rates().front();
+        EXPECT_TRUE(std::isfinite(firstFrequency));
+        EXPECT_TRUE(std::isfinite(steadyFrequency));
+        // The first callback includes Signalsmith's latency correction. Allow
+        // a broad frequency tolerance for that warmup window while rejecting
+        // a grossly wrong or missing signal.
+        EXPECT_NEAR(toneCase.expectedFrequency, firstFrequency, kToneHz * 0.2);
+        EXPECT_GT(firstWindowAmplitude, kToneAmplitude * 0.1);
+        EXPECT_LT(firstWindowAmplitude, kToneAmplitude * 1.5);
+        // Bound both intra-window and callback-boundary jumps relative to the
+        // known test-tone amplitude instead of asserting a specific warmup
+        // waveform.
+        EXPECT_LT(firstWindowMaxStep, kToneAmplitude * 0.5);
+        EXPECT_LT(firstToSecondWindowJump, kToneAmplitude * 0.5);
+        EXPECT_DOUBLE_EQ(toneCase.baseRate * kTempoRatio, readAhead.rates().front());
+        EXPECT_NEAR(toneCase.expectedFrequency,
+                steadyFrequency,
                 toneCase.expectedFrequency * 0.005);
     }
 }

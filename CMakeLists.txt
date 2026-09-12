@@ -2348,6 +2348,41 @@ elseif(UNIX)
   set(MIXXX_INSTALL_LICENSEDIR "${CMAKE_INSTALL_DOCDIR}")
 endif()
 
+# Optional user-local Linux installs use CMake's runtime dependency scanner to
+# stage the small set of optional libraries that are commonly available in a
+# build toolbox but absent from the host. System libraries remain excluded.
+cmake_dependent_option(
+  MIXXX_INSTALL_RUNTIME_DEPENDENCIES
+  "Install selected non-system runtime dependencies for a user-local install"
+  OFF
+  "UNIX AND NOT APPLE"
+  OFF
+)
+
+if(MIXXX_INSTALL_RUNTIME_DEPENDENCIES)
+  # CMake's runtime dependency scanner does not use CMAKE_PREFIX_PATH when
+  # resolving ELF dependencies. Pass the library directories from custom
+  # prefixes so user-local installs can stage optional libraries such as
+  # ONNX Runtime.
+  set(MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES "")
+  foreach(MIXXX_RUNTIME_PREFIX IN LISTS CMAKE_PREFIX_PATH)
+    foreach(
+      MIXXX_RUNTIME_LIBDIR
+      "${MIXXX_RUNTIME_PREFIX}/lib"
+      "${MIXXX_RUNTIME_PREFIX}/lib64"
+    )
+      if(IS_DIRECTORY "${MIXXX_RUNTIME_LIBDIR}")
+        list(
+          APPEND
+          MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES
+          "${MIXXX_RUNTIME_LIBDIR}"
+        )
+      endif()
+    endforeach()
+  endforeach()
+  list(REMOVE_DUPLICATES MIXXX_RUNTIME_DEPENDENCY_DIRECTORIES)
+endif()
+
 if(WIN32)
   target_compile_definitions(mixxx-lib PUBLIC __WINDOWS__)
 
@@ -2571,11 +2606,35 @@ if(WIN32)
 endif()
 
 if(NOT ANDROID)
-  install(
-    TARGETS mixxx
-    RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
-    BUNDLE DESTINATION .
-  )
+  if(MIXXX_INSTALL_RUNTIME_DEPENDENCIES)
+    # The wrapper invokes the generated runtime dependency script explicitly
+    # after a plain CMake install has completed in its disposable prefix.
+    # Keeping this script out of the install rules prevents direct
+    # `cmake --install` calls from entering the wrapper-only staging path.
+    install(
+      TARGETS mixxx
+      RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
+      BUNDLE DESTINATION .
+    )
+    # Keep the target install rule, but run the allowlisted scanner from a
+    # generated script so it can preserve complete SONAME symlink chains with
+    # file(INSTALL ... FOLLOW_SYMLINK_CHAIN).
+    set(
+      MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT
+      "${CMAKE_CURRENT_BINARY_DIR}/InstallMixxxRuntimeDependencies.cmake"
+    )
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/InstallMixxxRuntimeDependencies.cmake.in"
+      "${MIXXX_RUNTIME_DEPENDENCY_INSTALL_SCRIPT}"
+      @ONLY
+    )
+  else()
+    install(
+      TARGETS mixxx
+      RUNTIME DESTINATION "${MIXXX_INSTALL_BINDIR}"
+      BUNDLE DESTINATION .
+    )
+  endif()
 
   # Skins
   install(
@@ -2873,6 +2932,7 @@ if(FFMPEG)
 endif()
 
 # STEM file support
+option(MIXXX_FLATPAK "Build for the Flatpak sandbox" OFF)
 default_option(STEM "STEM file support" "FFmpeg_FOUND;FFMPEG")
 if(STEM)
   if(NOT FFMPEG)
@@ -2895,6 +2955,365 @@ if(STEM)
       PRIVATE src/waveform/renderers/allshader/waveformrendererstem.cpp
     )
   endif()
+
+  # ONNX Runtime - STEMS CONVERSION. Distributions export several different
+  # target names, so discover an existing target first and only fall back to
+  # a manually imported library when no package target is available.
+  find_package(ONNXRuntime CONFIG QUIET)
+  set(MIXXX_ONNX_RUNTIME_TARGET "")
+  foreach(
+    MIXXX_ONNX_RUNTIME_CANDIDATE
+    IN
+    ITEMS
+      ONNX::Runtime
+      ONNXRuntime::ONNXRuntime
+      onnxruntime::onnxruntime
+      onnxruntime
+  )
+    if(TARGET ${MIXXX_ONNX_RUNTIME_CANDIDATE})
+      set(MIXXX_ONNX_RUNTIME_TARGET ${MIXXX_ONNX_RUNTIME_CANDIDATE})
+      break()
+    endif()
+  endforeach()
+
+  if(NOT MIXXX_ONNX_RUNTIME_TARGET)
+    find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime libonnxruntime)
+    find_path(
+      ONNXRUNTIME_INCLUDE_DIR
+      NAMES onnxruntime_cxx_api.h
+      PATH_SUFFIXES onnxruntime
+    )
+
+    if(ONNXRUNTIME_LIBRARY AND ONNXRUNTIME_INCLUDE_DIR)
+      add_library(mixxx_onnxruntime UNKNOWN IMPORTED GLOBAL)
+      set_target_properties(
+        mixxx_onnxruntime
+        PROPERTIES
+          IMPORTED_LOCATION "${ONNXRUNTIME_LIBRARY}"
+          INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
+      )
+      set(MIXXX_ONNX_RUNTIME_TARGET mixxx_onnxruntime)
+    endif()
+  endif()
+
+  if(MIXXX_ONNX_RUNTIME_TARGET)
+    set(STEM_CONVERSION TRUE)
+    message(
+      STATUS
+      "ONNX Runtime target '${MIXXX_ONNX_RUNTIME_TARGET}' found. Enabling STEM conversion support."
+    )
+  else()
+    set(STEM_CONVERSION FALSE)
+    message(
+      STATUS
+      "ONNX Runtime not found. STEM conversion support will be disabled."
+    )
+  endif()
+
+  if(STEM_CONVERSION)
+    if(MIXXX_FLATPAK)
+      target_compile_definitions(mixxx-lib PRIVATE MIXXX_FLATPAK)
+    endif()
+    target_compile_definitions(
+      mixxx-lib
+      PUBLIC
+        __STEM_CONVERSION__
+        MIXXX_STEM_MODEL_SOURCE_RESOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/res"
+    )
+
+    target_link_libraries(mixxx-lib PUBLIC ${MIXXX_ONNX_RUNTIME_TARGET})
+
+    target_sources(
+      mixxx-lib
+      PRIVATE
+        src/stems/stemconverter.cpp
+        src/stems/stemconversionmanager.cpp
+        src/stems/dlgstemconversion.cpp
+        src/widget/dlgstemconversionoptions.cpp
+    )
+  endif()
+endif()
+
+set(
+  MIXXX_STEM_MODEL_MANIFEST
+  "${CMAKE_CURRENT_SOURCE_DIR}/models/htdemucs.onnx.manifest.json"
+)
+if(NOT EXISTS "${MIXXX_STEM_MODEL_MANIFEST}")
+  message(
+    FATAL_ERROR
+    "Stem model manifest is missing: ${MIXXX_STEM_MODEL_MANIFEST}"
+  )
+endif()
+file(READ "${MIXXX_STEM_MODEL_MANIFEST}" MIXXX_STEM_MODEL_MANIFEST_JSON)
+string(
+  JSON
+  MIXXX_STEM_MODEL_NAME
+  ERROR_VARIABLE MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  filename
+)
+if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
+  message(
+    FATAL_ERROR
+    "Could not read the filename from the Stem model manifest: ${MIXXX_STEM_MODEL_MANIFEST_ERROR}"
+  )
+endif()
+string(
+  JSON
+  MIXXX_STEM_MODEL_SIZE
+  ERROR_VARIABLE MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  size_bytes
+)
+if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
+  message(
+    FATAL_ERROR
+    "Could not read the size from the Stem model manifest: ${MIXXX_STEM_MODEL_MANIFEST_ERROR}"
+  )
+endif()
+string(
+  JSON
+  MIXXX_STEM_MODEL_SHA256
+  ERROR_VARIABLE MIXXX_STEM_MODEL_MANIFEST_ERROR
+  GET "${MIXXX_STEM_MODEL_MANIFEST_JSON}"
+  sha256
+)
+if(NOT MIXXX_STEM_MODEL_MANIFEST_ERROR STREQUAL "NOTFOUND")
+  message(
+    FATAL_ERROR
+    "Could not read the SHA-256 from the Stem model manifest: ${MIXXX_STEM_MODEL_MANIFEST_ERROR}"
+  )
+endif()
+
+if(STEM_CONVERSION)
+  target_compile_definitions(
+    mixxx-lib
+    PUBLIC
+      MIXXX_STEM_MODEL_NAME="${MIXXX_STEM_MODEL_NAME}"
+      MIXXX_STEM_MODEL_EXPECTED_SIZE=${MIXXX_STEM_MODEL_SIZE}
+      MIXXX_STEM_MODEL_EXPECTED_SHA256="${MIXXX_STEM_MODEL_SHA256}"
+  )
+endif()
+
+set(
+  MIXXX_STEM_MODEL_DEFAULT
+  "${CMAKE_CURRENT_SOURCE_DIR}/models/${MIXXX_STEM_MODEL_NAME}"
+)
+set(MIXXX_STEM_LFS_POINTER_HEADER "version https://git-lfs.github.com/spec/v1")
+function(mixxx_stem_model_path_has_symlink_component model_path result_variable)
+  set(path_to_check "${model_path}")
+  while(NOT path_to_check STREQUAL "")
+    if(IS_SYMLINK "${path_to_check}")
+      set(${result_variable} TRUE PARENT_SCOPE)
+      return()
+    endif()
+    get_filename_component(parent_path "${path_to_check}" DIRECTORY)
+    if(parent_path STREQUAL path_to_check)
+      break()
+    endif()
+    set(path_to_check "${parent_path}")
+  endwhile()
+  set(${result_variable} FALSE PARENT_SCOPE)
+endfunction()
+function(mixxx_stem_model_is_lfs_pointer model_file result_variable)
+  set(${result_variable} FALSE PARENT_SCOPE)
+  if(
+    NOT EXISTS "${model_file}"
+    OR IS_DIRECTORY "${model_file}"
+    OR IS_SYMLINK "${model_file}"
+  )
+    return()
+  endif()
+
+  file(READ "${model_file}" model_prefix LIMIT 64)
+  string(
+    FIND
+    "${model_prefix}"
+    "${MIXXX_STEM_LFS_POINTER_HEADER}"
+    header_offset
+  )
+  if(header_offset EQUAL 0)
+    set(${result_variable} TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(mixxx_stem_model_matches_manifest model_file result_variable)
+  set(${result_variable} FALSE PARENT_SCOPE)
+  if(
+    NOT EXISTS "${model_file}"
+    OR IS_DIRECTORY "${model_file}"
+    OR IS_SYMLINK "${model_file}"
+  )
+    return()
+  endif()
+
+  file(SIZE "${model_file}" model_size)
+  if(NOT model_size EQUAL MIXXX_STEM_MODEL_SIZE)
+    return()
+  endif()
+
+  file(SHA256 "${model_file}" model_sha256)
+  if(NOT model_sha256 STREQUAL MIXXX_STEM_MODEL_SHA256)
+    return()
+  endif()
+
+  set(${result_variable} TRUE PARENT_SCOPE)
+endfunction()
+
+set(MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER FALSE)
+mixxx_stem_model_is_lfs_pointer(
+  "${MIXXX_STEM_MODEL_DEFAULT}"
+  MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER
+)
+set(MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST FALSE)
+if(NOT MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
+  mixxx_stem_model_matches_manifest(
+    "${MIXXX_STEM_MODEL_DEFAULT}"
+    MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST
+  )
+endif()
+if(NOT DEFINED MIXXX_STEM_MODEL_FILE)
+  set(
+    MIXXX_STEM_MODEL_FILE
+    ""
+    CACHE FILEPATH
+    "Path to a package-owned htdemucs.onnx model to install"
+  )
+  if(STEM_CONVERSION AND MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST)
+    set(
+      MIXXX_STEM_MODEL_FILE
+      "${MIXXX_STEM_MODEL_DEFAULT}"
+      CACHE FILEPATH
+      "Path to a package-owned htdemucs.onnx model to install"
+      FORCE
+    )
+  endif()
+endif()
+if(MIXXX_STEM_MODEL_FILE)
+  if(ANDROID OR IOS)
+    message(
+      FATAL_ERROR
+      "Package-owned STEM models are only supported on desktop platforms"
+    )
+  endif()
+  if(NOT STEM_CONVERSION)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE requires STEM conversion support"
+    )
+  endif()
+  if(
+    NOT EXISTS "${MIXXX_STEM_MODEL_FILE}"
+    OR IS_DIRECTORY "${MIXXX_STEM_MODEL_FILE}"
+    OR IS_SYMLINK "${MIXXX_STEM_MODEL_FILE}"
+  )
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE is not a regular file: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
+  set(MIXXX_STEM_MODEL_FILE_IS_LFS_POINTER FALSE)
+  mixxx_stem_model_is_lfs_pointer(
+    "${MIXXX_STEM_MODEL_FILE}"
+    MIXXX_STEM_MODEL_FILE_IS_LFS_POINTER
+  )
+  if(MIXXX_STEM_MODEL_FILE_IS_LFS_POINTER)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE is an unmaterialized Git LFS pointer, not a model file: ${MIXXX_STEM_MODEL_FILE}. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
+    )
+  endif()
+  set(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT FALSE)
+  mixxx_stem_model_path_has_symlink_component(
+    "${MIXXX_STEM_MODEL_FILE}"
+    MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT
+  )
+  if(MIXXX_STEM_MODEL_FILE_HAS_SYMLINK_COMPONENT)
+    message(
+      FATAL_ERROR
+      "MIXXX_STEM_MODEL_FILE must not contain a symlink path component: ${MIXXX_STEM_MODEL_FILE}"
+    )
+  endif()
+
+  set(
+    MIXXX_STEM_MODEL_STAGED_FILE
+    "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model/${MIXXX_STEM_MODEL_NAME}"
+  )
+  set(
+    MIXXX_STEM_MODEL_STAGED_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/stemgen-model"
+  )
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageStemgenModel.cmake")
+  mixxx_stage_stem_model(
+    "${MIXXX_STEM_MODEL_FILE}"
+    "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    "${MIXXX_STEM_MODEL_STAGED_DIRECTORY}"
+    "${MIXXX_STEM_MODEL_SIZE}"
+    "${MIXXX_STEM_MODEL_SHA256}"
+  )
+  # Validate the published bytes again here. The staged file is the only model
+  # path consumed by the generated install rule.
+  set(MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST FALSE)
+  mixxx_stem_model_matches_manifest(
+    "${MIXXX_STEM_MODEL_STAGED_FILE}"
+    MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST
+  )
+  if(NOT MIXXX_STEM_MODEL_STAGED_FILE_MATCHES_MANIFEST)
+    message(
+      FATAL_ERROR
+      "The staged Stemgen model does not match the verified model manifest: ${MIXXX_STEM_MODEL_STAGED_FILE}"
+    )
+  endif()
+
+  set(
+    MIXXX_STEM_MODEL_INSTALL_SCRIPT
+    "${CMAKE_CURRENT_BINARY_DIR}/InstallStemgenModel.cmake"
+  )
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/InstallStemgenModel.cmake.in"
+    "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}"
+    @ONLY
+  )
+  # Revalidate the configure-time snapshot immediately before the generated
+  # install rule consumes it. The staged path is never the caller-owned model
+  # pathname, and symlinks are rejected at both configure and install time.
+  install(SCRIPT "${MIXXX_STEM_MODEL_INSTALL_SCRIPT}")
+
+  # Keep the model's provenance and rights documentation alongside it.
+  install(
+    FILES
+      "${MIXXX_STEM_MODEL_MANIFEST}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/models/NOTICE.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/models/README.md"
+    DESTINATION "${MIXXX_INSTALL_DATADIR}/models"
+  )
+elseif(STEM_CONVERSION)
+  if(MIXXX_STEM_MODEL_DEFAULT_IS_LFS_POINTER)
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed: ${MIXXX_STEM_MODEL_DEFAULT} is an unmaterialized Git LFS pointer. Materialize the model or set MIXXX_STEM_MODEL_FILE to materialized htdemucs.onnx content."
+    )
+  elseif(MIXXX_STEM_MODEL_DEFAULT_MATCHES_MANIFEST)
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed because MIXXX_STEM_MODEL_FILE is empty."
+    )
+  elseif(
+    EXISTS "${MIXXX_STEM_MODEL_DEFAULT}"
+    AND NOT IS_DIRECTORY "${MIXXX_STEM_MODEL_DEFAULT}"
+  )
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed: ${MIXXX_STEM_MODEL_DEFAULT} does not match the verified Stem model in ${MIXXX_STEM_MODEL_MANIFEST}. Set MIXXX_STEM_MODEL_FILE to a matching materialized model file."
+    )
+  else()
+    set(
+      MIXXX_STEM_MODEL_DIAGNOSTIC
+      "STEM conversion support is enabled, but no package model will be installed. Materialize ${MIXXX_STEM_MODEL_DEFAULT} or set MIXXX_STEM_MODEL_FILE to a matching materialized model file."
+    )
+  endif()
+  message(WARNING "${MIXXX_STEM_MODEL_DIAGNOSTIC}")
+  install(CODE "message(WARNING [==[${MIXXX_STEM_MODEL_DIAGNOSTIC}]==])")
 endif()
 
 if(BUILD_TESTING)
@@ -2921,6 +3340,7 @@ if(BUILD_TESTING)
     src/test/colorpalette_test.cpp
     src/test/configobject_test.cpp
     src/test/settingsmanager_test.cpp
+    $<$<BOOL:${STEM_CONVERSION}>:src/test/stemconverter_test.cpp>
     src/test/controller_mapping_validation_test.cpp
     src/test/controller_mapping_settings_test.cpp
     src/test/controllers/controller_columnid_regression_test.cpp
