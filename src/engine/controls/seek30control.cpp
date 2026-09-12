@@ -1,159 +1,181 @@
 #include "engine/controls/seek30control.h"
 
-#include <QtDebug>
-
+#include "engine/cachingreader/cachingreaderworker.h"
 #include "moc_seek30control.cpp"
-#include "track/cue.h"
-#include "track/track.h"
 
-void Seek30Control::trackLoaded(TrackPointer pNewTrack) {
-    m_pLoadedTrack = pNewTrack;
-    rebuildMemoryCueCache();
+Seek30Control::Seek30Control(const QString& group,
+        UserSettingsPointer pConfig)
+        : EngineControl(group, pConfig),
+          m_seekTarget(Seek30SeekTarget{}) {
+    createControls();
 }
 
-void Seek30Control::rebuildMemoryCueCache() {
-    m_memoryCues.clear();
-    if (!m_pLoadedTrack) {
+void Seek30Control::setWorker(CachingReaderWorker* pWorker) {
+    m_pWorker.store(pWorker, std::memory_order_release);
+}
+
+void Seek30Control::process(const double,
+        mixxx::audio::FramePos,
+        const std::size_t) {
+    const auto target = m_seekTarget.getValue();
+    if (target.sequence == m_consumedSeekSequence) {
         return;
     }
-    DEBUG_ASSERT(!"Seek 30 Track loaded!");
-    const QList<CuePointer> cues = m_pLoadedTrack->getCuePoints();
-    for (const auto& pCue : cues) {
-        if (!pCue)
-            continue;
-        if (pCue->getType() == mixxx::CueType::Memory) {
-            DEBUG_ASSERT(!"Found a memory cue");
-            qCritical("Found memory cue %s", std::to_string(pCue->getHotCue()).c_str());
-            m_memoryCues.append(pCue);
-        }
-    }
-    sortCueCache();
-}
+    m_consumedSeekSequence = target.sequence;
 
-void Seek30Control::sortCueCache() {
-    // Optional: keep a stable order (by start position)
-    std::sort(m_memoryCues.begin(),
-            m_memoryCues.end(),
-            [](const CuePointer& a, const CuePointer& b) {
-                return a->getStartAndEndPosition().startPosition <
-                        b->getStartAndEndPosition().startPosition;
-            });
-}
-
-int Seek30Control::nextFreeMemoryCueIndex() const {
-    // Some codebases store a “hotcue index” even for Memory cues; others leave it -1.
-    // We’ll accept either. If all are -1, we’ll just use size() as the next index.
-    QSet<int> used;
-    for (const auto& pCue : m_memoryCues) {
-        if (!pCue)
-            continue;
-
-        // Prefer an explicit index if your Cue has one
-        int idx = -1;
-
-        // Try common fields in order of likelihood; keep whichever your Cue API supports:
-        // If your Cue has getHotCue():
-        if (pCue->getHotCue() >= 0) {
-            idx = pCue->getHotCue();
-        }
-        // If your Cue has getIndex() (uncomment if applicable):
-        // else if (pCue->getIndex() >= 0) {
-        //     idx = pCue->getIndex();
-        // }
-
-        if (idx >= 0)
-            used.insert(idx);
-    }
-
-    if (used.isEmpty()) {
-        // No explicit indices recorded: just append at the end.
-        return m_memoryCues.size();
-    }
-
-    // Return the first gap in {0,1,2,...}
-    int next = 0;
-    while (used.contains(next)) {
-        ++next;
-    }
-    return next;
-}
-
-int Seek30Control::createMemoryCueAt(const mixxx::audio::FramePos& pos) {
-    if (!m_pLoadedTrack || !pos.isValid()) {
-        return -1;
-    }
-
-    const int index = nextFreeMemoryCueIndex();
-
-    CuePointer pCue = m_pLoadedTrack->createAndAddCue(
-            mixxx::CueType::Memory,
-            index,
-            pos,
-            pos);
-
-    // Mirror into our in-class cache so future index calculations see it.
-    m_memoryCues.append(pCue);
-    sortCueCache();
-
-    return index;
-}
-
-void Seek30Control::clearAll(double v) {
-    if (v <= 0 || !m_pLoadedTrack)
+    CachingReaderWorker* const pWorker =
+            m_pWorker.load(std::memory_order_acquire);
+    if (!pWorker || target.generation != pWorker->seek30Generation() ||
+            !target.position.isValid()) {
         return;
-    m_pLoadedTrack->removeCuesOfType(mixxx::CueType::Memory);
-    m_memoryCues.clear();
+    }
+    seekAbs(target.position);
+}
+
+void Seek30Control::enqueue(Seek30Operation operation) {
+    CachingReaderWorker* const pWorker =
+            m_pWorker.load(std::memory_order_acquire);
+    if (pWorker) {
+        pWorker->enqueueSeek30Command(operation);
+    }
 }
 
 void Seek30Control::createAtCurrent(double v) {
-    if (v <= 0)
-        return;
-
-    // Read normalized play position [0..1] and track duration [s] from COs.
-    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
-    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
-    if (!(durationSec > 0.0)) {
-        return; // nothing loaded or unknown duration
+    if (v > 0) {
+        enqueue(Seek30Operation::CreateAtCurrent);
     }
+}
 
-    // Convert to current absolute frame position.
-    // frames = seconds * sampleRate; (frames are per-frame, independent of channels)
-    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
-    mixxx::audio::FramePos currentPos(currentFrames);
+void Seek30Control::clearAll(double v) {
+    if (v > 0) {
+        enqueue(Seek30Operation::ClearAll);
+    }
+}
 
-    createMemoryCueAt(currentPos);
+void Seek30Control::clearPrev(double v) {
+    if (v > 0) {
+        enqueue(Seek30Operation::ClearPrevious);
+    }
+}
+
+void Seek30Control::clearNext(double v) {
+    if (v > 0) {
+        enqueue(Seek30Operation::ClearNext);
+    }
+}
+
+void Seek30Control::clearCurrent(double v) {
+    if (v > 0) {
+        enqueue(Seek30Operation::ClearCurrent);
+    }
+}
+
+void Seek30Control::clearNearest(double v) {
+    if (v > 0) {
+        enqueue(Seek30Operation::ClearNearest);
+    }
 }
 
 void Seek30Control::slotSeek30(double v) {
-    if (v <= 0 || !m_pLoadedTrack)
-        return;
-
-    // Read normalized play position [0..1] and track duration [s] from COs.
-    const double playpos = ControlObject::get(ConfigKey(m_group, "playposition"));
-    const double durationSec = ControlObject::get(ConfigKey(m_group, "duration"));
-    if (!(durationSec > 0.0)) {
-        return; // nothing loaded or unknown duration
+    if (v > 0) {
+        enqueue(Seek30Operation::SeekNext);
     }
+}
 
-    // Convert to current absolute frame position.
-    // frames = seconds * sampleRate; (frames are per-frame, independent of channels)
-    const double currentFrames = playpos * durationSec * m_sampleRate.toDouble();
-    mixxx::audio::FramePos currentPos(currentFrames);
-    double curPos = currentPos.toEngineSamplePos();
-    qCritical("Current pos %s", std::to_string(curPos).c_str());
-
-    // Avoid floating point errors
-    constexpr double kEps = 0.5; // half a sample in "engine sample pos" units
-
-    qCritical("Mem size %s", std::to_string(m_memoryCues.size()).c_str());
-    for (const auto& pCue : m_memoryCues) {
-        if (!pCue)
-            continue;
-        double testPos = pCue->getStartAndEndPosition().startPosition.toEngineSamplePos();
-        qCritical("Test pos %s", std::to_string(testPos).c_str());
-        if ((testPos - curPos) > kEps) {
-            getEngineBuffer()->seekAbs(pCue->getStartAndEndPosition().startPosition);
-            break;
-        }
+void Seek30Control::slotSeek30Prev(double v) {
+    if (v > 0) {
+        enqueue(Seek30Operation::SeekPrevious);
     }
+}
+
+Seek30WorkerInputs Seek30Control::seek30WorkerInputs() const {
+    const auto info = frameInfo();
+    const auto closestBeat =
+            mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(
+                    ControlObject::get(ConfigKey(m_group, "beat_closest")));
+    return {
+            info.currentPosition,
+            info.sampleRate,
+            ControlObject::get(ConfigKey(m_group, "quantize")) > 0.0,
+            closestBeat,
+            ControlObject::get(ConfigKey(m_group, "play")) > 0.0};
+}
+
+void Seek30Control::publishSeekTarget(const Seek30SeekTarget& target) {
+    m_seekTarget.setValue(target);
+}
+
+void Seek30Control::createControls() {
+    m_pMemoryCue = std::make_unique<ControlObject>(ConfigKey(m_group, "memory_cue"));
+    m_pMemoryCue->set(0.0);
+
+    m_pSeek30 = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30s"));
+    m_pSeek30->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pSeek30.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::slotSeek30,
+            Qt::DirectConnection);
+
+    m_pSeek30Prev = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30Prev"));
+    m_pSeek30Prev->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pSeek30Prev.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::slotSeek30Prev,
+            Qt::DirectConnection);
+
+    m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(
+            ConfigKey(m_group, "memory_create_at_current"));
+    m_pMemoryCreateAtCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pMemoryCreateAtCurrent.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::createAtCurrent,
+            Qt::DirectConnection);
+
+    m_pMemoryClearAll = std::make_unique<ControlPushButton>(
+            ConfigKey(m_group, "memory_clear_all"));
+    m_pMemoryClearAll->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pMemoryClearAll.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::clearAll,
+            Qt::DirectConnection);
+
+    m_pMemoryClearCurrent = std::make_unique<ControlPushButton>(
+            ConfigKey(m_group, "memory_clear_current"));
+    m_pMemoryClearCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pMemoryClearCurrent.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::clearCurrent,
+            Qt::DirectConnection);
+
+    m_pMemoryClearPrev = std::make_unique<ControlPushButton>(
+            ConfigKey(m_group, "memory_clear_prev"));
+    m_pMemoryClearPrev->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pMemoryClearPrev.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::clearPrev,
+            Qt::DirectConnection);
+
+    m_pMemoryClearNext = std::make_unique<ControlPushButton>(
+            ConfigKey(m_group, "memory_clear_next"));
+    m_pMemoryClearNext->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pMemoryClearNext.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::clearNext,
+            Qt::DirectConnection);
+
+    m_pMemoryClearNearest = std::make_unique<ControlPushButton>(
+            ConfigKey(m_group, "memory_clear_nearest"));
+    m_pMemoryClearNearest->setButtonMode(mixxx::control::ButtonMode::Trigger);
+    connect(m_pMemoryClearNearest.get(),
+            &ControlObject::valueChanged,
+            this,
+            &Seek30Control::clearNearest,
+            Qt::DirectConnection);
 }
