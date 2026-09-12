@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QList>
 #include <QObject>
+#include <QSet>
+#include <algorithm>
 #include <memory>
 
 #include "audio/frame.h"
@@ -10,6 +13,7 @@
 #include "engine/controls/enginecontrol.h"
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
+#include "track/cue.h"
 
 // A very small control that seeks the deck to 30.0 seconds absolute
 // using EngineBuffer::seekAbs(...).
@@ -36,23 +40,29 @@ class Seek30Control final : public EngineControl {
         m_sampleRate = sampleRate;
     }
 
+    void trackLoaded(TrackPointer pNewTrack) override;
+
   private slots:
-    void slotSeek30(double v) {
-        if (v <= 0) {
-            return;
-        }
-        // Convert 30.0 s -> engine sample position, then -> FramePos via factory.
-        const double engineSamplePos =
-                30.0 * m_sampleRate.toDouble() * mixxx::kEngineChannelOutputCount;
-
-        const auto target = mixxx::audio::FramePos::fromEngineSamplePos(engineSamplePos);
-
-        if (target.isValid()) {
-            getEngineBuffer()->seekAbs(target);
-        }
-    }
+    void createAtCurrent(double v);
+    void clearAll(double v);
+    void slotSeek30(double v);
 
   private:
+    // Cache only the memory cues that belong to the currently loaded track.
+    QList<CuePointer> m_memoryCues;
+
+    // Rebuilds the cache from the track's cue list.
+    void rebuildMemoryCueCache();
+
+    void sortCueCache();
+
+    // Returns the smallest non-negative index not yet used by memory cues.
+    int nextFreeMemoryCueIndex() const;
+
+    // Helper to create & register a new memory cue at a given position.
+    // Returns the index that was assigned.
+    int createMemoryCueAt(const mixxx::audio::FramePos& pos);
+
     void createControls() {
         m_pSeek30 = std::make_unique<ControlPushButton>(ConfigKey(m_group, "seek_30s"));
         m_pSeek30->setButtonMode(mixxx::control::ButtonMode::Trigger);
@@ -61,8 +71,30 @@ class Seek30Control final : public EngineControl {
                 this,
                 &Seek30Control::slotSeek30,
                 Qt::DirectConnection);
+
+        m_pMemoryCreateAtCurrent = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_create_at_current"));
+        m_pMemoryCreateAtCurrent->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pMemoryCreateAtCurrent.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::createAtCurrent,
+                Qt::DirectConnection);
+
+        m_pMemoryClearAll = std::make_unique<ControlPushButton>(
+                ConfigKey(m_group, "memory_clear_all"));
+        m_pMemoryClearAll->setButtonMode(mixxx::control::ButtonMode::Trigger);
+        connect(m_pMemoryClearAll.get(),
+                &ControlObject::valueChanged,
+                this,
+                &Seek30Control::clearAll,
+                Qt::DirectConnection);
     }
 
     std::unique_ptr<ControlPushButton> m_pSeek30;
+    std::unique_ptr<ControlPushButton> m_pMemoryCreateAtCurrent;
+    std::unique_ptr<ControlPushButton> m_pMemoryClearAll;
     mixxx::audio::SampleRate m_sampleRate;
+
+    TrackPointer m_pLoadedTrack; // is written from an engine worker thread
 };
