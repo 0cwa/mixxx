@@ -14,6 +14,7 @@
 #include "engine/enginemixer.h"
 #include "mixer/playermanager.h"
 #include "qml/qmlconfigproxy.h"
+#include "qml/qmlcontrolproxy.h"
 #include "qml/qmlplayermanagerproxy.h"
 #include "soundio/soundmanager.h"
 #include "test/mixxxtest.h"
@@ -88,22 +89,29 @@ Item {
         mixxx::qml::QmlPlayerManagerProxy::registerPlayerManager(m_testPlayerManager);
 
         QQmlComponent component(&m_engine);
-        component.setData(R"(
+        const QString componentData =
+                QStringLiteral(R"(
 import QtQuick
 import Mixxx 1.0 as Mixxx
-import "."
 
 Item {
     property var configProxy: Mixxx.Config
 
-    WaveformDisplay {
-        objectName: "waveformDisplay"
-        group: "[Channel1]"
+    Loader {
+        id: waveformDisplayLoader
     }
+    Component.onCompleted: waveformDisplayLoader.setSource(
+        "%1",
+        { group: "[Channel1]", objectName: "waveformDisplay" })
 }
-)",
+)")
+                        .arg(QUrl::fromLocalFile(
+                                QStringLiteral(RESOURCE_FOLDER
+                                        "/qml/WaveformDisplay.qml"))
+                                        .toString());
+        component.setData(componentData.toUtf8(),
                 QUrl::fromLocalFile(QStringLiteral(
-                        RESOURCE_FOLDER "/qml/waveformdisplayqml_test.qml")));
+                        RESOURCE_FOLDER "/qml/main.qml")));
 
         m_root.reset(component.create());
         EXPECT_FALSE(component.isError()) << qPrintable(component.errorString());
@@ -111,6 +119,7 @@ Item {
         if (!m_root) {
             return nullptr;
         }
+        application()->processEvents();
         return m_root->findChild<QObject*>(QStringLiteral("waveformDisplay"));
     }
 
@@ -120,16 +129,6 @@ Item {
             if (child->property("suffix").toString() == QStringLiteral("x") &&
                     child->property("min").toDouble() == 10.0 &&
                     child->property("max").toDouble() == 100.0) {
-                return child;
-            }
-        }
-        return nullptr;
-    }
-
-    static QObject* findControlProxy(QObject* root, const QString& key) {
-        const auto children = root->findChildren<QObject*>();
-        for (QObject* child : children) {
-            if (child->property("key").toString() == key) {
                 return child;
             }
         }
@@ -202,9 +201,13 @@ TEST_F(InterfaceQmlTest, EditResetCancelAndSaveKeepMaxZoomOutSynchronized) {
 TEST_F(InterfaceQmlTest, LoweringMaxZoomOutReclampsExistingWaveformDisplay) {
     QObject* waveformDisplay = loadWaveformDisplay();
     ASSERT_NE(nullptr, waveformDisplay);
-    QObject* zoomControl = findControlProxy(m_root.get(), QStringLiteral("waveform_zoom"));
+    QObject* zoomControl = waveformDisplay->property("zoomControlProxy").value<QObject*>();
     ASSERT_NE(nullptr, zoomControl);
-    EXPECT_EQ(QStringLiteral("waveform_zoom"), zoomControl->property("key").toString());
+    auto* zoomControlProxy = qobject_cast<mixxx::qml::QmlControlProxy*>(zoomControl);
+    ASSERT_NE(nullptr, zoomControlProxy);
+    EXPECT_EQ(QStringLiteral("waveform_zoom"), zoomControlProxy->getKey());
+    EXPECT_EQ(QStringLiteral("[Channel1]"), zoomControlProxy->getGroup());
+    EXPECT_TRUE(zoomControlProxy->isInitialized());
 
     QObject* configProxy = m_root->property("configProxy").value<QObject*>();
     ASSERT_NE(nullptr, configProxy);
