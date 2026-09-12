@@ -313,6 +313,20 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                 sampleCount = getOutputSignal().frames2samples(currentFrameFloor);
             } while (sampleCount + 2 * chCount - 1 >= m_bufferIntSize);
 
+            if (!input_available) {
+                const SINT remainingOutputFrames =
+                        getOutputSignal().samples2frames(buf_size - i);
+                SampleUtil::clear(&buf[i], buf_size - i);
+                // m_dCurrentFrame and startFrame were rebased above when the
+                // old internal buffer was replaced. Keep that adjusted
+                // coordinate for the remaining output frames.
+                m_dNextFrame = m_dCurrentFrame +
+                        remainingOutputFrames * rate_add +
+                        rate_delta_abs * remainingOutputFrames *
+                                (remainingOutputFrames - 1) / 2.0;
+                m_floorSampleOld.clear();
+                break;
+            }
             // Now that the buffer is up to date, we can get the value of the sample
             // at the floor of our position.
             if (currentFrameFloor >= 0) {

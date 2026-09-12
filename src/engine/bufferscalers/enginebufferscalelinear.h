@@ -1,5 +1,7 @@
 #pragma once
 
+#include <gtest/gtest_prod.h>
+
 #include "engine/bufferscalers/enginebufferscale.h"
 #include "util/samplebuffer.h"
 
@@ -47,4 +49,7 @@ class EngineBufferScaleLinear : public EngineBufferScale  {
 
     double m_dCurrentFrame;
     double m_dNextFrame;
+
+    FRIEND_TEST(EngineBufferScaleLinearTest,
+            ZeroProgressRefillPreservesRebasedPosition);
 };
