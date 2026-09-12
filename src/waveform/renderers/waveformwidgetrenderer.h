@@ -22,7 +22,8 @@ class Context;
 class WaveformWidgetRenderer {
   public:
     static const double s_waveformMinZoom;
-    static const double s_waveformMaxZoom;
+    static double s_waveformMaxZoom;
+    static const double s_waveformDefaultMaxZoom;
     static const double s_waveformDefaultZoom;
     static const double s_defaultPlayMarkerPosition;
 
@@ -102,6 +103,10 @@ class WaveformWidgetRenderer {
     }
 
     void setZoom(double zoom);
+
+    static double getWaveformMaxZoom();
+    static double clampWaveformMaxZoom(double maxZoom);
+    static void setWaveformMaxZoom(double maxZoom);
 
     void setDisplayBeatGrid(bool set);
     void setDisplayBeatGridAlpha(int alpha);
