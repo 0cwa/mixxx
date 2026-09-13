@@ -1,6 +1,8 @@
 #pragma once
 
+#ifdef BUILD_TESTING
 #include <gtest/gtest_prod.h>
+#endif
 
 #include <QMutex>
 #include <QString>
@@ -156,8 +158,10 @@ class CachingReaderWorker : public EngineWorker {
 
   private:
     friend class CachingReaderWorkerTest;
+#ifdef BUILD_TESTING
     FRIEND_TEST(CachingReaderWorkerTest,
             ShutdownPublicationFailureSuppressesLoadFailureSignal);
+#endif
 
 #ifdef __STEM__
     struct NewTrackRequest {
