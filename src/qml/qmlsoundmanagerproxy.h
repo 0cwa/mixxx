@@ -182,7 +182,6 @@ class QmlSoundManagerProxy : public QObject {
 
     std::optional<EngineBuffer::KeylockEngine> m_pendingKeylockEngine;
     std::optional<EngineBuffer::KeylockEngine> m_pendingKeylockEngineForAllDecks;
-
     SoundManagerConfig m_config;
     QAtomicInt m_commitInProgress;
 };

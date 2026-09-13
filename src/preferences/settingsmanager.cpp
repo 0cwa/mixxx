@@ -44,6 +44,8 @@ EngineBuffer::KeylockEngine defaultKeylockEngineForMigration(
 }
 
 void initializePerDeckKeylockEngines(const UserSettingsPointer& pSettings) {
+    // Deck-specific values take precedence. The legacy global value is only
+    // used to initialize missing deck values during profile migration.
     const auto keylockEngine = defaultKeylockEngineForMigration(pSettings);
     for (const char* group : kDeckGroups) {
         const ConfigKey keylockEngineKey(
