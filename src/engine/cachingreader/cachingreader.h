@@ -166,6 +166,12 @@ class CachingReader : public QObject {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
+    friend class CachingReaderStatusQueueTest;
+
+    // Keep callback-side status processing bounded. Unprocessed updates remain
+    // in the FIFO and are handled by a later callback.
+    static constexpr int kMaxStatusUpdatesPerCallback = 4;
+
     ReadResult readInternal(SINT startSample,
             SINT numSamples,
             bool reverse,
