@@ -302,7 +302,7 @@ TEST_F(CachingReaderStatusQueueTest,
 class CachingReaderWorkerTest : public ::testing::Test {
   protected:
     static bool publishStatus(
-            CachingReaderWorker& worker, ReaderStatusUpdate update) {
+            CachingReaderWorker& worker, const ReaderStatusUpdate& update) {
         return worker.publishStatus(update);
     }
 };
