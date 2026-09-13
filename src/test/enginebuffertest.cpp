@@ -27,11 +27,51 @@ namespace {
 const QString kAppGroup = QStringLiteral("[App]");
 }
 
-class EngineBufferTest : public MockedEngineBackendTest {};
+class EngineBufferTest : public MockedEngineBackendTest {
+#ifdef __STEM__
+  protected:
+    void addStemHandles() {
+        for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; ++stemIdx) {
+            const auto stemHandleGroup = m_pEngineMixer->registerChannelGroup(
+                    EngineDeck::getGroupForStem(m_sGroup1, stemIdx));
+            m_pChannel1->addStemHandle(stemHandleGroup);
+        }
+    }
+#endif
+};
 
 class EngineBufferE2ETest : public SignalPathTest {};
 
 #ifdef __STEM__
+namespace {
+TrackPointer createStemTrack(int channelCount) {
+    TrackPointer pTrack = Track::newTemporary();
+    pTrack->setAudioProperties(
+            mixxx::audio::ChannelCount(channelCount),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(1));
+    return pTrack;
+}
+
+void fillStemBuffer(
+        mixxx::SampleBuffer* pBuffer,
+        int channelCount,
+        std::size_t bufferSize) {
+    const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+    const std::size_t numFrames = bufferSize / mixxx::kEngineChannelOutputCount;
+    for (std::size_t frame = 0; frame < numFrames; ++frame) {
+        for (int stemIdx = 0; stemIdx < stemCount; ++stemIdx) {
+            const auto sample = static_cast<CSAMPLE>(stemIdx + 1);
+            const std::size_t offset =
+                    frame * channelCount + stemIdx * mixxx::kEngineChannelOutputCount;
+            pBuffer->data()[offset] = sample;
+            pBuffer->data()[offset + 1] = sample;
+        }
+    }
+}
+} // namespace
+
 TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
     EXPECT_EQ(m_pChannel1->m_stemBuffer.size(),
             static_cast<SINT>(kMaxEngineFrames *
@@ -68,6 +108,68 @@ TEST_F(EngineBufferTest, StemProcessClearsStemVectorMismatch) {
     m_pChannel1->processStem(output.data(), output.size());
 
     EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+
+TEST_F(EngineBufferTest, StemProcessClearsStemGainCacheMismatch) {
+    addStemHandles();
+    ASSERT_EQ(m_pChannel1->m_stemsGainCache.size(), mixxx::kMaxSupportedStems);
+    m_pChannel1->m_stemsGainCache.pop_back();
+
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+    m_pChannel1->m_stemBuffer.fill(1.0f);
+
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+
+TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
+    addStemHandles();
+    for (auto& pGain : m_pChannel1->m_stemGain) {
+        pGain->set(1.0);
+    }
+    for (auto& pMute : m_pChannel1->m_stemMute) {
+        pMute->set(0.0);
+    }
+
+    constexpr std::size_t kBufferSize = 16;
+    for (const int channelCount : {4, 6, 8}) {
+        const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+        m_pChannel1->getEngineBuffer()->loadFakeTrack(
+                createStemTrack(channelCount), true);
+        fillStemBuffer(
+                &m_pChannel1->m_stemBuffer, channelCount, kBufferSize);
+
+        std::array<CSAMPLE, kBufferSize> output;
+        std::fill(output.begin(), output.end(), 1.0f);
+        m_pChannel1->processStem(output.data(), output.size());
+
+        const auto expectedSample = static_cast<CSAMPLE>(stemCount * (stemCount + 1) / 2);
+        EXPECT_THAT(output, ::testing::Each(expectedSample)) << channelCount;
+    }
+}
+
+TEST_F(EngineBufferTest, StemProcessClearsOddOutputSentinel) {
+    addStemHandles();
+
+    constexpr int kChannelCount = 4;
+    constexpr std::size_t kBufferSize = 17;
+    constexpr std::size_t kAlignedBufferSize = kBufferSize - 1;
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(
+            createStemTrack(kChannelCount), true);
+    fillStemBuffer(
+            &m_pChannel1->m_stemBuffer, kChannelCount, kAlignedBufferSize);
+
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    for (std::size_t i = 0; i < kAlignedBufferSize; ++i) {
+        EXPECT_EQ(output[i], 3.0f);
+    }
+    EXPECT_EQ(output.back(), CSAMPLE_ZERO);
 }
 #endif
 
