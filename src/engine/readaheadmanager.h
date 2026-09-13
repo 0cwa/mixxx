@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef BUILD_TESTING
+#include <gtest/gtest_prod.h>
+#endif
+
 #include <array>
 #include <gsl/pointers>
 
@@ -140,6 +144,9 @@ class ReadAheadManager {
 
   private:
     static constexpr std::size_t kMaxReadAheadLogOverflowEntries = 2;
+#ifdef BUILD_TESTING
+    FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
+#endif
 
     RetryState makeReadPlan(bool inReverse,
             SINT requestSamples,
