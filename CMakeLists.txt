@@ -2044,6 +2044,7 @@ if(QOPENGL)
       src/waveform/renderers/allshader/matrixforwidgetgeometry.cpp
       src/waveform/renderers/allshader/waveformrenderbackground.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererslipmode.cpp
@@ -3007,6 +3008,7 @@ if(BUILD_TESTING)
     src/test/uuid_test.cpp
     src/test/wbatterytest.cpp
     src/test/wpushbutton_test.cpp
+    src/test/waveformmarkset_test.cpp
     src/test/wwidgetstack_test.cpp
     src/util/moc_included_test.cpp
     src/test/helpers/log_test.cpp
@@ -4044,6 +4046,7 @@ if(QML)
       src/qml/qmlpreferencesproxy.cpp
       src/waveform/renderers/allshader/digitsrenderer.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp
