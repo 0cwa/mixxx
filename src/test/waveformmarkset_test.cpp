@@ -173,9 +173,15 @@ class WaveformMarkVisibilityTest : public MixxxTest {};
 TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets) {
     constexpr double kNoNextMark = 10000.0;
     const QString group = QStringLiteral("[WaveformCountdownTest]");
+    const ConfigKey visibilityControlKey(group, QStringLiteral("show_intro_outro_cues"));
+    ControlObject introPositionControl(
+            ConfigKey(group, QStringLiteral("intro_start_position")));
+    ControlObject outroPositionControl(
+            ConfigKey(group, QStringLiteral("outro_start_position")));
     const QString visibilityControl = QStringLiteral(
             "[WaveformCountdownTest],show_intro_outro_cues");
-    ControlObject::set(ConfigKey(group, QStringLiteral("show_intro_outro_cues")), 0.0);
+    ControlObject visibilityControlObject(visibilityControlKey);
+    ControlObject::set(visibilityControlKey, 0.0);
 
     WaveformMarkSet marks;
     marks.addMark(makeFixedMark(group,
@@ -193,7 +199,7 @@ TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets
             marks.findNextCountdownMarkPosition(
                     0.0, kNoNextMark, false, false, true, false));
 
-    ControlObject::set(ConfigKey(group, QStringLiteral("show_intro_outro_cues")), 1.0);
+    ControlObject::set(visibilityControlKey, 1.0);
     marks.update();
     EXPECT_DOUBLE_EQ(200.0,
             marks.findNextCountdownMarkPosition(
@@ -204,11 +210,20 @@ TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets
                     200.0, kNoNextMark, false, false, false, true));
 }
 
-class WaveformCueCountdownConfigTest : public MixxxTest {};
+class WaveformCueCountdownConfigTest : public MixxxTest {
+  protected:
+    void SetUp() override {
+        WaveformWidgetFactory::createInstance();
+        ASSERT_TRUE(WaveformWidgetFactory::instance()->setConfig(config()));
+    }
+
+    void TearDown() override {
+        WaveformWidgetFactory::destroy();
+    }
+};
 
 TEST_F(WaveformCueCountdownConfigTest, DefaultsAreMigratedToWaveformConfig) {
     auto* factory = WaveformWidgetFactory::instance();
-    ASSERT_TRUE(factory->setConfig(config()));
 
     const ConfigKey hotKey("[Waveform]", "cue_countdown_hot_cues");
     const ConfigKey memoryKey("[Waveform]", "cue_countdown_memory_cues");
