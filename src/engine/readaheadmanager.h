@@ -90,6 +90,8 @@ class ReadAheadManager {
             mixxx::audio::ChannelCount channelCount);
 
   private:
+    static constexpr std::size_t kMaxReadAheadLogOverflowEntries = 2;
+
     struct ReadPlan {
         bool active{false};
         bool inReverse{false};
@@ -209,8 +211,9 @@ class ReadAheadManager {
     std::array<ReadLogEntry, kMaxReadAheadLogEntries> m_readAheadLog;
     std::size_t m_readAheadLogStart{0};
     std::size_t m_readAheadLogSize{0};
-    ReadLogEntry m_readAheadLogOverflowEntry;
-    bool m_hasReadAheadLogOverflowEntry{false};
+    std::array<ReadLogEntry, kMaxReadAheadLogOverflowEntries>
+            m_readAheadLogOverflow;
+    std::size_t m_readAheadLogOverflowSize{0};
     double m_currentPosition; // In absolute samples
     CachingReader* m_pReader;
     CSAMPLE* m_pCrossFadeBuffer;
