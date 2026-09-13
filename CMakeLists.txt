@@ -4804,7 +4804,7 @@ if(RUBBERBAND)
 endif()
 
 # Bungee
-option(BUNGEE "Enable the Bungee engine for pitch-bending" OFF)
+option(BUNGEE "Enable the Bungee engine for pitch-bending" ON)
 option(
   BUNGEE_PETRIFY_DEBUG
   "Freeze Bungee on fatal signals in Debug builds so a debugger can attach (non-Windows only)"
