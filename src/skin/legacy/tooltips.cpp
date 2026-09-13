@@ -489,6 +489,18 @@ void Tooltips::addStandardTooltips() {
             << tr("Revert last BPM/Beatgrid Change")
             << tr("Revert last BPM/Beatgrid Change of the loaded track.");
 
+    add("toggle_downbeats_marker")
+            << tr("Toggle Downbeats Marker")
+            << tr("Show or hide the downbeat markers on the waveform.");
+
+    add("beats_backward_down_beats_marker")
+            << tr("Shift Downbeat Marker Earlier")
+            << tr("Move the downbeat marker one beat earlier.");
+
+    add("beats_forward_down_beats_marker")
+            << tr("Shift Downbeat Marker Later")
+            << tr("Move the downbeat marker one beat later.");
+
     add("bpmlock")
             << tr("Toggle the BPM/beatgrid lock")
             << tr("Toggle the BPM/beatgrid lock");
