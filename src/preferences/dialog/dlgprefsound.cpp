@@ -1,15 +1,11 @@
 #include "preferences/dialog/dlgprefsound.h"
 
-#include <QBoxLayout>
-#include <QCheckBox>
-#include <QGroupBox>
 #include <QMessageBox>
 #include <QtDebug>
 #include <algorithm>
 #include <vector>
 
 #include "control/controlproxy.h"
-#include "defs_urls.h"
 #include "engine/enginebuffer.h"
 #include "engine/enginemixer.h"
 #include "mixer/playermanager.h"
@@ -17,11 +13,7 @@
 #include "preferences/configobject.h"
 #include "preferences/dialog/dlgprefsound.h"
 #include "preferences/dialog/dlgprefsounditem.h"
-#include "soundio/sounddevice.h"
 #include "soundio/soundmanager.h"
-#include "soundio/soundmanagerconfig.h"
-#include "soundio/soundmanagerutil.h"
-#include "util/cmdlineargs.h"
 #include "util/rlimit.h"
 #include "util/scopedoverridecursor.h"
 
@@ -37,10 +29,6 @@ const ConfigKey kKeylockEngingeCfgkey =
         ConfigKey(kAppGroup, QStringLiteral("keylock_engine"));
 const ConfigKey kKeylockMultiThreadingCfgkey =
         ConfigKey(kAppGroup, QStringLiteral("keylock_multithreading"));
-const ConfigKey kPipeWire =
-        ConfigKey(kAppGroup, QStringLiteral("pipewire"));
-const ConfigKey kPipeWirePatchbay =
-        ConfigKey(kAppGroup, QStringLiteral("pipewire_patchbay_sync"));
 
 bool soundItemAlreadyExists(const AudioPath& output, const QWidget& widget) {
     for (const QObject* pObj : widget.children()) {
@@ -107,26 +95,6 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
             &SoundManager::devicesUpdated,
             this,
             &DlgPrefSound::refreshDevices);
-
-    connect(m_pSoundManager.get(),
-            &SoundManager::deviceAdded,
-            this,
-            &DlgPrefSound::addDevice);
-
-    connect(m_pSoundManager.get(),
-            &SoundManager::deviceRemoved,
-            this,
-            &DlgPrefSound::removeDevice);
-
-    connect(m_pSoundManager.get(),
-            &SoundManager::deviceChannelsUpdated,
-            this,
-            &DlgPrefSound::updateDeviceChannels);
-
-    connect(m_pSoundManager.get(),
-            &SoundManager::configInvalidated,
-            this,
-            &DlgPrefSound::invalidateConfig);
 
     apiComboBox->clear();
     apiComboBox->addItem(SoundManagerConfig::kEmptyComboBox,
@@ -220,55 +188,6 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
             &DlgPrefSound::micMonitorModeComboBoxChanged);
-
-#ifdef __PIPEWIRE__
-    if (CmdlineArgs::Instance().getDeveloper()) {
-        m_pipewireCheckBox = make_parented<QCheckBox>(this);
-        m_pipewireCheckBox->setText(tr("Use PipeWire API"));
-
-        bool checked = m_pSoundManager->isPipewireSelected();
-        m_pipewireCheckBox->setChecked(checked);
-        apiComboBox->setDisabled(checked);
-
-        m_pipewireCheckBox->setSizePolicy(QSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed));
-        apiHBox->addWidget(m_pipewireCheckBox.get());
-
-        connect(m_pipewireCheckBox,
-                &QCheckBox::toggled,
-                this,
-                [this](bool) {
-                    m_settingsModified = true;
-                    QMessageBox::information(this,
-                            tr("Information"),
-                            tr("Mixxx must be restarted for the PipeWire "
-                               "API selection to take effect."));
-                });
-    }
-
-    if (m_pSoundManager->isPipewireSelected()) {
-        m_pipewirePatchbayCheckBox = make_parented<QCheckBox>(this);
-        m_pipewirePatchbayCheckBox->setText(tr("Sync with external patchbay"));
-        m_pPipewirePatchbay = make_parented<ControlProxy>(
-                kPipeWirePatchbay.group, kPipeWirePatchbay.item, this);
-        connect(m_pipewirePatchbayCheckBox,
-                &QCheckBox::toggled,
-                this,
-                [this](bool checked) {
-                    m_pSettings->setValue(kPipeWirePatchbay, checked);
-                    m_pPipewirePatchbay->set(checked);
-                    ioTabs->setDisabled(checked);
-                    m_settingsModified = true;
-                });
-
-        auto pipewireGroupBox = make_parented<QGroupBox>("PipeWire Settings", this);
-        auto pipewireSettings = make_parented<QVBoxLayout>(pipewireGroupBox);
-        verticalLayout_2->insertWidget(2, pipewireGroupBox.get());
-
-        bool checked = m_pSettings->getValue(kPipeWirePatchbay, false);
-        m_pipewirePatchbayCheckBox->setChecked(checked);
-        pipewireSettings->addWidget(m_pipewirePatchbayCheckBox.get());
-    }
-#endif
 
     initializePaths();
     loadSettings();
@@ -481,13 +400,6 @@ void DlgPrefSound::slotApply() {
         m_settingsModified = false;
         m_bLatencyChanged = false;
     }
-
-#ifdef __PIPEWIRE__
-    if (CmdlineArgs::Instance().getDeveloper()) {
-        m_pSettings->set(kPipeWire, ConfigValue(m_pipewireCheckBox->isChecked()));
-    }
-#endif
-
     m_bSkipConfigClear = true;
     loadSettings(); // in case SM decided to change anything it didn't like
     checkLatencyCompensation();
@@ -590,8 +502,6 @@ void DlgPrefSound::connectSoundItem(DlgPrefSoundItem* pItem) {
     connect(this, &DlgPrefSound::writePaths, pItem, &DlgPrefSoundItem::writePath);
     if (pItem->isInput()) {
         connect(this, &DlgPrefSound::refreshInputDevices, pItem, &DlgPrefSoundItem::refreshDevices);
-        connect(this, &DlgPrefSound::addInputDevice, pItem, &DlgPrefSoundItem::addDevice);
-        connect(this, &DlgPrefSound::removeInputDevice, pItem, &DlgPrefSoundItem::removeDevice);
     } else {
         connect(this,
                 &DlgPrefSound::refreshOutputDevices,
@@ -602,10 +512,6 @@ void DlgPrefSound::connectSoundItem(DlgPrefSoundItem* pItem) {
     }
     connect(this, &DlgPrefSound::updatingAPI, pItem, &DlgPrefSoundItem::save);
     connect(this, &DlgPrefSound::updatedAPI, pItem, &DlgPrefSoundItem::reload);
-    connect(this,
-            &DlgPrefSound::deviceChannelsUpdated,
-            pItem,
-            &DlgPrefSoundItem::updateDeviceChannels);
 }
 
 void DlgPrefSound::insertItem(DlgPrefSoundItem *pItem, QVBoxLayout *pLayout) {
@@ -886,62 +792,6 @@ void DlgPrefSound::refreshDevices() {
     }
     emit refreshOutputDevices(m_outputDevices);
     emit refreshInputDevices(m_inputDevices);
-}
-
-void DlgPrefSound::addDevice(SoundDevicePointer pDevice) {
-    const bool hasInputs = pDevice->getNumInputChannels().isValid();
-    const bool hasOutputs = pDevice->getNumOutputChannels().isValid();
-
-    if (hasInputs) {
-        m_inputDevices.append(pDevice);
-        emit addInputDevice(pDevice);
-    }
-    if (hasOutputs) {
-        m_outputDevices.append(pDevice);
-        emit addOutputDevice(pDevice);
-    }
-}
-
-void DlgPrefSound::removeDevice(SoundDevicePointer pDevice) {
-    const bool hasInputs = pDevice->getNumInputChannels().isValid();
-    const bool hasOutputs = pDevice->getNumOutputChannels().isValid();
-
-    if (hasInputs && m_inputDevices.removeOne(pDevice)) {
-        emit removeInputDevice(pDevice);
-    }
-
-    if (hasOutputs && m_outputDevices.removeOne(pDevice)) {
-        emit removeOutputDevice(pDevice);
-    }
-}
-
-void DlgPrefSound::updateDeviceChannels(SoundDevicePointer pDevice) {
-    const bool hasInputs = pDevice->getNumInputChannels().isValid();
-    const bool hasOutputs = pDevice->getNumOutputChannels().isValid();
-    const bool hadInputs = m_inputDevices.contains(pDevice);
-    const bool hadOutputs = m_outputDevices.contains(pDevice);
-    const bool listsModified = (hasInputs ^ hadInputs) || (hasOutputs ^ hadOutputs);
-
-    if (!listsModified) {
-        emit deviceChannelsUpdated(pDevice);
-        return;
-    }
-
-    if (hadInputs && !hasInputs) {
-        m_inputDevices.removeOne(pDevice);
-        emit removeInputDevice(pDevice);
-    } else if (!hadInputs && hasInputs) {
-        m_inputDevices.append(pDevice);
-        emit addInputDevice(pDevice);
-    }
-
-    if (hadOutputs && !hasOutputs) {
-        m_outputDevices.removeOne(pDevice);
-        emit removeOutputDevice(pDevice);
-    } else if (!hadOutputs && hasOutputs) {
-        m_outputDevices.append(pDevice);
-        emit addOutputDevice(pDevice);
-    }
 }
 
 /// Called when any of the combo boxes in this dialog are changed. Enables the
