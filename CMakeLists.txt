@@ -2045,9 +2045,9 @@ if(QOPENGL)
       src/waveform/renderers/allshader/matrixforwidgetgeometry.cpp
       src/waveform/renderers/allshader/waveformrenderbackground.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
-      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
       src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererslipmode.cpp
@@ -2988,7 +2988,6 @@ if(BUILD_TESTING)
     src/test/rekordboxfeature_test.cpp
     src/test/rangelist_test.cpp
     src/test/readaheadmanager_test.cpp
-    src/test/rekordboxfeature_test.cpp
     src/test/replaygaintest.cpp
     src/test/rescalertest.cpp
     src/test/rgbcolor_test.cpp
@@ -4084,9 +4083,9 @@ if(QML)
       src/qml/qmlpreferencesproxy.cpp
       src/waveform/renderers/allshader/digitsrenderer.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
-      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
       src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp
