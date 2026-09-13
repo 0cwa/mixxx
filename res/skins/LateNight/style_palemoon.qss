@@ -2034,7 +2034,6 @@ WPushButton#MemoryClearNext[displayValue="0"]:hover {
 }
 
 
-
 /************** Button icons **************************************************/
 WPushButton#PlayDeck[value="0"] {
   image: url(skins:LateNight/palemoon/buttons/btn__play_deck.svg) no-repeat center center;
