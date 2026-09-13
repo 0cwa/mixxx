@@ -9,7 +9,6 @@
 #include "preferences/usersettings.h"
 #include "soundio/sounddevice.h"
 #include "soundio/soundmanagerconfig.h"
-#include "soundio/soundmanagerutil.h"
 #include "util/parented_ptr.h"
 
 class ControlObject;
@@ -42,13 +41,8 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     void writePaths(SoundManagerConfig *config);
     void refreshOutputDevices(const QList<SoundDevicePointer>& devices);
     void refreshInputDevices(const QList<SoundDevicePointer>& devices);
-    void addOutputDevice(SoundDevicePointer pDevice);
-    void addInputDevice(SoundDevicePointer pDevice);
-    void removeOutputDevice(SoundDevicePointer pDevice);
-    void removeInputDevice(SoundDevicePointer pDevice);
     void updatingAPI();
     void updatedAPI();
-    void deviceChannelsUpdated(SoundDevicePointer devices);
 
   public slots:
     void slotUpdate() override; // called on show
@@ -88,11 +82,6 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     void updateKeylockDualThreadingCheckbox();
     void updateKeylockMultithreading(bool enabled);
 #endif
-    void addDevice(SoundDevicePointer pDevice);
-    void removeDevice(SoundDevicePointer pDevice);
-    void updateDeviceChannels(SoundDevicePointer pDevice);
-    void updateSampleRates(const QList<mixxx::audio::SampleRate>& sampleRates);
-    void invalidateConfig();
 
   private:
     void initializePaths();
@@ -126,10 +115,4 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     bool m_bSkipConfigClear;
     bool m_loading;
     bool m_configValid;
-
-#ifdef __PIPEWIRE__
-    parented_ptr<QCheckBox> m_pipewireCheckBox;
-    parented_ptr<QCheckBox> m_pipewirePatchbayCheckBox;
-    parented_ptr<ControlProxy> m_pPipewirePatchbay;
-#endif
 };
