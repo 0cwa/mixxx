@@ -255,22 +255,8 @@ void CachingReaderWorker::run() {
                 }
             }
             processSeek30Commands();
-        } else if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
-            m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
-            // Read the requested chunk and send the result. Publish only
-            // primitive progress snapshots for off-thread diagnostics.
-            const int chunkIndex = request.chunk->getIndex();
-            m_diagnosticActiveChunk.storeRelease(chunkIndex);
-            m_diagnosticState.storeRelease(
-                    static_cast<int>(DiagnosticState::Decoding));
-            const ReaderStatusUpdate update = processReadRequest(request);
-            m_diagnosticLastCompletedChunk.storeRelease(chunkIndex);
-            m_diagnosticCompletedRequests.fetchAndAddRelaxed(1);
-            m_diagnosticActiveChunk.storeRelease(-1);
-            if (!publishStatus(update)) {
-                break;
-            }
         } else {
+            processSeek30Commands();
             if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
                 m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
                 // Read the requested chunk and send the result. Publish only
@@ -282,8 +268,10 @@ void CachingReaderWorker::run() {
                 const ReaderStatusUpdate update = processReadRequest(request);
                 m_diagnosticLastCompletedChunk.storeRelease(chunkIndex);
                 m_diagnosticCompletedRequests.fetchAndAddRelaxed(1);
-                publishStatus(update);
                 m_diagnosticActiveChunk.storeRelease(-1);
+                if (!publishStatus(update)) {
+                    break;
+                }
             } else {
                 m_diagnosticActiveChunk.storeRelease(-1);
                 m_diagnosticState.storeRelease(
