@@ -3495,11 +3495,6 @@ endif()
 target_include_directories(mixxx-lib SYSTEM PUBLIC lib/fidlib)
 target_link_libraries(mixxx-lib PRIVATE fidlib)
 
-# Create a list from CMAKE_PREFIX_PATH with an alternate separator
-# This is required to forward CMAKE_PREFIX_PATH in ExternalProject_Add()
-# using the LIST_SEPARATOR option
-string(REPLACE ";" "|" CMAKE_PREFIX_PATH_ALT_SEP "${CMAKE_PREFIX_PATH}")
-
 # KeyFinder
 option(KEYFINDER "KeyFinder support" ON)
 if(KEYFINDER)
@@ -3603,42 +3598,16 @@ if(KEYFINDER)
 endif()
 
 # SignalSmith
-option(SIGNALSMITH "Enable the SignalSmith engine for pitch-bending" ON)
+option(SIGNALSMITH "Enable the SignalSmith engine for pitch-bending" OFF)
 if(SIGNALSMITH)
-  set(
-    SIGNALSMITH_INSTALL_DIR
-    "${CMAKE_CURRENT_BINARY_DIR}/lib/signalsmith-install"
-  )
-  ExternalProject_Add(
-    signalsmith-stretch
-    GIT_REPOSITORY
-      "https://github.com/Signalsmith-Audio/signalsmith-stretch.git"
-    GIT_TAG "57b93f4e9206a089a45387eaa39bdc9f310d3308"
-    PREFIX "signalsmith-stretch"
-    INSTALL_DIR "${SIGNALSMITH_INSTALL_DIR}"
-    LIST_SEPARATOR "|"
-    CMAKE_ARGS
-      -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
-      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-      -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-      -DCMAKE_PREFIX_PATH=${PIPE_DELIMITED_CMAKE_PREFIX_PATH}
-      -$<IF:$<BOOL:${CMAKE_TOOLCHAIN_FILE}>,D,U>CMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}
-      -$<IF:$<BOOL:${CMAKE_OSX_DEPLOYMENT_TARGET}>,D,U>CMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-      -$<IF:$<BOOL:${CMAKE_OSX_ARCHITECTURES}>,D,U>CMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
-      -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
-    BUILD_COMMAND ${CMAKE_COMMAND} --build .
-    INSTALL_COMMAND true
-    EXCLUDE_FROM_ALL TRUE
-  )
-
-  add_dependencies(mixxx-lib signalsmith-stretch)
+  find_path(SIGNALSMITH_INCLUDE_DIR signalsmith-stretch.h PATH_SUFFIXES include)
+  if(NOT SIGNALSMITH_INCLUDE_DIR)
+    message(FATAL_ERROR "SIGNALSMITH requires SIGNALSMITH_INCLUDE_DIR")
+  endif()
   target_include_directories(
     mixxx-lib
     SYSTEM
-    PUBLIC
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
+    PUBLIC "${SIGNALSMITH_INCLUDE_DIR}"
   )
   target_sources(
     mixxx-lib
@@ -5456,13 +5425,6 @@ if(QML)
   target_compile_definitions(mixxx-qml-lib PRIVATE rendergraph=rendergraph_sg)
   target_compile_definitions(mixxx-qml-lib PRIVATE __SCENEGRAPH__)
   target_compile_definitions(mixxx-qml-lib PRIVATE allshader=allshader_sg)
-  target_include_directories(
-    mixxx-qml-lib
-    SYSTEM
-    PUBLIC
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch-build/_deps/signalsmith-linear-src/include/"
-      "${CMAKE_CURRENT_BINARY_DIR}/signalsmith-stretch/src/signalsmith-stretch/"
-  )
 endif()
 
 # WavPack audio file support
