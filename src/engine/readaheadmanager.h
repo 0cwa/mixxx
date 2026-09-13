@@ -230,10 +230,9 @@ class ReadAheadManager {
     CueControl* m_pCueControl;
     RateControl* m_pRateControl;
     // Read-ahead logging runs on the engine callback. Keep a fixed-size buffer
-    // so direction changes never allocate in the callback. The extra entry is
-    // a preallocated recovery slot for the first read after the main log fills;
-    // it keeps that read mapped until normal positive output consumption frees
-    // space in the main log.
+    // so direction changes never allocate in the callback. The overflow queue
+    // provides a bounded recovery window after the main log fills; normal
+    // positive output consumption must free entries before the bound is hit.
     std::array<ReadLogEntry, kMaxReadAheadLogEntries> m_readAheadLog;
     std::size_t m_readAheadLogStart{0};
     std::size_t m_readAheadLogSize{0};
