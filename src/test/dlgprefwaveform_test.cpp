@@ -5,11 +5,20 @@
 #include "test/mixxxtest.h"
 #include "waveform/waveformwidgetfactory.h"
 
-class DlgPrefWaveformTest : public MixxxTest {};
+class DlgPrefWaveformTest : public MixxxTest {
+  protected:
+    void SetUp() override {
+        WaveformWidgetFactory::createInstance();
+        ASSERT_TRUE(WaveformWidgetFactory::instance()->setConfig(config()));
+    }
+
+    void TearDown() override {
+        WaveformWidgetFactory::destroy();
+    }
+};
 
 TEST_F(DlgPrefWaveformTest, CueCountdownControlsHaveIndependentDefaultsAndSettings) {
     auto* factory = WaveformWidgetFactory::instance();
-    ASSERT_TRUE(factory->setConfig(config()));
 
     DlgPrefWaveform dialog(nullptr, config(), nullptr);
 
@@ -36,7 +45,6 @@ TEST_F(DlgPrefWaveformTest, CueCountdownControlsHaveIndependentDefaultsAndSettin
 
 TEST_F(DlgPrefWaveformTest, CueCategoriesDoNotDependOnDisplayFormatSelection) {
     auto* factory = WaveformWidgetFactory::instance();
-    ASSERT_TRUE(factory->setConfig(config()));
 
     DlgPrefWaveform dialog(nullptr, config(), nullptr);
     dialog.untilMarkShowBeatsCheckBox->setChecked(false);
