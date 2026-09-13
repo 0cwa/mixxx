@@ -72,12 +72,11 @@ class EngineBufferScaleBungeeBufferWindowTest;
 //       is unchanged.
 //     - Full discard (framePosition >= m_bufferedInputEndFrame, which
 //       happens when grain hops outrun the input window at very high
-//       playback rates): first consume the skipped gap from ReadAheadManager,
-//       then both pointers jump to framePosition.  Any other choice (e.g.
-//       leaving begin at the OLD end, as an earlier implementation did)
-//       produces a gap that violates the dataOffset invariant on the next
-//       grain; jumping without consuming the skipped read-ahead input labels
-//       future reads with the wrong absolute frame position.
+//       playback rates): consume the skipped source range before both pointers
+//       jump to framePosition. A pending retry leaves the pointers at the
+//       consumed prefix so the next callback retries without relabelling input;
+//       an exhausted read collapses the empty window to framePosition to retain
+//       the BNG-13 invariant.
 //
 //   processGrain() additionally enforces the invariant defensively: if it
 //   ever computes dataOffset + grainSize > m_channelStride, it sets
@@ -87,6 +86,12 @@ class EngineBufferScaleBungeeBufferWindowTest;
 //
 // ## Thread safety
 //   Not thread-safe; intended for single-threaded engine use only.
+//
+// ## Stretcher lifetime
+//   A valid output signal owns a configured stretcher. The real-time grain
+//   recovery paths must preserve that invariant: a failed muted-grain
+//   recovery may discard the current grain, but must not destroy the only
+//   configured stretcher. Signal changes are the only path that replaces it.
 class EngineBufferScaleBungee final : public EngineBufferScale {
     Q_OBJECT
   public:
@@ -159,10 +164,10 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     std::unique_ptr<Bungee::Stretcher<Bungee::Basic>> m_pStretcher;
 
     // Current Bungee request for grain processing.
-    Bungee::Request m_request;
+    Bungee::Request m_request{};
 
     // Output chunk for synthesiseGrain.
-    Bungee::OutputChunk m_outputChunk;
+    Bungee::OutputChunk m_outputChunk{};
 
     // Deinterleaved channel pointers into the contiguous buffered input window.
     std::vector<float*> m_channelBufferPtrs;
@@ -180,7 +185,7 @@ class EngineBufferScaleBungee final : public EngineBufferScale {
     SINT m_channelStride;
 
     // Current grain's input chunk.
-    Bungee::InputChunk m_currentInputChunk;
+    Bungee::InputChunk m_currentInputChunk{};
 
     // Absolute frame range currently buffered in m_contiguousChannelBuffer.
     SINT m_bufferedInputBeginFrame;
