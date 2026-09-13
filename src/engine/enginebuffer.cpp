@@ -4,8 +4,6 @@
 #include <mutex>
 #endif
 
-#include <QtDebug>
-
 #include "control/controllinpotmeter.h"
 #include "control/controlpotmeter.h"
 #include "control/controlproxy.h"
@@ -259,6 +257,7 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_slipQuitAndAdopt(0),
           m_bPlayAfterLoading(false),
           m_channelCount(mixxx::kEngineChannelOutputCount),
+          m_iChannelCount(mixxx::kEngineChannelOutputCount.value()),
           m_pCrossfadeBuffer(SampleUtil::alloc(
                   kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount)),
           m_bCrossfadeReady(false),
@@ -460,10 +459,9 @@ EngineBuffer::EngineBuffer(const QString& group,
             m_pCueControl);
     m_pReadAheadManager->addRateControl(m_pRateControl);
 
-    m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
-    m_pKeylockEngine->connectValueChanged(this,
-            &EngineBuffer::slotKeylockEngineChanged,
-            Qt::DirectConnection);
+    if (PlayerManager::isDeckGroup(group)) {
+        m_pKeylockEngine = new ControlProxy(group, QStringLiteral("keylock_engine"), this);
+    }
     // Construct scaling objects
     m_pScaleLinear = new EngineBufferScaleLinear(m_pReadAheadManager);
     m_pScaleST = new EngineBufferScaleST(m_pReadAheadManager);
@@ -484,15 +482,22 @@ EngineBuffer::EngineBuffer(const QString& group,
         pInitialBungee->setSignal(initialSampleRate, m_channelCount);
     }
 #endif
+#ifdef __SIGNALSMITH__
+    m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
+#endif
 #ifdef __BUNGEE__
     m_pSampleRate->connectValueChanged(this,
             &EngineBuffer::slotSampleRateChanged,
             Qt::DirectConnection);
 #endif
-#ifdef __SIGNALSMITH__
-    m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
-#endif
-    slotKeylockEngineChanged(m_pKeylockEngine->get());
+    if (m_pKeylockEngine) {
+        m_pKeylockEngine->connectValueChanged(this,
+                &EngineBuffer::slotKeylockEngineChanged,
+                Qt::DirectConnection);
+    }
+    slotKeylockEngineChanged(m_pKeylockEngine
+                    ? m_pKeylockEngine->get()
+                    : static_cast<double>(defaultKeylockEngine()));
 #ifdef __BUNGEE__
     m_pBungeeWorker = std::make_unique<EngineBufferBungeeWorker>(
             this,
@@ -635,6 +640,11 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
             // Keep using the already prepared scaler until the worker publishes
             // a state for the new signal. Falling back to vinyl here avoids
             // feeding a stale channel/sample-rate layout to Bungee.
+            break;
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            keylock_scale = m_pScaleSignalSmith;
             break;
 #endif
         default:
@@ -912,6 +922,8 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
         m_channelCount = mixxx::audio::ChannelCount::stereo();
     }
 
+    m_iChannelCount.storeRelease(m_channelCount.value());
+
 #ifdef __BUNGEE__
     requestBungeeConfiguration(
             mixxx::audio::SampleRate::fromDouble(m_pSampleRate->get()),
@@ -1090,8 +1102,8 @@ double EngineBuffer::fractionalPlayposFromAbsolute(double absolutePlaypos) {
         return 0.0;
     }
 
-    const double position = std::clamp(
-            absolutePlaypos, 0.0, m_trackEndPositionOld.value());
+    const double position = std::min(
+            absolutePlaypos, m_trackEndPositionOld.value());
     return position / m_trackEndPositionOld.value();
 }
 
@@ -1231,7 +1243,6 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
 #endif
 #ifdef __SIGNALSMITH__
     case KeylockEngine::SignalSmith:
-        m_pScaleKeylock = m_pScaleSignalSmith;
         break;
 #endif
     default:
@@ -1489,6 +1500,13 @@ void EngineBuffer::processTrackLocked(
 
     m_rate_old = rate;
 
+    // The callback layout is immutable for this processing pass. Never let a
+    // scaler configured for another layout interpret this buffer.
+    if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        SampleUtil::clear(pOutput, bufferSize);
+        return;
+    }
+
     // If the buffer is not paused, then scale the audio.
     if (!bCurBufferPaused) {
         // Perform scaling of Reader buffer into buffer.
@@ -1514,8 +1532,11 @@ void EngineBuffer::processTrackLocked(
         // If repeat is enabled, scaler->scaleBuffer() wraps around at end/start
         // and fills the buffer with samples from the other end of the track.
 
-        if (m_bCrossfadeReady &&
-                isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        if (m_bCrossfadeReady) {
+            if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+                SampleUtil::clear(pOutput, bufferSize);
+                return;
+            }
             // Bring pOutput with the new parameters in and fade out the old one,
             // stored with the old parameters in m_pCrossfadeBuffer
             SampleUtil::linearCrossfadeBuffersIn(
@@ -1606,7 +1627,6 @@ void EngineBuffer::processWithChannelLayout(
     m_pBungeeStateForCallback = m_pBungeeCallbackState.load(
             std::memory_order_seq_cst);
 #endif
-    m_pReader->process();
     // Steps:
     // - Lookup new reader information
     // - Calculate current rate
@@ -1626,6 +1646,9 @@ void EngineBuffer::processWithChannelLayout(
     m_pScaleST->setSignal(m_sampleRate, callbackChannelCount);
 #ifdef __RUBBERBAND__
     m_pScaleRB->setSignal(m_sampleRate, callbackChannelCount);
+#endif
+#ifdef __SIGNALSMITH__
+    m_pScaleSignalSmith->setSignal(m_sampleRate, callbackChannelCount);
 #endif
 #ifdef __BUNGEE__
     // A track-load publication can change the callback layout before the
@@ -1652,21 +1675,18 @@ void EngineBuffer::processWithChannelLayout(
             m_bScalerChanged = true;
         }
     }
-#endif
-#ifdef __SIGNALSMITH__
-    m_pScaleSignalSmith->setSignal(m_sampleRate, m_channelCount);
-#endif
 
     if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
         SampleUtil::clear(pOutput, bufferSize);
         m_pSyncControl->updateAudible();
         m_lastBufferSize = bufferSize;
         m_bCrossfadeReady = false;
-#ifdef __BUNGEE__
         finishBungeeCallback();
-#endif
         return;
     }
+#endif
+
+    m_pReader->process();
 
     if (isTrackLoaded() && m_pause.tryLock()) {
         processTrackLocked(
@@ -1979,13 +1999,8 @@ void EngineBuffer::updateIndicators(double speed, std::size_t bufferSize) {
     // Increase samplesCalculated by the buffer size
     m_samplesSinceLastIndicatorUpdate += bufferSize;
 
-    const double trackEndPosition = m_trackEndPositionOld.isValid()
-            ? m_trackEndPositionOld.value()
-            : 0.0;
-    const double visualPlayPosition = std::clamp(
-            m_playPos.value() + m_pScale->getVisualPlayPositionOffset(),
-            0.0,
-            trackEndPosition);
+    const double visualPlayPosition =
+            m_playPos.value() + m_pScale->getVisualPlayPositionOffset();
     const double fFractionalPlaypos =
             fractionalPlayposFromAbsolute(visualPlayPosition);
     const double fFractionalSlipPos =

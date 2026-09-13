@@ -1,8 +1,11 @@
 #pragma once
 
+#ifdef BUILD_TESTING
 #include <gtest/gtest_prod.h>
+#endif
 
 #include <QAtomicInt>
+#include <QAtomicPointer>
 #include <QMutex>
 #include <atomic>
 #include <cstdint>
@@ -40,7 +43,7 @@ class EngineBufferBungeeWorker;
 #endif
 
 #ifdef __SIGNALSMITH__
-#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+class EngineBufferScaleSignalSmith;
 #endif
 
 //for the writer
@@ -149,7 +152,8 @@ class EngineBuffer : public EngineObject {
     // Return the current rate (not thread-safe)
     double getSpeed() const;
     mixxx::audio::ChannelCount getChannelCount() const {
-        return m_channelCount;
+        return mixxx::audio::ChannelCount(
+                static_cast<uint8_t>(m_iChannelCount.loadAcquire()));
     }
     mixxx::audio::FramePos getPlayPos() const {
         return m_playPos;
@@ -397,7 +401,9 @@ class EngineBuffer : public EngineObject {
     void processSeek(bool paused,
             mixxx::audio::ChannelCount callbackChannelCount);
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
+#endif
     bool previousBufferSeek() const {
         return m_previousBufferSeek;
     }
@@ -427,6 +433,7 @@ class EngineBuffer : public EngineObject {
     friend class LoopingControlTest;
 
     LoopingControl* m_pLoopingControl; // used for tests
+#ifdef BUILD_TESTING
     FRIEND_TEST(LoopingControlTest, LoopScale_HalvesLoop);
     FRIEND_TEST(SyncControlTest, TestDetermineBpmMultiplier);
     FRIEND_TEST(EngineSyncTest, HalfDoubleBpmTest);
@@ -436,9 +443,8 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInLeaderChange);
     FRIEND_TEST(EngineSyncTest, BeatMapQuantizePlay);
     FRIEND_TEST(EngineBufferTest, ScalerNoTransport);
-    FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
-    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
-    FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
+    FRIEND_TEST(EngineBufferTest, FractionalPlayposClampsToTrackBounds);
+#endif
     EngineSync* m_pEngineSync;
     SyncControl* m_pSyncControl;
     VinylControlControl* m_pVinylControlControl;
@@ -446,8 +452,10 @@ class EngineBuffer : public EngineObject {
     BpmControl* m_pBpmControl;
     KeyControl* m_pKeyControl;
     ClockControl* m_pClockControl;
+#ifdef BUILD_TESTING
     FRIEND_TEST(CueControlTest, SeekOnSetCueCDJ);
     FRIEND_TEST(CueControlTest, SeekOnSetCuePlay);
+#endif
     CueControl* m_pCueControl;
     Seek30Control* m_pSeek30Control{nullptr};
 
@@ -555,6 +563,7 @@ class EngineBuffer : public EngineObject {
     // Object used to perform waveform scaling (sample rate conversion).  These
     // three pointers may be reassigned depending on configuration and tests.
     EngineBufferScale* m_pScale;
+#ifdef BUILD_TESTING
     FRIEND_TEST(EngineBufferTest, SlowRubberBand);
     FRIEND_TEST(EngineBufferTest, ResetPitchAdjustUsesLinear);
     FRIEND_TEST(EngineBufferTest, VinylScalerRampZero);
@@ -564,9 +573,12 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
+    FRIEND_TEST(EngineBufferBungeeTest,
+            BungeeRapidReconfigurationAndEngineChanges);
     FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
     FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
     FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
+#endif
     EngineBufferScale* m_pScaleVinyl;
     // Used for test scaler injection. Production selection is derived from the
     // single m_iKeylockEngine publication and fixed scaler members; Bungee is
@@ -636,6 +648,9 @@ class EngineBuffer : public EngineObject {
 
     // The current channel count of the loaded track
     mixxx::audio::ChannelCount m_channelCount;
+    // Published atomically when m_channelCount changes. Audio callbacks take
+    // one acquire snapshot and pass it through the processing path.
+    QAtomicInt m_iChannelCount;
 
     TrackPointer m_pCurrentTrack;
 #ifdef __SCALER_DEBUG__
