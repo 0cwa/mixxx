@@ -136,6 +136,7 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
     // samples. Do not clear beyond that established output-buffer contract.
     DEBUG_ASSERT(bufferSize <= kMaxEngineSamples);
     if (bufferSize > kMaxEngineSamples) {
+        SampleUtil::clear(pOut, static_cast<SINT>(kMaxEngineSamples));
         return;
     }
 
@@ -266,6 +267,16 @@ void EngineDeck::cloneStemState(const EngineDeck* deckToClone) {
 #endif
 
 void EngineDeck::process(CSAMPLE* pOut, const std::size_t bufferSize) {
+    // EngineMixer::process() provides an output buffer of at most
+    // kMaxEngineSamples samples. Reject an out-of-contract callback before
+    // any processing path can use the oversized value. Only the prefix covered
+    // by the callback contract may be cleared.
+    DEBUG_ASSERT(bufferSize <= kMaxEngineSamples);
+    if (bufferSize > kMaxEngineSamples) {
+        SampleUtil::clear(pOut, static_cast<SINT>(kMaxEngineSamples));
+        return;
+    }
+
     // Feed the incoming audio through if passthrough is active
     const CSAMPLE* sampleBuffer = m_sampleBuffer; // save pointer on stack
     if (isPassthroughActive() && sampleBuffer) {
