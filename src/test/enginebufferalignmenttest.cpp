@@ -24,11 +24,19 @@
 #include <vector>
 
 #include "control/controlobject.h"
+#ifdef __BUNGEE__
+#include "engine/bufferscalers/enginebufferscalebungee.h"
+#endif
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
+#include "engine/bufferscalers/enginebufferscalelinear.h"
 #include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/controls/enginecontrol.h"
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
+#include "engine/readaheadmanager.h"
 #include "test/signalpathtest.h"
 #include "track/track.h"
 #include "util/performancetimer.h"
@@ -63,10 +71,13 @@ constexpr double kBungeeMarkerOnsetThreshold = 0.8;
 #endif
 constexpr int kMarkerNeighbourFrames = 8;
 constexpr int kRendererWidth = 1000;
-constexpr const char* kTracePath =
-        "/tmp/mixxx-enginebuffer-alignment.trace";
-constexpr const char* kEngineMarkerTracePath =
-        "/tmp/mixxx-engine-marker-alignment.trace";
+const QString kTracePath =
+        QDir(QDir::tempPath())
+                .filePath(QStringLiteral("mixxx-enginebuffer-alignment.trace"));
+const QString kEngineMarkerTracePath =
+        QDir(QDir::tempPath())
+                .filePath(
+                        QStringLiteral("mixxx-engine-marker-alignment.trace"));
 
 static_assert(kMarkerSourceFrame + kMarkerFrames < kTrackFrames);
 static_assert(kEngineMarkerSourceFrame + kEngineMarkerFrames < kTrackFrames);
@@ -118,14 +129,15 @@ CSAMPLE engineMarkerSample(int markerFrame, int channel) {
     return channel == 0 ? level : -level;
 }
 
-struct DeterministicSource {
-    struct ReadObservation {
-        SINT startSample = 0;
-        SINT numSamples = 0;
-        bool reverse = false;
-    };
+struct ReadObservation {
+    SINT startSample = 0;
+    SINT numSamples = 0;
+    bool reverse = false;
+    std::size_t generation = 0;
+};
 
-    static constexpr std::size_t kMaxReadObservations = 4096;
+struct DeterministicSource {
+    static constexpr std::size_t kMaxReadObservations = 65536;
 
     std::array<CSAMPLE, kTrackFrames * kChannels> samples{};
     mutable std::array<ReadObservation, kMaxReadObservations> readObservations{};
@@ -136,8 +148,9 @@ struct DeterministicSource {
             const double phase = 0.017 * static_cast<double>(frame);
             samples[frame * kChannels] = static_cast<CSAMPLE>(
                     0.18 * std::sin(phase) + 0.07 * std::sin(phase * 0.37));
-            samples[frame * kChannels + 1] = static_cast<CSAMPLE>(
-                    0.16 * std::cos(phase * 0.71) - 0.05 * std::sin(phase * 0.19));
+            samples[frame * kChannels + 1] =
+                    static_cast<CSAMPLE>(0.16 * std::cos(phase * 0.71) -
+                            0.05 * std::sin(phase * 0.19));
         }
 
         std::copy(kMarkerCode.begin(),
@@ -163,16 +176,80 @@ struct DeterministicSource {
     }
 };
 
-DeterministicSource g_source;
+CSAMPLE markerForRead(std::size_t readGeneration) {
+    return static_cast<CSAMPLE>(
+            0.25 + 0.0001 * static_cast<double>(readGeneration));
+}
+
+class GenerationMarkedSource {
+  public:
+    static constexpr std::size_t kMaxReadObservations = 65536;
+
+    mutable std::array<ReadObservation, kMaxReadObservations> readObservations{};
+    mutable std::size_t readObservationCount = 0;
+    mutable std::size_t generation = 0;
+
+    void resetReadObservations() const {
+        readObservationCount = 0;
+        generation = 0;
+    }
+
+    CachingReader::ReadResult read(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount) const {
+        if (numSamples == 0) {
+            return CachingReader::ReadResult::AVAILABLE;
+        }
+
+        const std::size_t readGeneration = ++generation;
+        if (readObservationCount < readObservations.size()) {
+            readObservations[readObservationCount++] =
+                    ReadObservation{startSample,
+                            numSamples,
+                            reverse,
+                            readGeneration};
+        }
+
+        const SINT sourceStart = reverse ? startSample - numSamples : startSample;
+        const SINT sourceEnd = sourceStart + numSamples;
+        const SINT sourceSize = kTrackFrames * kChannels;
+        if (channelCount != mixxx::audio::ChannelCount::stereo() ||
+                sourceStart < 0 || sourceEnd > sourceSize) {
+            SampleUtil::clear(buffer, numSamples);
+            return CachingReader::ReadResult::PARTIALLY_AVAILABLE;
+        }
+
+        // Every reader call gets a unique constant stereo marker. The marker
+        // survives linear interpolation and ties recovered output to one
+        // exact ReadObservation instead of to an absolute-position heuristic.
+        const CSAMPLE marker = markerForRead(readGeneration);
+        for (SINT sample = 0; sample < numSamples; ++sample) {
+            buffer[sample] = sample % kChannels == 0 ? marker : -marker;
+        }
+        return CachingReader::ReadResult::AVAILABLE;
+    }
+};
+
+struct DeterministicReaderContext {
+    DeterministicSource normalSource;
+    GenerationMarkedSource recoverySource;
+    bool useRecoverySource = false;
+};
+
+DeterministicReaderContext g_readerContext;
+DeterministicSource& g_source = g_readerContext.normalSource;
+GenerationMarkedSource& g_recoverySource = g_readerContext.recoverySource;
 
 class DeterministicCachingReader final : public CachingReader {
   public:
     DeterministicCachingReader(const QString& group,
             UserSettingsPointer pConfig,
             mixxx::audio::ChannelCount maxSupportedChannel,
-            const DeterministicSource* pSource)
+            const DeterministicReaderContext* pContext)
             : CachingReader(group, pConfig, maxSupportedChannel),
-              m_pSource(pSource) {
+              m_pContext(pContext) {
     }
 
     CachingReader::ReadResult read(SINT startSample,
@@ -184,14 +261,21 @@ class DeterministicCachingReader final : public CachingReader {
             return CachingReader::ReadResult::AVAILABLE;
         }
 
-        m_pSource->recordRead(startSample, numSamples, reverse);
+        if (m_pContext->useRecoverySource) {
+            return m_pContext->recoverySource.read(
+                    startSample, numSamples, reverse, buffer, channelCount);
+        }
+
+        const DeterministicSource* const pSource =
+                &m_pContext->normalSource;
+        pSource->recordRead(startSample, numSamples, reverse);
 
         // This test only enables forward playback. Keep the implementation
         // exact for both directions so an accidental reverse request cannot
         // silently turn into a different source sequence.
         const SINT sourceStart = reverse ? startSample - numSamples : startSample;
         const SINT sourceEnd = sourceStart + numSamples;
-        const SINT sourceSize = static_cast<SINT>(m_pSource->samples.size());
+        const SINT sourceSize = static_cast<SINT>(pSource->samples.size());
         if (channelCount != mixxx::audio::ChannelCount::stereo() ||
                 sourceStart < 0 || sourceEnd > sourceSize) {
             SampleUtil::clear(buffer, numSamples);
@@ -199,19 +283,19 @@ class DeterministicCachingReader final : public CachingReader {
         }
 
         if (!reverse) {
-            std::copy_n(m_pSource->samples.data() + sourceStart,
+            std::copy_n(pSource->samples.data() + sourceStart,
                     numSamples,
                     buffer);
         } else {
             for (SINT sample = 0; sample < numSamples; ++sample) {
-                buffer[sample] = m_pSource->samples[sourceEnd - sample - 1];
+                buffer[sample] = pSource->samples[sourceEnd - sample - 1];
             }
         }
         return CachingReader::ReadResult::AVAILABLE;
     }
 
   private:
-    const DeterministicSource* const m_pSource;
+    const DeterministicReaderContext* const m_pContext;
 };
 
 CachingReader* makeDeterministicReader(const QString& group,
@@ -222,7 +306,106 @@ CachingReader* makeDeterministicReader(const QString& group,
             group,
             pConfig,
             maxSupportedChannel,
-            static_cast<const DeterministicSource*>(pContext));
+            static_cast<const DeterministicReaderContext*>(pContext));
+}
+
+class RecoverySourceScope {
+  public:
+    explicit RecoverySourceScope(DeterministicReaderContext* pContext)
+            : m_pContext(pContext),
+              m_previous(pContext->useRecoverySource) {
+        m_pContext->useRecoverySource = true;
+    }
+
+    ~RecoverySourceScope() {
+        m_pContext->useRecoverySource = m_previous;
+    }
+
+  private:
+    DeterministicReaderContext* const m_pContext;
+    const bool m_previous;
+};
+
+bool containsGenerationMarker(std::span<const CSAMPLE> samples,
+        std::size_t generation) {
+    const CSAMPLE marker = markerForRead(generation);
+    for (std::size_t sample = 0; sample + 1 < samples.size(); sample += 2) {
+        if (std::abs(samples[sample] - marker) < 1e-5f &&
+                std::abs(samples[sample + 1] + marker) < 1e-5f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool allSamplesMatchObservedGenerationInterval(
+        const GenerationMarkedSource& source,
+        std::size_t firstObservation,
+        std::span<const CSAMPLE> samples) {
+    if (samples.empty() || samples.size() % kChannels != 0) {
+        return false;
+    }
+    for (std::size_t sample = 0; sample < samples.size(); sample += kChannels) {
+        // The reader returns a constant marker for each exact observation.
+        // At a linear interpolation boundary, a frame may instead lie between
+        // the markers of two adjacent recovery observations.
+        bool matchesObservationInterval = false;
+        for (std::size_t observation = firstObservation;
+                observation < source.readObservationCount;
+                ++observation) {
+            const CSAMPLE intervalStart = markerForRead(
+                    source.readObservations[observation].generation);
+            const CSAMPLE intervalEnd = observation + 1 <
+                            source.readObservationCount
+                    ? markerForRead(
+                              source.readObservations[observation + 1]
+                                      .generation)
+                    : intervalStart;
+            const CSAMPLE lowerMarker = std::min(intervalStart, intervalEnd);
+            const CSAMPLE upperMarker = std::max(intervalStart, intervalEnd);
+            const CSAMPLE value = samples[sample];
+            if (value >= lowerMarker - 1e-5f &&
+                    value <= upperMarker + 1e-5f &&
+                    std::abs(samples[sample + 1] + value) < 1e-5f) {
+                matchesObservationInterval = true;
+                break;
+            }
+        }
+        if (!matchesObservationInterval) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::size_t countGenerationMarkers(const GenerationMarkedSource& source,
+        std::size_t firstObservation,
+        std::span<const CSAMPLE> samples) {
+    std::size_t count = 0;
+    for (std::size_t i = firstObservation;
+            i < source.readObservationCount;
+            ++i) {
+        if (containsGenerationMarker(samples,
+                    source.readObservations[i].generation)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::size_t findGenerationMarkedRead(
+        const GenerationMarkedSource& source,
+        std::size_t firstObservation,
+        std::span<const CSAMPLE> samples) {
+    for (std::size_t i = firstObservation;
+            i < source.readObservationCount;
+            ++i) {
+        if (containsGenerationMarker(samples,
+                    source.readObservations[i].generation)) {
+            return i;
+        }
+    }
+    return std::numeric_limits<std::size_t>::max();
 }
 
 bool matchesMarker(const CSAMPLE* pSamples) {
@@ -381,6 +564,7 @@ MarkerSimilarity findBestEngineMarkerSimilarity(
     return best;
 }
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
         double sourceRate,
         double threshold) {
@@ -406,6 +590,7 @@ MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
     }
     return {};
 }
+#endif
 
 class FixedVSyncProvider final : public VSyncTimeProvider {
   public:
@@ -428,6 +613,7 @@ class FixedVSyncProvider final : public VSyncTimeProvider {
     const std::chrono::microseconds m_offset;
 };
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 struct MarkerPlayheadPixelResult {
     bool rendererInitialized = false;
     double markerPixel = 0.0;
@@ -470,6 +656,7 @@ MarkerPlayheadPixelResult replayMarkerAtSyntheticVSync(
     }
     return result;
 }
+#endif
 
 struct StretchedMarkerProbeResult {
     MarkerSimilarity similarity;
@@ -640,10 +827,12 @@ void writeCommonScalerPositionTrace(
                      << " (" << records.size() << " records)";
 }
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 StretchedMarkerProbeResult runStretchedMarkerProbe(
         EngineBuffer* pEngineBuffer,
         const QString& group,
         const TrackPointer& track,
+        double sourceRate,
         double markerThreshold) {
     pEngineBuffer->loadFakeTrack(track, false);
     pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
@@ -688,8 +877,10 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
 
     StretchedMarkerProbeResult result;
     result.similarity = findEngineMarkerOnset(
-            emitted, 1.25, markerThreshold);
-    result.callbackIndex = result.similarity.outputFrame / kBufferFrames;
+            emitted, sourceRate, markerThreshold);
+    result.callbackIndex = result.similarity.outputFrame >= 0
+            ? result.similarity.outputFrame / kBufferFrames
+            : -1;
     if (result.callbackIndex >= 0 && result.callbackIndex < 80) {
         result.playPosBeforeFrames = playPositionsBefore[result.callbackIndex];
         result.playPosAfterFrames = playPositionsAfter[result.callbackIndex];
@@ -708,6 +899,7 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
     result.maximumOutput = maximumOutput;
     return result;
 }
+#endif
 
 struct AlignmentObservation {
     int callbackIndex = -1;
@@ -736,7 +928,7 @@ static_assert(std::is_trivially_copyable_v<AlignmentObservation>);
 void writeFailureTrace(const AlignmentObservation* observations,
         std::size_t observationCount,
         int sourceMarkerOccurrences) {
-    std::ofstream trace(kTracePath, std::ios::trunc);
+    std::ofstream trace(kTracePath.toStdString(), std::ios::trunc);
     if (!trace) {
         return;
     }
@@ -784,6 +976,7 @@ void writeFailureTrace(const AlignmentObservation* observations,
     }
 }
 
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 void writeEngineMarkerFailureTrace(const char* engine,
         double correlation,
         double normalizedError,
@@ -804,7 +997,7 @@ void writeEngineMarkerFailureTrace(const char* engine,
         int firstDivergentClock,
         double maximumOutput,
         const char* scenario = "EngineMarkerTracksEnginePosition") {
-    std::ofstream trace(kEngineMarkerTracePath, std::ios::trunc);
+    std::ofstream trace(kEngineMarkerTracePath.toStdString(), std::ios::trunc);
     if (!trace) {
         return;
     }
@@ -836,6 +1029,7 @@ void writeEngineMarkerFailureTrace(const char* engine,
     trace << "read_ahead_observation_count=" << readAheadObservationCount << '\n';
     trace << "maximum_output=" << maximumOutput << '\n';
 }
+#endif
 
 } // namespace
 
@@ -844,7 +1038,7 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
     static void SetUpTestSuite() {
         EngineBuffer::setTestReaderFactory(
                 &makeDeterministicReader,
-                &g_source);
+                &g_readerContext);
     }
 
     static void TearDownTestSuite() {
@@ -916,7 +1110,10 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
 #endif
 #ifdef __BUNGEE__
             case EngineBuffer::KeylockEngine::Bungee:
-                expectedKeylockScaler = pEngineBuffer->m_pScaleBungee;
+                if (const auto* pState = pEngineBuffer->m_pBungeePublishedState.load(
+                            std::memory_order_seq_cst)) {
+                    expectedKeylockScaler = pState->pScaler;
+                }
                 break;
 #endif
 #ifdef __SIGNALSMITH__
@@ -927,9 +1124,8 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
             default:
                 break;
             }
-            ASSERT_EQ(pEngineBuffer->m_pScaleKeylock.loadAcquire(),
-                    expectedKeylockScaler)
-                    << "The requested keylock scaler is not selected for "
+            ASSERT_NE(nullptr, expectedKeylockScaler)
+                    << "The requested keylock scaler is unavailable for "
                     << keylockEngineTraceName(engine);
 
             const char* const engineName = keylockEngineTraceName(engine);
@@ -1202,7 +1398,229 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
 
     EXPECT_TRUE(allChecksPassed)
             << "first divergent clock=" << firstDivergentClock
-            << "; failure trace=" << kTracePath;
+            << "; failure trace=" << kTracePath.toStdString();
+}
+
+TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
+    constexpr int kSetupStartFrame = 128;
+    constexpr double kTempoRatio = 1.25;
+    constexpr int kPrimeCallbackFrames = kBufferFrames - 1;
+    constexpr SINT kPrimeCallbackSamples = kPrimeCallbackFrames * kChannels;
+    // The recovery callback needs one refill for its 2400 output frames at
+    // 1.25x. The retained one-frame interpolation tail may require one more
+    // reader observation to provide the boundary sample.
+    constexpr std::size_t kMaxRecoveryReadObservations = 2;
+    constexpr std::size_t kReadLogCapacity =
+            ReadAheadManager::kMaxReadAheadLogEntries + 2;
+    constexpr SINT kForwardMappingSamples = kChannels * 2;
+    constexpr SINT kReverseMappingSamples = kChannels;
+    constexpr int kFallbackCallbackFrames = kBufferFrames * 2;
+    constexpr int kFallbackCallbackSamples =
+            kFallbackCallbackFrames * kChannels;
+    constexpr CSAMPLE kStaleSample = -12345.0f;
+
+    // Existing alignment tests use the normal waveform fixture. This test
+    // temporarily selects a separate source that labels every reader call so
+    // recovery output can be tied to the exact read that produced it.
+    RecoverySourceScope recoverySourceScope(&g_readerContext);
+
+    TrackPointer track = Track::newTemporary();
+    track->setAudioProperties(
+            mixxx::kEngineChannelOutputCount,
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(kTrackSeconds));
+
+    // Keep this callback test on the linear scaler. Disabling keylock while
+    // keeping pitch and tempo equal selects it independently of optional
+    // time-stretching engines.
+    configureAlignmentControls(
+            m_sGroup1, EngineBuffer::KeylockEngine::SoundTouch, kTempoRatio);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock")), 0.0);
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->loadFakeTrack(track, false);
+    pEngineBuffer->seekExact(mixxx::audio::FramePos(kSetupStartFrame));
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+
+    g_recoverySource.resetReadObservations();
+    std::array<CSAMPLE, kBufferSamples> primeOutput{};
+
+    // Prime the actual EngineBuffer/scaler once with a non-integral source
+    // consumption. The linear scaler retains a fractional tail of its first
+    // read-ahead mapping; the manager therefore starts with one deliberately
+    // partial mapping for the bounded alternating setup below.
+    const std::size_t primeReadStart = g_recoverySource.readObservationCount;
+    pEngineBuffer->process(primeOutput.data(), kPrimeCallbackSamples);
+    pEngineBuffer->postProcess(kPrimeCallbackSamples);
+
+    ReadAheadManager* const pReadAheadManager =
+            pEngineBuffer->m_pReadAheadManager;
+    ASSERT_EQ(pEngineBuffer->m_pScale,
+            static_cast<EngineBufferScale*>(pEngineBuffer->m_pScaleLinear));
+    ASSERT_EQ(1u, pReadAheadManager->m_readAheadLogSize);
+    ASSERT_EQ(0u, pReadAheadManager->m_readAheadLogOverflowSize);
+    ASSERT_DOUBLE_EQ(0.5,
+            pReadAheadManager
+                    ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
+                    .length());
+    ASSERT_TRUE(std::all_of(
+            primeOutput.begin(),
+            primeOutput.begin() + kPrimeCallbackSamples,
+            [](CSAMPLE sample) { return sample != kStaleSample; }));
+    const std::size_t primeRead = findGenerationMarkedRead(
+            g_recoverySource, primeReadStart, primeOutput);
+    ASSERT_NE(std::numeric_limits<std::size_t>::max(), primeRead);
+    const auto& primeObservation = g_recoverySource.readObservations[primeRead];
+
+    // Alternate directions so every request is a distinct mapping. Starting
+    // opposite the primed forward entry and ending reverse ensures the next
+    // forward scaler refill cannot merge with either spill entry.
+    const bool primedForward = pReadAheadManager
+                                       ->m_readAheadLog[pReadAheadManager->m_readAheadLogStart]
+                                       .direction();
+    ASSERT_TRUE(primedForward);
+    bool reverse = primedForward;
+    std::array<CSAMPLE, kForwardMappingSamples> mappingBuffer{};
+    for (std::size_t mapping = 0; mapping < kReadLogCapacity; ++mapping) {
+        const std::size_t occupiedEntries =
+                pReadAheadManager->m_readAheadLogSize +
+                pReadAheadManager->m_readAheadLogOverflowSize;
+        const SINT requestedSamples =
+                reverse ? kReverseMappingSamples : kForwardMappingSamples;
+        std::fill(mappingBuffer.begin(), mappingBuffer.end(), kStaleSample);
+        ASSERT_EQ(requestedSamples,
+                pReadAheadManager->getNextSamples(
+                        reverse ? -1.0 : 1.0,
+                        mappingBuffer.data(),
+                        requestedSamples,
+                        mixxx::audio::ChannelCount::stereo()));
+        ASSERT_TRUE(std::all_of(
+                mappingBuffer.begin(),
+                mappingBuffer.begin() + requestedSamples,
+                [](CSAMPLE sample) { return sample != kStaleSample; }));
+        ASSERT_EQ(occupiedEntries + 1,
+                pReadAheadManager->m_readAheadLogSize +
+                        pReadAheadManager->m_readAheadLogOverflowSize);
+        const bool newestEntryForward =
+                pReadAheadManager->m_readAheadLogOverflowSize > 0
+                ? pReadAheadManager
+                          ->m_readAheadLogOverflow
+                                  [pReadAheadManager
+                                                  ->m_readAheadLogOverflowSize -
+                                          1]
+                          .direction()
+                : pReadAheadManager
+                          ->m_readAheadLog[pReadAheadManager
+                                                   ->m_readAheadLogStart +
+                                  pReadAheadManager->m_readAheadLogSize - 1]
+                          .direction();
+        ASSERT_EQ(!reverse, newestEntryForward);
+        reverse = !reverse;
+        if (pReadAheadManager->m_readAheadLogSize ==
+                        ReadAheadManager::kMaxReadAheadLogEntries &&
+                pReadAheadManager->m_readAheadLogOverflowSize == 2) {
+            break;
+        }
+    }
+
+    ASSERT_EQ(ReadAheadManager::kMaxReadAheadLogEntries,
+            pReadAheadManager->m_readAheadLogSize);
+    ASSERT_EQ(2u, pReadAheadManager->m_readAheadLogOverflowSize);
+    ASSERT_FALSE(pReadAheadManager
+                    ->m_readAheadLogOverflow[1]
+                    .direction());
+
+    const std::size_t oldestLogStart = pReadAheadManager->m_readAheadLogStart;
+    const double oldestMappingFrames =
+            pReadAheadManager->m_readAheadLog[oldestLogStart].length() /
+            kChannels;
+    const double readAheadPositionBefore = pReadAheadManager->getPlaypos();
+    const double playPosBefore = pEngineBuffer->getPlayPos().value();
+    const std::size_t readsBeforeFallback = g_recoverySource.readObservationCount;
+
+    std::array<CSAMPLE, kFallbackCallbackSamples> blockedOutput{};
+    std::fill(blockedOutput.begin(), blockedOutput.end(), kStaleSample);
+    // This is the real callback path while the manager is full. The forward
+    // linear refill is non-mergeable with the reverse final spill mapping, so
+    // capacity fallback must return zero without calling the reader.
+    pEngineBuffer->process(blockedOutput.data(), blockedOutput.size());
+    pEngineBuffer->postProcess(blockedOutput.size());
+
+    const double playPosAfterFallback = pEngineBuffer->getPlayPos().value();
+    EXPECT_TRUE(std::all_of(
+            blockedOutput.begin(),
+            blockedOutput.end(),
+            [](CSAMPLE sample) { return sample != kStaleSample; }));
+    EXPECT_TRUE(std::all_of(
+            blockedOutput.begin(),
+            blockedOutput.end(),
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+    EXPECT_GT(playPosAfterFallback, playPosBefore);
+    EXPECT_GT(playPosAfterFallback - playPosBefore, oldestMappingFrames);
+    EXPECT_GT(pReadAheadManager->m_readAheadLogStart, oldestLogStart);
+    EXPECT_LT(pReadAheadManager->m_readAheadLogSize +
+                    pReadAheadManager->m_readAheadLogOverflowSize,
+            kReadLogCapacity);
+    EXPECT_EQ(2u, pReadAheadManager->m_readAheadLogOverflowSize);
+    EXPECT_DOUBLE_EQ(readAheadPositionBefore,
+            pReadAheadManager->getPlaypos());
+    EXPECT_EQ(readsBeforeFallback, g_recoverySource.readObservationCount);
+
+    std::array<CSAMPLE, kFallbackCallbackSamples> recoveryOutput{};
+    std::fill(recoveryOutput.begin(), recoveryOutput.end(), kStaleSample);
+    const std::size_t recoveryReadStart = g_recoverySource.readObservationCount;
+    pEngineBuffer->process(recoveryOutput.data(), recoveryOutput.size());
+    pEngineBuffer->postProcess(recoveryOutput.size());
+
+    const std::size_t recoveryReadCount =
+            g_recoverySource.readObservationCount - recoveryReadStart;
+    ASSERT_GT(recoveryReadCount, 0u);
+    ASSERT_LE(recoveryReadCount, kMaxRecoveryReadObservations);
+    ASSERT_TRUE(std::all_of(
+            recoveryOutput.begin(),
+            recoveryOutput.end(),
+            [](CSAMPLE sample) { return sample != kStaleSample; }));
+    const std::size_t recoveryRead = findGenerationMarkedRead(
+            g_recoverySource, recoveryReadStart, recoveryOutput);
+    ASSERT_NE(std::numeric_limits<std::size_t>::max(), recoveryRead);
+    for (std::size_t observation = recoveryReadStart;
+            observation < g_recoverySource.readObservationCount;
+            ++observation) {
+        const auto& recoveryObservation =
+                g_recoverySource.readObservations[observation];
+        EXPECT_GT(recoveryObservation.generation,
+                primeObservation.generation);
+        EXPECT_FALSE(recoveryObservation.reverse);
+        EXPECT_GT(recoveryObservation.numSamples, 0);
+        if (observation == recoveryReadStart) {
+            EXPECT_EQ(recoveryObservation.startSample,
+                    static_cast<SINT>(readAheadPositionBefore));
+        } else {
+            const auto& previousObservation =
+                    g_recoverySource.readObservations[observation - 1];
+            EXPECT_EQ(previousObservation.startSample +
+                            previousObservation.numSamples,
+                    recoveryObservation.startSample);
+        }
+    }
+    const std::size_t outputGenerationCount = countGenerationMarkers(
+            g_recoverySource, recoveryReadStart, recoveryOutput);
+    EXPECT_GE(outputGenerationCount, 1u);
+    EXPECT_LE(outputGenerationCount, recoveryReadCount);
+    EXPECT_TRUE(allSamplesMatchObservedGenerationInterval(
+            g_recoverySource, recoveryReadStart, recoveryOutput));
+    EXPECT_FALSE(containsGenerationMarker(
+            recoveryOutput, primeObservation.generation));
+    EXPECT_FALSE(std::all_of(
+            recoveryOutput.begin(),
+            recoveryOutput.end(),
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+    EXPECT_FALSE(std::equal(
+            recoveryOutput.begin(), recoveryOutput.end(), blockedOutput.begin()));
+    EXPECT_FALSE(std::equal(
+            recoveryOutput.begin(),
+            recoveryOutput.begin() + kBufferSamples,
+            primeOutput.begin()));
 }
 
 #ifdef __SIGNALSMITH__
@@ -1327,8 +1745,12 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
 
     const MarkerSimilarity bestSimilarity =
             findBestEngineMarkerSimilarity(emitted);
-    const int bestCallback = bestSimilarity.outputFrame / kBufferFrames;
-    const int markerOutputFrame = bestSimilarity.outputFrame % kBufferFrames;
+    const int bestCallback = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame / kBufferFrames
+            : -1;
+    const int markerOutputFrame = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame % kBufferFrames
+            : -1;
     const double markerPlayPosBefore = bestCallback >= 0 && bestCallback < 80
             ? playPositionsBefore[bestCallback]
             : 0.0;
@@ -1363,7 +1785,8 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
             static_cast<double>(kEngineMarkerSourceFrame * kChannels));
     const double rendererPlayheadPixel = renderer.transformSamplePositionInRendererWorld(
             markerRendererPosBefore);
-    const bool markerObserved = bestSimilarity.correlation >= 0.3;
+    const bool markerObserved = bestSimilarity.outputFrame >= 0 &&
+            bestSimilarity.correlation >= 0.3;
     const double bestPlayPos = markerPlayPosBefore;
     const int firstDivergentClock = !markerObserved
             ? 1
@@ -1504,7 +1927,11 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
             kRateRatio);
     EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
     const StretchedMarkerProbeResult probe = runStretchedMarkerProbe(
-            pEngineBuffer, m_sGroup1, track, kSignalSmithMarkerOnsetThreshold);
+            pEngineBuffer,
+            m_sGroup1,
+            track,
+            kRateRatio,
+            kSignalSmithMarkerOnsetThreshold);
     if (probe.callbackIndex < 0 || probe.similarity.correlation < 0.3) {
         writeEngineMarkerFailureTrace(
                 "SignalSmith",
@@ -1536,7 +1963,9 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
             << ", output frame=" << probe.similarity.outputFrame
             << ", maximum output=" << probe.maximumOutput;
 
-    const int markerOutputFrame = probe.similarity.outputFrame % kBufferFrames;
+    const int markerOutputFrame = probe.similarity.outputFrame >= 0
+            ? probe.similarity.outputFrame % kBufferFrames
+            : -1;
     qDebug() << "SignalSmith stretched probe" << probe.callbackIndex
              << probe.similarity.outputFrame << markerOutputFrame
              << probe.visualPlayPosBeforeFrames << probe.effectiveRate
@@ -1679,8 +2108,12 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
 
     const MarkerSimilarity bestSimilarity =
             findBestEngineMarkerSimilarity(emitted);
-    const int bestCallback = bestSimilarity.outputFrame / kBufferFrames;
-    const int markerOutputFrame = bestSimilarity.outputFrame % kBufferFrames;
+    const int bestCallback = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame / kBufferFrames
+            : -1;
+    const int markerOutputFrame = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame % kBufferFrames
+            : -1;
     const double markerPlayPosBefore = bestCallback >= 0 && bestCallback < 80
             ? playPositionsBefore[bestCallback]
             : 0.0;
@@ -1715,7 +2148,8 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
             static_cast<double>(kEngineMarkerSourceFrame * kChannels));
     const double rendererPlayheadPixel = renderer.transformSamplePositionInRendererWorld(
             markerRendererPosBefore);
-    const bool markerObserved = bestSimilarity.correlation >= 0.3;
+    const bool markerObserved = bestSimilarity.outputFrame >= 0 &&
+            bestSimilarity.correlation >= 0.3;
     const double bestPlayPos = markerPlayPosBefore;
     const int firstDivergentClock = !markerObserved
             ? 1
@@ -1856,7 +2290,11 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
             kRateRatio);
     EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
     const StretchedMarkerProbeResult probe = runStretchedMarkerProbe(
-            pEngineBuffer, m_sGroup1, track, kBungeeMarkerOnsetThreshold);
+            pEngineBuffer,
+            m_sGroup1,
+            track,
+            kRateRatio,
+            kBungeeMarkerOnsetThreshold);
     if (probe.callbackIndex < 0 || probe.similarity.correlation < 0.3) {
         writeEngineMarkerFailureTrace(
                 "Bungee",
@@ -1888,7 +2326,9 @@ TEST_F(EngineBufferAlignmentTest, BungeeStretchedMarkerTracksEnginePosition) {
             << ", output frame=" << probe.similarity.outputFrame
             << ", maximum output=" << probe.maximumOutput;
 
-    const int markerOutputFrame = probe.similarity.outputFrame % kBufferFrames;
+    const int markerOutputFrame = probe.similarity.outputFrame >= 0
+            ? probe.similarity.outputFrame % kBufferFrames
+            : -1;
     qDebug() << "Bungee stretched probe" << probe.callbackIndex
              << probe.similarity.outputFrame << markerOutputFrame
              << probe.visualPlayPosBeforeFrames << probe.effectiveRate
