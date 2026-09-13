@@ -391,6 +391,9 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
             this,
             &DlgPrefSound::mainOutputModeComboBoxChanged);
     m_pMainMonoMixdown->connectValueChanged(this, &DlgPrefSound::mainMonoMixdownChanged);
+#ifdef __RUBBERBAND__
+    updateKeylockDualThreadingCheckbox();
+#endif
 
 #ifdef __LINUX__
     qDebug() << "RLimit Cur " << RLimit::getCurRtPrio();
@@ -746,6 +749,7 @@ void DlgPrefSound::loadSettings(const SoundManagerConfig& config) {
     keylockDualthreadedCheckBox->setChecked(m_pSettings->getValue(
             kKeylockMultiThreadingCfgkey,
             false));
+    updateKeylockDualThreadingCheckbox();
 #endif
 
     // Collect selected I/O channel indices for all non-empty device comboboxes
@@ -1231,6 +1235,10 @@ void DlgPrefSound::mainOutputModeComboBoxChanged(int value) {
 void DlgPrefSound::mainMonoMixdownChanged(double value) {
     const bool mainMonoMixdownEnabled = (value != 0);
     mainOutputModeComboBox->setCurrentIndex(mainMonoMixdownEnabled ? 1 : 0);
+
+#ifdef __RUBBERBAND__
+    updateKeylockDualThreadingCheckbox();
+#endif
 }
 
 void DlgPrefSound::micMonitorModeComboBoxChanged(int value) {
