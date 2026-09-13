@@ -20,6 +20,9 @@
 #include "engine/controls/ratecontrol.h"
 #include "engine/controls/seek30control.h"
 #include "engine/enginemixer.h"
+#ifdef __BUNGEE__
+#include "engine/engineworker.h"
+#endif
 #include "engine/readaheadmanager.h"
 #include "engine/sync/enginesync.h"
 #include "engine/sync/synccontrol.h"
@@ -64,6 +67,144 @@ const QString kAppGroup = QStringLiteral("[App]");
 
 } // anonymous namespace
 
+#ifdef __BUNGEE__
+class EngineBufferBungeeWorker final : public EngineWorker {
+  public:
+    EngineBufferBungeeWorker(
+            EngineBuffer* pEngineBuffer,
+            std::unique_ptr<EngineBufferScaleBungee> pInitialScaler,
+            mixxx::audio::SampleRate sampleRate,
+            mixxx::audio::ChannelCount channelCount)
+            : m_pEngineBuffer(pEngineBuffer),
+              m_pCurrentScaler(std::move(pInitialScaler)),
+              m_pCurrentState(std::make_unique<EngineBufferBungeePublishedState>(
+                      EngineBufferBungeePublishedState{
+                              m_pCurrentScaler.get(),
+                              static_cast<int>(sampleRate.value()),
+                              static_cast<int>(channelCount.value())})),
+              m_stop(false) {
+        m_pEngineBuffer->m_pBungeePublishedState.store(
+                m_pCurrentState.get(), std::memory_order_seq_cst);
+    }
+
+    ~EngineBufferBungeeWorker() override {
+        stopAndWait();
+    }
+
+    void run() override {
+        while (!m_stop.load(std::memory_order_acquire)) {
+            m_semaRun.acquire();
+            if (m_stop.load(std::memory_order_acquire)) {
+                break;
+            }
+            prepareConfiguration();
+        }
+    }
+
+    void stopAndWait() {
+        if (!isRunning()) {
+            return;
+        }
+        m_stop.store(true, std::memory_order_release);
+        m_semaRun.release();
+        wait();
+    }
+
+  private:
+    bool reclaimRetiredState() {
+        if (!m_pRetiredState) {
+            return true;
+        }
+
+        // The audio callback never waits here. It acknowledges the state it
+        // may keep in m_pScale at its callback boundary, then wakes this
+        // worker. Until both conditions are met the worker must leave the
+        // retired state and scaler untouched.
+        if (m_pEngineBuffer->m_iBungeeCallbackReaders.load(
+                    std::memory_order_seq_cst) != 0 ||
+                m_pEngineBuffer->m_pBungeeCallbackState.load(
+                        std::memory_order_seq_cst) == m_pRetiredState.get()) {
+            return false;
+        }
+
+        m_pRetiredScaler.reset();
+        m_pRetiredState.reset();
+        return true;
+    }
+
+    void prepareConfiguration() {
+        if (!reclaimRetiredState()) {
+            // A callback boundary will wake the worker after it can make
+            // progress. Do not self-wake and turn a pending audio callback
+            // acknowledgement into a worker hot loop.
+            return;
+        }
+
+        const int generation =
+                m_pEngineBuffer->m_iBungeeConfigurationGeneration.loadAcquire();
+        const uint64_t configuration = m_pEngineBuffer->m_iBungeeConfiguration.load(
+                std::memory_order_acquire);
+        const int sampleRate = static_cast<int>(configuration >> 8);
+        const int channelCount = static_cast<int>(configuration & 0xff);
+        if (!mixxx::audio::SampleRate(static_cast<uint32_t>(sampleRate)).isValid() ||
+                !mixxx::audio::ChannelCount(static_cast<uint8_t>(channelCount)).isValid()) {
+            return;
+        }
+
+        if (m_pCurrentState && m_pCurrentState->sampleRate == sampleRate &&
+                m_pCurrentState->channelCount == channelCount) {
+            return;
+        }
+
+        // There is at most one retired scaler. This keeps the ownership
+        // protocol bounded and prevents allocating a replacement that could
+        // itself become unreclaimable behind an older callback state.
+        if (m_pRetiredState || m_pRetiredScaler) {
+            return;
+        }
+
+        const auto outputSampleRate =
+                mixxx::audio::SampleRate(static_cast<uint32_t>(sampleRate));
+        const auto outputChannelCount =
+                mixxx::audio::ChannelCount(static_cast<uint8_t>(channelCount));
+        auto pNewScaler = std::make_unique<EngineBufferScaleBungee>(
+                m_pEngineBuffer->m_pReadAheadManager);
+        pNewScaler->setSignal(outputSampleRate, outputChannelCount);
+
+        // A newer request may have arrived while preparation allocated and
+        // configured the replacement. Discarding this worker-owned object is
+        // safe; it was never published to the callback.
+        if (generation !=
+                m_pEngineBuffer->m_iBungeeConfigurationGeneration.loadAcquire()) {
+            workReady();
+            return;
+        }
+
+        auto pOldScaler = std::move(m_pCurrentScaler);
+        auto pOldState = std::move(m_pCurrentState);
+        m_pCurrentScaler = std::move(pNewScaler);
+        m_pCurrentState = std::make_unique<EngineBufferBungeePublishedState>(
+                EngineBufferBungeePublishedState{
+                        m_pCurrentScaler.get(), sampleRate, channelCount});
+        m_pRetiredScaler = std::move(pOldScaler);
+        m_pRetiredState = std::move(pOldState);
+
+        // Keep the old state and scaler owned until the callback has
+        // acknowledged that it no longer uses them. The release sequence is
+        // intentionally a single immutable-state publication.
+        m_pEngineBuffer->m_pBungeePublishedState.store(
+                m_pCurrentState.get(), std::memory_order_seq_cst);
+    }
+
+    EngineBuffer* const m_pEngineBuffer;
+    std::unique_ptr<EngineBufferScaleBungee> m_pCurrentScaler;
+    std::unique_ptr<EngineBufferScaleBungee> m_pRetiredScaler;
+    std::unique_ptr<EngineBufferBungeePublishedState> m_pCurrentState;
+    std::unique_ptr<EngineBufferBungeePublishedState> m_pRetiredState;
+    std::atomic<bool> m_stop;
+};
+#endif
+
 EngineBuffer::EngineBuffer(const QString& group,
         UserSettingsPointer pConfig,
         EngineChannel* pChannel,
@@ -95,6 +236,9 @@ EngineBuffer::EngineBuffer(const QString& group,
           m_bSlipEnabledProcessing(false),
           m_slipModeState(SlipModeState::Disabled),
           m_quantize(ControlFlag::AllowMissingOrInvalid),
+          m_pKeylockEngine(nullptr),
+          m_iKeylockEngine(static_cast<int>(defaultKeylockEngine())),
+          m_keylockEngine(static_cast<int>(defaultKeylockEngine())),
           m_pRepeat(nullptr),
           m_startButton(nullptr),
           m_endButton(nullptr),
@@ -117,6 +261,7 @@ EngineBuffer::EngineBuffer(const QString& group,
     // This should be a static assertion, but isValid() is not constexpr.
     DEBUG_ASSERT(kInitialPlayPosition.isValid());
 
+    m_pScaleKeylock.storeRelease(nullptr);
     m_queuedSeek.setValue(kNoQueuedSeek);
 
     // zero out crossfade buffer
@@ -296,12 +441,35 @@ EngineBuffer::EngineBuffer(const QString& group,
     m_pScaleRB = new EngineBufferScaleRubberBand(m_pReadAheadManager);
 #endif
 #ifdef __BUNGEE__
-    m_pScaleBungee = new EngineBufferScaleBungee(m_pReadAheadManager);
+    const auto initialSampleRate =
+            mixxx::audio::SampleRate::fromDouble(m_pSampleRate->get());
+    m_iBungeeConfiguration.store(
+            (static_cast<uint64_t>(initialSampleRate.value()) << 8) |
+                    static_cast<uint64_t>(m_channelCount.value()),
+            std::memory_order_release);
+    m_iBungeeConfigurationGeneration.storeRelease(0);
+    auto pInitialBungee =
+            std::make_unique<EngineBufferScaleBungee>(m_pReadAheadManager);
+    if (initialSampleRate.isValid()) {
+        pInitialBungee->setSignal(initialSampleRate, m_channelCount);
+    }
+#endif
+#ifdef __BUNGEE__
+    m_pSampleRate->connectValueChanged(this,
+            &EngineBuffer::slotSampleRateChanged,
+            Qt::DirectConnection);
 #endif
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
 #endif
     slotKeylockEngineChanged(m_pKeylockEngine->get());
+#ifdef __BUNGEE__
+    m_pBungeeWorker = std::make_unique<EngineBufferBungeeWorker>(
+            this,
+            std::move(pInitialBungee),
+            initialSampleRate,
+            m_channelCount);
+#endif
     m_pScaleVinyl = m_pScaleLinear;
     m_pScale = m_pScaleVinyl;
     m_pScale->clear();
@@ -328,6 +496,17 @@ EngineBuffer::~EngineBuffer() {
 #ifdef __SCALER_DEBUG__
     //close the writer
     df.close();
+#endif
+
+#ifdef __BUNGEE__
+    // Stop the preparation worker before destroying the ReadAheadManager it
+    // supplies to worker-owned scalers. This is an off-callback teardown; the
+    // callback never waits for the worker or destroys a published scaler.
+    if (m_pBungeeWorker) {
+        m_pBungeeWorker->stopAndWait();
+    }
+    m_pBungeePublishedState.store(nullptr, std::memory_order_seq_cst);
+    m_pBungeeWorker.reset();
 #endif
 
     delete m_pReadAheadManager;
@@ -357,13 +536,9 @@ EngineBuffer::~EngineBuffer() {
 #ifdef __RUBBERBAND__
     delete m_pScaleRB;
 #endif
-#ifdef __BUNGEE__
-    delete m_pScaleBungee;
-#endif
 #ifdef __SIGNALSMITH__
     delete m_pScaleSignalSmith;
 #endif
-
     delete m_pKeylock;
     delete m_pReplayGain;
 
@@ -372,6 +547,13 @@ EngineBuffer::~EngineBuffer() {
 
 void EngineBuffer::bindWorkers(EngineWorkerScheduler* pWorkerScheduler) {
     m_pReader->setScheduler(pWorkerScheduler);
+#ifdef __BUNGEE__
+    m_pBungeeWorker->setScheduler(pWorkerScheduler);
+    m_pBungeeWorker->start(QThread::HighPriority);
+    // Process requests made during construction, before the worker had a
+    // scheduler, without requiring a callback-side fallback.
+    m_pBungeeWorker->workReady();
+#endif
 }
 
 bool EngineBuffer::isScalerLayoutCompatible(
@@ -390,21 +572,74 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
     // interpolation code (EngineBufferScaleLinear). It is faster and sounds
     // much better for scratching.
 
-    // m_pScaleKeylock and m_pScaleVinyl could change out from under us,
-    // so cache it.
-    EngineBufferScale* keylock_scale = m_pScaleKeylock;
+    const auto keylockEngine = static_cast<KeylockEngine>(
+            m_iKeylockEngine.loadAcquire());
+    EngineBufferScale* keylock_scale = nullptr;
+#ifdef __BUNGEE__
+    EngineBufferBungeePublishedState* pSelectedBungeeState =
+            m_pBungeePublishedState.load(std::memory_order_seq_cst);
+#endif
+    if (m_bScalerOverride) {
+        keylock_scale = m_pScaleKeylock.loadAcquire();
+    } else {
+        switch (keylockEngine) {
+        case KeylockEngine::SoundTouch:
+            keylock_scale = m_pScaleST;
+            break;
+#ifdef __RUBBERBAND__
+        case KeylockEngine::RubberBandFaster:
+        case KeylockEngine::RubberBandFiner:
+        case KeylockEngine::RubberBandR3ShortWindow:
+            keylock_scale = m_pScaleRB;
+            break;
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            if (pSelectedBungeeState &&
+                    pSelectedBungeeState->sampleRate ==
+                            static_cast<int>(m_sampleRate.value()) &&
+                    pSelectedBungeeState->channelCount ==
+                            static_cast<int>(callbackChannelCount.value())) {
+                keylock_scale = pSelectedBungeeState->pScaler;
+            }
+            // Keep using the already prepared scaler until the worker publishes
+            // a state for the new signal. Falling back to vinyl here avoids
+            // feeding a stale channel/sample-rate layout to Bungee.
+            break;
+#endif
+        default:
+            keylock_scale = m_pScaleST;
+            break;
+        }
+    }
     EngineBufferScale* vinyl_scale = m_pScaleVinyl;
 
-    if (bEnable && m_pScale != keylock_scale) {
+    const bool keylockEngineChanged =
+            keylockEngine != static_cast<KeylockEngine>(m_keylockEngine) ||
+            m_pScale != keylock_scale;
+
+    if (bEnable && keylockEngineChanged) {
         if (m_speed_old != 0.0) {
             // Crossfade if we are not paused.
             // If we start from zero a ramping gain is
             // applied later
             readToCrossfadeBuffer(bufferSize, callbackChannelCount);
         }
+        if (!keylock_scale) {
+            keylock_scale = vinyl_scale;
+        }
         m_pScale = keylock_scale;
         if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
             m_pScale->clear();
+        }
+        m_keylockEngine = static_cast<int>(keylockEngine);
+#ifdef __BUNGEE__
+        m_pBungeeStateForCallback = pSelectedBungeeState;
+#endif
+        if (!m_bScalerOverride) {
+            // This is a callback-side diagnostic/test mirror only. Production
+            // selection above is derived from the atomic engine publication.
+            m_pScaleKeylock.storeRelease(keylock_scale);
         }
         m_bScalerChanged = true;
     } else if (!bEnable && m_pScale != vinyl_scale) {
@@ -417,6 +652,9 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
         if (isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
             m_pScale->clear();
         }
+#ifdef __BUNGEE__
+        m_pBungeeStateForCallback = pSelectedBungeeState;
+#endif
         m_bScalerChanged = true;
     }
 }
@@ -587,6 +825,21 @@ void EngineBuffer::slotTrackLoading() {
     setTrackEndPosition(mixxx::audio::kInvalidFramePos); // Stop renderer
 }
 
+#ifdef __BUNGEE__
+void EngineBuffer::slotSampleRateChanged(double sampleRate) {
+    const auto outputSampleRate = mixxx::audio::SampleRate::fromDouble(sampleRate);
+    if (!outputSampleRate.isValid()) {
+        return;
+    }
+
+    const uint64_t configuration = m_iBungeeConfiguration.load(
+            std::memory_order_acquire);
+    requestBungeeConfiguration(
+            outputSampleRate,
+            mixxx::audio::ChannelCount(static_cast<uint8_t>(configuration & 0xff)));
+}
+#endif
+
 void EngineBuffer::loadFakeTrack(TrackPointer pTrack, bool bPlay) {
     if (bPlay) {
         m_playButton->set((double)bPlay);
@@ -628,6 +881,12 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
         // CachingReaderChunk::bufferSampleFrames
         m_channelCount = mixxx::audio::ChannelCount::stereo();
     }
+
+#ifdef __BUNGEE__
+    requestBungeeConfiguration(
+            mixxx::audio::SampleRate::fromDouble(m_pSampleRate->get()),
+            m_channelCount);
+#endif
 
     m_pTrackSamples->set(trackNumFrame.toEngineSamplePos());
     m_pTrackSampleRate->set(trackSampleRate.toDouble());
@@ -919,29 +1178,24 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
     const KeylockEngine engine = static_cast<KeylockEngine>(dIndex);
     switch (engine) {
     case KeylockEngine::SoundTouch:
-        m_pScaleKeylock = m_pScaleST;
         break;
 #ifdef __RUBBERBAND__
     case KeylockEngine::RubberBandFaster:
         m_pScaleRB->useEngineFiner(false);
         m_pScaleRB->useOptionWindowShort(false);
-        m_pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandFiner:
         m_pScaleRB->useEngineFiner(
                 true); // in case of Rubberband V2 it falls back to RUBBERBAND_FASTER
         m_pScaleRB->useOptionWindowShort(false);
-        m_pScaleKeylock = m_pScaleRB;
         break;
     case KeylockEngine::RubberBandR3ShortWindow:
         m_pScaleRB->useEngineFiner(true);
         m_pScaleRB->useOptionWindowShort(true);
-        m_pScaleKeylock = m_pScaleRB;
         break;
 #endif
 #ifdef __BUNGEE__
     case KeylockEngine::Bungee:
-        m_pScaleKeylock = m_pScaleBungee;
         break;
 #endif
 #ifdef __SIGNALSMITH__
@@ -951,8 +1205,14 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
 #endif
     default:
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
-        break;
+        return;
     }
+
+    // Publish the engine only after any fixed-scaler setup above is complete.
+    // Bungee is resolved from its immutable worker publication in the callback;
+    // the worker never writes this selection value, so it cannot race this
+    // publication or overwrite a newer control request.
+    m_iKeylockEngine.storeRelease(static_cast<int>(engine));
 }
 
 void EngineBuffer::slipQuitAndAdopt() {
@@ -1301,6 +1561,16 @@ void EngineBuffer::processWithChannelLayout(
             (bufferSize % callbackChannelCount) == 0) {
         return;
     }
+#ifdef __BUNGEE__
+    // Enter the callback ownership epoch before loading the published state.
+    // The worker uses the same sequentially consistent order when publishing
+    // and reclaiming states; it can therefore never destroy a state that this
+    // callback may load or that m_pScale carried over from the previous
+    // callback may still reference.
+    m_iBungeeCallbackReaders.fetch_add(1, std::memory_order_seq_cst);
+    m_pBungeeStateForCallback = m_pBungeeCallbackState.load(
+            std::memory_order_seq_cst);
+#endif
     m_pReader->process();
     // Steps:
     // - Lookup new reader information
@@ -1323,13 +1593,29 @@ void EngineBuffer::processWithChannelLayout(
     m_pScaleRB->setSignal(m_sampleRate, callbackChannelCount);
 #endif
 #ifdef __BUNGEE__
-    // A newly constructed Bungee scaler has no signal yet. Configure that
-    // first-use case here; a previously valid scaler is deliberately not
-    // reconfigured when the callback layout changes. The latter must be
-    // handled by the worker branch so an old layout cannot consume the new
-    // buffer.
-    if (!m_pScaleBungee->getOutputSignal().isValid()) {
-        m_pScaleBungee->setSignal(m_sampleRate, callbackChannelCount);
+    // A track-load publication can change the callback layout before the
+    // worker publishes its replacement. Prefer a matching published Bungee
+    // scaler, then the matching vinyl scaler, and otherwise write a complete
+    // silent buffer without touching the reader or a stale scaler.
+    if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+        auto* pPublishedState = m_pBungeePublishedState.load(
+                std::memory_order_seq_cst);
+        const auto selectedKeylockEngine = static_cast<KeylockEngine>(
+                m_iKeylockEngine.loadAcquire());
+        if (selectedKeylockEngine == KeylockEngine::Bungee &&
+                pPublishedState &&
+                pPublishedState->sampleRate ==
+                        static_cast<int>(m_sampleRate.value()) &&
+                isScalerLayoutCompatible(
+                        pPublishedState->pScaler, callbackChannelCount)) {
+            m_pScale = pPublishedState->pScaler;
+            m_pBungeeStateForCallback = pPublishedState;
+            m_bScalerChanged = true;
+        } else if (isScalerLayoutCompatible(
+                           m_pScaleVinyl, callbackChannelCount)) {
+            m_pScale = m_pScaleVinyl;
+            m_bScalerChanged = true;
+        }
     }
 #endif
 #ifdef __SIGNALSMITH__
@@ -1341,6 +1627,9 @@ void EngineBuffer::processWithChannelLayout(
         m_pSyncControl->updateAudible();
         m_lastBufferSize = bufferSize;
         m_bCrossfadeReady = false;
+#ifdef __BUNGEE__
+        finishBungeeCallback();
+#endif
         return;
     }
 
@@ -1384,7 +1673,54 @@ void EngineBuffer::processWithChannelLayout(
 
     m_lastBufferSize = bufferSize;
     m_bCrossfadeReady = false;
+#ifdef __BUNGEE__
+    finishBungeeCallback();
+#endif
 }
+
+#ifdef __BUNGEE__
+void EngineBuffer::requestBungeeConfiguration(
+        mixxx::audio::SampleRate sampleRate,
+        mixxx::audio::ChannelCount channelCount) {
+    if (!sampleRate.isValid() || !channelCount.isValid()) {
+        return;
+    }
+
+    // Publish the signal as one atomic value so the worker cannot pair a new
+    // sample rate with an old channel count. The generation is published
+    // after the configuration; the worker rejects a replacement if a newer
+    // request arrived during preparation.
+    m_iBungeeConfiguration.store(
+            (static_cast<uint64_t>(sampleRate.value()) << 8) |
+                    static_cast<uint64_t>(channelCount.value()),
+            std::memory_order_release);
+    m_iBungeeConfigurationGeneration.fetchAndAddRelease(1);
+    if (m_pBungeeWorker) {
+        m_pBungeeWorker->workReady();
+    }
+}
+
+void EngineBuffer::finishBungeeCallback() {
+    // If the callback no longer retains the Bungee scaler acknowledged at its
+    // entry, it can acknowledge the current immutable state. If it still
+    // retains that scaler, keep acknowledging the old state so the worker
+    // cannot destroy it before the next callback boundary.
+    auto* pPublishedState = m_pBungeePublishedState.load(
+            std::memory_order_seq_cst);
+    if (!m_pBungeeStateForCallback ||
+            m_pScale != m_pBungeeStateForCallback->pScaler) {
+        m_pBungeeStateForCallback = pPublishedState;
+    }
+    m_pBungeeCallbackState.store(
+            m_pBungeeStateForCallback, std::memory_order_seq_cst);
+    m_iBungeeCallbackReaders.fetch_sub(1, std::memory_order_seq_cst);
+    if (m_pBungeeWorker) {
+        // The callback performs only the worker-ready atomic handoff here. It
+        // never waits for, locks, allocates, or destroys worker-owned state.
+        m_pBungeeWorker->workReady();
+    }
+}
+#endif
 
 void EngineBuffer::processSlip(
         std::size_t bufferSize,
@@ -1789,7 +2125,7 @@ void EngineBuffer::setScalerForTest(
         EngineBufferScale* pScaleVinyl,
         EngineBufferScale* pScaleKeylock) {
     m_pScaleVinyl = pScaleVinyl;
-    m_pScaleKeylock = pScaleKeylock;
+    m_pScaleKeylock.storeRelease(pScaleKeylock);
     m_pScale = m_pScaleVinyl;
     m_pScale->clear();
     m_bScalerChanged = true;

@@ -4,7 +4,10 @@
 
 #include <QAtomicInt>
 #include <QMutex>
+#include <atomic>
+#include <cstdint>
 #include <initializer_list>
+#include <memory>
 
 #include "audio/frame.h"
 #include "audio/types.h"
@@ -24,7 +27,16 @@
 #endif
 
 #ifdef __BUNGEE__
-#include "engine/bufferscalers/enginebufferscalebungee.h"
+class EngineBufferScaleBungee;
+struct EngineBufferBungeePublishedState {
+    // Immutable after publication. The scaler is owned by the worker that
+    // published this state; callbacks hold the state alive through the
+    // callback reader/acknowledgement protocol in EngineBuffer.
+    EngineBufferScaleBungee* pScaler;
+    int sampleRate;
+    int channelCount;
+};
+class EngineBufferBungeeWorker;
 #endif
 
 #ifdef __SIGNALSMITH__
@@ -312,6 +324,9 @@ class EngineBuffer : public EngineObject {
 
   private slots:
     void slotTrackLoading();
+#ifdef __BUNGEE__
+    void slotSampleRateChanged(double sampleRate);
+#endif
     void slotTrackLoaded(
             TrackPointer pTrack,
             mixxx::audio::SampleRate trackSampleRate,
@@ -370,6 +385,14 @@ class EngineBuffer : public EngineObject {
     }
     bool updateIndicatorsAndModifyPlay(bool newPlay, bool oldPlay);
     void notifyTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
+#ifdef __BUNGEE__
+    // Publishes a Bungee configuration request. Preparation and replacement
+    // happen in EngineBufferBungeeWorker, never in the audio callback.
+    void requestBungeeConfiguration(
+            mixxx::audio::SampleRate sampleRate,
+            mixxx::audio::ChannelCount channelCount);
+    void finishBungeeCallback();
+#endif
     void processTrackLocked(CSAMPLE* pOutput,
             const std::size_t bufferSize,
             mixxx::audio::SampleRate sampleRate,
@@ -489,6 +512,11 @@ class EngineBuffer : public EngineObject {
     ControlPotmeter* m_playposSlider;
     ControlProxy* m_pSampleRate;
     ControlProxy* m_pKeylockEngine;
+    // The selected keylock engine is the publication gate for the fixed
+    // scalers. For Bungee, the callback resolves the scaler from the
+    // immutable worker-published state after acquiring this value.
+    QAtomicInt m_iKeylockEngine;
+    int m_keylockEngine;
     ControlPushButton* m_pKeylock;
     ControlProxy* m_pReplayGain;
 
@@ -519,9 +547,10 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
     EngineBufferScale* m_pScaleVinyl;
-    // The keylock engine is configurable, so it could flip flop between
-    // ScaleST and ScaleRB during a single callback.
-    EngineBufferScale* volatile m_pScaleKeylock;
+    // Used for test scaler injection. Production selection is derived from the
+    // single m_iKeylockEngine publication and fixed scaler members; Bungee is
+    // resolved from m_pBungeePublishedState.
+    QAtomicPointer<EngineBufferScale> m_pScaleKeylock;
 
     // Object used for vinyl-style interpolation scaling of the audio
     EngineBufferScaleLinear* m_pScaleLinear;
@@ -531,7 +560,29 @@ class EngineBuffer : public EngineObject {
     EngineBufferScaleRubberBand* m_pScaleRB;
 #endif
 #ifdef __BUNGEE__
-    EngineBufferScaleBungee* m_pScaleBungee;
+    friend class EngineBufferBungeeWorker;
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,
+            "Bungee configuration publication must not use a callback lock");
+    static_assert(std::atomic<EngineBufferBungeePublishedState*>::is_always_lock_free,
+            "Bungee state publication must not use a callback lock");
+    static_assert(std::atomic<int>::is_always_lock_free,
+            "Bungee callback ownership must not use a callback lock");
+    // Worker-owned Bungee scaler and immutable publication state.
+    std::unique_ptr<EngineBufferBungeeWorker> m_pBungeeWorker;
+    std::atomic<EngineBufferBungeePublishedState*> m_pBungeePublishedState{
+            nullptr};
+    std::atomic<EngineBufferBungeePublishedState*> m_pBungeeCallbackState{
+            nullptr};
+    std::atomic<int> m_iBungeeCallbackReaders{0};
+    // Updated by the callback only while it owns a reader slot. Its value is
+    // acknowledged to the worker at the end of each callback.
+    EngineBufferBungeePublishedState* m_pBungeeStateForCallback{nullptr};
+    // Sample rate and channel count are packed so the worker never observes
+    // a mixed request while a control and track-load notification are being
+    // published. The generation separately tells the worker whether a
+    // replacement became stale while it was being prepared.
+    std::atomic<uint64_t> m_iBungeeConfiguration{0};
+    QAtomicInt m_iBungeeConfigurationGeneration;
 #endif
 #ifdef __SIGNALSMITH__
     EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
