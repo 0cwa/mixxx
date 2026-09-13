@@ -3635,6 +3635,25 @@ if(KEYFINDER)
   target_compile_definitions(mixxx-lib PUBLIC __KEYFINDER__)
 endif()
 
+# SignalSmith
+option(SIGNALSMITH "Enable the SignalSmith engine for pitch-bending" OFF)
+if(SIGNALSMITH)
+  find_path(SIGNALSMITH_INCLUDE_DIR signalsmith-stretch.h PATH_SUFFIXES include)
+  if(NOT SIGNALSMITH_INCLUDE_DIR)
+    message(FATAL_ERROR "SIGNALSMITH requires SIGNALSMITH_INCLUDE_DIR")
+  endif()
+  target_include_directories(
+    mixxx-lib
+    SYSTEM
+    PUBLIC "${SIGNALSMITH_INCLUDE_DIR}"
+  )
+  target_sources(
+    mixxx-lib
+    PRIVATE src/engine/bufferscalers/enginebufferscalesignalsmith.cpp
+  )
+  target_compile_definitions(mixxx-lib PUBLIC __SIGNALSMITH__)
+endif()
+
 # FLAC
 find_package(FLAC REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE FLAC::FLAC)
