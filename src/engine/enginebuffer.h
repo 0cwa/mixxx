@@ -207,6 +207,24 @@ class EngineBuffer : public EngineObject {
             EngineBufferScale* pScaleVinyl,
             EngineBufferScale* pScaleKeylock);
 
+#ifdef BUILD_TESTING
+    // Installs a factory used only while constructing EngineBuffers in tests.
+    // The returned reader becomes owned by the EngineBuffer and is deleted by
+    // its destructor. The factory is consulted during construction only, so
+    // installing or clearing it must happen outside the audio callback and
+    // while no test is concurrently constructing an EngineBuffer. The
+    // registration itself is serialized, but callers must keep the context
+    // alive until all EngineBuffers created through the factory are destroyed.
+    // Passing nullptr restores the production CachingReader construction path.
+    using TestReaderFactory = CachingReader* (*)(const QString& group,
+            UserSettingsPointer pConfig,
+            mixxx::audio::ChannelCount maxSupportedChannel,
+            void* pContext);
+    static void setTestReaderFactory(
+            TestReaderFactory factory,
+            void* pContext = nullptr);
+#endif
+
     // For injection of fake tracks.
     void loadFakeTrack(TrackPointer pTrack, bool bPlay);
 
@@ -359,7 +377,7 @@ class EngineBuffer : public EngineObject {
     bool isScalerLayoutCompatible(const EngineBufferScale* pScale,
             mixxx::audio::ChannelCount callbackChannelCount) const;
 
-    double fractionalPlayposFromAbsolute(mixxx::audio::FramePos position);
+    double fractionalPlayposFromAbsolute(double position);
 
     void doSeekFractional(double fractionalPos, enum SeekRequest seekType);
     void doSeekPlayPos(mixxx::audio::FramePos position, enum SeekRequest seekType);
@@ -544,6 +562,7 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferBungeeTest, BungeeEngineSelected);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockToggleDoesNotCrash);
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
+    FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
     EngineBufferScale* m_pScaleVinyl;
     // Used for test scaler injection. Production selection is derived from the
     // single m_iKeylockEngine publication and fixed scaler members; Bungee is
