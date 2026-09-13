@@ -64,6 +64,14 @@ class EngineBufferScale : public QObject {
             CSAMPLE* pOutputBuffer,
             SINT iOutputBufferSize) = 0;
 
+    // Returns the signed source-frame offset from EngineBuffer::m_playPos to
+    // the first source frame represented by the output currently reaching the
+    // DAC. This is used only for visual prediction. The transport cursor must
+    // continue to follow the scaler's read-ahead accounting.
+    virtual double getVisualPlayPositionOffset() const {
+        return 0.0;
+    }
+
   private:
     mixxx::audio::SignalInfo m_signal;
 
