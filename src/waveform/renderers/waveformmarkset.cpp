@@ -1,6 +1,7 @@
 #include "waveformmarkset.h"
 
 #include <QtDebug>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -112,7 +113,7 @@ void WaveformMarkSet::syncMemoryCueMarks(const QString& group,
                 QString(),
                 textColor,
                 QString("AlignBottom"),
-                pCue->getLabel(),
+                pCue->getLabel().isEmpty() ? QString("Memory Cue") : pCue->getLabel(),
                 tmpl->m_pixmapPath,
                 tmpl->m_iconPath,
                 QColor(),
@@ -201,7 +202,7 @@ void WaveformMarkSet::setBreadth(float breadth) {
 }
 
 void WaveformMarkSet::update() {
-    std::map<WaveformMarkSortKey, WaveformMarkPointer> map;
+    std::multimap<WaveformMarkSortKey, WaveformMarkPointer> map;
     for (const auto& pMark : std::as_const(m_marks)) {
         if (pMark->isValid() && pMark->isVisible()) {
             double samplePosition = pMark->getSamplePosition();
