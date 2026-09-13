@@ -387,7 +387,7 @@ Category {
                             height: width / 16 * 9
                             width: parent.width - 160
 
-                            Skin.Button {
+                            SettingComponents.FormButton {
                                 activeColor: Theme.white
                                 anchors.bottom: parent.bottom
                                 anchors.bottomMargin: 20
