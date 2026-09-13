@@ -23,6 +23,14 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
+#ifdef __BUNGEE__
+#include "engine/bufferscalers/enginebufferscalebungee.h"
+#endif
+
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
+
 //for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
@@ -90,6 +98,12 @@ class EngineBuffer : public EngineObject {
         RubberBandFiner = 2,
         RubberBandR3ShortWindow = 3,
 #endif
+#ifdef __BUNGEE__
+        Bungee = 4,
+#endif
+#ifdef __SIGNALSMITH__
+        SignalSmith = 5,
+#endif
     };
     Q_ENUM(KeylockEngine);
 
@@ -100,6 +114,12 @@ class EngineBuffer : public EngineObject {
             KeylockEngine::RubberBandFaster,
             KeylockEngine::RubberBandFiner,
             KeylockEngine::RubberBandR3ShortWindow,
+#endif
+#ifdef __BUNGEE__
+            KeylockEngine::Bungee,
+#endif
+#ifdef __SIGNALSMITH__
+            KeylockEngine::SignalSmith,
 #endif
     };
 
@@ -185,12 +205,20 @@ class EngineBuffer : public EngineObject {
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
                 return tr("Rubberband R3 MW (slow, highest quality)");
             }
-            [[fallthrough]];
+            return tr("Rubberband (fast, medium quality)");
         case KeylockEngine::RubberBandR3ShortWindow:
             if (EngineBufferScaleRubberBand::isEngineFinerAvailable()) {
                 return tr("Rubberband R3 SW (fast, high quality)");
             }
-            [[fallthrough]];
+            return tr("Rubberband (fast, medium quality)");
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            return tr("Bungee (high quality)");
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return tr("Signalsmith Stretch (experimental)");
 #endif
         default:
 #ifdef __RUBBERBAND__
@@ -211,6 +239,14 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::RubberBandFiner:
         case KeylockEngine::RubberBandR3ShortWindow:
             return EngineBufferScaleRubberBand::isEngineFinerAvailable();
+#endif
+#ifdef __BUNGEE__
+        case KeylockEngine::Bungee:
+            return true;
+#endif
+#ifdef __SIGNALSMITH__
+        case KeylockEngine::SignalSmith:
+            return true;
 #endif
         default:
             return false;
@@ -472,6 +508,12 @@ class EngineBuffer : public EngineObject {
     EngineBufferScaleST* m_pScaleST;
 #ifdef __RUBBERBAND__
     EngineBufferScaleRubberBand* m_pScaleRB;
+#endif
+#ifdef __BUNGEE__
+    EngineBufferScaleBungee* m_pScaleBungee;
+#endif
+#ifdef __SIGNALSMITH__
+    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 
     // Indicates whether the scaler has changed since the last process()
