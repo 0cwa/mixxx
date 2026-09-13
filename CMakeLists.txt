@@ -3641,7 +3641,7 @@ endif()
 option(
   SIGNALSMITH
   "Enable the SignalSmith Stretch engine for pitch-bending (experimental)"
-  OFF
+  ON
 )
 if(SIGNALSMITH)
   add_subdirectory(lib/signalsmith)
