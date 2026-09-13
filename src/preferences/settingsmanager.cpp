@@ -29,20 +29,6 @@ EngineBuffer::KeylockEngine defaultStableKeylockEngine() {
 #endif
 }
 
-bool isStableKeylockEngine(EngineBuffer::KeylockEngine engine) {
-    switch (engine) {
-    case EngineBuffer::KeylockEngine::SoundTouch:
-        return true;
-#ifdef __RUBBERBAND__
-    case EngineBuffer::KeylockEngine::RubberBandFaster:
-    case EngineBuffer::KeylockEngine::RubberBandFiner:
-        return true;
-#endif
-    default:
-        return false;
-    }
-}
-
 EngineBuffer::KeylockEngine defaultKeylockEngineForMigration(
         const UserSettingsPointer& pSettings) {
     if (pSettings->exists(kGlobalKeylockEngineKey)) {
@@ -50,7 +36,7 @@ EngineBuffer::KeylockEngine defaultKeylockEngineForMigration(
                 pSettings->getValue<EngineBuffer::KeylockEngine>(
                         kGlobalKeylockEngineKey,
                         defaultStableKeylockEngine());
-        if (isStableKeylockEngine(globalKeylockEngine)) {
+        if (EngineBuffer::isKeylockEngineAvailable(globalKeylockEngine)) {
             return globalKeylockEngine;
         }
     }
