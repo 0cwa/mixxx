@@ -26,10 +26,6 @@
 #include "engine/bufferscalers/enginebufferscalesignalsmith.h"
 #endif
 
-#ifdef __SIGNALSMITH__
-#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
-#endif
-
 //for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
@@ -98,11 +94,8 @@ class EngineBuffer : public EngineObject {
         RubberBandR3ShortWindow = 3,
 #endif
 #ifdef __SIGNALSMITH__
-        SignalSmithDefault = 3,
-        SignalSmithCheaper = 4,
-#endif
-#ifdef __SIGNALSMITH__
-        SignalSmith = 4,
+        SignalSmithDefault = 4,
+        SignalSmithCheaper = 5,
 #endif
     };
     Q_ENUM(KeylockEngine);
@@ -118,9 +111,6 @@ class EngineBuffer : public EngineObject {
 #ifdef __SIGNALSMITH__
             KeylockEngine::SignalSmithDefault,
             KeylockEngine::SignalSmithCheaper,
-#endif
-#ifdef __SIGNALSMITH__
-            KeylockEngine::SignalSmith,
 #endif
     };
 
@@ -219,10 +209,6 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::SignalSmithDefault:
             return tr("Signalsmith Stretch (Default)");
 #endif
-#ifdef __SIGNALSMITH__
-        case KeylockEngine::SignalSmith:
-            return tr("Signalsmith Stretch (experimental)");
-#endif
         default:
 #ifdef __RUBBERBAND__
             return tr("Unknown, using Rubberband (fast, medium quality)");
@@ -246,10 +232,6 @@ class EngineBuffer : public EngineObject {
 #ifdef __SIGNALSMITH__
         case KeylockEngine::SignalSmithDefault:
         case KeylockEngine::SignalSmithCheaper:
-            return true;
-#endif
-#ifdef __SIGNALSMITH__
-        case KeylockEngine::SignalSmith:
             return true;
 #endif
         default:
@@ -518,9 +500,6 @@ class EngineBuffer : public EngineObject {
     EngineBufferScaleST* m_pScaleST;
 #ifdef __RUBBERBAND__
     EngineBufferScaleRubberBand* m_pScaleRB;
-#endif
-#ifdef __SIGNALSMITH__
-    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 #ifdef __SIGNALSMITH__
     EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
