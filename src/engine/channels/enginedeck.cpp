@@ -132,6 +132,13 @@ void EngineDeck::addStemHandle(const ChannelHandleAndGroup& stemHandleGroup) {
 }
 
 void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
+    processStem(pOut, bufferSize, m_pBuffer->getChannelCount());
+}
+
+void EngineDeck::processStem(
+        CSAMPLE* pOut,
+        const std::size_t bufferSize,
+        mixxx::audio::ChannelCount chCount) {
     // EngineMixer::process() provides a buffer of at most kMaxEngineSamples
     // samples. Do not clear beyond that established output-buffer contract.
     DEBUG_ASSERT(bufferSize <= kMaxEngineSamples);
@@ -140,7 +147,6 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
         return;
     }
 
-    mixxx::audio::ChannelCount chCount = m_pBuffer->getChannelCount();
     VERIFY_OR_DEBUG_ASSERT(chCount % mixxx::kEngineChannelOutputCount == 0) {
         SampleUtil::clear(pOut, bufferSize);
         return;
@@ -181,7 +187,8 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
     }
     const std::size_t allChannelBufferSize = processingBufferSize * stemCount;
     DEBUG_ASSERT(allChannelBufferSize <= stemBufferCapacity);
-    m_pBuffer->process(m_stemBuffer.data(), allChannelBufferSize);
+    m_pBuffer->processWithChannelLayout(
+            m_stemBuffer.data(), allChannelBufferSize, chCount);
 
     CSAMPLE* pIn = m_stemBuffer.data();
 
@@ -292,16 +299,19 @@ void EngineDeck::process(CSAMPLE* pOut, const std::size_t bufferSize) {
             return;
         }
 
+        const mixxx::audio::ChannelCount channelCount =
+                m_pBuffer->getChannelCount();
 #ifdef __STEM__
         // Process the raw audio
-        if (m_pBuffer->getChannelCount() <= mixxx::kEngineChannelOutputCount) {
+        if (channelCount <= mixxx::kEngineChannelOutputCount) {
             // Process a single mono or stereo channel
 #endif
-            m_pBuffer->process(pOut, bufferSize);
+            m_pBuffer->processWithChannelLayout(
+                    pOut, bufferSize, channelCount);
 #ifdef __STEM__
         } else {
             // Process multiple stereo channels (stems) and mix them together
-            processStem(pOut, bufferSize);
+            processStem(pOut, bufferSize, channelCount);
         }
 #endif
         m_pPregain->setSpeedAndScratching(m_pBuffer->getSpeed(), m_pBuffer->getScratching());
