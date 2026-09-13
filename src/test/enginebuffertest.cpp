@@ -19,6 +19,11 @@
 #include "test/signalpathtest.h"
 #include "util/defs.h"
 
+#ifndef GTEST_FLAG_SET
+// Available in GoogleTest v1.12.0.
+#define GTEST_FLAG_SET(name, value) (void)(::testing::GTEST_FLAG(name) = value)
+#endif
+
 // In case any of the test in this file fail. You can use the audioplot.py tool
 // in the tools folder to visually compare the results of the enginebuffer
 // with the golden test data.
@@ -88,7 +93,7 @@ TEST_F(EngineBufferTest, StemProcessRejectsOddChannelLayout) {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
             m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false),
-            "DEBUG ASSERT");
+            "m_channelCount % mixxx::audio::ChannelCount::stereo\\(\\) == 0");
 #else
     std::array<CSAMPLE, kProcessBufferSize> output;
     std::fill(output.begin(), output.end(), 1.0f);
