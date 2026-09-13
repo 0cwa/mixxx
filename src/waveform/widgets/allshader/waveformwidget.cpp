@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QWheelEvent>
 
+#include "control/controlobject.h"
 #include "rendergraph/engine.h"
 #include "rendergraph/opacitynode.h"
 #include "waveform/renderers/allshader/waveformrenderbackground.h"
@@ -19,6 +20,7 @@
 #include "waveform/renderers/allshader/waveformrenderertextured.h"
 #include "waveform/renderers/allshader/waveformrendermark.h"
 #include "waveform/renderers/allshader/waveformrendermarkrange.h"
+#include "waveform/renderers/allshader/waveformrendermemorycues.h"
 #include "waveform/waveformwidgetfactory.h"
 #include "waveform/widgets/allshader/moc_waveformwidget.cpp"
 
@@ -60,6 +62,7 @@ WaveformWidget::WaveformWidget(QWidget* parent,
         pOpacityNode->appendChildNode(std::unique_ptr<rendergraph::BaseNode>(pNode));
     }
     pOpacityNode->appendChildNode(addRendererNode<WaveformRenderBeat>());
+    pOpacityNode->appendChildNode(addRendererNode<WaveformRenderMemoryCues>());
     m_pWaveformRenderMark = pOpacityNode->appendChildNode(addRendererNode<WaveformRenderMark>());
 
     // if the added signal renderer supports slip, we add it again, now for
