@@ -18,6 +18,7 @@
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
 #include "util/defs.h"
+#include "util/sample.h"
 
 #ifndef GTEST_FLAG_SET
 // Available in GoogleTest v1.12.0.
@@ -152,25 +153,19 @@ TEST_F(EngineBufferTest, StemProcessRejectsStemGainCacheMismatch) {
 }
 
 TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
-    addStemHandles();
-    for (auto& pGain : m_pChannel1->m_stemGain) {
-        pGain->set(1.0);
-    }
-    for (auto& pMute : m_pChannel1->m_stemMute) {
-        pMute->set(0.0);
-    }
-
     constexpr std::size_t kBufferSize = 16;
+    mixxx::SampleBuffer stemBuffer(kBufferSize * mixxx::kMaxSupportedStems);
+    std::array<CSAMPLE, kBufferSize> output;
     for (const int channelCount : {4, 6, 8}) {
         const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
-        m_pChannel1->getEngineBuffer()->loadFakeTrack(
-                createStemTrack(channelCount), true);
-        fillStemBuffer(
-                &m_pChannel1->m_stemBuffer, channelCount, kBufferSize);
-
-        std::array<CSAMPLE, kBufferSize> output;
+        stemBuffer.fill(CSAMPLE_ZERO);
+        fillStemBuffer(&stemBuffer, channelCount, kBufferSize);
         std::fill(output.begin(), output.end(), 1.0f);
-        m_pChannel1->processStem(output.data(), output.size());
+        SampleUtil::mixMultichannelToStereo(
+                output.data(),
+                stemBuffer.data(),
+                kBufferSize / mixxx::kEngineChannelOutputCount,
+                mixxx::audio::ChannelCount(channelCount));
 
         const auto expectedSample = static_cast<CSAMPLE>(stemCount * (stemCount + 1) / 2);
         EXPECT_THAT(output, ::testing::Each(expectedSample)) << channelCount;
@@ -223,19 +218,24 @@ TEST_F(EngineBufferTest, StemProcessAcceptsMaximumBufferSize) {
 }
 
 TEST_F(EngineBufferTest, StemProcessRejectsOversizedBufferAndClearsSafePrefix) {
-    addStemHandles();
-    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), false);
-
     constexpr std::size_t kBufferSize = kMaxEngineSamples + 1;
     constexpr CSAMPLE kSentinel = -7.0f;
     std::array<CSAMPLE, kBufferSize> output;
     std::fill(output.begin(), output.end(), kSentinel);
+
+#ifdef MIXXX_DEBUG_ASSERTIONS_ENABLED
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->process(output.data(), kBufferSize),
+            "bufferSize <= kMaxEngineSamples");
+#else
     m_pChannel1->process(output.data(), kBufferSize);
 
     EXPECT_TRUE(std::all_of(output.begin(),
             output.begin() + kMaxEngineSamples,
             [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
     EXPECT_EQ(output.back(), kSentinel);
+#endif
 }
 #endif
 
