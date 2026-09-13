@@ -29,24 +29,7 @@
 #include "engine/bufferscalers/enginebufferscalerubberband.h"
 #endif
 
-#ifdef __BUNGEE__
-class EngineBufferScaleBungee;
-struct EngineBufferBungeePublishedState {
-    // Immutable after publication. The scaler is owned by the worker that
-    // published this state; callbacks hold the state alive through the
-    // callback reader/acknowledgement protocol in EngineBuffer.
-    EngineBufferScaleBungee* pScaler;
-    int sampleRate;
-    int channelCount;
-};
-class EngineBufferBungeeWorker;
-#endif
-
-#ifdef __SIGNALSMITH__
-class EngineBufferScaleSignalSmith;
-#endif
-
-//for the writer
+// for the writer
 #ifdef __SCALER_DEBUG__
 #include <QFile>
 #include <QTextStream>
@@ -71,6 +54,21 @@ class ControlPotmeter;
 class EngineBufferScale;
 class EngineBufferScaleLinear;
 class EngineBufferScaleST;
+#ifdef __BUNGEE__
+class EngineBufferScaleBungee;
+struct EngineBufferBungeePublishedState {
+    // Immutable after publication. The scaler is owned by the worker that
+    // published this state; callbacks hold the state alive through the
+    // callback reader/acknowledgement protocol in EngineBuffer.
+    EngineBufferScaleBungee* pScaler;
+    int sampleRate;
+    int channelCount;
+};
+class EngineBufferBungeeWorker;
+#endif
+#ifdef __SIGNALSMITH__
+class EngineBufferScaleSignalSmith;
+#endif
 class EngineSync;
 class EngineWorkerScheduler;
 class VisualPlayPosition;
@@ -346,9 +344,6 @@ class EngineBuffer : public EngineObject {
 
   private slots:
     void slotTrackLoading();
-#ifdef __BUNGEE__
-    void slotSampleRateChanged(double sampleRate);
-#endif
     void slotTrackLoaded(
             TrackPointer pTrack,
             mixxx::audio::SampleRate trackSampleRate,
@@ -356,6 +351,9 @@ class EngineBuffer : public EngineObject {
             mixxx::audio::FramePos trackNumFrame);
     void slotTrackLoadFailed(TrackPointer pTrack,
             const QString& reason);
+#ifdef __BUNGEE__
+    void slotSampleRateChanged(double sampleRate);
+#endif
     // Fired when passthrough mode is enabled or disabled.
     void slotPassthroughChanged(double v);
     void slotUpdatedTrackBeats();
@@ -378,9 +376,6 @@ class EngineBuffer : public EngineObject {
 
     void hintReader(const double rate,
             mixxx::audio::ChannelCount callbackChannelCount);
-
-    bool isScalerLayoutCompatible(const EngineBufferScale* pScale,
-            mixxx::audio::ChannelCount callbackChannelCount) const;
 
     double fractionalPlayposFromAbsolute(double position);
 
@@ -421,6 +416,9 @@ class EngineBuffer : public EngineObject {
             const std::size_t bufferSize,
             mixxx::audio::SampleRate sampleRate,
             mixxx::audio::ChannelCount callbackChannelCount);
+    bool isScalerLayoutCompatible(
+            const EngineBufferScale* pScale,
+            mixxx::audio::ChannelCount callbackChannelCount) const;
 
     // Holds the name of the control group
     const QString m_group;

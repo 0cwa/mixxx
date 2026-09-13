@@ -297,8 +297,10 @@ EngineBuffer::EngineBuffer(const QString& group,
     if (!m_pReader) {
         m_pReader = new CachingReader(group, pConfig, maxSupportedChannel);
     }
-    connect(m_pReader, &CachingReader::trackLoading,
-            this, &EngineBuffer::slotTrackLoading,
+    connect(m_pReader,
+            &CachingReader::trackLoading,
+            this,
+            &EngineBuffer::slotTrackLoading,
             Qt::DirectConnection);
     connect(m_pReader, &CachingReader::trackLoaded,
             this, &EngineBuffer::slotTrackLoaded,
@@ -574,6 +576,7 @@ EngineBuffer::~EngineBuffer() {
 #ifdef __SIGNALSMITH__
     delete m_pScaleSignalSmith;
 #endif
+
     delete m_pKeylock;
     delete m_pReplayGain;
 
@@ -653,7 +656,6 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
         }
     }
     EngineBufferScale* vinyl_scale = m_pScaleVinyl;
-
     const bool keylockEngineChanged =
             keylockEngine != static_cast<KeylockEngine>(m_keylockEngine) ||
             m_pScale != keylock_scale;
@@ -1650,6 +1652,7 @@ void EngineBuffer::processWithChannelLayout(
 #ifdef __SIGNALSMITH__
     m_pScaleSignalSmith->setSignal(m_sampleRate, callbackChannelCount);
 #endif
+
 #ifdef __BUNGEE__
     // A track-load publication can change the callback layout before the
     // worker publishes its replacement. Prefer a matching published Bungee
@@ -1807,7 +1810,8 @@ void EngineBuffer::processSlip(
         // TODO: Check if we can replace `bufferSize` with the number of
         // frames per buffer in most engine method signatures to avoid this
         // back and forth calculations.
-        const std::size_t bufferFrameCount = bufferSize / callbackChannelCount;
+        const std::size_t bufferFrameCount =
+                bufferSize / callbackChannelCount;
         DEBUG_ASSERT(bufferFrameCount * callbackChannelCount == bufferSize);
         const mixxx::audio::FrameDiff_t slipDelta =
                 static_cast<mixxx::audio::FrameDiff_t>(bufferFrameCount) * m_dSlipRate;
