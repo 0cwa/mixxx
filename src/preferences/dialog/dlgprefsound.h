@@ -3,11 +3,13 @@
 #include <memory>
 
 #include "control/pollingcontrolproxy.h"
+#include "defs_urls.h"
 #include "preferences/constants.h"
 #include "preferences/dialog/dlgpreferencepage.h"
 #include "preferences/dialog/ui_dlgprefsounddlg.h"
 #include "preferences/usersettings.h"
 #include "soundio/sounddevice.h"
+#include "soundio/sounddevicestatus.h"
 #include "soundio/soundmanagerconfig.h"
 #include "util/parented_ptr.h"
 
@@ -37,7 +39,6 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
 
   signals:
     void loadPaths(const SoundManagerConfig &config);
-    void writePath(const AudioPath* pPath, SoundManagerConfig* config);
     void writePaths(SoundManagerConfig *config);
     void refreshOutputDevices(const QList<SoundDevicePointer>& devices);
     void refreshInputDevices(const QList<SoundDevicePointer>& devices);
