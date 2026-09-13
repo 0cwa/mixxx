@@ -83,7 +83,7 @@ Category {
         maxZoomOutInput.realValue = value;
     }
     function loadWaveform() {
-        setWaveformMaxZoomOutInput(Mixxx.Config.waveformMaxZoomOut);
+        maxZoomOutInput.value = Mixxx.Config.waveformMaxZoomOut;
         waveformTab.dirty = false;
     }
     function resetDeck() {
@@ -91,7 +91,7 @@ Category {
     function resetInterface() {
     }
     function resetWaveform() {
-        setWaveformMaxZoomOutInput(10);
+        maxZoomOutInput.value = 10;
         waveformTab.dirty = true;
     }
     function saveDeck() {
