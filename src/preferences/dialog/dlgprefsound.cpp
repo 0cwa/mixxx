@@ -10,8 +10,6 @@
 #include "engine/enginemixer.h"
 #include "mixer/playermanager.h"
 #include "moc_dlgprefsound.cpp"
-#include "preferences/configobject.h"
-#include "preferences/dialog/dlgprefsound.h"
 #include "preferences/dialog/dlgprefsounditem.h"
 #include "soundio/soundmanager.h"
 #include "util/rlimit.h"
@@ -25,7 +23,6 @@ namespace {
 
 const QString kAppGroup = QStringLiteral("[App]");
 const QString kMasterGroup = QStringLiteral("[Master]");
-
 const ConfigKey kKeylockEngingeCfgkey1 =
         ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("keylock_engine"));
 const ConfigKey kKeylockEngingeCfgkey2 =
@@ -34,7 +31,6 @@ const ConfigKey kKeylockEngingeCfgkey3 =
         ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("keylock_engine"));
 const ConfigKey kKeylockEngingeCfgkey4 =
         ConfigKey(QStringLiteral("[Channel4]"), QStringLiteral("keylock_engine"));
-
 const ConfigKey kKeylockMultiThreadingCfgkey =
         ConfigKey(kAppGroup, QStringLiteral("keylock_multithreading"));
 
@@ -70,7 +66,7 @@ const QString kKeylockMultiThreadedUnavailableMono = QStringLiteral("<i>") +
         QStringLiteral("</i>");
 const QString kKeylockMultiThreadedUnavailableRubberband =
         QStringLiteral("<i>") +
-        QObject::tr("Dual threading mode is only available with RubberBand.") +
+        QObject::tr("Dual threading mode is only available with the RubberBand engine.") +
         QStringLiteral("</i>");
 #endif
 } // namespace
@@ -121,8 +117,16 @@ DlgPrefSound::DlgPrefSound(QWidget* pParent,
                     QStringLiteral("(?)"),
                     MIXXX_MANUAL_SOUND_API_URL));
 
+    sampleRateComboBox->clear();
     const auto sampleRates = m_pSoundManager->getSampleRates();
-    updateSampleRates(sampleRates);
+    for (const auto& sampleRate : sampleRates) {
+        if (sampleRate.isValid()) {
+            // no ridiculous sample rate values. prohibiting zero means
+            // avoiding a potential div-by-0 error in ::updateLatencies
+            sampleRateComboBox->addItem(tr("%1 Hz").arg(sampleRate.value()),
+                    QVariant::fromValue(sampleRate));
+        }
+    }
     connect(sampleRateComboBox,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
@@ -550,8 +554,6 @@ void DlgPrefSound::connectSoundItem(DlgPrefSoundItem* pItem) {
                 &DlgPrefSound::refreshOutputDevices,
                 pItem,
                 &DlgPrefSoundItem::refreshDevices);
-        connect(this, &DlgPrefSound::addOutputDevice, pItem, &DlgPrefSoundItem::addDevice);
-        connect(this, &DlgPrefSound::removeOutputDevice, pItem, &DlgPrefSoundItem::removeDevice);
     }
     connect(this, &DlgPrefSound::updatingAPI, pItem, &DlgPrefSoundItem::save);
     connect(this, &DlgPrefSound::updatedAPI, pItem, &DlgPrefSoundItem::reload);
@@ -629,13 +631,13 @@ void DlgPrefSound::loadSettings(const SoundManagerConfig& config) {
         engineClockComboBox->setCurrentIndex(0);
     }
 
+    // Default keylock engine is Rubberband Faster (v2)
     QList<QComboBox*> boxes{keylockComboBox1, keylockComboBox2, keylockComboBox3, keylockComboBox4};
     QList<ConfigKey> keys{kKeylockEngingeCfgkey1,
             kKeylockEngingeCfgkey2,
             kKeylockEngingeCfgkey3,
             kKeylockEngingeCfgkey4};
     for (int i = 0; i < 4; i++) {
-        // Default keylock engine is Rubberband Faster (v2)
         const auto keylockEngine = static_cast<EngineBuffer::KeylockEngine>(
                 m_pSettings->getValue(keys[i],
                         static_cast<int>(EngineBuffer::defaultKeylockEngine())));
@@ -685,7 +687,6 @@ void DlgPrefSound::loadSettings(const SoundManagerConfig& config) {
                     QPair<SoundDeviceId, int>(id, pItem->getChannelIndex()));
         }
     }
-
     m_loading = false;
     // DlgPrefSoundItem has it's own inhibit flag
     emit loadPaths(m_config);
@@ -1166,20 +1167,4 @@ void DlgPrefSound::checkLatencyCompensation() {
 
 bool DlgPrefSound::okayToClose() const {
     return m_configValid;
-}
-
-void DlgPrefSound::updateSampleRates(const QList<mixxx::audio::SampleRate>& sampleRates) {
-    sampleRateComboBox->clear();
-    for (const auto& sampleRate : sampleRates) {
-        if (sampleRate.isValid()) {
-            // no ridiculous sample rate values. prohibiting zero means
-            // avoiding a potential div-by-0 error in ::updateLatencies
-            sampleRateComboBox->addItem(tr("%1 Hz").arg(sampleRate.value()),
-                    QVariant::fromValue(sampleRate));
-        }
-    }
-}
-
-void DlgPrefSound::invalidateConfig() {
-    m_settingsModified = true;
 }
