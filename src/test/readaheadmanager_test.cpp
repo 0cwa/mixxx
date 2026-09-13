@@ -12,6 +12,9 @@
 #include <vector>
 
 #include "control/controlobject.h"
+#ifdef __BUNGEE__
+#include "engine/bufferscalers/enginebufferscalebungee.h"
+#endif
 #include "engine/cachingreader/cachingreader.h"
 #include "engine/cachingreader/cachingreaderchunk.h"
 #include "engine/cachingreader/cachingreaderworker.h"
@@ -1005,6 +1008,76 @@ TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversAfterDualOccupancy) {
         }
     }
 }
+
+#ifdef __BUNGEE__
+TEST_F(ReadAheadManagerTest, ReadAheadLogOverflowRecoversThroughBungeeConsumer) {
+    constexpr SINT kSamplesPerSegment = 10;
+    constexpr int kSegments =
+            static_cast<int>(ReadAheadManager::kMaxReadAheadLogEntries) + 2;
+    constexpr SINT kOutputFrames = 1024;
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+
+    m_pReadAheadManager->notifySeek(0);
+    for (int i = 0; i < kSegments; ++i) {
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    }
+
+    for (int i = 0; i < kSegments; ++i) {
+        EXPECT_EQ(kSamplesPerSegment,
+                m_pReadAheadManager->getNextSamples(
+                        i % 2 == 0 ? 1.0 : -1.0,
+                        m_pBuffer,
+                        kSamplesPerSegment,
+                        kChannelCount));
+    }
+    ASSERT_EQ(kSegments, m_pReader->readStartSamples().size());
+
+    // Keep the controls available for the real scaler calls below. The
+    // scaler may need more than one grain to fill an output callback.
+    for (int i = 0; i < 128; ++i) {
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    }
+
+    EngineBufferScaleBungee scaler(m_pReadAheadManager.data());
+    scaler.setSignal(mixxx::audio::SampleRate(44100), kChannelCount);
+    double tempoRatio = 1.0;
+    double pitchRatio = 1.0;
+    scaler.setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+
+    std::array<CSAMPLE, kOutputFrames * 2> output;
+    mixxx::audio::FramePos filePosition =
+            mixxx::audio::FramePos::fromSamplePos(0, kChannelCount);
+    const int readCallsBeforeCapacityRecovery =
+            m_pReader->readStartSamples().size();
+
+    auto renderAndAccount = [&]() {
+        SampleUtil::fill(output.data(), -1.0f, static_cast<SINT>(output.size()));
+        const double framesRead = scaler.scaleBuffer(
+                output.data(), static_cast<SINT>(output.size()));
+        EXPECT_GT(framesRead, 0.0);
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+            return sample != -1.0f;
+        }));
+
+        // This is the exact public accounting call made by EngineBuffer. It
+        // consumes the source mappings represented by the positive scaler
+        // result and, in turn, frees capacity for the next read.
+        filePosition = m_pReadAheadManager->getFilePlaypositionFromLog(
+                filePosition, framesRead, kChannelCount);
+        return framesRead;
+    };
+
+    renderAndAccount();
+    EXPECT_EQ(readCallsBeforeCapacityRecovery,
+            m_pReader->readStartSamples().size());
+
+    renderAndAccount();
+    EXPECT_GT(m_pReader->readStartSamples().size(),
+            readCallsBeforeCapacityRecovery);
+}
+#endif
 
 TEST_F(ReadAheadManagerTest, TriggerOnJumpOrLoop) {
     m_pReadAheadManager->notifySeek(0);
