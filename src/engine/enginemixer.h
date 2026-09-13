@@ -304,6 +304,7 @@ class EngineMixer : public QObject, public AudioSource {
     std::unique_ptr<ControlObject> m_pHeadGain;
     std::unique_ptr<ControlObject> m_pSampleRate;
     std::unique_ptr<ControlObject> m_pOutputLatencyMs;
+    std::unique_ptr<ControlObject> m_pWaveformMaxZoomOut;
     std::unique_ptr<ControlObject> m_pAudioLatencyOverloadCount;
     std::unique_ptr<ControlObject> m_pAudioLatencyUsage;
     std::unique_ptr<ControlObject> m_pAudioLatencyOverload;
@@ -324,6 +325,7 @@ class EngineMixer : public QObject, public AudioSource {
     std::unique_ptr<ControlPotmeter> m_pXFaderCalibration;
     std::unique_ptr<ControlPushButton> m_pXFaderReverse;
     std::unique_ptr<ControlPushButton> m_pHeadSplitEnabled;
+    std::unique_ptr<ControlObject> m_pKeylockEngine;
     std::unique_ptr<ControlObject> m_pKeylockEngine1;
     std::unique_ptr<ControlObject> m_pKeylockEngine2;
     std::unique_ptr<ControlObject> m_pKeylockEngine3;
