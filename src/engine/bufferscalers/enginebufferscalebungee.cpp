@@ -231,9 +231,8 @@ EngineBufferScaleBungee::InputReadResult EngineBufferScaleBungee::consumeReadAhe
     }
 
     // Two consecutive empty reads exhaust the retry budget. At end-of-track
-    // this can return fewer frames than requested; the caller records only the
-    // consumed prefix, and processGrain() handles the incomplete window on its
-    // next invariant check.
+    // this can return fewer frames than requested; the caller still collapses
+    // the empty window to the requested frame so the BNG-13 invariant holds.
     return {consumedFrames, false};
 }
 
