@@ -13,6 +13,8 @@
 #include "util/fifo.h"
 #include "util/types.h"
 
+class Seek30Control;
+
 // A Hint is an indication to the CachingReader that a certain section of a
 // SoundSource will be used 'soon' and so it should be brought into memory by
 // the reader work thread.
@@ -125,6 +127,8 @@ class CachingReader : public QObject {
     void setScheduler(EngineWorkerScheduler* pScheduler) {
         m_worker.setScheduler(pScheduler);
     }
+
+    void setSeek30Control(Seek30Control* pControl);
 
   signals:
     // Emitted once a new track is loaded and ready to be read from.
