@@ -3620,6 +3620,12 @@ if(SIGNALSMITH)
     PRIVATE src/engine/bufferscalers/enginebufferscalesignalsmith.cpp
   )
   target_compile_definitions(mixxx-lib PUBLIC __SIGNALSMITH__)
+  if(BUILD_TESTING)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/enginebufferscalesignalsmithtest.cpp
+    )
+  endif()
 endif()
 
 # FLAC
