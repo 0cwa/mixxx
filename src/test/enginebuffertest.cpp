@@ -6,6 +6,8 @@
 #include <QString>
 #include <QTest>
 #include <QtDebug>
+#include <algorithm>
+#include <array>
 
 #include "control/controlobject.h"
 #include "engine/controls/ratecontrol.h"
@@ -34,6 +36,38 @@ TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
     EXPECT_EQ(m_pChannel1->m_stemBuffer.size(),
             static_cast<SINT>(kMaxEngineFrames *
                     mixxx::kMaxEngineChannelInputCount));
+}
+
+TEST_F(EngineBufferTest, StemProcessClearsOddChannelLayout) {
+    TrackPointer pTrack = Track::newTemporary();
+    pTrack->setAudioProperties(
+            mixxx::audio::ChannelCount(3),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(1));
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+
+TEST_F(EngineBufferTest, StemProcessClearsStemVectorMismatch) {
+    TrackPointer pTrack = Track::newTemporary();
+    pTrack->setAudioProperties(
+            mixxx::audio::ChannelCount(4),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(1));
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
 }
 #endif
 
