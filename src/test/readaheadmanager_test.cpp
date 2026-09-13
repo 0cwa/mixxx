@@ -4,9 +4,12 @@
 
 #include <QScopedPointer>
 #include <QtDebug>
+#include <algorithm>
+#include <array>
 
 #include "control/controlobject.h"
 #include "engine/cachingreader/cachingreader.h"
+#include "engine/cachingreader/cachingreaderchunk.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
 #include "test/mixxxtest.h"
@@ -29,13 +32,182 @@ class StubReader : public CachingReader {
             bool reverse,
             CSAMPLE* buffer,
             mixxx::audio::ChannelCount channelCount) override {
+        Q_UNUSED(reverse);
+        Q_UNUSED(channelCount);
+        m_readStartSamples.push_back(startSample);
+        if (!m_readAvailable) {
+            return CachingReader::ReadResult::UNAVAILABLE;
+        }
+        SampleUtil::clear(buffer, numSamples);
+        return CachingReader::ReadResult::AVAILABLE;
+    }
+
+    void setReadAvailable(bool available) {
+        m_readAvailable = available;
+    }
+
+    const QList<SINT>& readStartSamples() const {
+        return m_readStartSamples;
+    }
+
+  protected:
+    RetryReadResult readWithRetryHook(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount) override {
+        Q_UNUSED(reverse);
+        Q_UNUSED(channelCount);
+        m_readStartSamples.push_back(startSample);
+        if (!m_readAvailable) {
+            return {CachingReader::ReadResult::UNAVAILABLE, true};
+        }
+        SampleUtil::clear(buffer, numSamples);
+        return {CachingReader::ReadResult::AVAILABLE, false};
+    }
+
+  private:
+    bool m_readAvailable{true};
+    QList<SINT> m_readStartSamples;
+};
+
+class ChunkBoundaryRetryReader : public CachingReader {
+  public:
+    ChunkBoundaryRetryReader()
+            : CachingReader(
+                      kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo()) {
+    }
+
+    CachingReader::ReadResult read(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount) override {
+        Q_UNUSED(reverse);
+        Q_UNUSED(channelCount);
+        m_readStartSamples.push_back(startSample);
+
+        const SINT boundarySample = CachingReaderChunk::frames2samples(
+                CachingReaderChunk::kFrames,
+                mixxx::audio::ChannelCount::stereo());
+        if (!m_laterChunkReady) {
+            const SINT prefixSamples = std::clamp(
+                    boundarySample - startSample, SINT{0}, numSamples);
+            SampleUtil::fill(buffer, 0.25f, prefixSamples);
+            return CachingReader::ReadResult::PARTIALLY_AVAILABLE;
+        }
+
+        for (SINT i = 0; i < numSamples; ++i) {
+            buffer[i] = sampleForAbsolutePosition(startSample + i);
+        }
+        return CachingReader::ReadResult::AVAILABLE;
+    }
+
+    void setLaterChunkReady() {
+        m_laterChunkReady = true;
+    }
+
+    const QList<SINT>& readStartSamples() const {
+        return m_readStartSamples;
+    }
+
+    static CSAMPLE sampleForAbsolutePosition(SINT sample) {
+        return static_cast<CSAMPLE>((sample % 101) / 100.0f);
+    }
+
+  protected:
+    RetryReadResult readWithRetryHook(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount) override {
+        const auto result = read(
+                startSample, numSamples, reverse, buffer, channelCount);
+        return {result, !m_laterChunkReady};
+    }
+
+  private:
+    bool m_laterChunkReady{false};
+    QList<SINT> m_readStartSamples;
+};
+
+class LegacyPartialReader : public CachingReader {
+  public:
+    LegacyPartialReader()
+            : CachingReader(
+                      kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo()) {
+    }
+
+    CachingReader::ReadResult read(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount) override {
         Q_UNUSED(startSample);
         Q_UNUSED(reverse);
         Q_UNUSED(channelCount);
         SampleUtil::clear(buffer, numSamples);
-        return CachingReader::ReadResult::AVAILABLE;
+        return CachingReader::ReadResult::PARTIALLY_AVAILABLE;
     }
 };
+
+TEST(CachingReaderRetryTest,
+        LateChunkMissAcrossChunkBoundaryLeavesDestinationUntouched) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+    constexpr SINT kStartFrame = CachingReaderChunk::kFrames - 2;
+    constexpr SINT kFrameCount = 4;
+    constexpr SINT kSampleCount = kFrameCount * 2;
+    constexpr CSAMPLE kSentinel = -0.75f;
+    const SINT startSample = CachingReaderChunk::frames2samples(
+            kStartFrame, kChannelCount);
+
+    ChunkBoundaryRetryReader reader;
+    std::array<CSAMPLE, kSampleCount> buffer;
+    buffer.fill(kSentinel);
+
+    EXPECT_EQ(CachingReader::ReadResult::UNAVAILABLE,
+            reader.readWithRetry(startSample,
+                    kSampleCount,
+                    false,
+                    buffer.data(),
+                    kChannelCount));
+    for (const auto sample : buffer) {
+        EXPECT_FLOAT_EQ(kSentinel, sample);
+    }
+
+    reader.setLaterChunkReady();
+    EXPECT_EQ(CachingReader::ReadResult::AVAILABLE,
+            reader.readWithRetry(startSample,
+                    kSampleCount,
+                    false,
+                    buffer.data(),
+                    kChannelCount));
+    for (SINT i = 0; i < kSampleCount; ++i) {
+        EXPECT_FLOAT_EQ(
+                ChunkBoundaryRetryReader::sampleForAbsolutePosition(startSample + i),
+                buffer[i]);
+    }
+    ASSERT_EQ(2, reader.readStartSamples().size());
+    EXPECT_EQ(startSample, reader.readStartSamples()[0]);
+    EXPECT_EQ(startSample, reader.readStartSamples()[1]);
+}
+
+TEST(CachingReaderRetryTest, LegacyPartialReadIsAcceptedAsIntentionalPadding) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+    std::array<CSAMPLE, 8> buffer;
+    buffer.fill(1.0f);
+
+    LegacyPartialReader reader;
+    EXPECT_EQ(CachingReader::ReadResult::PARTIALLY_AVAILABLE,
+            reader.readWithRetry(0,
+                    static_cast<SINT>(buffer.size()),
+                    false,
+                    buffer.data(),
+                    kChannelCount));
+    EXPECT_TRUE(std::all_of(buffer.begin(), buffer.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
+}
 
 class StubLoopControl : public LoopingControl {
   public:
@@ -50,12 +222,21 @@ class StubLoopControl : public LoopingControl {
                 mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(target));
     }
 
+    int queryCount() const {
+        return m_queryCount;
+    }
+
+    int pendingPlanCount() const {
+        return m_triggerReturnValues.size();
+    }
+
     mixxx::audio::FramePos nextTrigger(bool reverse,
             mixxx::audio::FramePos currentPosition,
             mixxx::audio::FramePos* pTargetPosition) override {
         Q_UNUSED(reverse);
         Q_UNUSED(currentPosition);
         Q_UNUSED(pTargetPosition);
+        ++m_queryCount;
         RELEASE_ASSERT(!m_targetReturnValues.isEmpty());
         *pTargetPosition = m_targetReturnValues.takeFirst();
         RELEASE_ASSERT(!m_triggerReturnValues.isEmpty());
@@ -65,6 +246,7 @@ class StubLoopControl : public LoopingControl {
   protected:
     QList<mixxx::audio::FramePos> m_triggerReturnValues;
     QList<mixxx::audio::FramePos> m_targetReturnValues;
+    int m_queryCount{0};
 };
 
 class StubCueControl : public CueControl {
@@ -81,10 +263,19 @@ class StubCueControl : public CueControl {
                 mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(target));
     }
 
+    int queryCount() const {
+        return m_queryCount;
+    }
+
+    int pendingPlanCount() const {
+        return m_triggerReturnValues.size();
+    }
+
     mixxx::audio::FramePos nextTrigger(bool,
             mixxx::audio::FramePos,
             mixxx::audio::FramePos* pTargetPosition,
             mixxx::audio::FrameDiff_t) override {
+        ++m_queryCount;
         RELEASE_ASSERT(!m_targetReturnValues.isEmpty());
         *pTargetPosition = m_targetReturnValues.takeFirst();
         RELEASE_ASSERT(!m_triggerReturnValues.isEmpty());
@@ -94,6 +285,7 @@ class StubCueControl : public CueControl {
   protected:
     QList<mixxx::audio::FramePos> m_triggerReturnValues;
     QList<mixxx::audio::FramePos> m_targetReturnValues;
+    int m_queryCount{0};
 };
 
 class ReadAheadManagerTest : public MixxxTest {
@@ -167,6 +359,98 @@ TEST_F(ReadAheadManagerTest, SavedJump) {
                     1.0, m_pBuffer, 80, mixxx::audio::ChannelCount::stereo()));
 
     EXPECT_NEAR(86.5, m_pReadAheadManager->getPlaypos(), 1);
+}
+
+TEST_F(ReadAheadManagerTest, RetryableCacheMissDoesNotAdvanceReadAheadPosition) {
+    m_pReadAheadManager->notifySeek(0);
+    m_pReader->setReadAvailable(false);
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    const auto unavailableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, m_pBuffer, 10, mixxx::audio::ChannelCount::stereo());
+    EXPECT_EQ(0, unavailableResult.samplesRead);
+    EXPECT_TRUE(unavailableResult.retryPending);
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+
+    m_pReader->setReadAvailable(true);
+
+    const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, m_pBuffer, 10, mixxx::audio::ChannelCount::stereo());
+    EXPECT_EQ(10, availableResult.samplesRead);
+    EXPECT_FALSE(availableResult.retryPending);
+    EXPECT_DOUBLE_EQ(10.0, m_pReadAheadManager->getPlaypos());
+    ASSERT_EQ(2, m_pReader->readStartSamples().size());
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+    EXPECT_EQ(0, m_pReader->readStartSamples()[1]);
+    EXPECT_EQ(1, m_pLoopControl->queryCount());
+    EXPECT_EQ(1, m_pCueControl->queryCount());
+}
+
+TEST_F(ReadAheadManagerTest, RetryableCacheMissRetainsStatefulTriggerPlan) {
+    m_pReadAheadManager->notifySeek(0);
+    m_pReader->setReadAvailable(false);
+    m_pLoopControl->pushValues(8, 2);
+    m_pCueControl->pushValues(6, 4);
+    // These plans must remain untouched while the first request is retried.
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    std::array<CSAMPLE, 10> output;
+    output.fill(1.0f);
+
+    const auto unavailableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), output.size(), mixxx::audio::ChannelCount::stereo());
+    EXPECT_EQ(0, unavailableResult.samplesRead);
+    EXPECT_TRUE(unavailableResult.retryPending);
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
+    EXPECT_EQ(1, m_pLoopControl->queryCount());
+    EXPECT_EQ(1, m_pCueControl->queryCount());
+
+    m_pReader->setReadAvailable(true);
+    const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), output.size(), mixxx::audio::ChannelCount::stereo());
+
+    EXPECT_EQ(6, availableResult.samplesRead);
+    EXPECT_FALSE(availableResult.retryPending);
+    EXPECT_DOUBLE_EQ(4.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_EQ(1, m_pLoopControl->queryCount());
+    EXPECT_EQ(1, m_pCueControl->queryCount());
+    EXPECT_EQ(1, m_pLoopControl->pendingPlanCount());
+    EXPECT_EQ(1, m_pCueControl->pendingPlanCount());
+    ASSERT_GE(m_pReader->readStartSamples().size(), 2);
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+    EXPECT_EQ(0, m_pReader->readStartSamples()[1]);
+}
+
+TEST_F(ReadAheadManagerTest, NotifySeekCancelsPendingTriggerPlan) {
+    m_pReadAheadManager->notifySeek(0);
+    m_pReader->setReadAvailable(false);
+    m_pLoopControl->pushValues(8, 2);
+    m_pCueControl->pushValues(6, 4);
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    const auto unavailableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, m_pBuffer, 10, mixxx::audio::ChannelCount::stereo());
+    ASSERT_TRUE(unavailableResult.retryPending);
+
+    m_pReadAheadManager->notifySeek(20);
+    m_pReader->setReadAvailable(true);
+    const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, m_pBuffer, 10, mixxx::audio::ChannelCount::stereo());
+
+    EXPECT_EQ(10, availableResult.samplesRead);
+    EXPECT_FALSE(availableResult.retryPending);
+    EXPECT_DOUBLE_EQ(30.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_EQ(2, m_pLoopControl->queryCount());
+    EXPECT_EQ(2, m_pCueControl->queryCount());
+    EXPECT_EQ(0, m_pLoopControl->pendingPlanCount());
+    EXPECT_EQ(0, m_pCueControl->pendingPlanCount());
+    ASSERT_GE(m_pReader->readStartSamples().size(), 2);
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+    EXPECT_EQ(20, m_pReader->readStartSamples()[1]);
 }
 
 TEST_F(ReadAheadManagerTest, TriggerOnJumpOrLoop) {
