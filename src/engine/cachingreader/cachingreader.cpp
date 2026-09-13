@@ -137,13 +137,11 @@ void CachingReader::reportDiagnostics() {
     const int workerProgress = m_worker.diagnosticCompletedRequests();
     const int activeChunk = m_worker.diagnosticActiveChunk();
     const auto workerState = m_worker.diagnosticState();
-    const int requestPending = std::max(
-            0,
+    const int requestPending = std::max(0,
             submitAttempts - submitFailures -
                     m_worker.diagnosticDequeuedRequests());
     const int requestCapacity = m_chunkReadRequestFIFO.capacity();
-    const int statusPending = std::max(
-            0,
+    const int statusPending = std::max(0,
             m_worker.diagnosticPublishedStatuses() -
                     m_diagnosticStatusConsumed.loadAcquire());
     const int statusCapacity = m_worker.diagnosticStatusCapacity();
