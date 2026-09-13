@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "control/controlobject.h"
+#include "test/mixxxtest.h"
 #include "track/cue.h"
 #include "util/color/predefinedcolorpalettes.h"
 #include "waveform/waveformwidgetfactory.h"
