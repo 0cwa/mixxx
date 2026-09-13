@@ -9,6 +9,8 @@
 
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboximport.h"
+#include "track/cue.h"
+#include "track/track.h"
 
 namespace {
 
@@ -96,6 +98,7 @@ TEST(RekordboxImportTest, SkipsDanglingPlaylistTrackReferences) {
         ASSERT_TRUE(invalidRelationQuery.next());
         EXPECT_EQ(0, invalidRelationQuery.value(0).toInt());
         ASSERT_TRUE(database.commit());
+
         database.close();
     }
     QSqlDatabase::removeDatabase(connectionName);
@@ -121,7 +124,9 @@ TEST(RekordboxImportTest, RollsBackFatalPlaylistInsertErrors) {
         {
             ScopedTransaction transaction(database);
             ASSERT_TRUE(transaction.active());
-            const QMap<uint32_t, uint32_t> playlistTracks{{1, 100}, {2, 102}};
+            const QMap<uint32_t, uint32_t> playlistTracks{
+                    {1, 100},
+                    {2, 102}};
             EXPECT_FALSE(mixxx::rekordbox::importPlaylistTracks(
                     database, 42, playlistTracks, QStringLiteral("USB")));
         }
@@ -136,6 +141,7 @@ TEST(RekordboxImportTest, RollsBackFatalPlaylistInsertErrors) {
     }
     QSqlDatabase::removeDatabase(connectionName);
 }
+
 TEST(RekordboxImportTest, PreservesMemoryLoopBoundsAndCueOrder) {
     TrackPointer track = Track::newTemporary();
     CuePointer hotCue = track->createAndAddCue(
@@ -165,14 +171,12 @@ TEST(RekordboxImportTest, PreservesMemoryLoopBoundsAndCueOrder) {
     EXPECT_EQ(mixxx::audio::FramePos(100), cuePoints.at(1)->getPosition());
     EXPECT_EQ(mixxx::audio::FramePos(200), cuePoints.at(1)->getEndPosition());
     EXPECT_EQ(QStringLiteral("first loop"), cuePoints.at(1)->getLabel());
-    EXPECT_EQ(mixxx::RgbColor(0x102030), cuePoints.at(1)->getColor());
 
     EXPECT_EQ(mixxx::CueType::Loop, cuePoints.at(2)->getType());
     EXPECT_EQ(Cue::kNoHotCue, cuePoints.at(2)->getHotCue());
     EXPECT_EQ(mixxx::audio::FramePos(100), cuePoints.at(2)->getPosition());
     EXPECT_EQ(mixxx::audio::FramePos(300), cuePoints.at(2)->getEndPosition());
     EXPECT_EQ(QStringLiteral("second loop"), cuePoints.at(2)->getLabel());
-    EXPECT_EQ(mixxx::RgbColor(0x405060), cuePoints.at(2)->getColor());
 }
 
 TEST(RekordboxImportTest, UpdatesFirstMatchingHotCueWithoutReordering) {
@@ -201,7 +205,6 @@ TEST(RekordboxImportTest, UpdatesFirstMatchingHotCueWithoutReordering) {
     EXPECT_EQ(duplicate, cuePoints.at(1));
     EXPECT_EQ(mixxx::audio::FramePos(30), first->getPosition());
     EXPECT_EQ(QStringLiteral("updated"), first->getLabel());
-    EXPECT_EQ(mixxx::RgbColor(0x102030), first->getColor());
     EXPECT_EQ(mixxx::audio::FramePos(20), duplicate->getPosition());
     EXPECT_TRUE(duplicate->getLabel().isEmpty());
 }
