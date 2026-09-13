@@ -55,8 +55,12 @@ constexpr int kEngineMarkerSourceFrame = 15 * kBufferFrames + 400;
 // The impulse is intentionally detected on onset, not peak: the two engines
 // have different smoothing kernels, while the first threshold crossing is a
 // stable emitted-output clock edge in the deterministic source.
+#ifdef __SIGNALSMITH__
 constexpr double kSignalSmithMarkerOnsetThreshold = 0.3;
+#endif
+#ifdef __BUNGEE__
 constexpr double kBungeeMarkerOnsetThreshold = 0.8;
+#endif
 constexpr int kMarkerNeighbourFrames = 8;
 constexpr int kRendererWidth = 1000;
 constexpr const char* kTracePath =
@@ -306,7 +310,7 @@ MarkerMatch correlateMarker(const std::array<CSAMPLE, kBufferSamples>& output) {
 
 struct MarkerSimilarity {
     double correlation = -1.0;
-    double normalizedError = std::numeric_limits<double>::infinity();
+    double normalizedError = std::numeric_limits<double>::max();
     int outputFrame = -1;
 };
 
@@ -334,7 +338,7 @@ MarkerSimilarity findBestEngineMarkerSimilarity(
         }
     }
 
-    const int outputFrames = output.size() / kChannels;
+    const int outputFrames = static_cast<int>(output.size() / kChannels);
     for (int frame = 0;
             frame + kEngineMarkerFrames <= outputFrames;
             ++frame) {
@@ -382,7 +386,7 @@ MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
         double threshold) {
     const int expectedOutputFrame = static_cast<int>(std::round(
             kEngineMarkerSourceFrame / sourceRate));
-    const int outputFrames = output.size() / kChannels;
+    const int outputFrames = static_cast<int>(output.size() / kChannels);
     // The source marker cannot be audible before its nominal source-to-output
     // time. Starting at that boundary avoids mistaking the deterministic
     // background waveform for the marker onset.
