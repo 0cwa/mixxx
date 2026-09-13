@@ -2946,6 +2946,8 @@ if(BUILD_TESTING)
     src/test/enginebufferscalelineartest.cpp
     $<$<BOOL:${BUNGEE}>:src/test/enginebufferscalebungeetest.cpp>
     $<$<BOOL:${BUNGEE}>:src/test/enginebufferbungeetest.cpp>
+    src/test/enginebufferalignmenttest.cpp
+    src/test/visualplaypositiontest.cpp
     src/test/enginebuffertest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp
