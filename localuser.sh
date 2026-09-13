@@ -30,7 +30,7 @@ CONTAINER_BUILD_DIR=${MIXXX_CONTAINER_BUILD_DIR:-$(container_path "$BUILD_DIR")}
 CONTAINER_INSTALL_PREFIX=${MIXXX_CONTAINER_INSTALL_PREFIX:-$(container_path "$INSTALL_PREFIX")}
 
 HOST_COMMAND_PREFIX=()
-if command -v flatpak-spawn >/dev/null 2>&1; then
+if [[ -e /.flatpak-info ]] && command -v flatpak-spawn >/dev/null 2>&1; then
     HOST_COMMAND_PREFIX=(flatpak-spawn --host)
 fi
 
