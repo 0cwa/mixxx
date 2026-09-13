@@ -7,6 +7,7 @@
 #include "util/assert.h"
 #include "util/compatibility/qatomic.h"
 #include "util/counter.h"
+#include "util/defs.h"
 #include "util/logger.h"
 #include "util/sample.h"
 
@@ -34,8 +35,6 @@ constexpr SINT kDefaultHintFrames = 1024;
 // (kNumberOfCachedChunksInMemory = 1, 2, 3, ...) for testing purposes
 // to verify that the MRU/LRU cache works as expected. Even though
 // massive drop outs are expected to occur Mixxx should run reliably!
-constexpr SINT kNumberOfCachedChunksInMemory = 80;
-
 } // anonymous namespace
 
 CachingReader::CachingReader(const QString& group,
@@ -73,7 +72,7 @@ CachingReader::CachingReader(const QString& group,
           m_lruCachingReaderChunk(nullptr),
           m_sampleBuffer(CachingReaderChunk::kFrames * maxSupportedChannel *
                   kNumberOfCachedChunksInMemory),
-          m_retryReadBuffer(CachingReaderChunk::kFrames * maxSupportedChannel),
+          m_retryReadBuffer(MAX_BUFFER_LEN * maxSupportedChannel),
           m_worker(group,
                   &m_chunkReadRequestFIFO,
                   &m_readerStatusUpdateFIFO,
@@ -90,7 +89,7 @@ CachingReader::CachingReader(const QString& group,
                                 CachingReaderChunk::kFrames * maxSupportedChannel * i,
                                 CachingReaderChunk::kFrames * maxSupportedChannel));
         m_chunks.push_back(c);
-        m_freeChunks.push_back(c);
+        m_freeChunks[m_freeChunkCount++] = c;
     }
 
     // Forward signals from worker
@@ -216,7 +215,14 @@ void CachingReader::freeChunkFromList(CachingReaderChunkForOwner* pChunk) {
             &m_mruCachingReaderChunk,
             &m_lruCachingReaderChunk);
     pChunk->free();
-    m_freeChunks.push_back(pChunk);
+    VERIFY_OR_DEBUG_ASSERT(m_freeChunkCount < static_cast<int>(m_freeChunks.size())) {
+        return;
+    }
+    const int insertIndex =
+            (m_freeChunkStart + m_freeChunkCount) %
+            static_cast<int>(m_freeChunks.size());
+    m_freeChunks[insertIndex] = pChunk;
+    ++m_freeChunkCount;
 }
 
 void CachingReader::freeChunk(CachingReaderChunkForOwner* pChunk) {
@@ -251,11 +257,13 @@ void CachingReader::freeAllChunks() {
 }
 
 CachingReaderChunkForOwner* CachingReader::allocateChunk(SINT chunkIndex) {
-    if (m_freeChunks.empty()) {
+    if (m_freeChunkCount == 0) {
         return nullptr;
     }
-    CachingReaderChunkForOwner* pChunk = m_freeChunks.front();
-    m_freeChunks.pop_front();
+    CachingReaderChunkForOwner* pChunk = m_freeChunks[m_freeChunkStart];
+    m_freeChunkStart =
+            (m_freeChunkStart + 1) % static_cast<int>(m_freeChunks.size());
+    --m_freeChunkCount;
 
     pChunk->init(chunkIndex);
 
