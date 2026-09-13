@@ -148,16 +148,29 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
             chCount / mixxx::kEngineChannelOutputCount;
     VERIFY_OR_DEBUG_ASSERT(stemCount <= m_stems.size() &&
             stemCount <= m_stemMute.size() && stemCount <= m_stemGain.size() &&
-            stemCount <= m_stemVuMeter.size()) {
+            stemCount <= m_stemVuMeter.size() &&
+            stemCount <= m_stemsGainCache.size()) {
         SampleUtil::clear(pOut, bufferSize);
         return;
     };
+    const std::size_t processingBufferSize =
+            bufferSize - bufferSize % mixxx::kEngineChannelOutputCount;
+    if (processingBufferSize != bufferSize) {
+        // The stem pipeline operates on complete stereo frames. Process the
+        // complete frames and explicitly clear the incomplete tail so it
+        // cannot retain samples from an earlier callback.
+        SampleUtil::clear(
+                pOut + processingBufferSize, bufferSize - processingBufferSize);
+    }
+    if (processingBufferSize == 0) {
+        return;
+    }
     mixxx::audio::SampleRate sampleRate = mixxx::audio::SampleRate::fromDouble(m_sampleRate.get());
-    SINT numFrames = bufferSize / mixxx::kEngineChannelOutputCount;
+    SINT numFrames = processingBufferSize / mixxx::kEngineChannelOutputCount;
     const std::size_t stemBufferCapacity =
             static_cast<std::size_t>(m_stemBuffer.size());
     DEBUG_ASSERT(stemCount > 0);
-    if (stemCount == 0 || bufferSize > stemBufferCapacity / stemCount) {
+    if (stemCount == 0 || processingBufferSize > stemBufferCapacity / stemCount) {
         // The stem scratch buffer is prepared for the largest engine callback
         // in the constructor. Never allocate or use a partial buffer from the
         // audio callback if an invalidly large callback reaches this path.
@@ -165,7 +178,7 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
         SampleUtil::clear(pOut, bufferSize);
         return;
     }
-    const std::size_t allChannelBufferSize = bufferSize * stemCount;
+    const std::size_t allChannelBufferSize = processingBufferSize * stemCount;
     DEBUG_ASSERT(allChannelBufferSize <= stemBufferCapacity);
     m_pBuffer->process(m_stemBuffer.data(), allChannelBufferSize);
 
@@ -204,7 +217,7 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
         pEngineEffectsManager->processPostFaderInPlace(m_stems[stemIdx].handle(),
                 m_pEffectsManager->getMainHandle(),
                 pOut,
-                bufferSize,
+                processingBufferSize,
                 sampleRate,
                 featureState,
                 m_stemsGainCache[stemIdx],
@@ -215,7 +228,7 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
         // gain) gain changes will yield to audio cracks.
         m_stemsGainCache[stemIdx] = stemGain;
 
-        m_stemVuMeter[stemIdx]->process(pOut, bufferSize);
+        m_stemVuMeter[stemIdx]->process(pOut, processingBufferSize);
 
         // Put back the stem frames into the steam buffer (LRLR -> LR......LR......)
         SampleUtil::insertStereoToMulti(
