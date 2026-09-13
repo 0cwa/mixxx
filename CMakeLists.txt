@@ -2918,6 +2918,8 @@ if(BUILD_TESTING)
     #TODO: write useful tests for refactored effects system
     #src/test/effectchainslottest.cpp
     src/test/enginebufferscalelineartest.cpp
+    $<$<BOOL:${BUNGEE}>:src/test/enginebufferscalebungeetest.cpp>
+    $<$<BOOL:${BUNGEE}>:src/test/enginebufferbungeetest.cpp>
     src/test/enginebuffertest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp
