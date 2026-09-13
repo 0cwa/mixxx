@@ -1,5 +1,7 @@
 #pragma once
 
+#include <gtest/gtest_prod.h>
+
 #include <QAtomicInt>
 #include <QHash>
 #include <QList>
