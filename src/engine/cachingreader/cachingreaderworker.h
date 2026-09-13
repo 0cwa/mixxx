@@ -200,7 +200,7 @@ class CachingReaderWorker : public EngineWorker {
     TrackPointer m_pNewTrack;
 #endif
 
-    void discardAllPendingRequests();
+    bool discardAllPendingRequests();
     // Publish without spinning when the callback-side FIFO is full. Returns
     // false only during shutdown; an unpublished chunk is returned to the
     // owner in that case.
@@ -208,17 +208,17 @@ class CachingReaderWorker : public EngineWorker {
 
     /// call to be prepare for new tracks
     /// Make sure engine has been stopped before
-    void closeAudioSource();
+    bool closeAudioSource();
 
     /// Internal method to unload a track.
     /// does not emit signals
-    void unloadTrack();
+    bool unloadTrack();
 
     /// Internal method to load a track. Emits trackLoaded when finished.
 #ifdef __STEM__
-    void loadTrack(const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask);
+    bool loadTrack(const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask);
 #else
-    void loadTrack(const TrackPointer& pTrack);
+    bool loadTrack(const TrackPointer& pTrack);
 #endif
 
     ReaderStatusUpdate processReadRequest(
