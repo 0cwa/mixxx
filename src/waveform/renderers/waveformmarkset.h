@@ -80,6 +80,16 @@ class WaveformMarkSet {
 
     void update();
 
+    // Returns the nearest valid, visible marker after playPosition whose
+    // category is enabled. Returns defaultNextMarkPosition when no marker
+    // qualifies.
+    double findNextCountdownMarkPosition(double playPosition,
+            double defaultNextMarkPosition,
+            bool showHotCues,
+            bool showMemoryCues,
+            bool showIntroCues,
+            bool showOutroCues) const;
+
     void setBreadth(float breadth);
 
     void clear() {
