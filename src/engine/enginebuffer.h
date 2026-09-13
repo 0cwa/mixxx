@@ -164,7 +164,11 @@ class EngineBuffer : public EngineObject {
 
     // The process methods all run in the audio callback.
     void process(CSAMPLE* pOut, const std::size_t bufferSize) override;
-    void processSlip(std::size_t bufferSize);
+    void processWithChannelLayout(CSAMPLE* pOut,
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
+    void processSlip(std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
     void postProcessLocalBpm();
     void postProcess(const std::size_t bufferSize);
 
@@ -329,11 +333,16 @@ class EngineBuffer : public EngineObject {
     void addControl(EngineControl* pControl);
 
     void enableIndependentPitchTempoScaling(bool bEnable,
-            const std::size_t bufferSize);
+            const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     void updateIndicators(double rate, std::size_t bufferSize);
 
-    void hintReader(const double rate);
+    void hintReader(const double rate,
+            mixxx::audio::ChannelCount callbackChannelCount);
+
+    bool isScalerLayoutCompatible(const EngineBufferScale* pScale,
+            mixxx::audio::ChannelCount callbackChannelCount) const;
 
     double fractionalPlayposFromAbsolute(mixxx::audio::FramePos position);
 
@@ -343,13 +352,16 @@ class EngineBuffer : public EngineObject {
     // Read one buffer from the current scaler into the crossfade buffer.  Used
     // for transitioning from one scaler to another, or reseeking a scaler
     // to prevent pops.
-    void readToCrossfadeBuffer(const std::size_t bufferSize);
+    bool readToCrossfadeBuffer(const std::size_t bufferSize,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     // Reset buffer playpos and set file playpos.
-    void setNewPlaypos(mixxx::audio::FramePos playpos);
+    void setNewPlaypos(mixxx::audio::FramePos playpos,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     void processSyncRequests();
-    void processSeek(bool paused);
+    void processSeek(bool paused,
+            mixxx::audio::ChannelCount callbackChannelCount);
     // For debugging / testing -- returns true if the previous buffer call resulted in a seek.
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInSyncDisable);
     bool previousBufferSeek() const {
@@ -359,7 +371,8 @@ class EngineBuffer : public EngineObject {
     void notifyTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
     void processTrackLocked(CSAMPLE* pOutput,
             const std::size_t bufferSize,
-            mixxx::audio::SampleRate sampleRate);
+            mixxx::audio::SampleRate sampleRate,
+            mixxx::audio::ChannelCount callbackChannelCount);
 
     // Holds the name of the control group
     const QString m_group;
