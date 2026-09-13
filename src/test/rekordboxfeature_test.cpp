@@ -24,6 +24,7 @@ TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
 
     const QString databasePath = temporaryDirectory.filePath("mixxxdb.sqlite");
     const QString connectionName = QStringLiteral("rekordbox-import-test");
+    bool permissionCheckSkipped = false;
     {
         QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
         database.setDatabaseName(databasePath);
@@ -35,14 +36,17 @@ TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
                 databasePath,
                 QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
         ASSERT_TRUE(database.open());
-        if (QFileInfo(databasePath).isWritable()) {
-            GTEST_SKIP() << "The test runner can write files without write permission bits";
+        permissionCheckSkipped = QFileInfo(databasePath).isWritable();
+        if (!permissionCheckSkipped) {
+            EXPECT_FALSE(mixxx::rekordbox::isWritableDatabase(database));
         }
-        EXPECT_FALSE(mixxx::rekordbox::isWritableDatabase(database));
 
         database.close();
     }
     QSqlDatabase::removeDatabase(connectionName);
+    if (permissionCheckSkipped) {
+        GTEST_SKIP() << "The test runner can write files without write permission bits";
+    }
 }
 
 TEST(RekordboxImportTest, SkipsDanglingPlaylistTrackReferences) {
@@ -85,6 +89,12 @@ TEST(RekordboxImportTest, SkipsDanglingPlaylistTrackReferences) {
         EXPECT_EQ(2, resultQuery.value(2).toInt());
         EXPECT_FALSE(resultQuery.next());
 
+        QSqlQuery invalidRelationQuery(database);
+        ASSERT_TRUE(invalidRelationQuery.exec(
+                "SELECT COUNT(*) FROM rekordbox_playlist_tracks "
+                "WHERE track_id <= 0"));
+        ASSERT_TRUE(invalidRelationQuery.next());
+        EXPECT_EQ(0, invalidRelationQuery.value(0).toInt());
         ASSERT_TRUE(database.commit());
         database.close();
     }
