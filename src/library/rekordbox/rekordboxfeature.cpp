@@ -4,6 +4,8 @@
 #include <rekordbox_anlz.h>
 #include <rekordbox_pdb.h>
 
+#include <QDir>
+#include <QFileInfo>
 #include <QMap>
 #include <QMessageBox>
 #include <QSettings>
@@ -16,6 +18,7 @@
 #include "library/library.h"
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboxconstants.h"
+#include "library/rekordbox/rekordboximport.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
@@ -34,6 +37,32 @@
 
 #define IS_RECORDBOX_DEVICE "::isRecordboxDevice::"
 #define IS_NOT_RECORDBOX_DEVICE "::isNotRecordboxDevice::"
+
+namespace mixxx::rekordbox {
+
+bool isWritableDatabase(const QSqlDatabase& database) {
+    if (!database.isOpen()) {
+        return false;
+    }
+
+    const QString databaseName = database.databaseName();
+    if (databaseName == QStringLiteral(":memory:") ||
+            databaseName.startsWith(QStringLiteral("file::memory:"))) {
+        return true;
+    }
+
+    const QFileInfo databaseFile(databaseName);
+    const QFileInfo databaseDirectory(databaseFile.dir().absolutePath());
+    const bool writable = databaseFile.exists()
+            ? databaseFile.isWritable() && databaseDirectory.isWritable()
+            : databaseDirectory.exists() && databaseDirectory.isWritable();
+    if (!writable) {
+        qWarning() << "Rekordbox import destination is not writable" << databaseName;
+    }
+    return writable;
+}
+
+} // namespace mixxx::rekordbox
 
 namespace {
 
@@ -472,6 +501,10 @@ QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* dev
     VERIFY_OR_DEBUG_ASSERT(database.isOpen()) {
         qDebug() << "Failed to open database for Rekordbox parser."
                  << database.lastError();
+        return QString();
+    }
+
+    if (!mixxx::rekordbox::isWritableDatabase(database)) {
         return QString();
     }
 
