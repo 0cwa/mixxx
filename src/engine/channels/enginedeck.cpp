@@ -12,6 +12,7 @@
 #include "moc_enginedeck.cpp"
 #include "track/track.h"
 #include "util/assert.h"
+#include "util/defs.h"
 #include "util/sample.h"
 
 EngineDeck::EngineDeck(
@@ -26,6 +27,9 @@ EngineDeck::EngineDeck(
                   primaryDeck),
           m_pConfig(pConfig),
 #ifdef __STEM__
+          m_stemBuffer(primaryDeck
+                          ? kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount
+                          : 0),
           m_stemClonedState(false),
 #endif
           m_pInputConfigured(new ControlObject(ConfigKey(getGroup(), "input_configured"))),
@@ -129,18 +133,28 @@ void EngineDeck::addStemHandle(const ChannelHandleAndGroup& stemHandleGroup) {
 
 void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
     mixxx::audio::ChannelCount chCount = m_pBuffer->getChannelCount();
-    VERIFY_OR_DEBUG_ASSERT(m_stems.size() <= chCount &&
-            m_stemMute.size() <= chCount && m_stemGain.size() <= chCount &&
-            m_stemVuMeter.size() <= chCount) {
+    const unsigned int stemCount =
+            chCount / mixxx::kEngineChannelOutputCount;
+    VERIFY_OR_DEBUG_ASSERT(stemCount <= m_stems.size() &&
+            stemCount <= m_stemMute.size() && stemCount <= m_stemGain.size() &&
+            stemCount <= m_stemVuMeter.size()) {
         return;
     };
     mixxx::audio::SampleRate sampleRate = mixxx::audio::SampleRate::fromDouble(m_sampleRate.get());
-    unsigned int stemCount = chCount / mixxx::kEngineChannelOutputCount;
     SINT numFrames = bufferSize / mixxx::kEngineChannelOutputCount;
-    std::size_t allChannelBufferSize = bufferSize * stemCount;
-    if (m_stemBuffer.size() < static_cast<SINT>(allChannelBufferSize)) {
-        m_stemBuffer = mixxx::SampleBuffer(allChannelBufferSize);
+    const std::size_t stemBufferCapacity =
+            static_cast<std::size_t>(m_stemBuffer.size());
+    DEBUG_ASSERT(stemCount > 0);
+    if (stemCount == 0 || bufferSize > stemBufferCapacity / stemCount) {
+        // The stem scratch buffer is prepared for the largest engine callback
+        // in the constructor. Never allocate or use a partial buffer from the
+        // audio callback if an invalidly large callback reaches this path.
+        DEBUG_ASSERT(false);
+        SampleUtil::clear(pOut, bufferSize);
+        return;
     }
+    const std::size_t allChannelBufferSize = bufferSize * stemCount;
+    DEBUG_ASSERT(allChannelBufferSize <= stemBufferCapacity);
     m_pBuffer->process(m_stemBuffer.data(), allChannelBufferSize);
 
     CSAMPLE* pIn = m_stemBuffer.data();

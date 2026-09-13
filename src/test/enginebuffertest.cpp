@@ -15,6 +15,7 @@
 #include "test/mixxxtest.h"
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
+#include "util/defs.h"
 
 // In case any of the test in this file fail. You can use the audioplot.py tool
 // in the tools folder to visually compare the results of the enginebuffer
@@ -37,6 +38,13 @@ TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
     EXPECT_DOUBLE_EQ(0.5, pEngineBuffer->fractionalPlayposFromAbsolute(50.0));
     EXPECT_DOUBLE_EQ(1.0, pEngineBuffer->fractionalPlayposFromAbsolute(101.0));
 }
+#ifdef __STEM__
+TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
+    EXPECT_EQ(m_pChannel1->m_stemBuffer.size(),
+            static_cast<SINT>(kMaxEngineFrames *
+                    mixxx::kMaxEngineChannelInputCount));
+}
+#endif
 
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,
