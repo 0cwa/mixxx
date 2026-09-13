@@ -10,12 +10,14 @@
 #include <QString>
 #include <QTextCodec>
 #include <QtDebug>
+#include <algorithm>
 
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboxconstants.h"
+#include "library/rekordbox/rekordboximport.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
@@ -835,25 +837,39 @@ void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
     transaction.commit();
 }
 
-void setHotCue(TrackPointer track,
+} // anonymous namespace
+
+namespace mixxx::rekordbox {
+
+void importMemoryCue(TrackPointer track,
+        mixxx::audio::FramePos startPosition,
+        mixxx::audio::FramePos endPosition,
+        const QString& label,
+        mixxx::RgbColor::optional_t color) {
+    const mixxx::CueType type = endPosition.isValid()
+            ? mixxx::CueType::Loop
+            : mixxx::CueType::Memory;
+    CuePointer pCue = track->createAndAddCue(
+            type,
+            Cue::kNoHotCue,
+            startPosition,
+            endPosition);
+    pCue->setLabel(label);
+    if (color) {
+        pCue->setColor(*color);
+    }
+}
+
+void importHotCue(TrackPointer track,
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
         int id,
         const QString& label,
         mixxx::RgbColor::optional_t color) {
-    CuePointer pCue;
-    const QList<CuePointer> cuePoints = track->getCuePoints();
-    for (const CuePointer& trackCue : cuePoints) {
-        if (trackCue->getHotCue() == id) {
-            pCue = trackCue;
-            break;
-        }
-    }
-
-    mixxx::CueType type = mixxx::CueType::HotCue;
-    if (endPosition.isValid()) {
-        type = mixxx::CueType::Loop;
-    }
+    CuePointer pCue = track->findHotcueByIndex(id);
+    const mixxx::CueType type = endPosition.isValid()
+            ? mixxx::CueType::Loop
+            : mixxx::CueType::HotCue;
 
     if (pCue) {
         pCue->setStartAndEndPosition(startPosition, endPosition);
@@ -869,6 +885,10 @@ void setHotCue(TrackPointer track,
         pCue->setColor(*color);
     }
 }
+
+} // namespace mixxx::rekordbox
+
+namespace {
 
 void readAnalyze(TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
@@ -889,8 +909,6 @@ void readAnalyze(TrackPointer track,
     const double sampleRateKhz = sampleRate / 1000.0;
 
     QList<memory_cue_loop_t> memoryCuesAndLoops;
-    int lastHotCueIndex = 0;
-
     for (const auto& section : *anlz.sections()) {
         switch (section->fourcc()) {
         case rekordbox_anlz_t::SECTION_TAGS_BEAT_GRID: {
@@ -965,10 +983,7 @@ void readAnalyze(TrackPointer track,
                 } break;
                 case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
                     int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
-                    if (hotCueIndex > lastHotCueIndex) {
-                        lastHotCueIndex = hotCueIndex;
-                    }
-                    setHotCue(
+                    mixxx::rekordbox::importHotCue(
                             track,
                             position,
                             mixxx::audio::kInvalidFramePos,
@@ -1031,10 +1046,7 @@ void readAnalyze(TrackPointer track,
                 } break;
                 case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
                     int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
-                    if (hotCueIndex > lastHotCueIndex) {
-                        lastHotCueIndex = hotCueIndex;
-                    }
-                    setHotCue(track,
+                    mixxx::rekordbox::importHotCue(track,
                             position,
                             mixxx::audio::kInvalidFramePos,
                             hotCueIndex,
@@ -1056,7 +1068,7 @@ void readAnalyze(TrackPointer track,
     }
 
     if (memoryCuesAndLoops.size() > 0) {
-        std::sort(memoryCuesAndLoops.begin(),
+        std::stable_sort(memoryCuesAndLoops.begin(),
                 memoryCuesAndLoops.end(),
                 [](const memory_cue_loop_t& a, const memory_cue_loop_t& b)
                         -> bool { return a.startPosition < b.startPosition; });
@@ -1073,18 +1085,22 @@ void readAnalyze(TrackPointer track,
                 // Set first chronological memory cue as Mixxx MainCue
                 track->setMainCuePosition(memoryCueOrLoop.startPosition);
                 CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
-                pMainCue->setLabel(memoryCueOrLoop.comment);
-                pMainCue->setColor(*memoryCueOrLoop.color);
+                if (pMainCue) {
+                    pMainCue->setLabel(memoryCueOrLoop.comment);
+                    if (memoryCueOrLoop.color) {
+                        pMainCue->setColor(*memoryCueOrLoop.color);
+                    }
+                }
                 mainCueFound = true;
             } else {
-                // Mixxx v2.4 will feature multiple loops, so these saved here will be usable
-                // For 2.3, Mixxx treats them as hotcues and the first one will be loaded as the single loop Mixxx supports
-                lastHotCueIndex++;
-                setHotCue(
+                // Mixxx v2.4 will feature multiple loops, so these saved
+                // here will be usable For 2.3, Mixxx treats them as hotcues
+                // and the first one will be loaded as the single loop Mixxx
+                // supports
+                mixxx::rekordbox::importMemoryCue(
                         track,
                         memoryCueOrLoop.startPosition,
                         memoryCueOrLoop.endPosition,
-                        lastHotCueIndex,
                         memoryCueOrLoop.comment,
                         memoryCueOrLoop.color);
             }
