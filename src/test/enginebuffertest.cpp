@@ -18,7 +18,6 @@
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
 #include "util/defs.h"
-#include "util/sample.h"
 
 #ifndef GTEST_FLAG_SET
 // Available in GoogleTest v1.12.0.
@@ -60,10 +59,7 @@ TrackPointer createStemTrack(int channelCount) {
     return pTrack;
 }
 
-void fillStemBuffer(
-        mixxx::SampleBuffer* pBuffer,
-        int channelCount,
-        std::size_t bufferSize) {
+void fillStemBuffer(CSAMPLE* pBuffer, int channelCount, std::size_t bufferSize) {
     const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
     const std::size_t numFrames = bufferSize / mixxx::kEngineChannelOutputCount;
     for (std::size_t frame = 0; frame < numFrames; ++frame) {
@@ -71,11 +67,44 @@ void fillStemBuffer(
             const auto sample = static_cast<CSAMPLE>(stemIdx + 1);
             const std::size_t offset =
                     frame * channelCount + stemIdx * mixxx::kEngineChannelOutputCount;
-            pBuffer->data()[offset] = sample;
-            pBuffer->data()[offset + 1] = sample;
+            pBuffer[offset] = sample;
+            pBuffer[offset + 1] = sample;
         }
     }
 }
+
+void fillStemBuffer(
+        mixxx::SampleBuffer* pBuffer,
+        int channelCount,
+        std::size_t bufferSize) {
+    fillStemBuffer(pBuffer->data(), channelCount, bufferSize);
+}
+
+class StemTestScaler final : public MockScaler {
+  public:
+    void clear() override {
+        m_scaleBufferCalls = 0;
+    }
+
+    void setChannelCount(int channelCount) {
+        m_channelCount = channelCount;
+    }
+
+    double scaleBuffer(CSAMPLE* pOutput, SINT bufferSize) override {
+        ++m_scaleBufferCalls;
+        fillStemBuffer(pOutput, m_channelCount, bufferSize);
+        const int frameCount = bufferSize / m_channelCount;
+        return frameCount;
+    }
+
+    int getScaleBufferCalls() const {
+        return m_scaleBufferCalls;
+    }
+
+  private:
+    int m_channelCount = mixxx::kEngineChannelOutputCount;
+    int m_scaleBufferCalls = 0;
+};
 } // namespace
 
 TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
@@ -153,23 +182,33 @@ TEST_F(EngineBufferTest, StemProcessRejectsStemGainCacheMismatch) {
 }
 
 TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
+    addStemHandles();
+    for (auto& pGain : m_pChannel1->m_stemGain) {
+        pGain->set(1.0);
+    }
+    for (auto& pMute : m_pChannel1->m_stemMute) {
+        pMute->set(0.0);
+    }
+
     constexpr std::size_t kBufferSize = 16;
-    mixxx::SampleBuffer stemBuffer(kBufferSize * mixxx::kMaxSupportedStems);
+    StemTestScaler scaler;
+    m_pChannel1->getEngineBuffer()->setScalerForTest(&scaler, &scaler);
     std::array<CSAMPLE, kBufferSize> output;
     for (const int channelCount : {4, 6, 8}) {
         const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
-        stemBuffer.fill(CSAMPLE_ZERO);
-        fillStemBuffer(&stemBuffer, channelCount, kBufferSize);
+        m_pChannel1->getEngineBuffer()->loadFakeTrack(
+                createStemTrack(channelCount), true);
+        scaler.setChannelCount(channelCount);
+        scaler.clear();
         std::fill(output.begin(), output.end(), 1.0f);
-        SampleUtil::mixMultichannelToStereo(
-                output.data(),
-                stemBuffer.data(),
-                kBufferSize / mixxx::kEngineChannelOutputCount,
-                mixxx::audio::ChannelCount(channelCount));
+        m_pChannel1->processStem(output.data(), output.size());
 
         const auto expectedSample = static_cast<CSAMPLE>(stemCount * (stemCount + 1) / 2);
+        EXPECT_EQ(scaler.getScaleBufferCalls(), 1) << channelCount;
         EXPECT_THAT(output, ::testing::Each(expectedSample)) << channelCount;
     }
+    m_pChannel1->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl1, m_pMockScaleKeylock1);
 }
 
 TEST_F(EngineBufferTest, StemProcessClearsOddOutputSentinel) {
