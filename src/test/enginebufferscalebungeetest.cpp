@@ -62,24 +62,60 @@ class ReadAheadManagerMock : public ReadAheadManager {
     NextSamplesResult getNextSamplesWithRetry(double dRate,
             CSAMPLE* buffer,
             SINT requested_samples,
-            mixxx::audio::ChannelCount channelCount) override {
+            mixxx::audio::ChannelCount channelCount,
+            RetryState& retryState) override {
+        const SINT sourcePosition = m_iReadPosition;
         const int retryCall = m_iRetryReadCallCount++;
-        m_retryReadSourcePositions.push_back(m_iReadPosition);
+        m_retryReadSourcePositions.push_back(sourcePosition);
         m_retryReadRequestedSamples.push_back(requested_samples);
+
+        if (m_pPendingRetryState) {
+            EXPECT_EQ(m_pPendingRetryState, &retryState);
+            if (m_pPendingRetryState != &retryState) {
+                return {0, true};
+            }
+            EXPECT_TRUE(retryState.active);
+            if (!retryState.active) {
+                return {0, true};
+            }
+            m_bRetryStateWasReused = true;
+        }
+
+        if (retryState.active) {
+            EXPECT_EQ(requested_samples, retryState.requestSamples);
+            EXPECT_EQ(channelCount.value(), retryState.channelCount.value());
+            EXPECT_EQ(sourcePosition, m_pendingRetryReadPosition);
+            EXPECT_DOUBLE_EQ(dRate, m_pendingRetryRate);
+            retryState.active = false;
+            m_pPendingRetryState = nullptr;
+            return {getNextSamples(dRate, buffer, requested_samples, channelCount),
+                    false};
+        }
+
         if (retryCall == m_retryPendingCall) {
+            retryState.active = true;
+            retryState.requestSamples = requested_samples;
+            retryState.requestedSamples = requested_samples;
+            retryState.channelCount = channelCount;
+            m_pendingRetryReadPosition = sourcePosition;
+            m_pendingRetryRate = dRate;
+            m_pPendingRetryState = &retryState;
             return {0, true};
         }
+
         return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
     }
 
     NextSamplesResult getNextSamplesWithRetry(double dRate,
             CSAMPLE* buffer,
             SINT requested_samples,
-            mixxx::audio::ChannelCount channelCount,
-            RetryState& retryState) override {
-        Q_UNUSED(retryState);
-        return getNextSamplesWithRetry(
-                dRate, buffer, requested_samples, channelCount);
+            mixxx::audio::ChannelCount channelCount) override {
+        ADD_FAILURE() << "Bungee must use caller-owned RetryState";
+        Q_UNUSED(dRate);
+        Q_UNUSED(buffer);
+        Q_UNUSED(requested_samples);
+        Q_UNUSED(channelCount);
+        return {0, true};
     }
 
     void cancelPendingRetry() override {
@@ -89,6 +125,10 @@ class ReadAheadManagerMock : public ReadAheadManager {
 
     void cancelPendingRetry(RetryState& retryState) override {
         ++m_cancelPendingRetryCallCount;
+        if (m_pPendingRetryState) {
+            EXPECT_EQ(m_pPendingRetryState, &retryState);
+            m_pPendingRetryState = nullptr;
+        }
         ReadAheadManager::cancelPendingRetry(retryState);
     }
 
@@ -127,6 +167,10 @@ class ReadAheadManagerMock : public ReadAheadManager {
         return m_cancelPendingRetryCallCount;
     }
 
+    bool retryStateWasReused() const {
+        return m_bRetryStateWasReused;
+    }
+
     MOCK_METHOD4(getNextSamples,
             SINT(double dRate,
                     CSAMPLE* buffer,
@@ -141,6 +185,10 @@ class ReadAheadManagerMock : public ReadAheadManager {
     int m_iRetryReadCallCount{0};
     int m_retryPendingCall{-1};
     int m_cancelPendingRetryCallCount{0};
+    SINT m_pendingRetryReadPosition{0};
+    double m_pendingRetryRate{0.0};
+    RetryState* m_pPendingRetryState{nullptr};
+    bool m_bRetryStateWasReused{false};
     std::vector<SINT> m_retryReadSourcePositions;
     std::vector<SINT> m_retryReadRequestedSamples;
 };
@@ -499,6 +547,8 @@ TEST_F(EngineBufferScaleBungeeTest,
     ASSERT_GE(retrySizes.size(), 3u);
     EXPECT_EQ(retryStarts[1], retryStarts[2]);
     EXPECT_EQ(retrySizes[1], retrySizes[2]);
+    EXPECT_TRUE(m_pReadAheadMock->retryStateWasReused())
+            << "The retry must use the same caller-owned RetryState instance.";
     EXPECT_GT(framesRead, 0.0);
 
     SampleUtil::free(pOutput);
@@ -531,6 +581,129 @@ TEST_F(EngineBufferScaleBungeeTest, ClearCompletesRetryPendingGrainSafely) {
     EXPECT_GT(framesRead, 0.0);
 
     SampleUtil::free(pOutput);
+}
+
+TEST_F(EngineBufferScaleBungeeTest,
+        PendingRetryWithPitchChangePreservesPhaseAndStemChannelContinuity) {
+    constexpr SINT kFeedFrames = 1 << 16;
+    constexpr SINT kOutputFramesBeforeRetry = 1024;
+    constexpr SINT kOutputFramesInPendingGrain = 512;
+    constexpr SINT kChannelCount =
+            static_cast<SINT>(mixxx::audio::ChannelCount::stem());
+    constexpr SINT kOutputSamplesBeforeRetry =
+            kOutputFramesBeforeRetry * kChannelCount;
+    constexpr SINT kOutputSamplesInPendingGrain =
+            kOutputFramesInPendingGrain * kChannelCount;
+
+    std::vector<CSAMPLE> readData(kFeedFrames * kChannelCount);
+    for (SINT frame = 0; frame < kFeedFrames; ++frame) {
+        const double phase = 0.011 * frame + 0.0000005 * frame * frame;
+        for (SINT channel = 0; channel < kChannelCount; ++channel) {
+            readData[frame * kChannelCount + channel] = static_cast<CSAMPLE>(
+                    0.3 * std::sin(phase * (1.0 + 0.01 * channel) + 0.23 * channel) +
+                    0.04 * channel);
+        }
+    }
+
+    StrictMock<ReadAheadManagerMock> referenceReadAhead;
+    EngineBufferScaleBungee referenceScaler(&referenceReadAhead);
+    m_pScaler->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount::stem());
+    referenceScaler.setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount::stem());
+
+    m_pReadAheadMock->setReadBuffer(readData.data(), readData.size());
+    referenceReadAhead.setReadBuffer(readData.data(), readData.size());
+    m_pReadAheadMock->setRetryPendingCall(1);
+
+    EXPECT_CALL(*m_pReadAheadMock, getNextSamples(_, _, _, _))
+            .WillRepeatedly(Invoke(
+                    m_pReadAheadMock, &ReadAheadManagerMock::getNextSamplesFake));
+    EXPECT_CALL(referenceReadAhead, getNextSamples(_, _, _, _))
+            .WillRepeatedly(Invoke(
+                    &referenceReadAhead, &ReadAheadManagerMock::getNextSamplesFake));
+
+    auto setPitch = [](EngineBufferScaleBungee* pScaler, double pitchRatio) {
+        double tempoRatio = 1.0;
+        pScaler->setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+    };
+    setPitch(m_pScaler, 1.0);
+    setPitch(&referenceScaler, 1.0);
+
+    std::vector<CSAMPLE> referenceFirst(kOutputSamplesBeforeRetry);
+    std::vector<CSAMPLE> retriedFirst(kOutputSamplesBeforeRetry);
+    std::fill(retriedFirst.begin(), retriedFirst.end(), 0.125f);
+    ASSERT_DOUBLE_EQ(kOutputFramesBeforeRetry,
+            referenceScaler.scaleBuffer(
+                    referenceFirst.data(), kOutputSamplesBeforeRetry));
+    ASSERT_DOUBLE_EQ(kOutputFramesInPendingGrain,
+            m_pScaler->scaleBuffer(retriedFirst.data(), kOutputSamplesBeforeRetry));
+
+    const auto& retryStarts = m_pReadAheadMock->retryReadSourcePositions();
+    const auto& retrySizes = m_pReadAheadMock->retryReadRequestedSamples();
+    const auto& referenceStarts = referenceReadAhead.retryReadSourcePositions();
+    // A pending read stops this callback before the retry is attempted. The
+    // next scaleBuffer call below performs the third retry-aware request.
+    ASSERT_EQ(2u, retryStarts.size());
+    ASSERT_EQ(2u, retrySizes.size());
+    ASSERT_EQ(2u, referenceStarts.size());
+    EXPECT_EQ(referenceStarts[0], retryStarts[0]);
+    EXPECT_EQ(referenceStarts[1], retryStarts[1]);
+
+    for (SINT sample = 0;
+            sample < kOutputFramesInPendingGrain * kChannelCount;
+            ++sample) {
+        EXPECT_NEAR(referenceFirst[sample], retriedFirst[sample], 1e-6)
+                << "Mismatch before the pending grain at sample " << sample;
+    }
+    for (SINT sample = kOutputSamplesInPendingGrain;
+            sample < kOutputSamplesBeforeRetry;
+            ++sample) {
+        EXPECT_FLOAT_EQ(0.0f, retriedFirst[sample])
+                << "scaleBuffer must not expose stale samples after a retry "
+                   "pending grain at sample "
+                << sample;
+    }
+
+    setPitch(m_pScaler, 1.5);
+    setPitch(&referenceScaler, 1.5);
+
+    std::vector<CSAMPLE> retriedPending(kOutputSamplesInPendingGrain);
+    std::vector<CSAMPLE> referenceNew(kOutputSamplesInPendingGrain);
+    ASSERT_DOUBLE_EQ(kOutputFramesInPendingGrain,
+            m_pScaler->scaleBuffer(
+                    retriedPending.data(), kOutputSamplesInPendingGrain));
+    ASSERT_DOUBLE_EQ(kOutputFramesInPendingGrain,
+            referenceScaler.scaleBuffer(
+                    referenceNew.data(), kOutputSamplesInPendingGrain));
+
+    ASSERT_EQ(3u, retryStarts.size());
+    ASSERT_EQ(3u, retrySizes.size());
+    EXPECT_EQ(retryStarts[1], retryStarts[2])
+            << "A pending retry must request the same source range without "
+               "advancing the read cursor.";
+    EXPECT_EQ(retrySizes[1], retrySizes[2]);
+    EXPECT_TRUE(m_pReadAheadMock->retryStateWasReused())
+            << "The retry must use the same caller-owned RetryState instance.";
+
+    for (SINT sample = 0; sample < kOutputSamplesInPendingGrain; ++sample) {
+        EXPECT_NEAR(referenceFirst[kOutputSamplesInPendingGrain + sample],
+                retriedPending[sample],
+                1e-6)
+                << "The pitch change must not alter the already-specified "
+                   "pending grain at sample "
+                << sample;
+    }
+
+    std::vector<CSAMPLE> retriedNew(kOutputSamplesInPendingGrain);
+    ASSERT_DOUBLE_EQ(kOutputFramesInPendingGrain,
+            m_pScaler->scaleBuffer(retriedNew.data(), kOutputSamplesInPendingGrain));
+    for (SINT sample = 0; sample < kOutputSamplesInPendingGrain; ++sample) {
+        EXPECT_NEAR(referenceNew[sample], retriedNew[sample], 1e-6)
+                << "The new pitch must apply at the next grain boundary at "
+                   "sample "
+                << sample;
+    }
 }
 
 TEST_F(EngineBufferScaleBungeeTest, ReusesBufferedInputAcrossOverlappingGrains) {
@@ -720,11 +893,12 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
             CSAMPLE* buffer,
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount) override {
-        const int retryCall = m_iRetryReadCallCount++;
-        if (retryCall == m_iRetryPendingCall) {
-            return {0, true};
-        }
-        return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
+        ADD_FAILURE() << "Bungee must use caller-owned RetryState";
+        Q_UNUSED(dRate);
+        Q_UNUSED(buffer);
+        Q_UNUSED(requested_samples);
+        Q_UNUSED(channelCount);
+        return {0, true};
     }
 
     NextSamplesResult getNextSamplesWithRetry(double dRate,
@@ -732,9 +906,40 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount,
             RetryState& retryState) override {
-        Q_UNUSED(retryState);
-        return getNextSamplesWithRetry(
-                dRate, buffer, requested_samples, channelCount);
+        const SINT sourcePosition = m_iReadPosition;
+        const int retryCall = m_iRetryReadCallCount++;
+        if (m_pPendingRetryState) {
+            EXPECT_EQ(m_pPendingRetryState, &retryState);
+            if (m_pPendingRetryState != &retryState) {
+                return {0, true};
+            }
+            EXPECT_TRUE(retryState.active);
+            if (!retryState.active) {
+                return {0, true};
+            }
+            m_bRetryStateWasReused = true;
+        }
+        if (retryState.active) {
+            EXPECT_EQ(requested_samples, retryState.requestSamples);
+            EXPECT_EQ(channelCount.value(), retryState.channelCount.value());
+            EXPECT_EQ(sourcePosition, m_pendingRetryReadPosition);
+            EXPECT_DOUBLE_EQ(dRate, m_pendingRetryRate);
+            retryState.active = false;
+            m_pPendingRetryState = nullptr;
+            return {getNextSamples(dRate, buffer, requested_samples, channelCount),
+                    false};
+        }
+        if (retryCall == m_iRetryPendingCall) {
+            retryState.active = true;
+            retryState.requestSamples = requested_samples;
+            retryState.requestedSamples = requested_samples;
+            retryState.channelCount = channelCount;
+            m_pendingRetryReadPosition = sourcePosition;
+            m_pendingRetryRate = dRate;
+            m_pPendingRetryState = &retryState;
+            return {0, true};
+        }
+        return {getNextSamples(dRate, buffer, requested_samples, channelCount), false};
     }
 
     void setReadBuffer(std::vector<CSAMPLE> buffer) {
@@ -764,6 +969,10 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
         return m_readCalls;
     }
 
+    bool retryStateWasReused() const {
+        return m_bRetryStateWasReused;
+    }
+
     void setReadSampleCounts(std::vector<SINT> readSampleCounts) {
         m_readSampleCounts = std::move(readSampleCounts);
         m_iReadSampleCountIndex = 0;
@@ -786,6 +995,10 @@ class BufferWindowReadAheadManagerMock : public ReadAheadManager {
     int m_iReadCallCount = 0;
     int m_iRetryReadCallCount = 0;
     int m_iRetryPendingCall = -1;
+    SINT m_pendingRetryReadPosition = 0;
+    double m_pendingRetryRate = 0.0;
+    RetryState* m_pPendingRetryState = nullptr;
+    bool m_bRetryStateWasReused = false;
     std::vector<ReadCall> m_readCalls;
 };
 
@@ -844,6 +1057,10 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
         return m_pScaler->m_request.position;
     }
 
+    double requestSpeed() const {
+        return m_pScaler->m_request.speed;
+    }
+
     SINT outputChunkConsumed() const {
         return m_pScaler->m_outputChunkConsumed;
     }
@@ -868,36 +1085,89 @@ class EngineBufferScaleBungeeBufferWindowTest : public MixxxTest {
 
 TEST_F(EngineBufferScaleBungeeBufferWindowTest,
         RetryPendingGrainKeepsOldRequestUntilBoundary) {
+    constexpr double kInitialTempo = 1.0;
+    constexpr double kChangedTempo = 3.0;
     constexpr SINT kFeedFrames = 1 << 16;
     constexpr SINT kFirstOutputSamples = 2048;
     constexpr SINT kRetryOutputSamples = 1024;
+    constexpr SINT kFirstOutputFrames = kFirstOutputSamples / 2;
+    constexpr SINT kRetryOutputFrames = kRetryOutputSamples / 2;
 
-    m_pReadAhead->setReadBuffer(
-            std::vector<CSAMPLE>(kFeedFrames * 2, 0.25f));
+    std::vector<CSAMPLE> readData(kFeedFrames * 2);
+    for (size_t sample = 0; sample < readData.size(); ++sample) {
+        readData[sample] = static_cast<CSAMPLE>(
+                (sample % 257) / 257.0f * 2.0f - 1.0f);
+    }
+
+    BufferWindowReadAheadManagerMock referenceReadAhead;
+    referenceReadAhead.setReadBuffer(readData);
+    EngineBufferScaleBungee referenceScaler(&referenceReadAhead);
+    referenceScaler.setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount::stereo());
+
+    m_pReadAhead->setReadBuffer(std::move(readData));
     m_pReadAhead->setRetryPendingCall(1);
 
-    double tempoRatio = 1.0;
+    double tempoRatio = kInitialTempo;
     double pitchRatio = 1.0;
     m_pScaler->setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+    tempoRatio = kInitialTempo;
+    referenceScaler.setScaleParameters(1.0, &tempoRatio, &pitchRatio);
 
     std::vector<CSAMPLE> firstOutput(kFirstOutputSamples);
-    EXPECT_DOUBLE_EQ(512.0,
+    std::vector<CSAMPLE> referenceFirst(kFirstOutputSamples);
+    ASSERT_DOUBLE_EQ(kRetryOutputFrames,
             m_pScaler->scaleBuffer(firstOutput.data(), kFirstOutputSamples));
+    ASSERT_DOUBLE_EQ(kFirstOutputFrames,
+            referenceScaler.scaleBuffer(
+                    referenceFirst.data(), kFirstOutputSamples));
     ASSERT_TRUE(inputRetryPending());
     ASSERT_DOUBLE_EQ(512.0, requestPosition());
+    EXPECT_DOUBLE_EQ(kInitialTempo, requestSpeed());
 
-    tempoRatio = 3.0;
+    tempoRatio = kChangedTempo;
     m_pScaler->setScaleParameters(1.0, &tempoRatio, &pitchRatio);
+    tempoRatio = kChangedTempo;
+    referenceScaler.setScaleParameters(1.0, &tempoRatio, &pitchRatio);
 
     std::vector<CSAMPLE> retryOutput(kRetryOutputSamples);
-    EXPECT_DOUBLE_EQ(512.0,
+    ASSERT_DOUBLE_EQ(kRetryOutputFrames,
             m_pScaler->scaleBuffer(retryOutput.data(), kRetryOutputSamples));
     EXPECT_FALSE(inputRetryPending());
     EXPECT_DOUBLE_EQ(1024.0, requestPosition());
+    EXPECT_DOUBLE_EQ(kInitialTempo, requestSpeed());
+    EXPECT_TRUE(m_pReadAhead->retryStateWasReused());
+
+    for (SINT sample = 0; sample < kRetryOutputSamples; ++sample) {
+        EXPECT_NEAR(referenceFirst[kRetryOutputSamples + sample],
+                retryOutput[sample],
+                1e-6)
+                << "The pending grain must retain its original request at sample "
+                << sample;
+    }
 
     std::vector<CSAMPLE> nextOutput(kRetryOutputSamples);
-    EXPECT_DOUBLE_EQ(1536.0,
+    std::vector<CSAMPLE> referenceNext(kRetryOutputSamples);
+    ASSERT_DOUBLE_EQ(kChangedTempo * kRetryOutputFrames,
             m_pScaler->scaleBuffer(nextOutput.data(), kRetryOutputSamples));
+    ASSERT_DOUBLE_EQ(kChangedTempo * kRetryOutputFrames,
+            referenceScaler.scaleBuffer(
+                    referenceNext.data(), kRetryOutputSamples));
+    EXPECT_DOUBLE_EQ(kChangedTempo, requestSpeed());
+
+    const auto& readCalls = m_pReadAhead->readCalls();
+    // readCalls records successful underlying reads. The pending invocation
+    // is represented by the RetryState and is not an entry in this vector.
+    ASSERT_EQ(3u, readCalls.size());
+    EXPECT_DOUBLE_EQ(kInitialTempo, readCalls[0].rate);
+    EXPECT_DOUBLE_EQ(kInitialTempo, readCalls[1].rate);
+    EXPECT_DOUBLE_EQ(kChangedTempo, readCalls[2].rate);
+
+    for (SINT sample = 0; sample < kRetryOutputSamples; ++sample) {
+        EXPECT_NEAR(referenceNext[sample], nextOutput[sample], 1e-6)
+                << "The next grain must use the changed tempo at sample "
+                << sample;
+    }
 }
 
 TEST(EngineBufferScaleBungeePlaypositionAccountingTest,
