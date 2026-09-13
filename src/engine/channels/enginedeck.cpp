@@ -132,12 +132,24 @@ void EngineDeck::addStemHandle(const ChannelHandleAndGroup& stemHandleGroup) {
 }
 
 void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
+    // EngineMixer::process() provides a buffer of at most kMaxEngineSamples
+    // samples. Do not clear beyond that established output-buffer contract.
+    DEBUG_ASSERT(bufferSize <= kMaxEngineSamples);
+    if (bufferSize > kMaxEngineSamples) {
+        return;
+    }
+
     mixxx::audio::ChannelCount chCount = m_pBuffer->getChannelCount();
+    VERIFY_OR_DEBUG_ASSERT(chCount % mixxx::kEngineChannelOutputCount == 0) {
+        SampleUtil::clear(pOut, bufferSize);
+        return;
+    }
     const unsigned int stemCount =
             chCount / mixxx::kEngineChannelOutputCount;
     VERIFY_OR_DEBUG_ASSERT(stemCount <= m_stems.size() &&
             stemCount <= m_stemMute.size() && stemCount <= m_stemGain.size() &&
             stemCount <= m_stemVuMeter.size()) {
+        SampleUtil::clear(pOut, bufferSize);
         return;
     };
     mixxx::audio::SampleRate sampleRate = mixxx::audio::SampleRate::fromDouble(m_sampleRate.get());
