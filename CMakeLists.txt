@@ -4807,16 +4807,19 @@ if(BUNGEE)
   find_package(Bungee REQUIRED)
   target_link_libraries(mixxx-lib PUBLIC Bungee::Bungee)
   target_compile_definitions(mixxx-lib PUBLIC __BUNGEE__)
+
   if(QML)
     target_link_libraries(mixxx-qml-lib PRIVATE Bungee::Bungee)
     target_compile_definitions(mixxx-qml-lib PUBLIC __BUNGEE__)
   endif()
+
   target_sources(
     mixxx-lib
     PRIVATE src/engine/bufferscalers/enginebufferscalebungee.cpp
   )
 endif()
 
+# SndFile
 # SndFile
 find_package(SndFile REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE SndFile::sndfile)
