@@ -294,7 +294,7 @@ QString getText(rekordbox_pdb_t::device_sql_string_t* deviceString) {
         rekordbox_pdb_t::device_sql_long_ascii_t* longAsciiString =
                 static_cast<rekordbox_pdb_t::device_sql_long_ascii_t*>(deviceString->body());
         text = QString::fromStdString(longAsciiString->text());
-    } else if (instanceof <rekordbox_pdb_t::device_sql_long_utf16le_t>(deviceString->body())) {
+    } else if (instanceof<rekordbox_pdb_t::device_sql_long_utf16le_t>(deviceString->body())) {
         rekordbox_pdb_t::device_sql_long_utf16le_t* longUtf16leString =
                 static_cast<rekordbox_pdb_t::device_sql_long_utf16le_t*>(deviceString->body());
         text = fromUtf16LeString(longUtf16leString->text());
