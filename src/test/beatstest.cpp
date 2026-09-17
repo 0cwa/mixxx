@@ -24,7 +24,8 @@ const auto kConstTempoBeats = Beats(
         kStartPosition,
         kBpm,
         kSampleRate,
-        QString());
+        QString(),
+        0);
 
 // Create beats with 8 beats at 120 BPM, then 16 beats at 60 Bpm, followed by 120 BPM.
 const auto kNonConstTempoBeats = Beats(
@@ -35,7 +36,8 @@ const auto kNonConstTempoBeats = Beats(
         kStartPosition + 8 * kSampleRate.value() / 2 + 16 * kSampleRate.value(),
         kBpm,
         kSampleRate,
-        QString());
+        QString(),
+        0);
 
 TEST(BeatsTest, ConstTempoGetBpmInRange) {
     EXPECT_DOUBLE_EQ(kBpm.value(),
@@ -577,7 +579,7 @@ TEST(BeatsTest, IteratorFromCeilOvershoot) {
     const auto bpm = Bpm(60.1);
     constexpr int kBeatOffset = 49;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = beatPos;
 
@@ -592,7 +594,7 @@ TEST(BeatsTest, IteratorFromCeilUndershoot) {
     const auto bpm = Bpm(127.0);
     constexpr int kBeatOffset = 11;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = audio::FramePos(
             std::nextafter(beatPos.value(),
@@ -609,7 +611,7 @@ TEST(BeatsTest, IteratorFromFloorOvershoot) {
     const auto bpm = Bpm(60.1);
     constexpr int kBeatOffset = -7;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = beatPos;
 
@@ -624,7 +626,7 @@ TEST(BeatsTest, IteratorFromFloorUndershoot) {
     const auto bpm = Bpm(60.0);
     constexpr int kBeatOffset = -1;
 
-    const auto beats = Beats(markerPos, bpm, sampleRate, QString());
+    const auto beats = Beats(markerPos, bpm, sampleRate, QString(), 0);
     const auto beatPos = *(beats.cfirstmarker() + kBeatOffset);
     const auto position = audio::FramePos(
             std::nextafter(beatPos.value(),
