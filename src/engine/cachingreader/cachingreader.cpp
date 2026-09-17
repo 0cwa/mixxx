@@ -321,7 +321,7 @@ CachingReader::ReadResult CachingReader::readWithRetry(SINT startSample,
         CSAMPLE* buffer,
         mixxx::audio::ChannelCount channelCount) {
     VERIFY_OR_DEBUG_ASSERT(numSamples >= 0 &&
-            static_cast<size_t>(numSamples) <= m_retryReadBuffer.size()) {
+            numSamples <= m_retryReadBuffer.size()) {
         return ReadResult::UNAVAILABLE;
     }
     VERIFY_OR_DEBUG_ASSERT(buffer) {
