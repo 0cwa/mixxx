@@ -1,0 +1,47 @@
+{
+  "worktree": "/var/home/x/Dev/mixxx/.worktrees/pr52-sync-20260917",
+  "merge": {
+    "ours": "ca22e54f458721516abc541671f9eab0b6cb240f",
+    "theirs": "5c0b05157ce30fbeaac642075b42694a6d08a0da",
+    "merge_base": "6f831813c933d79070600c4b0d47f3318340b0d7",
+    "parents": [
+      "ca22e54f458721516abc541671f9eab0b6cb240f",
+      "5c0b05157ce30fbeaac642075b42694a6d08a0da"
+    ]
+  },
+  "conflicts": [
+    {
+      "path": "src/engine/bufferscalers/enginebufferscalelinear.cpp",
+      "base_stage_blob": "9788e67f13b0f9566ffbfc9957032188b9bc1c35",
+      "ours_stage_blob": "2f4fd5e4aa5d1ac7f995c3d29fad908b3377ba17",
+      "theirs_stage_blob": "141ebcb4fc5699533817524baa099710792baa86",
+      "decision": "Retain the shared bounded input_available/read_failed_count recovery logic from PR52 and PR42. Resolve the sole remaining difference, an empty line, mechanically."
+    },
+    {
+      "path": "src/engine/bufferscalers/enginebufferscalelinear.h",
+      "base_stage_blob": "fcc81cbd2b29dc615cbb5e06d6b8c39f8323a23d",
+      "ours_stage_blob": "64337bcdfcdb62c4dbeb0350a5c6a4cae82747cc",
+      "theirs_stage_blob": "3374803d65a5e43ddd023be643fdb9e2daa1b7d7",
+      "decision": "Keep both PR52 FRIEND_TEST declarations and PR52's BUILD_TESTING guard around the GTest include and declarations, avoiding a production GTest dependency."
+    },
+    {
+      "path": "src/test/enginebufferscalelineartest.cpp",
+      "base_stage_blob": "fe1d63dc1e34d2626e7494617ef46916d485cfed",
+      "ours_stage_blob": "e58b4e96518239fff0f6659306ea97b46cc6b0b9",
+      "theirs_stage_blob": "f0d9f9c694bace122ec45616cc644526eff00bec",
+      "decision": "Retain PR52's deterministic one-frame bounds assertion, sizeof-derived source length, exact recovery samples, and distinct-value assertions. The PR42 modulo read and weaker approximate assertions would hide source exhaustion or skipped/duplicated frames; blank-line differences were resolved mechanically."
+    }
+  ],
+  "pr52_commits_inspected": [
+    "da73359c569f8fb5b027062ed85a9e7e054ec9ab",
+    "042a895d9e1a83576f72f07c544af06d9d6b4add",
+    "ca22e54f458721516abc541671f9eab0b6cb240f"
+  ],
+  "validation": {
+    "conflict_markers": "none",
+    "git_diff_check": "passed",
+    "git_diff_cached_check": "passed",
+    "tests": "not run; immediate finalization was requested"
+  },
+  "remote_mutation": false
+}
