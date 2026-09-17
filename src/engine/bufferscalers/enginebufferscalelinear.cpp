@@ -346,6 +346,7 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                 m_floorSampleOld.clear();
                 break;
             }
+
             // Now that the buffer is up to date, we can get the value of the sample
             // at the floor of our position.
             if (currentFrameFloor >= 0) {

@@ -58,8 +58,13 @@ class ReadAheadManagerMock : public ReadAheadManager {
 
         const SINT frame_samples = channelCount.value();
         EXPECT_GE(requested_samples, frame_samples);
+        EXPECT_LE(m_iReadPosition + frame_samples, m_iBufferSize);
+        if (m_iReadPosition + frame_samples > m_iBufferSize) {
+            ADD_FAILURE() << "One-frame recovery mock exhausted its deterministic source";
+            return 0;
+        }
         for (SINT i = 0; i < frame_samples; ++i) {
-            buffer[i] = m_pBuffer[m_iReadPosition++ % m_iBufferSize];
+            buffer[i] = m_pBuffer[m_iReadPosition++];
         }
         m_iSamplesRead += frame_samples;
         ++m_iOneFrameReadCalls;
@@ -400,6 +405,7 @@ TEST_F(EngineBufferScaleLinearTest, ZeroProgressRefillPreservesRebasedPosition) 
         AssertWholeBufferEquals(output, 0.0f, kOutputSamples);
     }
 }
+
 TEST_F(EngineBufferScaleLinearTest, EmptyRefillNormalizesPartialReadRecovery) {
     constexpr SINT kFallbackFrames = 1024;
     constexpr SINT kFallbackSamples = kFallbackFrames * 2;
@@ -410,7 +416,8 @@ TEST_F(EngineBufferScaleLinearTest, EmptyRefillNormalizesPartialReadRecovery) {
     SetRateNoLerp(1.25);
     // Distinct frames make skipped or duplicated recovery data observable.
     CSAMPLE readBuffer[] = {41.0, -41.0, 43.0, -43.0, 47.0, -47.0, 53.0, -53.0, 59.0, -59.0};
-    m_pReadAheadMock->setReadBuffer(readBuffer, 10);
+    m_pReadAheadMock->setReadBuffer(
+            readBuffer, sizeof(readBuffer) / sizeof(readBuffer[0]));
     m_pScaler->m_bufferIntSize = 4;
     m_pScaler->m_dNextFrame = 1.5;
     SampleUtil::fill(m_pScaler->m_bufferInt,
