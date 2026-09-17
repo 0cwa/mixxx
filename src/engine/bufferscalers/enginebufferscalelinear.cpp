@@ -285,6 +285,7 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                 SampleUtil::copy(m_floorSample.data(), &m_bufferInt[sampleCount], chCount);
             }
 
+            bool input_available = true;
             do {
                 SINT oldBufferFrames = getOutputSignal().samples2frames(m_bufferIntSize);
                 if (unscaled_frames_needed == 0) {
@@ -302,6 +303,14 @@ double EngineBufferScaleLinear::do_scale(CSAMPLE* buf, SINT buf_size) {
                         m_bufferInt,
                         samples_to_read,
                         getOutputSignal().getChannelCount());
+                if (m_bufferIntSize == 0) {
+                    if (++read_failed_count > 1) {
+                        input_available = false;
+                        break;
+                    }
+                } else {
+                    read_failed_count = 0;
+                }
                 // Note we may get 0 samples once if we just hit a loop trigger,
                 // e.g. when reloop_toggle jumps back to loop_in, or when
                 // moving a loop causes the play position to be moved along.
