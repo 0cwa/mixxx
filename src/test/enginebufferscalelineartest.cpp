@@ -446,15 +446,22 @@ TEST_F(EngineBufferScaleLinearTest, EmptyRefillNormalizesPartialReadRecovery) {
     EXPECT_DOUBLE_EQ(kRecoveryFrames * 1.25, recoveryFrames);
     EXPECT_EQ(kRecoveryFrames + 1, m_pReadAheadMock->getOneFrameReadCalls());
     EXPECT_EQ((kRecoveryFrames + 1) * 2, m_pReadAheadMock->getSamplesRead());
-    EXPECT_FLOAT_EQ(0.0f, recoveryOutput[0]);
-    EXPECT_FLOAT_EQ(0.0f, recoveryOutput[1]);
-    EXPECT_FLOAT_EQ(11.75f, recoveryOutput[2]);
-    EXPECT_FLOAT_EQ(-11.75f, recoveryOutput[3]);
-    EXPECT_FLOAT_EQ(26.5f, recoveryOutput[4]);
-    EXPECT_FLOAT_EQ(-26.5f, recoveryOutput[5]);
-    EXPECT_FLOAT_EQ(44.25f, recoveryOutput[6]);
-    EXPECT_FLOAT_EQ(-44.25f, recoveryOutput[7]);
-    for (const CSAMPLE sample : recoveryOutput) {
-        EXPECT_NE(kStaleSample, sample);
+    const CSAMPLE expectedRecovery[] = {
+            0.0f,
+            0.0f,
+            44.0f,
+            -44.0f,
+            50.0f,
+            -50.0f,
+            57.5f,
+            -57.5f};
+    for (SINT i = 0; i < kRecoverySamples; ++i) {
+        // Exact values prove the recovery consumed the deterministic source
+        // frames in order, without retaining the stale fallback or duplicating
+        // an interpolated frame.
+        EXPECT_FLOAT_EQ(expectedRecovery[i], recoveryOutput[i]);
+        EXPECT_NE(kStaleSample, recoveryOutput[i]);
     }
+    EXPECT_NE(recoveryOutput[2], recoveryOutput[4]);
+    EXPECT_NE(recoveryOutput[4], recoveryOutput[6]);
 }
