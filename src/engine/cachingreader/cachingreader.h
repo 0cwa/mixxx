@@ -107,6 +107,14 @@ class CachingReader : public QObject {
             CSAMPLE* buffer,
             mixxx::audio::ChannelCount channelCount);
 
+    // Like read(), but treats a cache miss in any required chunk as an
+    // all-or-nothing failure. On ReadResult::UNAVAILABLE, buffer is untouched.
+    ReadResult readWithRetry(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
     // Issue a list of hints, but check whether any of the hints request a chunk
     // that is not in the cache. If any hints do request a chunk not in cache,
     // then wake the reader so that it can process them. Must only be called
@@ -126,6 +134,23 @@ class CachingReader : public QObject {
         m_worker.setScheduler(pScheduler);
     }
 
+  protected:
+    struct RetryReadResult {
+        ReadResult result;
+        bool retryPending;
+    };
+
+    // Explicit retry hook. Implementations write only to the provided staging
+    // buffer and report whether the same absolute range must be retried. The
+    // default implementation accepts PARTIALLY_AVAILABLE as intentional
+    // padding from legacy readers. Retry-aware subclasses must override this
+    // hook to identify partial cache misses.
+    virtual RetryReadResult readWithRetryHook(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
   signals:
     // Emitted once a new track is loaded and ready to be read from.
     void trackLoading();
@@ -136,7 +161,15 @@ class CachingReader : public QObject {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
+    ReadResult readInternal(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount,
+            bool retryOnCacheMiss);
+
     const UserSettingsPointer m_pConfig;
+    bool m_retryOnCacheMiss;
 
     // Thread-safe FIFOs for communication between the engine callback and
     // reader thread.
@@ -193,6 +226,10 @@ class CachingReader : public QObject {
 
     // The raw memory buffer which is divided up into chunks.
     mixxx::SampleBuffer m_sampleBuffer;
+
+    // Preallocated staging storage that preserves the caller's buffer until a
+    // retry read has completed atomically.
+    mixxx::SampleBuffer m_retryReadBuffer;
 
     // The readable frame index range as reported by the worker.
     mixxx::IndexRange m_readableFrameIndexRange;
