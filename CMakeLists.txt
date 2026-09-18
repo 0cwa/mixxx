@@ -2912,6 +2912,7 @@ if(BUILD_TESTING)
     src/test/dbconnectionpool_test.cpp
     src/test/dbidtest.cpp
     src/test/directorydaotest.cpp
+    src/test/dlgprefwaveform_test.cpp
     src/test/duration_test.cpp
     src/test/durationutiltest.cpp
     #TODO: write useful tests for refactored effects system
@@ -2987,6 +2988,7 @@ if(BUILD_TESTING)
     src/test/trackupdate_test.cpp
     src/test/uuid_test.cpp
     src/test/wbatterytest.cpp
+    src/test/waveformmarkset_test.cpp
     src/test/wpushbutton_test.cpp
     src/test/wwidgetstack_test.cpp
     src/util/moc_included_test.cpp

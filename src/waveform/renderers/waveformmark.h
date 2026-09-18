@@ -25,6 +25,18 @@ class WaveformRenderMark;
 
 class WaveformMark {
   public:
+    enum class CountdownCategory {
+        None,
+        HotCue,
+        MemoryCue,
+        IntroCue,
+        OutroCue,
+    };
+
+    static CountdownCategory countdownCategoryForPositionControl(
+            const QString& positionControl,
+            int hotCue = Cue::kNoHotCue);
+
     class Graphics {
       public:
         // To indicate that the image for the mark needs to be regenerated,
@@ -167,6 +179,9 @@ class WaveformMark {
     bool isShowUntilNext() const {
         return m_showUntilNext;
     }
+    CountdownCategory getCountdownCategory() const {
+        return m_countdownCategory;
+    }
 
     template<typename Receiver, typename Slot>
     void connectVisibleChanged(Receiver receiver, Slot slot) const {
@@ -300,6 +315,8 @@ class WaveformMark {
 
     int m_iPriority;
     int m_iHotCue;
+
+    CountdownCategory m_countdownCategory;
 
     // Whether this marker is used in the show beats/time until next marker display.
     bool m_showUntilNext;
