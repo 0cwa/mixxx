@@ -202,10 +202,34 @@ TEST(RekordboxImportTest, UpdatesFirstMatchingHotCueWithoutReordering) {
     EXPECT_EQ(first, cuePoints.at(0));
     EXPECT_EQ(duplicate, cuePoints.at(1));
     EXPECT_EQ(mixxx::audio::FramePos(30), first->getPosition());
+    EXPECT_EQ(mixxx::CueType::HotCue, first->getType());
     EXPECT_EQ(QStringLiteral("updated"), first->getLabel());
     EXPECT_EQ(mixxx::RgbColor(0x102030), first->getColor());
     EXPECT_EQ(mixxx::audio::FramePos(20), duplicate->getPosition());
     EXPECT_TRUE(duplicate->getLabel().isEmpty());
+
+    mixxx::rekordbox::importHotCue(track,
+            mixxx::audio::FramePos(40),
+            mixxx::audio::FramePos(60),
+            2,
+            QStringLiteral("updated loop"),
+            mixxx::RgbColor(0x102030));
+
+    const QList<CuePointer> updatedCuePoints = track->getCuePoints();
+    ASSERT_EQ(2, updatedCuePoints.size());
+    EXPECT_EQ(first, updatedCuePoints.at(0));
+    EXPECT_EQ(duplicate, updatedCuePoints.at(1));
+    EXPECT_EQ(mixxx::CueType::Loop, first->getType());
+    EXPECT_EQ(mixxx::audio::FramePos(60), first->getEndPosition());
+
+    mixxx::rekordbox::importHotCue(track,
+            mixxx::audio::FramePos(70),
+            mixxx::audio::kInvalidFramePos,
+            2,
+            QStringLiteral("updated hot cue"),
+            mixxx::RgbColor(0x102030));
+    EXPECT_EQ(first, track->getCuePoints().at(0));
+    EXPECT_EQ(mixxx::CueType::HotCue, first->getType());
 }
 
 } // namespace
