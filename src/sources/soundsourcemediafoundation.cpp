@@ -400,6 +400,17 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << "-> abort decoding";
             DEBUG_ASSERT(pSample == nullptr);
             break; // abort
+        } else if (dwFlags & MF_SOURCE_READERF_STREAMTICK) {
+            // A stream tick indicates a gap in the stream without a sample.
+            safeRelease(&pSample);
+            continue; // consume the gap and read the next sample
+        } else if (pSample == nullptr) {
+            kLogger.warning()
+                    << "IMFSourceReader::ReadSample() returned no sample"
+                    << "without a recognized stream flag"
+                    << "(flags =" << dwFlags << ")"
+                    << "-> abort decoding";
+            break; // abort
         }
         DEBUG_ASSERT(pSample != nullptr);
         SINT readerFrameIndex = m_streamUnitConverter.toFrameIndex(streamPos);
