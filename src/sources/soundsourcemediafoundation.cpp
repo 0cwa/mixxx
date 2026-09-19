@@ -448,6 +448,19 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         }
         DEBUG_ASSERT(pSample != nullptr);
         SINT readerFrameIndex = m_streamUnitConverter.toFrameIndex(streamPos);
+        if (m_streamTickFrameIndex != kUnknownFrameIndex) {
+            if (readerFrameIndex > m_streamTickFrameIndex) {
+                if (m_currentFrameIndex == kUnknownFrameIndex) {
+                    // A stream tick can be the first event after seeking. Use
+                    // its timestamp as the beginning of the pending gap.
+                    m_currentFrameIndex = m_streamTickFrameIndex;
+                }
+                if (readerFrameIndex > m_currentFrameIndex) {
+                    m_streamGapEndFrameIndex = readerFrameIndex;
+                }
+            }
+            m_streamTickFrameIndex = kUnknownFrameIndex;
+        }
         // TODO: Fix debug assertion in else arm. It has been commented
         // out deliberately to prevent crashes in debug builds.
         // https://github.com/mixxxdj/mixxx/issues/10160
@@ -473,13 +486,6 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             //                 << "expected =" << m_currentFrameIndex
             //                 << "actual =" << readerFrameIndex;
             //     }
-        }
-        if (m_streamTickFrameIndex != kUnknownFrameIndex) {
-            if (readerFrameIndex > m_streamTickFrameIndex &&
-                    readerFrameIndex > m_currentFrameIndex) {
-                m_streamGapEndFrameIndex = readerFrameIndex;
-            }
-            m_streamTickFrameIndex = kUnknownFrameIndex;
         }
         writePendingGap();
 
