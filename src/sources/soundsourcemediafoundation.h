@@ -84,6 +84,11 @@ class SoundSourceMediaFoundation : public SoundSource {
     StreamUnitConverter m_streamUnitConverter;
 
     SINT m_currentFrameIndex;
+    // A stream tick announces a gap before the next decoded sample. Keep the
+    // timestamps until the sample arrives so a short read can be completed
+    // with silence without moving the following sample earlier in the stream.
+    SINT m_streamTickFrameIndex;
+    SINT m_streamGapEndFrameIndex;
 
     ReadAheadSampleBuffer m_sampleBuffer;
 };

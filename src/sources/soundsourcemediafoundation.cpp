@@ -105,7 +105,9 @@ SoundSourceMediaFoundation::SoundSourceMediaFoundation(const QUrl& url)
           m_hrCoInitialize(E_FAIL),
           m_hrMFStartup(E_FAIL),
           m_pSourceReader(nullptr),
-          m_currentFrameIndex(0) {
+          m_currentFrameIndex(0),
+          m_streamTickFrameIndex(kUnknownFrameIndex),
+          m_streamGapEndFrameIndex(kUnknownFrameIndex) {
 }
 
 SoundSourceMediaFoundation::~SoundSourceMediaFoundation() {
@@ -220,6 +222,8 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
     if (m_currentFrameIndex != frameIndex) {
         // Discard decoded samples
         m_sampleBuffer.clear();
+        m_streamTickFrameIndex = kUnknownFrameIndex;
+        m_streamGapEndFrameIndex = kUnknownFrameIndex;
 
         // Invalidate current position (end of stream to prevent further reading)
         m_currentFrameIndex = frameIndexMax();
@@ -332,7 +336,36 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
 
     CSAMPLE* pSampleBuffer = writableSampleFrames.writableData();
     SINT numberOfFramesRemaining = numberOfFramesTotal;
+    const auto writeSilence = [&](SINT numberOfFrames) {
+        if (numberOfFrames <= 0) {
+            return;
+        }
+        const SINT numberOfSamples =
+                getSignalInfo().frames2samples(numberOfFrames);
+        if (pSampleBuffer) {
+            SampleUtil::clear(pSampleBuffer, numberOfSamples);
+            pSampleBuffer += numberOfSamples;
+        }
+        m_currentFrameIndex += numberOfFrames;
+        numberOfFramesRemaining -= numberOfFrames;
+    };
+    const auto writePendingGap = [&]() {
+        if (m_streamGapEndFrameIndex == kUnknownFrameIndex) {
+            return;
+        }
+        writeSilence(std::min(
+                numberOfFramesRemaining,
+                std::max<SINT>(0, m_streamGapEndFrameIndex - m_currentFrameIndex)));
+        if (m_currentFrameIndex >= m_streamGapEndFrameIndex) {
+            m_streamGapEndFrameIndex = kUnknownFrameIndex;
+        }
+    };
     while (numberOfFramesRemaining > 0) {
+        writePendingGap();
+        if (numberOfFramesRemaining == 0) {
+            break; // finished writing a stream gap
+        }
+
         SampleBuffer::ReadableSlice readableSlice(
                 m_sampleBuffer.shrinkForReading(
                         getSignalInfo().frames2samples(numberOfFramesRemaining)));
@@ -402,8 +435,9 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             break; // abort
         } else if (dwFlags & MF_SOURCE_READERF_STREAMTICK) {
             // A stream tick indicates a gap in the stream without a sample.
+            m_streamTickFrameIndex = m_streamUnitConverter.toFrameIndex(streamPos);
             safeRelease(&pSample);
-            continue; // consume the gap and read the next sample
+            continue; // wait for the next sample timestamp before filling it
         } else if (pSample == nullptr) {
             kLogger.warning()
                     << "IMFSourceReader::ReadSample() returned no sample"
@@ -440,6 +474,14 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             //                 << "actual =" << readerFrameIndex;
             //     }
         }
+        if (m_streamTickFrameIndex != kUnknownFrameIndex) {
+            if (readerFrameIndex > m_streamTickFrameIndex &&
+                    readerFrameIndex > m_currentFrameIndex) {
+                m_streamGapEndFrameIndex = readerFrameIndex;
+            }
+            m_streamTickFrameIndex = kUnknownFrameIndex;
+        }
+        writePendingGap();
 
         DWORD dwSampleBufferCount = 0;
         HRESULT hrGetBufferCount =
