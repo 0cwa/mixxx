@@ -135,6 +135,7 @@ TEST_F(WaveformMarkSetTest, CountdownSelectionHonorsCategories) {
 
 TEST_F(WaveformMarkSetTest, CountdownSelectionUsesNearestFutureMark) {
     constexpr double kDefaultNextMarkPosition = 10000.0;
+    constexpr double kEarlierDefaultNextMarkPosition = 100.0;
     const QString group = QStringLiteral("[WaveformCountdownNearestTest]");
 
     ControlObject firstPosition(ConfigKey(group, QStringLiteral("intro_end_position")));
@@ -162,7 +163,13 @@ TEST_F(WaveformMarkSetTest, CountdownSelectionUsesNearestFutureMark) {
     EXPECT_DOUBLE_EQ(150.0,
             marks.findNextCountdownMarkPosition(
                     101.0, kDefaultNextMarkPosition, false, false, true, false));
-    EXPECT_DOUBLE_EQ(kDefaultNextMarkPosition,
+    // A pre-existing countdown boundary takes precedence over later cue marks.
+    EXPECT_DOUBLE_EQ(kEarlierDefaultNextMarkPosition,
             marks.findNextCountdownMarkPosition(
-                    100.0, 100.0, false, false, true, false));
+                    100.0,
+                    kEarlierDefaultNextMarkPosition,
+                    false,
+                    false,
+                    true,
+                    false));
 }
