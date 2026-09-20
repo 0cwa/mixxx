@@ -80,6 +80,13 @@ class WaveformMarkSet {
 
     void update();
 
+    double findNextCountdownMarkPosition(double playPosition,
+            double defaultNextMarkPosition,
+            bool showHotCues,
+            bool showMemoryCues,
+            bool showIntroCues,
+            bool showOutroCues) const;
+
     void setBreadth(float breadth);
 
     void clear() {

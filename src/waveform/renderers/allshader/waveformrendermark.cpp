@@ -168,6 +168,10 @@ allshader::WaveformRenderMark::WaveformRenderMark(
           m_playPosDevicePixelRatio(0.f),
           m_untilMarkShowBeats{false},
           m_untilMarkShowTime(false),
+          m_untilMarkShowHotCues{false},
+          m_untilMarkShowMemoryCues(true),
+          m_untilMarkShowIntroCues(false),
+          m_untilMarkShowOutroCues(false),
           m_untilMarkAlign(Qt::AlignVCenter),
           m_untilMarkTextSize(0),
           m_untilMarkTextHeightLimit(0.0),
@@ -196,8 +200,8 @@ allshader::WaveformRenderMark::WaveformRenderMark(
         m_pPlayPosNode->initForRectangles<TextureMaterial>(1);
         appendChildNode(std::move(pNode));
     }
-#ifndef __SCENEGRAPH__
     auto* pWaveformWidgetFactory = WaveformWidgetFactory::instance();
+#ifndef __SCENEGRAPH__
     connect(pWaveformWidgetFactory,
             &WaveformWidgetFactory::untilMarkShowBeatsChanged,
             this,
@@ -206,6 +210,24 @@ allshader::WaveformRenderMark::WaveformRenderMark(
             &WaveformWidgetFactory::untilMarkShowTimeChanged,
             this,
             &WaveformRenderMark::setUntilMarkShowTime);
+#endif
+    connect(pWaveformWidgetFactory,
+            &WaveformWidgetFactory::untilMarkShowHotCuesChanged,
+            this,
+            &WaveformRenderMark::setUntilMarkShowHotCues);
+    connect(pWaveformWidgetFactory,
+            &WaveformWidgetFactory::untilMarkShowMemoryCuesChanged,
+            this,
+            &WaveformRenderMark::setUntilMarkShowMemoryCues);
+    connect(pWaveformWidgetFactory,
+            &WaveformWidgetFactory::untilMarkShowIntroCuesChanged,
+            this,
+            &WaveformRenderMark::setUntilMarkShowIntroCues);
+    connect(pWaveformWidgetFactory,
+            &WaveformWidgetFactory::untilMarkShowOutroCuesChanged,
+            this,
+            &WaveformRenderMark::setUntilMarkShowOutroCues);
+#ifndef __SCENEGRAPH__
     connect(pWaveformWidgetFactory,
             &WaveformWidgetFactory::untilMarkAlignChanged,
             this,
@@ -231,6 +253,10 @@ void allshader::WaveformRenderMark::setup(const QDomNode& node, const SkinContex
 
     m_untilMarkShowBeats = pWaveformWidgetFactory->getUntilMarkShowBeats();
     m_untilMarkShowTime = pWaveformWidgetFactory->getUntilMarkShowTime();
+    m_untilMarkShowHotCues = pWaveformWidgetFactory->getUntilMarkShowHotCues();
+    m_untilMarkShowMemoryCues = pWaveformWidgetFactory->getUntilMarkShowMemoryCues();
+    m_untilMarkShowIntroCues = pWaveformWidgetFactory->getUntilMarkShowIntroCues();
+    m_untilMarkShowOutroCues = pWaveformWidgetFactory->getUntilMarkShowOutroCues();
     m_untilMarkAlign = pWaveformWidgetFactory->getUntilMarkAlign();
 
     m_untilMarkTextSize =
@@ -333,7 +359,13 @@ void allshader::WaveformRenderMark::update() {
     updateMarkImages();
 
     const double playPosition = m_waveformRenderer->getTruePosSample(positionType);
-    double nextMarkPosition = m_defaultNextMarkPosition;
+    const double nextMarkPosition = m_marks.findNextCountdownMarkPosition(
+            playPosition,
+            m_defaultNextMarkPosition,
+            m_untilMarkShowHotCues,
+            m_untilMarkShowMemoryCues,
+            m_untilMarkShowIntroCues,
+            m_untilMarkShowOutroCues);
 
     GeometryNode* pRangeChild = static_cast<GeometryNode*>(m_pRangeNodesParent->firstChild());
 
@@ -363,11 +395,6 @@ void allshader::WaveformRenderMark::update() {
             continue;
         }
 
-        if (pMark->isShowUntilNext() &&
-                samplePosition >= playPosition + 1.0 &&
-                samplePosition < nextMarkPosition) {
-            nextMarkPosition = samplePosition;
-        }
         const double sampleEndPosition = pMark->getSampleEndPosition();
 
         const float markWidth = pMarkNodeGraphics->textureWidth() / devicePixelRatio;
