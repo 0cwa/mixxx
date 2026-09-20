@@ -360,6 +360,15 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             m_streamGapEndFrameIndex = kUnknownFrameIndex;
         }
     };
+    const auto settleTerminalRead = [&]() {
+        // frameIndexMax() is the existing internal abort sentinel used by
+        // seekSampleFrame(). It is not an EOS timestamp or a duration claim.
+        if (m_currentFrameIndex == kUnknownFrameIndex) {
+            m_currentFrameIndex = frameIndexMax();
+        }
+        m_streamTickFrameIndex = kUnknownFrameIndex;
+        m_streamGapEndFrameIndex = kUnknownFrameIndex;
+    };
     while (numberOfFramesRemaining > 0) {
         writePendingGap();
         if (numberOfFramesRemaining == 0) {
@@ -391,6 +400,7 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         DEBUG_ASSERT(m_sampleBuffer.empty());
 
         if (m_pSourceReader == nullptr) {
+            settleTerminalRead();
             break; // abort if reader is dead
         }
 
@@ -398,6 +408,16 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         LONGLONG streamPos = 0;
         IMFSample* pSample = nullptr;
         HRESULT hrReadSample =
+#ifdef BUILD_TESTING
+                m_readSampleProvider
+                ? m_readSampleProvider(
+                          kStreamIndex,
+                          0,
+                          &dwFlags,
+                          &streamPos,
+                          &pSample)
+                :
+#endif
                 m_pSourceReader->ReadSample(
                         kStreamIndex, // [in]  DWORD dwStreamIndex,
                         0,            // [in]  DWORD dwControlFlags,
@@ -411,6 +431,8 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << hrReadSample
                     << "-> abort decoding";
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
+            settleTerminalRead();
             break; // abort
         }
         if (dwFlags & MF_SOURCE_READERF_ERROR) {
@@ -420,10 +442,14 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << "(MF_SOURCE_READERF_ERROR)"
                     << "-> abort and stop decoding";
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
             safeRelease(&m_pSourceReader); // kill the reader
-            break;                         // abort
+            settleTerminalRead();
+            break; // abort
         } else if (dwFlags & MF_SOURCE_READERF_ENDOFSTREAM) {
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
+            settleTerminalRead();
             break; // finished reading
         } else if (dwFlags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
             kLogger.warning()
@@ -432,6 +458,8 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << "(MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)"
                     << "-> abort decoding";
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
+            settleTerminalRead();
             break; // abort
         } else if (dwFlags & MF_SOURCE_READERF_STREAMTICK) {
             // A stream tick indicates a gap in the stream without a sample.
@@ -444,6 +472,7 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << "without a recognized stream flag"
                     << "(flags =" << dwFlags << ")"
                     << "-> abort decoding";
+            settleTerminalRead();
             break; // abort
         }
         DEBUG_ASSERT(pSample != nullptr);
