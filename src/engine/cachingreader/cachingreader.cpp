@@ -6,6 +6,7 @@
 #include "util/assert.h"
 #include "util/compatibility/qatomic.h"
 #include "util/counter.h"
+#include "util/defs.h"
 #include "util/logger.h"
 #include "util/sample.h"
 
@@ -41,6 +42,7 @@ CachingReader::CachingReader(const QString& group,
         UserSettingsPointer config,
         mixxx::audio::ChannelCount maxSupportedChannel)
         : m_pConfig(config),
+          m_retryOnCacheMiss(false),
           // Limit the number of in-flight requests to the worker. This should
           // prevent to overload the worker when it is not able to fetch those
           // requests from the FIFO timely. Otherwise outdated requests pile up
@@ -60,6 +62,7 @@ CachingReader::CachingReader(const QString& group,
           m_lruCachingReaderChunk(nullptr),
           m_sampleBuffer(CachingReaderChunk::kFrames * maxSupportedChannel *
                   kNumberOfCachedChunksInMemory),
+          m_retryReadBuffer(MAX_BUFFER_LEN * maxSupportedChannel),
           m_worker(group,
                   &m_chunkReadRequestFIFO,
                   &m_readerStatusUpdateFIFO,
@@ -305,6 +308,60 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
         bool reverse,
         CSAMPLE* buffer,
         mixxx::audio::ChannelCount channelCount) {
+    return readInternal(startSample,
+            numSamples,
+            reverse,
+            buffer,
+            channelCount,
+            m_retryOnCacheMiss);
+}
+
+CachingReader::ReadResult CachingReader::readWithRetry(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount) {
+    VERIFY_OR_DEBUG_ASSERT(numSamples >= 0 &&
+            numSamples <= m_retryReadBuffer.size()) {
+        return ReadResult::UNAVAILABLE;
+    }
+    VERIFY_OR_DEBUG_ASSERT(buffer) {
+        return ReadResult::UNAVAILABLE;
+    }
+
+    DEBUG_ASSERT(!m_retryOnCacheMiss);
+    m_retryOnCacheMiss = true;
+    const auto retryResult = readWithRetryHook(startSample,
+            numSamples,
+            reverse,
+            m_retryReadBuffer.data(),
+            channelCount);
+    m_retryOnCacheMiss = false;
+
+    if (retryResult.retryPending ||
+            retryResult.result == ReadResult::UNAVAILABLE) {
+        return ReadResult::UNAVAILABLE;
+    }
+    SampleUtil::copy(buffer, m_retryReadBuffer.data(), numSamples);
+    return retryResult.result;
+}
+
+CachingReader::RetryReadResult CachingReader::readWithRetryHook(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount) {
+    const auto result = read(
+            startSample, numSamples, reverse, buffer, channelCount);
+    return {result, result == ReadResult::UNAVAILABLE};
+}
+
+CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount,
+        bool retryOnCacheMiss) {
     // Check for bad inputs
     // Refuse to read from an invalid position
     VERIFY_OR_DEBUG_ASSERT(startSample % channelCount == 0) {
@@ -332,7 +389,6 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
                 << "buffer =" << buffer;
         return ReadResult::UNAVAILABLE;
     }
-
     // If no track is loaded, don't do anything.
     if (atomicLoadRelaxed(m_state) != STATE_TRACK_LOADED) {
         return ReadResult::UNAVAILABLE;
@@ -364,6 +420,42 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
                     CachingReaderChunk::samples2frames(sample, channelCount),
                     CachingReaderChunk::samples2frames(numSamples, channelCount));
     DEBUG_ASSERT(!remainingFrameIndexRange.empty());
+
+    if (retryOnCacheMiss) {
+        auto preflightFrameIndexRange =
+                intersect(remainingFrameIndexRange, m_readableFrameIndexRange);
+        if (!preflightFrameIndexRange.empty()) {
+            const SINT firstChunkIndex =
+                    CachingReaderChunk::indexForFrame(preflightFrameIndexRange.start());
+            SINT lastChunkIndex =
+                    CachingReaderChunk::indexForFrame(preflightFrameIndexRange.end() - 1);
+            for (SINT chunkIndex = firstChunkIndex;
+                    chunkIndex <= lastChunkIndex;
+                    ++chunkIndex) {
+                process();
+                preflightFrameIndexRange = intersect(
+                        preflightFrameIndexRange, m_readableFrameIndexRange);
+                if (preflightFrameIndexRange.empty()) {
+                    break;
+                }
+                lastChunkIndex = CachingReaderChunk::indexForFrame(
+                        preflightFrameIndexRange.end() - 1);
+                if (lastChunkIndex < chunkIndex) {
+                    break;
+                }
+
+                const CachingReaderChunkForOwner* const pChunk =
+                        lookupChunkAndFreshen(chunkIndex);
+                if (!pChunk ||
+                        pChunk->getState() != CachingReaderChunkForOwner::READY) {
+                    DEBUG_ASSERT(!pChunk ||
+                            pChunk->getState() ==
+                                    CachingReaderChunkForOwner::READ_PENDING);
+                    return ReadResult::UNAVAILABLE;
+                }
+            }
+        }
+    }
 
     auto result = ReadResult::AVAILABLE;
     if (!intersect(remainingFrameIndexRange, m_readableFrameIndexRange).empty()) {
