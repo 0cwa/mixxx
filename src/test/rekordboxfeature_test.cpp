@@ -258,31 +258,35 @@ TEST(RekordboxImportTest, SkipsTruncatedSyntheticBeatGrid) {
     anlzFile.close();
 
     const auto sampleRate = mixxx::audio::SampleRate(48000);
-    TrackPointer seededTrack = Track::newTemporary();
-    const QVector<mixxx::audio::FramePos> seedPositions{
-            mixxx::audio::FramePos(48000),
-            mixxx::audio::FramePos(72000)};
-    const auto seededBeats = mixxx::Beats::fromBeatPositions(sampleRate, seedPositions);
-    ASSERT_TRUE(seededBeats);
-    ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
-    const CuePointer seededCue = seededTrack->createAndAddCue(
-            mixxx::CueType::HotCue,
-            1,
-            mixxx::audio::FramePos(123),
-            mixxx::audio::kInvalidFramePos);
+    for (const bool ignoreCues : {true, false}) {
+        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
 
-    mixxx::rekordbox::test::readAnalyzeForTest(
-            seededTrack, sampleRate, 0, false, anlzPath);
+        TrackPointer seededTrack = Track::newTemporary();
+        const QVector<mixxx::audio::FramePos> seedPositions{
+                mixxx::audio::FramePos(48000),
+                mixxx::audio::FramePos(72000)};
+        const auto seededBeats = mixxx::Beats::fromBeatPositions(sampleRate, seedPositions);
+        ASSERT_TRUE(seededBeats);
+        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
+        const CuePointer seededCue = seededTrack->createAndAddCue(
+                mixxx::CueType::HotCue,
+                1,
+                mixxx::audio::FramePos(123),
+                mixxx::audio::kInvalidFramePos);
 
-    EXPECT_EQ(seededBeats, seededTrack->getBeats());
-    ASSERT_EQ(1, seededTrack->getCuePoints().size());
-    EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                seededTrack, sampleRate, 0, ignoreCues, anlzPath);
 
-    TrackPointer freshTrack = Track::newTemporary();
-    mixxx::rekordbox::test::readAnalyzeForTest(
-            freshTrack, sampleRate, 0, false, anlzPath);
+        EXPECT_EQ(seededBeats, seededTrack->getBeats());
+        ASSERT_EQ(1, seededTrack->getCuePoints().size());
+        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
 
-    EXPECT_FALSE(freshTrack->getBeats());
+        TrackPointer freshTrack = Track::newTemporary();
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                freshTrack, sampleRate, 0, ignoreCues, anlzPath);
+
+        EXPECT_FALSE(freshTrack->getBeats());
+    }
 }
 
 } // namespace
