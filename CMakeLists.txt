@@ -2068,7 +2068,10 @@ set_target_properties(
 )
 target_include_directories(
   mixxx-lib
-  PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/src"
+  PUBLIC
+    src
+    "${CMAKE_CURRENT_BINARY_DIR}/src"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/mixxx-lib_autogen/include>"
 )
 if(UNIX AND NOT APPLE)
   target_sources(mixxx-lib PRIVATE src/util/rlimit.cpp)
