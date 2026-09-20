@@ -232,6 +232,22 @@ DlgPrefWaveform::DlgPrefWaveform(
             &QCheckBox::toggled,
             this,
             &DlgPrefWaveform::slotSetUntilMarkShowTime);
+    connect(untilMarkShowHotCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowHotCues);
+    connect(untilMarkShowMemoryCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowMemoryCues);
+    connect(untilMarkShowIntroCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowIntroCues);
+    connect(untilMarkShowOutroCuesCheckBox,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefWaveform::slotSetUntilMarkShowOutroCues);
     connect(untilMarkAlignComboBox,
             QOverload<int>::of(&QComboBox::currentIndexChanged),
             this,
@@ -352,6 +368,10 @@ void DlgPrefWaveform::slotUpdate() {
 
     untilMarkShowBeatsCheckBox->setChecked(factory->getUntilMarkShowBeats());
     untilMarkShowTimeCheckBox->setChecked(factory->getUntilMarkShowTime());
+    untilMarkShowHotCuesCheckBox->setChecked(factory->getUntilMarkShowHotCues());
+    untilMarkShowMemoryCuesCheckBox->setChecked(factory->getUntilMarkShowMemoryCues());
+    untilMarkShowIntroCuesCheckBox->setChecked(factory->getUntilMarkShowIntroCues());
+    untilMarkShowOutroCuesCheckBox->setChecked(factory->getUntilMarkShowOutroCues());
     untilMarkAlignComboBox->setCurrentIndex(
             WaveformWidgetFactory::toUntilMarkAlignIndex(
                     factory->getUntilMarkAlign()));
@@ -645,6 +665,7 @@ void DlgPrefWaveform::updateEnableUntilMark() {
 #endif
     untilMarkShowBeatsCheckBox->setEnabled(enabled);
     untilMarkShowTimeCheckBox->setEnabled(enabled);
+    untilMarkCueTypesGroupBox->setEnabled(enabled);
     // Disable the beats/time options if neither beats nor time is enabled
     bool beatsOrTimeEnabled = untilMarkShowBeatsCheckBox->isChecked() ||
             untilMarkShowTimeCheckBox->isChecked();
@@ -840,6 +861,22 @@ void DlgPrefWaveform::slotSetUntilMarkShowTime(bool checked) {
     updateEnableUntilMark();
 }
 
+void DlgPrefWaveform::slotSetUntilMarkShowHotCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowHotCues(checked);
+}
+
+void DlgPrefWaveform::slotSetUntilMarkShowMemoryCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowMemoryCues(checked);
+}
+
+void DlgPrefWaveform::slotSetUntilMarkShowIntroCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowIntroCues(checked);
+}
+
+void DlgPrefWaveform::slotSetUntilMarkShowOutroCues(bool checked) {
+    WaveformWidgetFactory::instance()->setUntilMarkShowOutroCues(checked);
+}
+
 void DlgPrefWaveform::slotSetUntilMarkAlign(int index) {
     WaveformWidgetFactory::instance()->setUntilMarkAlign(
             WaveformWidgetFactory::toUntilMarkAlign(index));
@@ -871,6 +908,11 @@ void DlgPrefWaveform::slotStemDisplayMode(int index) {
 }
 
 void DlgPrefWaveform::calculateCachedWaveformDiskUsage() {
+    if (!m_pLibrary) {
+        waveformDiskUsage->setText(tr("N/A"));
+        return;
+    }
+
     AnalysisDao analysisDao(m_pConfig);
     QSqlDatabase dbConnection = mixxx::DbConnectionPooled(m_pLibrary->dbConnectionPool());
     size_t numBytes = analysisDao.getDiskUsageInBytes(dbConnection, AnalysisDao::TYPE_WAVEFORM) +
