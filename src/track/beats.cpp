@@ -305,17 +305,17 @@ mixxx::BeatsPointer Beats::fromBeatGridByteArray(
     track::io::BeatGrid grid;
     audio::FramePos position;
     Bpm bpm;
+    int downbeatsOffset = 0;
     if (grid.ParseFromArray(byteArray.constData(), byteArray.size())) {
         position = audio::FramePos(grid.first_beat().frame_position());
         bpm = Bpm(grid.bpm().bpm());
+        downbeatsOffset = grid.has_downbeats_offset() ? grid.downbeats_offset() : 0;
     } else if (byteArray.size() == sizeof(BeatGridV1Data)) {
         // Legacy fallback for BeatGrid-1.0
         const auto* pBlob = reinterpret_cast<const BeatGridV1Data*>(byteArray.constData());
         position = mixxx::audio::FramePos(pBlob->firstBeat);
         bpm = mixxx::Bpm(pBlob->bpm);
     }
-
-    int downbeatsOffset = grid.has_downbeats_offset() ? grid.downbeats_offset() : 0;
 
     if (position.isValid() && bpm.isValid()) {
         return fromConstTempo(sampleRate, position, bpm, subVersion, downbeatsOffset);
