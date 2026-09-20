@@ -368,6 +368,10 @@ class Track : public QObject {
         // lock thread-unsafe copy constructors of QList
         return !m_stemInfo.isEmpty();
     }
+#else
+    bool hasStem() const {
+        return false;
+    }
 #endif
 
     enum class ImportStatus {
