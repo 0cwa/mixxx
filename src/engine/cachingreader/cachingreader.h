@@ -1,17 +1,25 @@
 #pragma once
 
+#ifdef BUILD_TESTING
+#include <gtest/gtest_prod.h>
+#endif
+
 #include <QAtomicInt>
 #include <QHash>
 #include <QList>
+#include <QTimer>
 #include <QVarLengthArray>
 #include <QVector>
-#include <list>
+#include <array>
+#include <cstddef>
 
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
 #include "util/fifo.h"
 #include "util/types.h"
+
+class Seek30Control;
 
 // A Hint is an indication to the CachingReader that a certain section of a
 // SoundSource will be used 'soon' and so it should be brought into memory by
@@ -107,6 +115,14 @@ class CachingReader : public QObject {
             CSAMPLE* buffer,
             mixxx::audio::ChannelCount channelCount);
 
+    // Like read(), but treats a cache miss in any required chunk as an
+    // all-or-nothing failure. On ReadResult::UNAVAILABLE, buffer is untouched.
+    ReadResult readWithRetry(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
     // Issue a list of hints, but check whether any of the hints request a chunk
     // that is not in the cache. If any hints do request a chunk not in cache,
     // then wake the reader so that it can process them. Must only be called
@@ -126,6 +142,25 @@ class CachingReader : public QObject {
         m_worker.setScheduler(pScheduler);
     }
 
+    void setSeek30Control(Seek30Control* pControl);
+
+  protected:
+    struct RetryReadResult {
+        ReadResult result;
+        bool retryPending;
+    };
+
+    // Explicit retry hook. Implementations write only to the provided staging
+    // buffer and report whether the same absolute range must be retried. The
+    // default implementation accepts PARTIALLY_AVAILABLE as intentional
+    // padding from legacy readers. Retry-aware subclasses must override this
+    // hook to identify partial cache misses.
+    virtual RetryReadResult readWithRetryHook(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
   signals:
     // Emitted once a new track is loaded and ready to be read from.
     void trackLoading();
@@ -136,12 +171,64 @@ class CachingReader : public QObject {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
+    friend class CachingReaderStatusQueueTest;
+#ifdef BUILD_TESTING
+    FRIEND_TEST(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            ProcessDiscardsChunkResultWhileTrackIsUnloading);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            ProcessRecyclesChunkIntoFixedFreePool);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            RecyclesChunksAcrossFreePoolWraparound);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            TeardownDrainReclaimsQueuedChunksWithoutStateTransitions);
+#endif
+
+    // Keep callback-side status processing bounded. Unprocessed updates remain
+    // in the FIFO and are handled by a later callback.
+    static constexpr int kMaxStatusUpdatesPerCallback = 4;
+    static constexpr int kNumberOfCachedChunksInMemory = 80;
+
+    void processPendingStatusUpdates();
+    void discardPendingStatusUpdates();
+
+    ReadResult readInternal(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount,
+            bool retryOnCacheMiss);
+
     const UserSettingsPointer m_pConfig;
+    bool m_retryOnCacheMiss;
+    const QString m_group;
+
+    void reportDiagnostics();
 
     // Thread-safe FIFOs for communication between the engine callback and
     // reader thread.
     FIFO<CachingReaderChunkReadRequest> m_chunkReadRequestFIFO;
     FIFO<ReaderStatusUpdate> m_readerStatusUpdateFIFO;
+
+    // Audio-thread counters sampled by reportDiagnostics(). Updating them must
+    // remain allocation-free and lock-free.
+    QAtomicInt m_diagnosticSubmitAttempts;
+    QAtomicInt m_diagnosticSubmitFailures;
+    QAtomicInt m_diagnosticCacheMisses;
+    QAtomicInt m_diagnosticLastFailedChunk;
+    QAtomicInt m_diagnosticStatusConsumed;
+
+    // Reset by process() at the start of each audio callback. Calls made from
+    // readInternal() consume the same budget instead of starting a new one.
+    int m_statusUpdatesRemainingInCallback{kMaxStatusUpdatesPerCallback};
+
+    // Accessed only by the QObject thread that owns the diagnostics timer.
+    QTimer m_diagnosticsTimer;
+    int m_lastReportedSubmitFailures;
+    int m_lastReportedCacheMisses;
+    int m_lastReportedWorkerProgress;
+    int m_lastReportedActiveChunk;
+    bool m_diagnosticEpisodeActive;
 
     // Looks for the provided chunk number in the index of in-memory chunks and
     // returns it if it is present. If not, returns nullptr. If it is present then
@@ -179,9 +266,12 @@ class CachingReader : public QObject {
     // Keeps track of all CachingReaderChunks we've allocated.
     QVector<CachingReaderChunkForOwner*> m_chunks;
 
-    // List of free chunks. Linked list so that we have constant time insertions
-    // and deletions. Iteration is not necessary.
-    std::list<CachingReaderChunkForOwner*> m_freeChunks;
+    // Fixed-capacity FIFO of free chunks. It must not allocate when a chunk is
+    // recycled from the engine callback.
+    std::array<CachingReaderChunkForOwner*, kNumberOfCachedChunksInMemory>
+            m_freeChunks;
+    int m_freeChunkStart{0};
+    int m_freeChunkCount{0};
 
     // Keeps track of what CachingReaderChunks we've allocated and indexes them based on what
     // chunk number they are allocated to.
@@ -193,6 +283,11 @@ class CachingReader : public QObject {
 
     // The raw memory buffer which is divided up into chunks.
     mixxx::SampleBuffer m_sampleBuffer;
+
+    // Preallocated staging storage that preserves the caller's buffer until a
+    // retry read has completed atomically. Its size covers the largest
+    // MAX_BUFFER_LEN request for this reader's channel layout.
+    mixxx::SampleBuffer m_retryReadBuffer;
 
     // The readable frame index range as reported by the worker.
     mixxx::IndexRange m_readableFrameIndexRange;

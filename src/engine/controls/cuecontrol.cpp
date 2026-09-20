@@ -278,12 +278,14 @@ void CueControl::createControls() {
     m_pOutroEndActivate = std::make_unique<ControlPushButton>(
             ConfigKey(m_group, "outro_end_activate"));
 
+#ifdef __VINYLCONTROL__
     if (PlayerManager::isDeckGroup(m_group)) {
         m_pVinylControlEnabled = std::make_unique<ControlProxy>(
                 m_group, "vinylcontrol_enabled");
         m_pVinylControlMode = std::make_unique<ControlProxy>(
                 m_group, "vinylcontrol_mode");
     }
+#endif
 
     m_pHotcueFocus = std::make_unique<ControlObject>(ConfigKey(m_group, "hotcue_focus"));
     setHotcueFocusIndex(Cue::kNoHotCue);
@@ -609,6 +611,10 @@ void CueControl::trackLoaded(TrackPointer pNewTrack) {
             &CueControl::trackAnalyzed,
             Qt::DirectConnection);
 
+    // Note: this has to be a direct connection so we can synchronously update
+    // cue position COs. WOverview and WaveformRenderMarkBase for example are
+    // also listening to cuesUpdated() (queued connections) and need the new
+    // positions when they iterate over the cues to update the marks and ranges.
     connect(m_pLoadedTrack.get(),
             &Track::cuesUpdated,
             this,

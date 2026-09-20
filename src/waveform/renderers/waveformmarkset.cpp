@@ -1,10 +1,12 @@
 #include "waveformmarkset.h"
 
 #include <QtDebug>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
 
+#include "track/cue.h"
 #include "util/defs.h"
 
 WaveformMarkSet::WaveformMarkSet() {
@@ -17,8 +19,8 @@ WaveformMarkSet::~WaveformMarkSet() {
 void WaveformMarkSet::setup(const QString& group, const QDomNode& node,
                             const SkinContext& context,
                             const WaveformSignalColors& signalColors) {
-    // + 3 for cue_point, loop_start_position and loop_end_position
-    m_marks.reserve(kMaxNumberOfHotcues + 3);
+    // + 30 for cue_point, loop_start_position and loop_end_position and 27 memory cues
+    m_marks.reserve(kMaxNumberOfHotcues + 30);
     // Note: m_hotCueMarks does not support reserving space
 
     std::set<QString> controlItemSet;
@@ -64,6 +66,72 @@ void WaveformMarkSet::setup(const QString& group, const QDomNode& node,
                 m_hotCueMarks.insert(pMark->getHotCue(), pMark);
             }
         }
+    }
+}
+
+void WaveformMarkSet::syncMemoryCueMarks(const QString& group,
+        const QList<CuePointer>& cues,
+        int dimBrightThreshold,
+        const WaveformSignalColors& signalColors) {
+    // Drop previously created memory-cue marks from the render set.
+    for (const auto& p : std::as_const(m_memoryCueMarks)) {
+        m_marks.removeAll(p);
+    }
+    m_memoryCueMarks.clear();
+
+    // Pick a style template: prefer <DefaultMark>, otherwise any existing hotcue mark.
+    WaveformMarkPointer tmpl = m_pDefaultMark;
+    if (tmpl.isNull()) {
+        // Grab the first existing hotcue mark as a visual template.
+        for (int i = 0; i < kMaxNumberOfHotcues && tmpl.isNull(); ++i) {
+            tmpl = m_hotCueMarks.value(i);
+        }
+    }
+    if (tmpl.isNull()) {
+        // Nothing to style with; bail out safely.
+        return;
+    }
+
+    // Create one fixed-position mark per Memory cue.
+    for (const CuePointer& pCue : cues) {
+        if (!pCue || pCue->getType() != mixxx::CueType::Memory) {
+            continue;
+        }
+        const double pos = pCue->getPosition().toEngineSamplePos();
+        if (pos == Cue::kNoPosition) {
+            continue;
+        }
+
+        // Construct a mark with no position/visibility control objects. The fixed
+        // position is supplied below so this mark is not tied to a ControlObject.
+        const QString textColor = tmpl->m_textColor.isValid()
+                ? tmpl->m_textColor.name()
+                : QStringLiteral("#ffffff");
+        auto mark = WaveformMark::create(
+                group,
+                QStringLiteral("memory_cue"),
+                QString(),
+                textColor,
+                QString("AlignBottom"),
+                pCue->getLabel().isEmpty() ? QString("Memory Cue") : pCue->getLabel(),
+                tmpl->m_pixmapPath,
+                tmpl->m_iconPath,
+                QColor(),
+                tmpl->getPriority(),
+                Cue::kNoHotCue,
+                signalColors);
+        if (std::holds_alternative<WaveformMark::WaveformMarkConstructionError>(mark)) {
+            qWarning() << "Could not create waveform mark for memory cue";
+            continue;
+        }
+        auto pMark = std::get<WaveformMarkPointer>(mark);
+
+        // Fixed position and colors from the cue.
+        pMark->setSamplePosition(pos);
+        pMark->setBaseColor(mixxx::RgbColor::toQColor(pCue->getColor()), dimBrightThreshold);
+
+        m_marks.push_front(pMark);
+        m_memoryCueMarks.push_back(pMark);
     }
 }
 
@@ -134,7 +202,7 @@ void WaveformMarkSet::setBreadth(float breadth) {
 }
 
 void WaveformMarkSet::update() {
-    std::map<WaveformMarkSortKey, WaveformMarkPointer> map;
+    std::multimap<WaveformMarkSortKey, WaveformMarkPointer> map;
     for (const auto& pMark : std::as_const(m_marks)) {
         if (pMark->isValid() && pMark->isVisible()) {
             double samplePosition = pMark->getSamplePosition();
@@ -168,6 +236,49 @@ void WaveformMarkSet::update() {
         }
         pMark->setLevel(levels[pMark->m_align]++);
     }
+}
+
+double WaveformMarkSet::findNextCountdownMarkPosition(
+        double playPosition,
+        double defaultNextMarkPosition,
+        bool showHotCues,
+        bool showMemoryCues,
+        bool showIntroCues,
+        bool showOutroCues) const {
+    double nextMarkPosition = defaultNextMarkPosition;
+    for (const auto& pMark : std::as_const(m_marksToRender)) {
+        if (!pMark->isValid() || !pMark->isVisible()) {
+            continue;
+        }
+
+        const double samplePosition = pMark->getSamplePosition();
+        if (samplePosition == Cue::kNoPosition || samplePosition < playPosition + 1.0 ||
+                samplePosition >= nextMarkPosition) {
+            continue;
+        }
+
+        bool enabled = false;
+        switch (pMark->getCountdownCategory()) {
+        case WaveformMark::CountdownCategory::HotCue:
+            enabled = showHotCues;
+            break;
+        case WaveformMark::CountdownCategory::MemoryCue:
+            enabled = showMemoryCues;
+            break;
+        case WaveformMark::CountdownCategory::IntroCue:
+            enabled = showIntroCues;
+            break;
+        case WaveformMark::CountdownCategory::OutroCue:
+            enabled = showOutroCues;
+            break;
+        case WaveformMark::CountdownCategory::None:
+            break;
+        }
+        if (enabled) {
+            nextMarkPosition = samplePosition;
+        }
+    }
+    return nextMarkPosition;
 }
 
 WaveformMarkPointer WaveformMarkSet::findHoveredMark(

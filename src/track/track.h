@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAtomicInt>
 #include <QList>
 #include <QObject>
 #include <QStack>
@@ -339,6 +340,7 @@ class Track : public QObject {
     CuePointer findHotcueByIndex(int idx) const;
     void removeCue(const CuePointer& pCue);
     void removeCuesOfType(mixxx::CueType);
+    void removeTempLoopCue();
     QList<CuePointer> getCuePoints() const {
         const QMutexLocker lock(&m_qMutex);
         // lock thread-unsafe copy constructors of QList
@@ -346,6 +348,12 @@ class Track : public QObject {
     }
     void swapHotcues(int a, int b);
     void setCuePoints(const QList<CuePointer>& cuePoints);
+
+    int getDownbeatOffset() const {
+        return m_downbeat_offset.loadAcquire();
+    }
+
+    void setDownbeatOffset(int offset);
 
 #ifdef __STEM__
     QList<StemInfo> getStemInfo() const {
@@ -359,6 +367,10 @@ class Track : public QObject {
         const QMutexLocker lock(&m_qMutex);
         // lock thread-unsafe copy constructors of QList
         return !m_stemInfo.isEmpty();
+    }
+#else
+    bool hasStem() const {
+        return false;
     }
 #endif
 
@@ -615,6 +627,8 @@ class Track : public QObject {
 
     // The list of cue points for the track
     QList<CuePointer> m_cuePoints;
+
+    QAtomicInt m_downbeat_offset = 0; // offset in bars
 
 #ifdef __STEM__
     // The list of stem info
