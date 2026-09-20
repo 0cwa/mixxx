@@ -22,6 +22,7 @@
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboxconstants.h"
 #include "library/rekordbox/rekordboximport.h"
+#include "library/rekordbox/rekordboxparser_test.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
@@ -1370,6 +1371,19 @@ void readAnalyze(TrackPointer track,
 }
 
 } // anonymous namespace
+
+namespace mixxx::rekordbox::test {
+
+void readAnalyzeForTest(
+        TrackPointer track,
+        mixxx::audio::SampleRate sampleRate,
+        int timingOffset,
+        bool ignoreCues,
+        const QString& anlzPath) {
+    readAnalyze(track, sampleRate, timingOffset, ignoreCues, anlzPath);
+}
+
+} // namespace mixxx::rekordbox::test
 
 RekordboxPlaylistModel::RekordboxPlaylistModel(QObject* parent,
         TrackCollectionManager* trackCollectionManager,
