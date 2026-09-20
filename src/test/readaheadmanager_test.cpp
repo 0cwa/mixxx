@@ -6,6 +6,7 @@
 #include <QtDebug>
 #include <algorithm>
 #include <array>
+#include <vector>
 
 #include "control/controlobject.h"
 #include "engine/cachingreader/cachingreader.h"
@@ -380,6 +381,45 @@ TEST_F(ReadAheadManagerTest, RetryableCacheMissDoesNotAdvanceReadAheadPosition) 
     EXPECT_EQ(10, availableResult.samplesRead);
     EXPECT_FALSE(availableResult.retryPending);
     EXPECT_DOUBLE_EQ(10.0, m_pReadAheadManager->getPlaypos());
+    ASSERT_EQ(2, m_pReader->readStartSamples().size());
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+    EXPECT_EQ(0, m_pReader->readStartSamples()[1]);
+    EXPECT_EQ(1, m_pLoopControl->queryCount());
+    EXPECT_EQ(1, m_pCueControl->queryCount());
+}
+
+TEST_F(ReadAheadManagerTest, RetryableMaximumStereoRequestRetriesIdenticalRange) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+    constexpr SINT kRequestSamples =
+            static_cast<SINT>(MAX_BUFFER_LEN) * kChannelCount;
+    std::vector<CSAMPLE> output(kRequestSamples, 1.0f);
+
+    m_pReadAheadManager->notifySeek(0);
+    m_pReader->setReadAvailable(false);
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    const auto unavailableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), kRequestSamples, kChannelCount);
+    EXPECT_EQ(0, unavailableResult.samplesRead);
+    EXPECT_TRUE(unavailableResult.retryPending);
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
+    ASSERT_EQ(1, m_pReader->readStartSamples().size());
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+
+    m_pReader->setReadAvailable(true);
+
+    const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), kRequestSamples, kChannelCount);
+    EXPECT_EQ(kRequestSamples, availableResult.samplesRead);
+    EXPECT_FALSE(availableResult.retryPending);
+    EXPECT_DOUBLE_EQ(kRequestSamples, m_pReadAheadManager->getPlaypos());
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
     ASSERT_EQ(2, m_pReader->readStartSamples().size());
     EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
     EXPECT_EQ(0, m_pReader->readStartSamples()[1]);

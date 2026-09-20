@@ -228,7 +228,8 @@ class CachingReader : public QObject {
     mixxx::SampleBuffer m_sampleBuffer;
 
     // Preallocated staging storage that preserves the caller's buffer until a
-    // retry read has completed atomically.
+    // retry read has completed atomically. Its size covers the largest
+    // MAX_BUFFER_LEN request for this reader's channel layout.
     mixxx::SampleBuffer m_retryReadBuffer;
 
     // The readable frame index range as reported by the worker.

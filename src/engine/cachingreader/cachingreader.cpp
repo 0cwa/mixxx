@@ -6,6 +6,7 @@
 #include "util/assert.h"
 #include "util/compatibility/qatomic.h"
 #include "util/counter.h"
+#include "util/defs.h"
 #include "util/logger.h"
 #include "util/sample.h"
 
@@ -61,7 +62,7 @@ CachingReader::CachingReader(const QString& group,
           m_lruCachingReaderChunk(nullptr),
           m_sampleBuffer(CachingReaderChunk::kFrames * maxSupportedChannel *
                   kNumberOfCachedChunksInMemory),
-          m_retryReadBuffer(CachingReaderChunk::kFrames * maxSupportedChannel),
+          m_retryReadBuffer(MAX_BUFFER_LEN * maxSupportedChannel),
           m_worker(group,
                   &m_chunkReadRequestFIFO,
                   &m_readerStatusUpdateFIFO,
