@@ -909,6 +909,7 @@ void DlgPrefWaveform::slotStemDisplayMode(int index) {
 
 void DlgPrefWaveform::calculateCachedWaveformDiskUsage() {
     if (!m_pLibrary) {
+        waveformDiskUsage->setText(tr("N/A"));
         return;
     }
 
