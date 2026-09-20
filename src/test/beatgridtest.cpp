@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <QtDebug>
+#include <bit>
 #include <memory>
 
 #include "audio/types.h"
+#include "proto/beats.pb.h"
 #include "track/beats.h"
 #include "track/track.h"
 
@@ -263,6 +265,89 @@ TEST(BeatGridTest, BpmLockRejectsBeatsForTrackWithoutBeats) {
     EXPECT_FALSE(pTrack->trySetBeats(pBeats));
     EXPECT_FALSE(pTrack->getBeats());
     EXPECT_TRUE(pTrack->isBpmLocked());
+}
+
+TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+
+    pTrack->setDownbeatOffset(1);
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0));
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+
+    pTrack->setDownbeatOffset(2);
+    ASSERT_TRUE(pTrack->getBeats());
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
+
+    pTrack->setBpmLocked(true);
+    pTrack->setDownbeatOffset(3);
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetRoundTrip) {
+    constexpr int kDownbeatsOffset = 3;
+    const auto pGrid = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0),
+            QString(),
+            kDownbeatsOffset);
+    ASSERT_TRUE(pGrid);
+    ASSERT_EQ(QString::fromLatin1(BEAT_GRID_2_VERSION), pGrid->getVersion());
+
+    const auto pRoundTrip = Beats::fromByteArray(
+            kSampleRate,
+            pGrid->getVersion(),
+            pGrid->getSubVersion(),
+            pGrid->toByteArray());
+    ASSERT_TRUE(pRoundTrip);
+    EXPECT_EQ(kDownbeatsOffset, pRoundTrip->getDownbeatsOffset());
+    EXPECT_EQ(pGrid->getMarkers(), pRoundTrip->getMarkers());
+    EXPECT_EQ(pGrid->getLastMarkerPosition(), pRoundTrip->getLastMarkerPosition());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetDefaultsForExistingSerialization) {
+    mixxx::track::io::BeatGrid grid;
+    grid.mutable_first_beat()->set_frame_position(0);
+    grid.mutable_bpm()->set_bpm(120.0);
+    ASSERT_FALSE(grid.has_downbeats_offset());
+
+    const auto pBeats = Beats::fromBeatGridByteArray(
+            kSampleRate,
+            QString(),
+            QByteArray::fromStdString(grid.SerializeAsString()));
+    ASSERT_TRUE(pBeats);
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, LegacySerializationIgnoresPartialProtobufDownbeatOffset) {
+    if constexpr (std::endian::native != std::endian::little) {
+        GTEST_SKIP() << "Legacy raw-double fixture uses little-endian byte order";
+    }
+
+    // These legacy BPM/first-beat doubles also begin with protobuf field 3
+    // (downbeats_offset = 3), followed by an invalid tag. The failed protobuf
+    // parse must not contribute an offset to the legacy fallback.
+    const QByteArray legacyBytes =
+            QByteArray::fromHex("1803000000005e400000000000000000");
+    const auto pBeats = Beats::fromByteArray(
+            kSampleRate,
+            QString::fromLatin1(BEAT_GRID_1_VERSION),
+            QString(),
+            legacyBytes);
+
+    ASSERT_TRUE(pBeats);
+    ASSERT_TRUE(pBeats->getLastMarkerBpm().isValid());
+    ASSERT_TRUE(pBeats->getLastMarkerPosition().isValid());
+    EXPECT_DOUBLE_EQ(120.00000000001125, pBeats->getLastMarkerBpm().value());
+    EXPECT_EQ(mixxx::audio::kStartFramePos, pBeats->getLastMarkerPosition());
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
 }
 
 }  // namespace
