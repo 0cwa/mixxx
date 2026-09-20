@@ -1,0 +1,45 @@
+{
+  "schema": "pr23-forest-state-sync/v1",
+  "generated_at": "2026-09-20T03:05:51Z",
+  "scope": "evidence-only quarantine of a mis-scoped GitHub status receipt",
+  "plan": "agent-docs/pr23-forest/FOREST_EXECUTION_PLAN_20260918.md",
+  "blocker_register": "agent-docs/pr23-forest/upstream-sync-blocker-20260919.md",
+  "rejected_artifact": {
+    "json": "pr23/forest/recovery-20260913/receipt-20260920T025931Z.json",
+    "markdown": "pr23/forest/recovery-20260913/receipt-20260920T025931Z.md",
+    "status": "rejected_quarantined",
+    "queried_repository": "mixxxdj/mixxx",
+    "in_scope_repository": "0cwa/mixxx",
+    "excluded_claim_types": [
+      "closure",
+      "head",
+      "CI"
+    ],
+    "reason": "The artifact queried the wrong repository and is not evidence for the in-scope Forest repository."
+  },
+  "preserved_valid_receipts": [
+    "pr23/forest/recovery-20260913/status-snapshot-20260920T023743Z.json",
+    "pr23/forest/recovery-20260913/20260920T042752+0200-pr53-pr58-pr61-pr62-pr63-current.json",
+    "pr23/forest/recovery-20260913/20260920T043516+0200-pr53-waveform-disk-usage.json"
+  ],
+  "next_action": {
+    "type": "fresh_explicit_repository_query",
+    "required_repository": "0cwa/mixxx",
+    "accepted_forms": [
+      "--repo 0cwa/mixxx",
+      "https://api.github.com/repos/0cwa/mixxx/..."
+    ],
+    "requirement": "Write a fresh receipt before making any head, CI, review, or closure claim."
+  },
+  "invariants": {
+    "source_changes": false,
+    "branch_changes": false,
+    "remote_or_github_actions": false,
+    "forest_completion": false,
+    "valid_0cwa_receipts_modified": false
+  },
+  "validation": {
+    "json_parse": "passed_after_write",
+    "git_diff_check": "passed_after_write"
+  }
+}
