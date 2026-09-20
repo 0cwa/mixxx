@@ -1,21 +1,44 @@
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QMap>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <thread>
 
+#include "database/mixxxdb.h"
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "library/rekordbox/rekordboxparser_test.h"
+#include "library/treeitem.h"
+#include "proto/keys.pb.h"
+#include "rekordbox_pdb_test_fixtures.h"
 #include "rekordbox_test_fixtures.h"
+#include "test/mixxxtest.h"
 #include "track/beats.h"
 #include "track/cue.h"
 #include "track/track.h"
+#include "util/db/dbconnectionpooled.h"
+#include "util/db/dbconnectionpooler.h"
 
 namespace {
+
+class RekordboxPdbImportTest : public MixxxTest {
+  public:
+    RekordboxPdbImportTest()
+            : m_mixxxDb(config(), false) {
+    }
+
+    mixxx::DbConnectionPoolPtr databasePool() const {
+        return m_mixxxDb.connectionPool();
+    }
+
+  private:
+    MixxxDb m_mixxxDb;
+};
 
 TEST(RekordboxImportTest, RejectsInvalidDatabaseIds) {
     EXPECT_FALSE(mixxx::rekordbox::isValidDatabaseId(-1));
@@ -286,6 +309,81 @@ TEST(RekordboxImportTest, SkipsTruncatedSyntheticBeatGrid) {
                 freshTrack, sampleRate, 0, ignoreCues, anlzPath);
 
         EXPECT_FALSE(freshTrack->getBeats());
+    }
+}
+
+TEST_F(RekordboxPdbImportTest, PersistsNormalizedKeyId) {
+    const auto dbConnectionPool = databasePool();
+    {
+        mixxx::DbConnectionPooler connectionPooler(dbConnectionPool);
+        const auto database = mixxx::DbConnectionPooled(dbConnectionPool);
+        ASSERT_TRUE(MixxxDb::initDatabaseSchema(database));
+
+        QSqlQuery setupQuery(database);
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_library ("
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT, rb_id INTEGER, artist TEXT,"
+                "    title TEXT, album TEXT, year INTEGER, genre TEXT, tracknumber TEXT,"
+                "    location TEXT UNIQUE, comment TEXT, duration INTEGER, bitrate TEXT,"
+                "    bpm FLOAT, key TEXT, key_id INTEGER, rating INTEGER,"
+                "    analyze_path TEXT UNIQUE, device TEXT, color INTEGER)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_playlists ("
+                "    id INTEGER PRIMARY KEY, name TEXT UNIQUE)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_playlist_tracks ("
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "    playlist_id INTEGER REFERENCES rekordbox_playlists(id),"
+                "    track_id INTEGER REFERENCES rekordbox_library(id), position INTEGER)"));
+    }
+
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+    const QString devicePath = temporaryDirectory.filePath("device");
+    const QString rekordboxPath = QDir(devicePath).filePath("PIONEER/rekordbox");
+    ASSERT_TRUE(QDir().mkpath(rekordboxPath));
+
+    const QString pdbPath = QDir(rekordboxPath).filePath("export.pdb");
+    QFile pdbFile(pdbPath);
+    ASSERT_TRUE(pdbFile.open(QIODevice::WriteOnly));
+    const QByteArray fixture = mixxx::rekordbox::test::makePdbKeyImportFixture();
+    ASSERT_EQ(fixture.size(), pdbFile.write(fixture));
+    pdbFile.close();
+
+    QString parseResult;
+    std::thread parserThread([dbConnectionPool, devicePath, &parseResult] {
+        TreeItem deviceItem(
+                QStringLiteral("TEST_DEVICE"), QVariant(QList<QString>{devicePath}));
+        parseResult = mixxx::rekordbox::test::parseDeviceDBForTest(
+                dbConnectionPool, &deviceItem);
+    });
+    parserThread.join();
+
+    ASSERT_EQ(devicePath, parseResult);
+
+    {
+        mixxx::DbConnectionPooler connectionPooler(dbConnectionPool);
+        const auto database = mixxx::DbConnectionPooled(dbConnectionPool);
+
+        QSqlQuery countQuery(database);
+        ASSERT_TRUE(countQuery.exec("SELECT COUNT(*) FROM rekordbox_library"));
+        ASSERT_TRUE(countQuery.next());
+        ASSERT_EQ(1, countQuery.value(0).toInt());
+
+        QSqlQuery resultQuery(database);
+        ASSERT_TRUE(resultQuery.exec(
+                "SELECT rb_id, device, key, key_id "
+                "FROM rekordbox_library WHERE rb_id = 100"));
+        ASSERT_TRUE(resultQuery.next());
+        EXPECT_EQ(100, resultQuery.value(0).toInt());
+        EXPECT_EQ(QStringLiteral("TEST_DEVICE"), resultQuery.value(1).toString());
+        EXPECT_EQ(QStringLiteral("C"), resultQuery.value(2).toString());
+
+        const int importedKeyId = resultQuery.value(3).toInt();
+        constexpr auto expectedKey = mixxx::track::io::key::C_MAJOR;
+        EXPECT_EQ(static_cast<int>(expectedKey), importedKeyId);
+        EXPECT_NE(42, importedKeyId);
+        EXPECT_FALSE(resultQuery.next());
     }
 }
 
