@@ -2750,6 +2750,10 @@ if(BUILD_TESTING)
   else()
     message(FATAL_ERROR "GTest: not found")
   endif()
+  # mixxx-lib is created before this directory definition. Keep the
+  # BUILD_TESTING macro identical for the library and its test executable so
+  # test-only class members cannot cause an ABI mismatch.
+  target_compile_definitions(mixxx-lib PRIVATE BUILD_TESTING)
   add_compile_definitions(BUILD_TESTING)
 endif()
 
@@ -3015,6 +3019,7 @@ if(BUILD_TESTING)
   endif()
 
   add_executable(mixxx-test ${src-mixxx-test})
+  target_compile_definitions(mixxx-test PRIVATE BUILD_TESTING)
   target_compile_definitions(
     mixxx-test
     PUBLIC RESOURCE_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/res"
@@ -5214,6 +5219,21 @@ if(MEDIAFOUNDATION)
     mixxx-lib
     PRIVATE ${MediaFoundation_LIBRARIES} Version.lib
   )
+  if(BUILD_TESTING)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/soundsourcemediafoundation_test.cpp
+    )
+    target_include_directories(
+      mixxx-test
+      SYSTEM
+      PRIVATE ${MediaFoundation_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+      mixxx-test
+      PRIVATE ${MediaFoundation_LIBRARIES} Version.lib
+    )
+  endif()
 endif()
 
 # Modplug support
