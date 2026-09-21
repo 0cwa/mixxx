@@ -15,6 +15,9 @@
 #include <QUrl>
 #include <QtDebug>
 #include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <optional>
 
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
@@ -1104,6 +1107,10 @@ void importHotCue(TrackPointer track,
         int id,
         const QString& label,
         mixxx::RgbColor::optional_t color) {
+    if (id < mixxx::kFirstHotCueIndex) {
+        return;
+    }
+
     CuePointer pCue = track->findHotcueByIndex(id);
     const mixxx::CueType type = endPosition.isValid()
             ? mixxx::CueType::Loop
@@ -1118,6 +1125,9 @@ void importHotCue(TrackPointer track,
                 startPosition,
                 endPosition);
     }
+    if (!pCue) {
+        return;
+    }
     pCue->setLabel(label);
     if (color) {
         pCue->setColor(*color);
@@ -1127,6 +1137,18 @@ void importHotCue(TrackPointer track,
 } // namespace mixxx::rekordbox
 
 namespace {
+
+std::optional<int> hotCueIndexFromRekordboxNumber(uint32_t hotCueNumber) {
+    if (hotCueNumber == 0) {
+        return std::nullopt;
+    }
+
+    const uint64_t hotCueIndex = static_cast<uint64_t>(hotCueNumber) - 1;
+    if (hotCueIndex > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<int>(hotCueIndex);
+}
 
 void readAnalyze(TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
@@ -1236,12 +1258,18 @@ void readAnalyze(TrackPointer track,
                         }
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
-                        int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
+                        const auto hotCueIndex =
+                                hotCueIndexFromRekordboxNumber(cueEntry->hot_cue());
+                        if (!hotCueIndex) {
+                            qWarning() << "Skipping invalid Rekordbox hot cue number"
+                                       << cueEntry->hot_cue();
+                            break;
+                        }
                         mixxx::rekordbox::importHotCue(
                                 track,
                                 position,
                                 mixxx::audio::kInvalidFramePos,
-                                hotCueIndex,
+                                *hotCueIndex,
                                 QString(),
                                 mixxx::RgbColor::nullopt());
                     } break;
@@ -1303,11 +1331,17 @@ void readAnalyze(TrackPointer track,
                         }
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
-                        int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
+                        const auto hotCueIndex = hotCueIndexFromRekordboxNumber(
+                                cueExtendedEntry->hot_cue());
+                        if (!hotCueIndex) {
+                            qWarning() << "Skipping invalid Rekordbox hot cue number"
+                                       << cueExtendedEntry->hot_cue();
+                            break;
+                        }
                         mixxx::rekordbox::importHotCue(track,
                                 position,
                                 mixxx::audio::kInvalidFramePos,
-                                hotCueIndex,
+                                *hotCueIndex,
                                 fromUtf16BeString(cueExtendedEntry->comment()),
                                 mixxx::RgbColor(qRgb(
                                         static_cast<int>(

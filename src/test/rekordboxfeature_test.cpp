@@ -6,6 +6,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <limits>
 
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboximport.h"
@@ -213,6 +214,141 @@ TEST(RekordboxImportTest, UpdatesFirstMatchingHotCueWithoutReordering) {
     EXPECT_EQ(mixxx::RgbColor(0x102030), first->getColor());
     EXPECT_EQ(mixxx::audio::FramePos(20), duplicate->getPosition());
     EXPECT_TRUE(duplicate->getLabel().isEmpty());
+}
+
+TEST(RekordboxImportTest, RejectsInvalidHotCueIdBeforeCreation) {
+    TrackPointer track = Track::newTemporary();
+
+    mixxx::rekordbox::importHotCue(
+            track,
+            mixxx::audio::FramePos(10),
+            mixxx::audio::kInvalidFramePos,
+            -2,
+            QStringLiteral("invalid"),
+            mixxx::RgbColor::nullopt());
+
+    EXPECT_TRUE(track->getCuePoints().isEmpty());
+}
+
+TEST(RekordboxImportTest, CreatesHotCueAtFirstIndex) {
+    TrackPointer track = Track::newTemporary();
+
+    mixxx::rekordbox::importHotCue(
+            track,
+            mixxx::audio::FramePos(10),
+            mixxx::audio::kInvalidFramePos,
+            0,
+            QStringLiteral("first"),
+            mixxx::RgbColor::nullopt());
+
+    const auto cue = track->findHotcueByIndex(0);
+    ASSERT_TRUE(cue);
+    EXPECT_EQ(1, track->getCuePoints().size());
+    EXPECT_EQ(mixxx::CueType::HotCue, cue->getType());
+    EXPECT_EQ(mixxx::audio::FramePos(10), cue->getPosition());
+    EXPECT_EQ(QStringLiteral("first"), cue->getLabel());
+}
+
+TEST(RekordboxImportTest, SkipsInvalidSyntheticHotCueNumbers) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool extended : {false, true}) {
+        for (const quint32 hotCueNumber : {
+                     quint32(0), std::numeric_limits<quint32>::max()}) {
+            SCOPED_TRACE(extended ? "extended" : "legacy");
+            SCOPED_TRACE(hotCueNumber == 0 ? "zero" : "overflow");
+
+            const QString anlzPath = temporaryDirectory.filePath(
+                    QStringLiteral("invalid-%1-%2.dat")
+                            .arg(extended ? QStringLiteral("extended")
+                                          : QStringLiteral("legacy"))
+                            .arg(hotCueNumber));
+            QFile anlzFile(anlzPath);
+            ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+            const QByteArray fixture = mixxx::rekordbox::test::makeAnlzCueFixture(
+                    extended,
+                    1,
+                    hotCueNumber);
+            ASSERT_EQ(fixture.size(), anlzFile.write(fixture));
+            anlzFile.close();
+
+            TrackPointer track = Track::newTemporary();
+            mixxx::rekordbox::test::readAnalyzeForTest(
+                    track, sampleRate, 0, false, anlzPath);
+
+            EXPECT_TRUE(track->getCuePoints().isEmpty());
+        }
+    }
+}
+
+TEST(RekordboxImportTest, PreservesSyntheticMemoryCueZeroNumber) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool extended : {false, true}) {
+        SCOPED_TRACE(extended ? "extended" : "legacy");
+
+        const QString anlzPath = temporaryDirectory.filePath(
+                extended ? QStringLiteral("memory-extended.dat")
+                         : QStringLiteral("memory-legacy.dat"));
+        QFile anlzFile(anlzPath);
+        ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+        const QByteArray fixture = mixxx::rekordbox::test::makeAnlzCueFixture(
+                extended,
+                0,
+                0,
+                1,
+                true);
+        ASSERT_EQ(fixture.size(), anlzFile.write(fixture));
+        anlzFile.close();
+
+        TrackPointer track = Track::newTemporary();
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                track, sampleRate, 0, false, anlzPath);
+
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        ASSERT_EQ(2, cuePoints.size());
+        EXPECT_EQ(mixxx::CueType::MainCue, cuePoints.at(0)->getType());
+        EXPECT_EQ(Cue::kNoHotCue, cuePoints.at(0)->getHotCue());
+        EXPECT_EQ(mixxx::CueType::Loop, cuePoints.at(1)->getType());
+        EXPECT_EQ(Cue::kNoHotCue, cuePoints.at(1)->getHotCue());
+        EXPECT_EQ(mixxx::audio::FramePos(96000), cuePoints.at(1)->getPosition());
+        EXPECT_EQ(mixxx::audio::FramePos(144000), cuePoints.at(1)->getEndPosition());
+    }
+}
+
+TEST(RekordboxImportTest, PreservesSyntheticHotCueNumberBeyondEight) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool extended : {false, true}) {
+        SCOPED_TRACE(extended ? "extended" : "legacy");
+
+        const QString anlzPath = temporaryDirectory.filePath(
+                extended ? QStringLiteral("hot-extended.dat")
+                         : QStringLiteral("hot-legacy.dat"));
+        QFile anlzFile(anlzPath);
+        ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+        const QByteArray fixture = mixxx::rekordbox::test::makeAnlzCueFixture(
+                extended,
+                1,
+                9);
+        ASSERT_EQ(fixture.size(), anlzFile.write(fixture));
+        anlzFile.close();
+
+        TrackPointer track = Track::newTemporary();
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                track, sampleRate, 0, false, anlzPath);
+
+        const QList<CuePointer> cuePoints = track->getCuePoints();
+        ASSERT_EQ(1, cuePoints.size());
+        EXPECT_EQ(mixxx::CueType::HotCue, cuePoints.at(0)->getType());
+        EXPECT_EQ(8, cuePoints.at(0)->getHotCue());
+    }
 }
 
 TEST(RekordboxImportTest, ReadsSyntheticBeatGridThroughProductionPath) {
