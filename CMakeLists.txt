@@ -3720,6 +3720,9 @@ target_include_directories(Kaitai SYSTEM PUBLIC lib/kaitai)
 target_compile_definitions(Kaitai PRIVATE KS_STR_ENCODING_NONE)
 target_link_libraries(rekordbox_metadata PRIVATE Kaitai)
 target_link_libraries(mixxx-lib PRIVATE Kaitai)
+if(BUILD_TESTING)
+  target_link_libraries(mixxx-test PRIVATE Kaitai)
+endif()
 
 # For determining MP3 timing offset cases in Rekordbox library feature
 add_library(

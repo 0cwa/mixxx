@@ -1383,6 +1383,12 @@ void readAnalyzeForTest(
     readAnalyze(track, sampleRate, timingOffset, ignoreCues, anlzPath);
 }
 
+QString parseDeviceDBForTest(
+        mixxx::DbConnectionPoolPtr dbConnectionPool,
+        TreeItem* deviceItem) {
+    return parseDeviceDB(dbConnectionPool, deviceItem);
+}
+
 } // namespace mixxx::rekordbox::test
 
 RekordboxPlaylistModel::RekordboxPlaylistModel(QObject* parent,
