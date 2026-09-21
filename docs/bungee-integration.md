@@ -12,14 +12,20 @@ engine.
 
 ```text
 EngineBuffer
-  └── m_pScaleBungee  (EngineBufferScaleBungee)
-        ├── ReadAheadManager   — pulls decoded audio frames
-        └── Bungee::Stretcher  — performs grain-based time-stretch / pitch-shift
+  ├── m_pBungeeWorker  (EngineBufferBungeeWorker)
+  │     └── owns EngineBufferScaleBungee and its published state record
+  │           ├── ReadAheadManager   — pulls decoded audio frames
+  │           └── Bungee::Stretcher  — time-stretch / pitch-shift
+  └── audio callback — borrows the scaler through the published state
 ```
 
 `EngineBufferScaleBungee` implements the `EngineBufferScale` interface.
 `EngineBuffer` selects it as `m_pScaleKeylock` when the user picks
 *"Bungee (high quality)"* from **Preferences → Sound → Keylock engine**.
+The worker prepares replacements outside the audio callback and publishes an
+immutable state record. The callback acknowledges the state it used; the worker
+retains the previous state and scaler until that acknowledgement permits safe
+reclamation. See [Immutable publication, acknowledgement, and retry](#immutable-publication-acknowledgement-and-retry).
 
 ---
 
