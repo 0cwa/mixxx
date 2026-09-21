@@ -3,6 +3,10 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 
+#ifdef BUILD_TESTING
+#include <functional>
+#endif
+
 #include "sources/soundsourceprovider.h"
 #include "util/readaheadsamplebuffer.h"
 
@@ -84,8 +88,26 @@ class SoundSourceMediaFoundation : public SoundSource {
     StreamUnitConverter m_streamUnitConverter;
 
     SINT m_currentFrameIndex;
+    // A stream tick announces a gap before the next decoded sample. Keep the
+    // timestamps until the sample arrives so a short read can be completed
+    // with silence without moving the following sample earlier in the stream.
+    SINT m_streamTickFrameIndex;
+    SINT m_streamGapEndFrameIndex;
 
     ReadAheadSampleBuffer m_sampleBuffer;
+
+#ifdef BUILD_TESTING
+    using ReadSampleProvider = std::function<HRESULT(
+            DWORD dwStreamIndex,
+            DWORD dwControlFlags,
+            DWORD* pdwStreamFlags,
+            LONGLONG* pllTimestamp,
+            IMFSample** ppSample)>;
+
+    ReadSampleProvider m_readSampleProvider;
+
+    friend class SoundSourceMediaFoundationTest;
+#endif
 };
 
 class SoundSourceProviderMediaFoundation : public SoundSourceProvider {
