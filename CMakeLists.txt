@@ -4898,15 +4898,73 @@ if(BUNGEE)
   # Mixxx source root, not from inside lib/bungee.
   if(MSVC)
     find_package(Git)
-    if(Git_FOUND)
+    if(NOT Git_FOUND)
+      message(
+        FATAL_ERROR
+        "Git is required to apply the Bungee MSVC compatibility patch."
+      )
+    endif()
+
+    set(
+      BUNGEE_MSVC_PATCH
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/0001-MSVC-compatibility.patch"
+    )
+    execute_process(
+      COMMAND
+        "${GIT_EXECUTABLE}" apply --ignore-whitespace --check
+        "${BUNGEE_MSVC_PATCH}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      RESULT_VARIABLE BUNGEE_MSVC_PATCH_CHECK_RESULT
+      OUTPUT_VARIABLE BUNGEE_MSVC_PATCH_CHECK_OUTPUT
+      ERROR_VARIABLE BUNGEE_MSVC_PATCH_CHECK_ERROR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_STRIP_TRAILING_WHITESPACE
+    )
+
+    if(BUNGEE_MSVC_PATCH_CHECK_RESULT EQUAL 0)
       execute_process(
         COMMAND
-          ${GIT_EXECUTABLE} apply --ignore-whitespace
-          ${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/0001-MSVC-compatibility.patch
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        ERROR_QUIET
-        OUTPUT_QUIET
+          "${GIT_EXECUTABLE}" apply --ignore-whitespace "${BUNGEE_MSVC_PATCH}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE BUNGEE_MSVC_PATCH_APPLY_RESULT
+        OUTPUT_VARIABLE BUNGEE_MSVC_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE BUNGEE_MSVC_PATCH_APPLY_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
       )
+      if(NOT BUNGEE_MSVC_PATCH_APPLY_RESULT EQUAL 0)
+        message(
+          FATAL_ERROR
+          "Failed to apply the Bungee MSVC compatibility patch.\n"
+          "${BUNGEE_MSVC_PATCH_APPLY_ERROR}\n"
+          "${BUNGEE_MSVC_PATCH_APPLY_OUTPUT}"
+        )
+      endif()
+    else()
+      execute_process(
+        COMMAND
+          "${GIT_EXECUTABLE}" apply --ignore-whitespace --reverse --check
+          "${BUNGEE_MSVC_PATCH}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE BUNGEE_MSVC_PATCH_REVERSE_CHECK_RESULT
+        OUTPUT_VARIABLE BUNGEE_MSVC_PATCH_REVERSE_CHECK_OUTPUT
+        ERROR_VARIABLE BUNGEE_MSVC_PATCH_REVERSE_CHECK_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
+      )
+      if(BUNGEE_MSVC_PATCH_REVERSE_CHECK_RESULT EQUAL 0)
+        message(STATUS "Bungee MSVC compatibility patch is already applied")
+      else()
+        message(
+          FATAL_ERROR
+          "The Bungee MSVC compatibility patch is neither cleanly applicable "
+          "nor already applied.\n"
+          "Forward check:\n${BUNGEE_MSVC_PATCH_CHECK_ERROR}\n"
+          "${BUNGEE_MSVC_PATCH_CHECK_OUTPUT}\n"
+          "Reverse check:\n${BUNGEE_MSVC_PATCH_REVERSE_CHECK_ERROR}\n"
+          "${BUNGEE_MSVC_PATCH_REVERSE_CHECK_OUTPUT}"
+        )
+      endif()
     endif()
   endif()
 
