@@ -7,9 +7,12 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <exception>
+#include <string>
 #include <thread>
 
 #include "database/mixxxdb.h"
+#include "kaitai/exceptions.h"
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "library/rekordbox/rekordboxparser_test.h"
@@ -26,6 +29,8 @@
 
 namespace {
 
+using PdbRootValidationError = kaitai::validation_not_equal_error<std::string>;
+
 class RekordboxPdbImportTest : public MixxxTest {
   public:
     RekordboxPdbImportTest()
@@ -39,6 +44,32 @@ class RekordboxPdbImportTest : public MixxxTest {
   private:
     MixxxDb m_mixxxDb;
 };
+
+QString parseDeviceDBOnThread(
+        mixxx::DbConnectionPoolPtr dbConnectionPool,
+        const QString& devicePath) {
+    QString parseResult;
+    std::exception_ptr parserException;
+    std::thread parserThread([dbConnectionPool,
+                                     devicePath,
+                                     &parseResult,
+                                     &parserException] {
+        try {
+            TreeItem deviceItem(
+                    QStringLiteral("TEST_DEVICE"),
+                    QVariant(QList<QString>{devicePath}));
+            parseResult = mixxx::rekordbox::test::parseDeviceDBForTest(
+                    dbConnectionPool, &deviceItem);
+        } catch (...) {
+            parserException = std::current_exception();
+        }
+    });
+    parserThread.join();
+    if (parserException) {
+        std::rethrow_exception(parserException);
+    }
+    return parseResult;
+}
 
 TEST(RekordboxImportTest, RejectsInvalidDatabaseIds) {
     EXPECT_FALSE(mixxx::rekordbox::isValidDatabaseId(-1));
@@ -350,14 +381,7 @@ TEST_F(RekordboxPdbImportTest, PersistsNormalizedKeyId) {
     ASSERT_EQ(fixture.size(), pdbFile.write(fixture));
     pdbFile.close();
 
-    QString parseResult;
-    std::thread parserThread([dbConnectionPool, devicePath, &parseResult] {
-        TreeItem deviceItem(
-                QStringLiteral("TEST_DEVICE"), QVariant(QList<QString>{devicePath}));
-        parseResult = mixxx::rekordbox::test::parseDeviceDBForTest(
-                dbConnectionPool, &deviceItem);
-    });
-    parserThread.join();
+    const QString parseResult = parseDeviceDBOnThread(dbConnectionPool, devicePath);
 
     ASSERT_EQ(devicePath, parseResult);
 
@@ -385,6 +409,48 @@ TEST_F(RekordboxPdbImportTest, PersistsNormalizedKeyId) {
         EXPECT_NE(42, importedKeyId);
         EXPECT_FALSE(resultQuery.next());
     }
+}
+
+TEST_F(RekordboxPdbImportTest, PropagatesMalformedParserExceptionFromWorker) {
+    const auto dbConnectionPool = databasePool();
+    {
+        mixxx::DbConnectionPooler connectionPooler(dbConnectionPool);
+        const auto database = mixxx::DbConnectionPooled(dbConnectionPool);
+        ASSERT_TRUE(MixxxDb::initDatabaseSchema(database));
+
+        QSqlQuery setupQuery(database);
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_library ("
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT, rb_id INTEGER, artist TEXT,"
+                "    title TEXT, album TEXT, year INTEGER, genre TEXT, tracknumber TEXT,"
+                "    location TEXT UNIQUE, comment TEXT, duration INTEGER, bitrate TEXT,"
+                "    bpm FLOAT, key TEXT, key_id INTEGER, rating INTEGER,"
+                "    analyze_path TEXT UNIQUE, device TEXT, color INTEGER)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_playlists ("
+                "    id INTEGER PRIMARY KEY, name TEXT UNIQUE)"));
+        ASSERT_TRUE(setupQuery.exec(
+                "CREATE TABLE rekordbox_playlist_tracks ("
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "    playlist_id INTEGER REFERENCES rekordbox_playlists(id),"
+                "    track_id INTEGER REFERENCES rekordbox_library(id), position INTEGER)"));
+    }
+
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+    const QString devicePath = temporaryDirectory.filePath("device");
+    const QString rekordboxPath = QDir(devicePath).filePath("PIONEER/rekordbox");
+    ASSERT_TRUE(QDir().mkpath(rekordboxPath));
+
+    const QString pdbPath = QDir(rekordboxPath).filePath("export.pdb");
+    QFile pdbFile(pdbPath);
+    ASSERT_TRUE(pdbFile.open(QIODevice::WriteOnly));
+    QByteArray malformedFixture = mixxx::rekordbox::test::makePdbKeyImportFixture();
+    malformedFixture[0x18] = '\x01';
+    ASSERT_EQ(malformedFixture.size(), pdbFile.write(malformedFixture));
+    pdbFile.close();
+
+    EXPECT_THROW(parseDeviceDBOnThread(dbConnectionPool, devicePath), PdbRootValidationError);
 }
 
 } // namespace
