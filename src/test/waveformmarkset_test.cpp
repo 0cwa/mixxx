@@ -154,6 +154,7 @@ TEST(WaveformMarkSetTest, CountdownSelectionHonorsIndependentCategories) {
 
 TEST(WaveformMarkSetTest, CountdownSelectionUsesNearestFutureVisibleMark) {
     constexpr double kNoNextMark = 10000.0;
+    constexpr double kEarlierDefaultNextMarkPosition = 100.0;
     constexpr double kPlayPosition = 100.0;
     WaveformMarkSet marks;
     marks.addMark(makeFixedMark({}, QStringLiteral("memory_cue"), 100.5));
@@ -166,6 +167,16 @@ TEST(WaveformMarkSetTest, CountdownSelectionUsesNearestFutureVisibleMark) {
     EXPECT_DOUBLE_EQ(101.0,
             marks.findNextCountdownMarkPosition(
                     kPlayPosition, kNoNextMark, false, true, false, false));
+
+    // A pre-existing countdown boundary takes precedence over later cue marks.
+    EXPECT_DOUBLE_EQ(kEarlierDefaultNextMarkPosition,
+            marks.findNextCountdownMarkPosition(
+                    kPlayPosition,
+                    kEarlierDefaultNextMarkPosition,
+                    false,
+                    true,
+                    false,
+                    false));
 }
 
 class WaveformMarkVisibilityTest : public MixxxTest {};
