@@ -41,10 +41,15 @@ pre-commit setup, Git workflow, and pull-request guidance.
 - **ControlObject/ControlProxy**: `[Group], key_name` inter-component
   communication.
 - **Engine thread**: real-time audio;
-no allocations or locks.It may emit Qt signals but cannot receive them.- **`parented_ptr`/`make_parented`** : Qt object - tree ownership.An object must have a parent before `parented_ptr` is destroyed.
+  no allocations or locks. It may emit Qt signals but cannot receive them.
+- **`parented_ptr`/`make_parented`** : Qt object - tree ownership.
+  An object must have a parent before `parented_ptr` is destroyed.
 
-                                                                                                                          ##Project layout
+## Project layout
 
-```text src / C++ source(engine /, controllers /, library /, mixer /, effects /, qml /, preferences /, util /, test /) res
-                        / Resources(controllers / JS / XML, skins /, qml /) cmake / CMake modules tools / Python helper scripts
+```text
+src / C++ source(engine /, controllers /, library /, mixer /, effects /, qml /, preferences /, util /, test /)
+res / Resources(controllers / JS / XML, skins /, qml /)
+cmake / CMake modules
+tools / Python helper scripts
 ```
