@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   diagnostic:
-    if: github.repository == '0cwa/mixxx' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/diagnostic/pr78-mf-alac-20260921'
+    if: github.repository == '0cwa/mixxx' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/diagnostic/pr78-qt-offscreen-20261002'
     runs-on: windows-2025-vs2026
     timeout-minutes: 45
     defaults:
@@ -31,10 +31,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $base = '8d43f359f306c26e042a2ba934daa6f762d7a204'
+          $priorDiagnostic = '927e5eaa9b71b7b9048cae96080ee5a6161e984b'
+          $priorTree = '86474e928ed542b42b1e97190df0bf02b57fbd72'
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:GITHUB_SHA) { throw 'Checkout mismatch' }
           $parent = git rev-parse HEAD^
-          if ($LASTEXITCODE -ne 0 -or $parent -ne $base) { throw 'Expected one diagnostic commit on PR78' }
+          if ($LASTEXITCODE -ne 0 -or $parent -ne $priorDiagnostic) { throw 'Expected reviewed prior diagnostic commit' }
+          $actualPriorTree = git rev-parse "$priorDiagnostic^{tree}"
+          if ($LASTEXITCODE -ne 0 -or $actualPriorTree -ne $priorTree) { throw 'Prior diagnostic tree mismatch' }
+          $priorParent = git rev-parse HEAD^^
+          if ($LASTEXITCODE -ne 0 -or $priorParent -ne $base) { throw 'Expected exactly two diagnostic commits atop PR78' }
           $allowed = @('.github/workflows/develop.yml', 'src/test/soundproxy_test.cpp', 'src/sources/soundsourcemediafoundation.cpp')
           $changed = @(git diff --name-only $base HEAD)
           if ($LASTEXITCODE -ne 0 -or @(Compare-Object $allowed $changed).Count -ne 0) { throw 'Unexpected diagnostic paths' }
@@ -75,6 +81,22 @@ jobs:
         env:
           CC: cl
           CXX: cl
+
+      - name: Stage the configured Qt offscreen platform plugin
+        run: |
+          # CMakeLists installs Qt6::QOffscreenIntegrationPlugin to platforms
+          # as part of the applocal component on Windows. Stage only that
+          # configured runtime component for CTest's PRE_TEST discovery.
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'build\qt-offscreen-stage'
+          cmake --install build --config RelWithDebInfo --component applocal --prefix $stage
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $platformPath = Join-Path $stage 'platforms'
+          $plugin = Join-Path $platformPath 'qoffscreen.dll'
+          if (-not (Test-Path -LiteralPath $plugin -PathType Leaf)) { throw "CMake applocal install did not stage $plugin" }
+          "QT_QPA_PLATFORM=offscreen" >> $env:GITHUB_ENV
+          "QT_QPA_PLATFORM_PLUGIN_PATH=$platformPath" >> $env:GITHUB_ENV
+          Get-FileHash -Algorithm SHA256 $plugin
+          Write-Output "Qt offscreen platform plugin: $plugin"
 
       - name: Discover exactly one diagnostic test
         working-directory: build
