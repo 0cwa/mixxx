@@ -1,91 +1,109 @@
-name: Pull request or branch build
+name: PR78 Windows seek diagnostic (not acceptance)
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
-  push:
-    branches:
-      - "*"
-      - "!main"
-      - "![0-9].[0-9]"
   workflow_dispatch:
 
 permissions:
-  contents: read #  to fetch code (actions/checkout)
-  checks: write #  to create new checks (coverallsapp/github-action)
+  contents: read
+
+concurrency:
+  group: pr78-windows-seek-diagnostic
+  cancel-in-progress: false
 
 jobs:
-  stop-build:
-    name: Check if build should be stopped
-    runs-on: ubuntu-slim
-    outputs:
-      result: ${{ github.event_name == 'push' && steps.stop-build.outputs.result || 'false' }}
+  diagnostic:
+    if: github.repository == '0cwa/mixxx' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/diagnostic/pr78-mf-alac-20260921'
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TMPDIR: ${{ github.workspace }}/tmp
     steps:
-      - name: Check if there is an open PR for this branch
-        id: stop-build
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/github-script@v9
-        env:
-          ORGANIZATION: mixxxdj
-          REPOSITORY: mixxx
+      - uses: actions/checkout@v7
         with:
-          script: |
-            try {
-              const branch = context.ref.replace('refs/heads/', '');
-              const { data: pullRequests } = await github.rest.pulls.list({
-                owner: process.env.ORGANIZATION,
-                repo: process.env.REPOSITORY,
-                head: `${context.repo.owner}:${branch}`,
-                state: 'open'
-              });
-              console.log(`There is ${pullRequests.length} PR open upstream for branch '${context.repo.owner}:${branch}'`);
-              return pullRequests.length != 0;
-            } catch (error) {
-              console.log(`Didn't find a PR for branch '${context.repo.owner}:${branch}' on '${process.env.ORGANIZATION}/${process.env.REPOSITORY}'.`);
-              return false;
-            }
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
-  pre-commit:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/pre-commit.yml
-    with:
-      pull_request: ${{ github.event_name == 'pull_request' }}
+      - name: Verify diagnostic ancestry and exact checkout
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = '8d43f359f306c26e042a2ba934daa6f762d7a204'
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:GITHUB_SHA) { throw 'Checkout mismatch' }
+          $parent = git rev-parse HEAD^
+          if ($LASTEXITCODE -ne 0 -or $parent -ne $base) { throw 'Expected one diagnostic commit on PR78' }
+          $allowed = @('.github/workflows/develop.yml', 'src/test/soundproxy_test.cpp', 'src/sources/soundsourcemediafoundation.cpp')
+          $changed = @(git diff --name-only $base HEAD)
+          if ($LASTEXITCODE -ne 0 -or @(Compare-Object $allowed $changed).Count -ne 0) { throw 'Unexpected diagnostic paths' }
+          $fixture = 'src/test/id3-test-data/cover-test-øé~ł€˚-itunes-12.7.0-alac.m4a'
+          if ((git hash-object $fixture) -ne '781512080d633ad5866214df92a8bdd0c22fa47b') { throw 'Fixture changed' }
+          Write-Output "DIAG checkout=$actual base=$base event=$env:GITHUB_EVENT_NAME ref=$env:GITHUB_REF"
+          git diff --stat $base HEAD
+          New-Item -ItemType Directory -Force $env:TMPDIR | Out-Null
 
-  checks:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/checks.yml
+      - name: Set up CMake (same version family as failing job)
+        uses: jwlawson/actions-setup-cmake@v2.2
+        with:
+          cmake-version: "3.30.x"
 
-  git:
-    if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/git.yml
+      - name: Set up MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-  build:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/build.yml
-    with:
-      branch: ${{ github.head_ref || github.ref_name }}
-      ref: ${{ github.ref }}
+      - name: Set up unchanged Windows dependency environment
+        shell: cmd
+        run: tools\windows_buildenv.bat setup
+        env:
+          BUILDENV_BASEPATH: C:\buildenv
+          BUILDENV_RELEASE: TRUE
 
-  # This task is used as a probe for auto merge
-  # In the future, it could also be used to perform a status update (e.g once the whole CI is passing + is ready for review, add a specific label such as `need review`)
-  ready:
-    name: Ready to merge
-    needs:
-      - pre-commit
-      - checks
-      - git
-      - build
-    runs-on: ubuntu-slim
-    steps:
-      - name: Ready to go
-        run: "exit 0"
+      - name: Configure with PR78 Windows flags
+        run: |
+          New-Item -ItemType Directory build | Out-Null
+          cmake -S . -B build -DBULK=ON -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DQML=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=x64-windows-release -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="" -DWARNINGS_FATAL=ON -DDEBUG_ASSERTIONS_FATAL=OFF -DBATTERY=ON -DBROADCAST=ON -DDOWNLOAD_MANUAL=ON -DHID=ON -DKEYFINDER=ON -DLILV=ON -DOPUS=ON -DQTKEYCHAIN=ON -DVINYLCONTROL=ON -DCMAKE_VERBOSE_MAKEFILE=OFF -L
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          CC: cl
+          CXX: cl
+
+      - name: Build test target only (no packaging)
+        run: cmake --build build --config RelWithDebInfo --target mixxx-test
+        env:
+          CC: cl
+          CXX: cl
+
+      - name: Discover exactly one diagnostic test
+        working-directory: build
+        run: |
+          $listing = ctest --show-only=json-v1 -R '^SoundSourceProxyTest.seekForwardBackward$'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $inventory = ($listing -join "`n") | ConvertFrom-Json
+          if (@($inventory.tests).Count -ne 1 -or $inventory.tests[0].name -ne 'SoundSourceProxyTest.seekForwardBackward') { throw 'Wrong test selection' }
+          $exe = $inventory.tests[0].command[0]
+          Get-FileHash -Algorithm SHA256 $exe
+          Write-Output ($inventory.tests[0] | ConvertTo-Json -Depth 8)
+
+      - name: Diagnostic only — one test, 120-second observation budget
+        working-directory: build
+        timeout-minutes: 3
+        env:
+          MIXXX_MF_DIAGNOSTIC: "1"
+          CTEST_PARALLEL_LEVEL: 1
+          CTEST_OUTPUT_ON_FAILURE: 1
+          GTEST_COLOR: 0
+        run: |
+          # Not acceptance: original build.yml retains its 45-second timeout.
+          # -V streams flushed progress even if the process is killed.
+          ctest -V --timeout 120 -R '^SoundSourceProxyTest.seekForwardBackward$'
+          exit $LASTEXITCODE
+
+      - name: Print diagnostic tail only
+        if: always()
+        run: |
+          if (Test-Path build/Testing/Temporary/LastTest.log) {
+            Get-Content build/Testing/Temporary/LastTest.log -Tail 100
+          }

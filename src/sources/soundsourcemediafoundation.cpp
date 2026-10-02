@@ -4,6 +4,8 @@
 #include <mferror.h>
 #include <propvarutil.h>
 
+#include <cstdio>
+
 #include "util/logger.h"
 #include "util/sample.h"
 
@@ -12,6 +14,31 @@ namespace {
 const mixxx::Logger kLogger("SoundSourceMediaFoundation");
 
 constexpr SINT kUnknownFrameIndex = -1;
+
+// Temporary fork-only diagnostics. Never merge into a production branch.
+void traceMediaRead(const char* operation,
+        SINT current,
+        SINT remaining = 0,
+        HRESULT status = S_OK,
+        DWORD flags = 0,
+        LONGLONG timestamp = 0,
+        bool sample = false) {
+    if (!qEnvironmentVariableIsSet("MIXXX_MF_DIAGNOSTIC")) {
+        return;
+    }
+    std::fprintf(stderr,
+            "MF_DIAG ms=%llu op=%s current=%lld remaining=%lld hr=%ld "
+            "flags=%lu timestamp=%lld sample=%d\n",
+            static_cast<unsigned long long>(GetTickCount64()),
+            operation,
+            static_cast<long long>(current),
+            static_cast<long long>(remaining),
+            static_cast<long>(status),
+            static_cast<unsigned long>(flags),
+            static_cast<long long>(timestamp),
+            static_cast<int>(sample));
+    std::fflush(stderr);
+}
 
 constexpr SINT kBytesPerSample = sizeof(CSAMPLE);
 constexpr SINT kBitsPerSample = kBytesPerSample * 8;
@@ -243,8 +270,17 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
         HRESULT hrInitPropVariantFromInt64 =
                 InitPropVariantFromInt64(seekPos, &prop);
         DEBUG_ASSERT(SUCCEEDED(hrInitPropVariantFromInt64)); // never fails
+        if (frameIndex >= 1300000) {
+            traceMediaRead("SetCurrentPosition-enter", frameIndex, seekIndex);
+        }
         HRESULT hrSetCurrentPosition =
                 m_pSourceReader->SetCurrentPosition(GUID_NULL, prop);
+        if (frameIndex >= 1300000) {
+            traceMediaRead("SetCurrentPosition-exit",
+                    m_currentFrameIndex,
+                    seekIndex,
+                    hrSetCurrentPosition);
+        }
         PropVariantClear(&prop);
         if (SUCCEEDED(hrSetCurrentPosition)) {
             // NOTE(uklotzde): After SetCurrentPosition() the actual position
@@ -308,6 +344,16 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
 ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         const WritableSampleFrames& writableSampleFrames) {
     const SINT firstFrameIndex = writableSampleFrames.frameIndexRange().start();
+    const bool diagnostic = firstFrameIndex >= 1300000 &&
+            qEnvironmentVariableIsSet("MIXXX_MF_DIAGNOSTIC");
+    if (diagnostic) {
+        traceMediaRead("read-enter",
+                m_currentFrameIndex,
+                writableSampleFrames.frameLength(),
+                S_OK,
+                0,
+                firstFrameIndex);
+    }
     if (m_currentFrameIndex != kUnknownFrameIndex) {
         seekSampleFrame(firstFrameIndex);
         if (m_currentFrameIndex != firstFrameIndex) {
@@ -364,6 +410,9 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         DWORD dwFlags = 0;
         LONGLONG streamPos = 0;
         IMFSample* pSample = nullptr;
+        if (diagnostic) {
+            traceMediaRead("ReadSample-enter", m_currentFrameIndex, numberOfFramesRemaining);
+        }
         HRESULT hrReadSample =
                 m_pSourceReader->ReadSample(
                         kStreamIndex, // [in]  DWORD dwStreamIndex,
@@ -372,6 +421,15 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                         &dwFlags,     // [out] DWORD *pdwStreamFlags,
                         &streamPos,   // [out] LONGLONG *pllTimestamp,
                         &pSample);    // [out] IMFSample **ppSample
+        if (diagnostic) {
+            traceMediaRead("ReadSample-exit",
+                    m_currentFrameIndex,
+                    numberOfFramesRemaining,
+                    hrReadSample,
+                    dwFlags,
+                    streamPos,
+                    pSample != nullptr);
+        }
         if (FAILED(hrReadSample)) {
             kLogger.warning()
                     << "IMFSourceReader::ReadSample() failed"
@@ -431,8 +489,17 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         }
 
         DWORD dwSampleBufferCount = 0;
+        if (diagnostic) {
+            traceMediaRead("GetBufferCount-enter", m_currentFrameIndex);
+        }
         HRESULT hrGetBufferCount =
                 pSample->GetBufferCount(&dwSampleBufferCount);
+        if (diagnostic) {
+            traceMediaRead("GetBufferCount-exit",
+                    m_currentFrameIndex,
+                    dwSampleBufferCount,
+                    hrGetBufferCount);
+        }
         if (FAILED(hrGetBufferCount)) {
             kLogger.warning()
                     << "IMFSample::GetBufferCount() failed"
@@ -443,7 +510,16 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         }
 
         DWORD dwSampleTotalLengthInBytes = 0;
+        if (diagnostic) {
+            traceMediaRead("GetTotalLength-enter", m_currentFrameIndex);
+        }
         HRESULT hrGetTotalLength = pSample->GetTotalLength(&dwSampleTotalLengthInBytes);
+        if (diagnostic) {
+            traceMediaRead("GetTotalLength-exit",
+                    m_currentFrameIndex,
+                    dwSampleTotalLengthInBytes,
+                    hrGetTotalLength);
+        }
         if (FAILED(hrGetTotalLength)) {
             kLogger.warning()
                     << "IMFSample::GetTotalLength() failed"
@@ -473,7 +549,16 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         DWORD dwSampleBufferIndex = 0;
         while (dwSampleBufferIndex < dwSampleBufferCount) {
             IMFMediaBuffer* pMediaBuffer = nullptr;
+            if (diagnostic) {
+                traceMediaRead("GetBufferByIndex-enter", m_currentFrameIndex, dwSampleBufferIndex);
+            }
             HRESULT hrGetBufferByIndex = pSample->GetBufferByIndex(dwSampleBufferIndex, &pMediaBuffer);
+            if (diagnostic) {
+                traceMediaRead("GetBufferByIndex-exit",
+                        m_currentFrameIndex,
+                        dwSampleBufferIndex,
+                        hrGetBufferByIndex);
+            }
             if (FAILED(hrGetBufferByIndex)) {
                 kLogger.warning()
                         << "IMFSample::GetBufferByIndex() failed"
@@ -485,10 +570,19 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
 
             CSAMPLE* pLockedSampleBuffer = nullptr;
             DWORD lockedSampleBufferLengthInBytes = 0;
+            if (diagnostic) {
+                traceMediaRead("Lock-enter", m_currentFrameIndex);
+            }
             HRESULT hrLock = pMediaBuffer->Lock(
                     reinterpret_cast<quint8**>(&pLockedSampleBuffer),
                     nullptr,
                     &lockedSampleBufferLengthInBytes);
+            if (diagnostic) {
+                traceMediaRead("Lock-exit",
+                        m_currentFrameIndex,
+                        lockedSampleBufferLengthInBytes,
+                        hrLock);
+            }
             if (FAILED(hrLock)) {
                 kLogger.warning()
                         << "IMFMediaBuffer::Lock() failed"
@@ -527,17 +621,38 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     writableSlice.data(),
                     pLockedSampleBuffer,
                     writableSlice.length());
+            if (diagnostic) {
+                traceMediaRead("Unlock-enter", m_currentFrameIndex, numberOfFramesRemaining);
+            }
             HRESULT hrUnlock = pMediaBuffer->Unlock();
+            if (diagnostic) {
+                traceMediaRead("Unlock-exit",
+                        m_currentFrameIndex,
+                        numberOfFramesRemaining,
+                        hrUnlock);
+            }
             VERIFY_OR_DEBUG_ASSERT(SUCCEEDED(hrUnlock)) {
                 kLogger.warning()
                         << "IMFMediaBuffer::Unlock() failed"
                         << hrUnlock;
                 // ignore and continue
             }
+            if (diagnostic) {
+                traceMediaRead("buffer-release-enter", m_currentFrameIndex);
+            }
             safeRelease(&pMediaBuffer);
+            if (diagnostic) {
+                traceMediaRead("buffer-release-exit", m_currentFrameIndex);
+            }
             ++dwSampleBufferIndex;
         }
+        if (diagnostic) {
+            traceMediaRead("sample-release-enter", m_currentFrameIndex);
+        }
         safeRelease(&pSample);
+        if (diagnostic) {
+            traceMediaRead("sample-release-exit", m_currentFrameIndex, numberOfFramesRemaining);
+        }
         if (dwSampleBufferIndex < dwSampleBufferCount) {
             // Failed to read data from all buffers -> kill the reader
             kLogger.warning()

@@ -1,6 +1,8 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QtDebug>
+#include <chrono>
+#include <cstdio>
 
 #include "analyzer/analyzersilence.h"
 #include "sources/audiosourcestereoproxy.h"
@@ -345,6 +347,8 @@ TEST_F(SoundSourceProxyTest, TOAL_TPE2) {
 
 TEST_F(SoundSourceProxyTest, seekForwardBackward) {
     constexpr SINT kReadFrameCount = 10000;
+    const auto diagnosticStart = std::chrono::steady_clock::now();
+    const bool diagnostic = qEnvironmentVariableIsSet("MIXXX_MF_DIAGNOSTIC");
 
     const QStringList filePaths = getFilePaths();
     for (const auto& filePath : filePaths) {
@@ -355,9 +359,30 @@ TEST_F(SoundSourceProxyTest, seekForwardBackward) {
         const auto providerRegistrations =
                 SoundSourceProxy::allProviderRegistrationsForUrl(fileUrl);
         for (const auto& providerRegistration : providerRegistrations) {
+            const auto trace = [&](const char* operation, SINT frame) {
+                if (!diagnostic) {
+                    return;
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - diagnosticStart);
+                std::fprintf(stderr,
+                        "SEEK_DIAG ms=%lld op=%s frame=%lld file=%s "
+                        "provider=%s\n",
+                        static_cast<long long>(elapsed.count()),
+                        operation,
+                        static_cast<long long>(frame),
+                        filePath.toUtf8().constData(),
+                        providerRegistration.getProvider()
+                                ->getDisplayName()
+                                .toUtf8()
+                                .constData());
+                std::fflush(stderr);
+            };
+            trace("continuous-open-enter", 0);
             mixxx::AudioSourcePointer pContReadSource = openAudioSource(
                     filePath,
                     providerRegistration.getProvider());
+            trace("continuous-open-exit", 0);
 
             // Obtaining an AudioSource may fail for unsupported file formats,
             // even if the corresponding file extension is supported, e.g.
@@ -378,11 +403,13 @@ TEST_F(SoundSourceProxyTest, seekForwardBackward) {
                 qDebug() << "Seeking and reading" << readFrameIndexRange;
 
                 // Read next chunk of frames for Cont source without seeking
+                trace("continuous-read-enter", contFrameIndex);
                 const auto contSampleFrames =
                         pContReadSource->readSampleFrames(
                                 mixxx::WritableSampleFrames(
                                         readFrameIndexRange,
                                         mixxx::SampleBuffer::WritableSlice(contReadData)));
+                trace("continuous-read-exit", contSampleFrames.frameIndexRange().end());
                 ASSERT_FALSE(contSampleFrames.frameIndexRange().empty());
                 ASSERT_TRUE(contSampleFrames.frameIndexRange().isSubrangeOf(readFrameIndexRange));
                 ASSERT_EQ(contSampleFrames.frameIndexRange().start(), readFrameIndexRange.start());
@@ -391,9 +418,11 @@ TEST_F(SoundSourceProxyTest, seekForwardBackward) {
                 const SINT sampleCount =
                         pContReadSource->getSignalInfo().frames2samples(contSampleFrames.frameLength());
 
+                trace("seek-open-enter", readFrameIndexRange.start());
                 mixxx::AudioSourcePointer pSeekReadSource = openAudioSource(
                         filePath,
                         providerRegistration.getProvider());
+                trace("seek-open-exit", readFrameIndexRange.start());
 
                 ASSERT_FALSE(!pSeekReadSource);
                 ASSERT_EQ(
@@ -402,11 +431,13 @@ TEST_F(SoundSourceProxyTest, seekForwardBackward) {
                 ASSERT_EQ(pContReadSource->frameIndexRange(), pSeekReadSource->frameIndexRange());
 
                 // Seek source to next chunk and read it
+                trace("forward-read-enter", readFrameIndexRange.start());
                 auto seekSampleFrames =
                         pSeekReadSource->readSampleFrames(
                                 mixxx::WritableSampleFrames(
                                         readFrameIndexRange,
                                         mixxx::SampleBuffer::WritableSlice(seekReadData)));
+                trace("forward-read-exit", seekSampleFrames.frameIndexRange().end());
 
                 // Both buffers should be equal
                 ASSERT_EQ(contSampleFrames.frameIndexRange(), seekSampleFrames.frameIndexRange());
@@ -417,11 +448,13 @@ TEST_F(SoundSourceProxyTest, seekForwardBackward) {
                         "Decoding mismatch after seeking forward");
 
                 // Seek backwards to beginning of chunk and read again
+                trace("backward-read-enter", readFrameIndexRange.start());
                 seekSampleFrames =
                         pSeekReadSource->readSampleFrames(
                                 mixxx::WritableSampleFrames(
                                         readFrameIndexRange,
                                         mixxx::SampleBuffer::WritableSlice(seekReadData)));
+                trace("backward-read-exit", seekSampleFrames.frameIndexRange().end());
 
                 // Both buffers should again be equal
                 ASSERT_EQ(contSampleFrames.frameIndexRange(), seekSampleFrames.frameIndexRange());
@@ -430,7 +463,13 @@ TEST_F(SoundSourceProxyTest, seekForwardBackward) {
                         &contReadData[0],
                         &seekReadData[0],
                         "Decoding mismatch after seeking backward");
+                trace("seek-close-enter", readFrameIndexRange.start());
+                pSeekReadSource.reset();
+                trace("seek-close-exit", readFrameIndexRange.start());
             }
+            trace("continuous-close-enter", contFrameIndex);
+            pContReadSource.reset();
+            trace("continuous-close-exit", contFrameIndex);
         }
     }
 }
