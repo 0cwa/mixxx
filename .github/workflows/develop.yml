@@ -1,91 +1,330 @@
-name: Pull request or branch build
+# Bounded origin trace for one retained PR47 Windows ARM64 failure.
+# Manual dispatch only; this workflow has no matrix or full-suite fallback.
+name: PR47 Windows ARM64 failure-origin case
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
-  push:
-    branches:
-      - "*"
-      - "!main"
-      - "![0-9].[0-9]"
   workflow_dispatch:
 
 permissions:
-  contents: read #  to fetch code (actions/checkout)
-  checks: write #  to create new checks (coverallsapp/github-action)
+  contents: read
 
 jobs:
-  stop-build:
-    name: Check if build should be stopped
-    runs-on: ubuntu-slim
-    outputs:
-      result: ${{ github.event_name == 'push' && steps.stop-build.outputs.result || 'false' }}
+  pr47-arm64-one-case:
+    name: Windows 11 VS2026 ARM64 / one SoundSourceProxy test
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 90
     steps:
-      - name: Check if there is an open PR for this branch
-        id: stop-build
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/github-script@v9
-        env:
-          ORGANIZATION: mixxxdj
-          REPOSITORY: mixxx
+      - name: Check out the selected diagnostic commit
+        uses: actions/checkout@v7
         with:
-          script: |
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Prove the exact diagnostic source before setup
+        shell: pwsh
+        run: |
+          $outDir = 'tmp/pr47-arm64-origin-diagnostic'
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $head = (git rev-parse HEAD).Trim()
+          $eventSha = $env:GITHUB_SHA
+          $commitParts = ((git rev-list --parents -n 1 HEAD).Trim()) -split '\s+'
+          $parent = if ($commitParts.Count -ge 2) { $commitParts[1] } else { '' }
+          $singleParent = $commitParts.Count -eq 2
+          $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
+          $workflowBlob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
+          $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
+          $expectedPaths = @(
+            '.github/workflows/develop.yml'
+            'src/test/soundproxy_test.cpp'
+          ) | Sort-Object
+          $pathsMatch = [string]::Join('|', $actualPaths) -eq [string]::Join('|', $expectedPaths)
+          $status = @(git status --porcelain --untracked-files=all)
+          $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
+          $valid = (
+            $head -eq $eventSha -and
+            $singleParent -and
+            $parent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $sourceBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $workflowBlob -ne '' -and
+            $pathsMatch -and
+            $unexpectedStatus.Count -eq 0 -and
+            $env:RUNNER_OS -eq 'Windows' -and
+            $env:RUNNER_ARCH -eq 'ARM64'
+          )
+          $proof = [ordered]@{
+            phase = 'before-build'
+            valid = $valid
+            event_sha = $eventSha
+            checked_out_head = $head
+            required_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            actual_parent = $parent
+            single_parent = $singleParent
+            required_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_test_blob = $sourceBlob
+            workflow_blob = $workflowBlob
+            expected_commit_paths = $expectedPaths
+            actual_commit_paths = $actualPaths
+            unexpected_worktree_status = $unexpectedStatus
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+          }
+          $proof | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 "$outDir/source-proof-before.json"
+          if (-not $valid) {
+            throw 'Exact source, workflow, worktree, or Windows ARM64 proof failed.'
+          }
+
+      - name: Set up MSVC ARM64 command environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Install ARM64 CMake
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'cmake-arm64.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'cmake-arm64'
+          Invoke-WebRequest -Uri 'https://github.com/Kitware/CMake/releases/download/v3.30.1/cmake-3.30.1-windows-arm64.zip' -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $destination -Force
+          $cmakePath = Join-Path $destination 'cmake-3.30.1-windows-arm64/bin'
+          $cmakePath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:Path = "$cmakePath;$env:Path"
+
+      - name: Select the pinned Windows ARM64 dependency package
+        shell: cmd
+        run: tools\windows_buildenv.bat name
+        env:
+          BUILDENV_BASEPATH: C:\buildenv
+          BUILDENV_RELEASE: TRUE
+
+      - name: Set up the pinned Windows ARM64 dependency package
+        shell: cmd
+        run: tools\windows_buildenv.bat setup
+        env:
+          BUILDENV_BASEPATH: C:\buildenv
+          BUILDENV_RELEASE: TRUE
+
+      - name: Configure Mixxx with tests enabled
+        shell: pwsh
+        run: |
+          if (-not $env:CMAKE_PREFIX_PATH) {
+            throw 'The pinned Windows dependency setup did not provide CMAKE_PREFIX_PATH.'
+          }
+          $cmakeArgs = @(
+            '-DBULK=ON'
+            '-DHSS1394=ON'
+            '-DLOCALECOMPARE=ON'
+            '-DMAD=ON'
+            '-DMEDIAFOUNDATION=ON'
+            '-DMODPLUG=ON'
+            '-DQT6=ON'
+            '-DQML=ON'
+            '-DWAVPACK=ON'
+            '-DVCPKG_TARGET_TRIPLET=arm64-windows-release'
+            '-DVCPKG_DEFAULT_HOST_TRIPLET=arm64-windows-release'
+            '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
+            "-DCMAKE_PREFIX_PATH=$env:CMAKE_PREFIX_PATH"
+            '-DWARNINGS_FATAL=ON'
+            '-DDEBUG_ASSERTIONS_FATAL=OFF'
+            '-DBATTERY=ON'
+            '-DBROADCAST=ON'
+            '-DDOWNLOAD_MANUAL=ON'
+            '-DHID=ON'
+            '-DKEYFINDER=ON'
+            '-DLILV=ON'
+            '-DOPUS=ON'
+            '-DQTKEYCHAIN=ON'
+            '-DVINYLCONTROL=ON'
+            '-DCMAKE_VERBOSE_MAKEFILE=OFF'
+            '-DBUILD_TESTING=ON'
+            '-DBUILD_BENCH=OFF'
+          )
+          & cmake -S . -B build @cmakeArgs
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+        env:
+          CC: cl
+          CXX: cl
+
+      - name: Build only the unit-test executable
+        shell: pwsh
+        run: |
+          cmake --build build --config RelWithDebInfo --target mixxx-test --parallel 4
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+        env:
+          CC: cl
+          CXX: cl
+
+      - name: Select and run exactly the failing GTest case
+        shell: pwsh
+        run: |
+          $outDir = 'tmp/pr47-arm64-origin-diagnostic'
+          $expectedTest = 'SoundSourceProxyTest.regressionTestCachingReaderChunkJumpForward'
+          $testRegex = '^SoundSourceProxyTest[.]regressionTestCachingReaderChunkJumpForward$'
+          $resultPath = Join-Path $outDir 'case-result.json'
+          $result = [ordered]@{
+            expected_test = $expectedTest
+            selection_count = 0
+            status = 'not-run'
+            started_utc = $null
+            completed_utc = $null
+            ctest_exit_code = $null
+          }
+
+          $selectionOutput = & ctest --test-dir build --show-only=json-v1 -R $testRegex 2>&1
+          $selectionExitCode = $LASTEXITCODE
+          $selectionText = (@($selectionOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+          $selectionText | Set-Content -Encoding utf8 (Join-Path $outDir 'test-selection.json')
+          if ($selectionExitCode -ne 0) {
+            $result.status = 'selection-command-failed'
+            $result.ctest_exit_code = $selectionExitCode
+            $result.completed_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $resultPath
+            exit $selectionExitCode
+          }
+
+          try {
+            $selection = $selectionText | ConvertFrom-Json -ErrorAction Stop
+            $selectedTests = @($selection.tests | Where-Object { $_.name -eq $expectedTest })
+            $result.selection_count = $selectedTests.Count
+          } catch {
+            $result.status = 'selection-output-invalid'
+            $result.error = $_.Exception.Message
+            $result.completed_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $resultPath
+            throw
+          }
+
+          if ($result.selection_count -ne 1 -or @($selection.tests).Count -ne 1) {
+            $result.status = 'selection-mismatch'
+            $result.completed_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $resultPath
+            throw 'CTest did not select exactly the pinned GTest case.'
+          }
+
+          $result.status = 'running'
+          $result.started_utc = [DateTimeOffset]::UtcNow.ToString('o')
+          $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $resultPath
+          $testOutput = & ctest --test-dir build --timeout 60 --output-on-failure --verbose -R $testRegex 2>&1
+          $testExitCode = $LASTEXITCODE
+          $testOutput | Tee-Object -FilePath (Join-Path $outDir 'test.log')
+          $result.ctest_exit_code = $testExitCode
+          $result.completed_utc = [DateTimeOffset]::UtcNow.ToString('o')
+          $result.status = if ($testExitCode -eq 0) { 'passed' } else { 'failed' }
+          $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $resultPath
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+        env:
+          CTEST_PARALLEL_LEVEL: 1
+          CTEST_OUTPUT_ON_FAILURE: 1
+          GTEST_COLOR: 0
+
+      - name: Collect a small dump if Windows already produced one
+        if: always()
+        shell: pwsh
+        run: |
+          $outDir = 'tmp/pr47-arm64-origin-diagnostic'
+          $dumpDir = Join-Path $outDir 'dumps'
+          New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+          $resultPath = Join-Path $outDir 'case-result.json'
+          $startUtc = $null
+          if (Test-Path $resultPath) {
             try {
-              const branch = context.ref.replace('refs/heads/', '');
-              const { data: pullRequests } = await github.rest.pulls.list({
-                owner: process.env.ORGANIZATION,
-                repo: process.env.REPOSITORY,
-                head: `${context.repo.owner}:${branch}`,
-                state: 'open'
-              });
-              console.log(`There is ${pullRequests.length} PR open upstream for branch '${context.repo.owner}:${branch}'`);
-              return pullRequests.length != 0;
-            } catch (error) {
-              console.log(`Didn't find a PR for branch '${context.repo.owner}:${branch}' on '${process.env.ORGANIZATION}/${process.env.REPOSITORY}'.`);
-              return false;
+              $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+              if ($result.started_utc) {
+                $startUtc = [DateTimeOffset]::Parse($result.started_utc).UtcDateTime
+              }
+            } catch {
+              $startUtc = $null
             }
+          }
+          $crashDir = Join-Path $env:LOCALAPPDATA 'CrashDumps'
+          $copied = @()
+          $skipped = @()
+          if ($startUtc -and (Test-Path $crashDir)) {
+            $dumps = Get-ChildItem -Path $crashDir -Filter 'mixxx-test.exe*.dmp' -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.LastWriteTimeUtc -ge $startUtc }
+            foreach ($dump in $dumps) {
+              if ($dump.Length -le 268435456) {
+                $destination = Join-Path $dumpDir $dump.Name
+                Copy-Item -LiteralPath $dump.FullName -Destination $destination
+                $copied += [ordered]@{ name = $dump.Name; bytes = $dump.Length }
+              } else {
+                $skipped += [ordered]@{ name = $dump.Name; bytes = $dump.Length; reason = 'over-256-MiB-limit' }
+              }
+            }
+          }
+          [ordered]@{
+            source = $crashDir
+            copied_dumps = $copied
+            skipped_dumps = $skipped
+            configured_os_capture = $false
+          } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $outDir 'dump-inventory.json')
 
-  pre-commit:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/pre-commit.yml
-    with:
-      pull_request: ${{ github.event_name == 'pull_request' }}
+      - name: Prove the exact diagnostic source after execution
+        if: always()
+        shell: pwsh
+        run: |
+          $outDir = 'tmp/pr47-arm64-origin-diagnostic'
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-  checks:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/checks.yml
+          $head = (git rev-parse HEAD).Trim()
+          $eventSha = $env:GITHUB_SHA
+          $commitParts = ((git rev-list --parents -n 1 HEAD).Trim()) -split '\s+'
+          $parent = if ($commitParts.Count -ge 2) { $commitParts[1] } else { '' }
+          $singleParent = $commitParts.Count -eq 2
+          $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
+          $workflowBlob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
+          $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
+          $expectedPaths = @(
+            '.github/workflows/develop.yml'
+            'src/test/soundproxy_test.cpp'
+          ) | Sort-Object
+          $pathsMatch = [string]::Join('|', $actualPaths) -eq [string]::Join('|', $expectedPaths)
+          $status = @(git status --porcelain --untracked-files=all)
+          $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
+          $valid = (
+            $head -eq $eventSha -and
+            $singleParent -and
+            $parent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $sourceBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $workflowBlob -ne '' -and
+            $pathsMatch -and
+            $unexpectedStatus.Count -eq 0 -and
+            $env:RUNNER_OS -eq 'Windows' -and
+            $env:RUNNER_ARCH -eq 'ARM64'
+          )
+          $proof = [ordered]@{
+            phase = 'after-run'
+            valid = $valid
+            event_sha = $eventSha
+            checked_out_head = $head
+            required_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            actual_parent = $parent
+            single_parent = $singleParent
+            required_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_test_blob = $sourceBlob
+            workflow_blob = $workflowBlob
+            expected_commit_paths = $expectedPaths
+            actual_commit_paths = $actualPaths
+            unexpected_worktree_status = $unexpectedStatus
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+          }
+          $proof | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 "$outDir/source-proof-after.json"
+          if (-not $valid) {
+            throw 'Source, workflow, worktree, or runner identity changed during the run.'
+          }
 
-  git:
-    if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/git.yml
-
-  build:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/build.yml
-    with:
-      branch: ${{ github.head_ref || github.ref_name }}
-      ref: ${{ github.ref }}
-
-  # This task is used as a probe for auto merge
-  # In the future, it could also be used to perform a status update (e.g once the whole CI is passing + is ready for review, add a specific label such as `need review`)
-  ready:
-    name: Ready to merge
-    needs:
-      - pre-commit
-      - checks
-      - git
-      - build
-    runs-on: ubuntu-slim
-    steps:
-      - name: Ready to go
-        run: "exit 0"
+      - name: Upload bounded diagnostic record
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: pr47-arm64-origin-case
+          path: tmp/pr47-arm64-origin-diagnostic/
+          if-no-files-found: warn
+          retention-days: 7

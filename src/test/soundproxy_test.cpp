@@ -1,3 +1,4 @@
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QtDebug>
@@ -715,9 +716,29 @@ TEST_F(SoundSourceProxyTest, regressionTestCachingReaderChunkJumpForward) {
             const auto providerRegistrations =
                     SoundSourceProxy::allProviderRegistrationsForUrl(fileUrl);
             for (const auto& providerRegistration : providerRegistrations) {
+#ifdef __WINDOWS__
+                const QString diagnosticFileName = QFileInfo(filePath).fileName();
+                const QString diagnosticProviderName =
+                        providerRegistration.getProvider()->getDisplayName();
+                const auto logDiagnosticStage = [&](const char* stage) {
+                    qInfo().noquote()
+                            << "PR47_ARM64_TRACE"
+                            << stage
+                            << "buffer_frames="
+                            << kReadFrameCount
+                            << "file="
+                            << diagnosticFileName
+                            << "provider="
+                            << diagnosticProviderName;
+                };
+                logDiagnosticStage("before_open");
+#endif
                 mixxx::AudioSourcePointer pAudioSource = openAudioSource(
                         filePath,
                         providerRegistration.getProvider());
+#ifdef __WINDOWS__
+                logDiagnosticStage("after_open");
+#endif
                 // Obtaining an AudioSource may fail for unsupported file formats,
                 // even if the corresponding file extension is supported, e.g.
                 // AAC vs. ALAC in .m4a files
@@ -732,6 +753,9 @@ TEST_F(SoundSourceProxyTest, regressionTestCachingReaderChunkJumpForward) {
                 // Read chunk from beginning
                 auto firstChunkRange = mixxx::IndexRange::forward(
                         pAudioSource->frameIndexMin(), kReadFrameCount);
+#ifdef __WINDOWS__
+                logDiagnosticStage("before_read1");
+#endif
                 EXPECT_EQ(
                         firstChunkRange,
                         pAudioSource->readSampleFrames(
@@ -739,6 +763,9 @@ TEST_F(SoundSourceProxyTest, regressionTestCachingReaderChunkJumpForward) {
                                                     firstChunkRange,
                                                     mixxx::SampleBuffer::WritableSlice(readBuffer)))
                                 .frameIndexRange());
+#ifdef __WINDOWS__
+                logDiagnosticStage("after_read1");
+#endif
 
                 // Read chunk from near the end, rounded to chunk boundary
                 auto secondChunkRange = mixxx::IndexRange::forward(
@@ -746,6 +773,9 @@ TEST_F(SoundSourceProxyTest, regressionTestCachingReaderChunkJumpForward) {
                                 kReadFrameCount) *
                                 kReadFrameCount,
                         kReadFrameCount);
+#ifdef __WINDOWS__
+                logDiagnosticStage("before_read2");
+#endif
                 EXPECT_EQ(
                         secondChunkRange,
                         pAudioSource->readSampleFrames(
@@ -753,6 +783,9 @@ TEST_F(SoundSourceProxyTest, regressionTestCachingReaderChunkJumpForward) {
                                                     secondChunkRange,
                                                     mixxx::SampleBuffer::WritableSlice(readBuffer)))
                                 .frameIndexRange());
+#ifdef __WINDOWS__
+                logDiagnosticStage("after_read2");
+#endif
             }
         }
     }
