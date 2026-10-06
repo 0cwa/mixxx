@@ -288,4 +288,20 @@ TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
     EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
 }
 
+TEST(BeatGridTest, ClearBeatsResetsDownbeatOffset) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0));
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+
+    pTrack->setDownbeatOffset(2);
+    ASSERT_EQ(2, pTrack->getDownbeatOffset());
+
+    ASSERT_TRUE(pTrack->trySetBeats(BeatsPointer()));
+    EXPECT_EQ(nullptr, pTrack->getBeats());
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+}
+
 }  // namespace
