@@ -25,10 +25,13 @@ void WaveformRenderMarkBase::onSetTrack() {
         return;
     }
 
+    // CueControl updates position ControlObjects through a direct connection.
+    // Queue the mark refresh so it reads the cue positions after that update.
     connect(pTrackInfo.get(),
             &Track::cuesUpdated,
             this,
-            &WaveformRenderMarkBase::slotCuesUpdated);
+            &WaveformRenderMarkBase::slotCuesUpdated,
+            Qt::QueuedConnection);
 }
 
 void WaveformRenderMarkBase::onResize() {

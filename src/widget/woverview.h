@@ -142,6 +142,9 @@ class WOverview : public WWidget, public TrackDropTarget {
         }
     }
 
+    /// Lazily creates and returns the cue menu popup.
+    WCueMenuPopup* getMenu();
+    bool menuIsCreated() const;
 
     const QString m_group;
     UserSettingsPointer m_pConfig;
@@ -158,6 +161,7 @@ class WOverview : public WWidget, public TrackDropTarget {
     bool m_endOfTrack;
     bool m_bPassthroughEnabled;
 
+    // Child of this widget, created only when the cue menu is first needed.
     parented_ptr<WCueMenuPopup> m_pCueMenuPopup;
     bool m_bShowCueTimes;
 

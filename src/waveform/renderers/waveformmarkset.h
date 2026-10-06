@@ -34,22 +34,26 @@ class WaveformMarkSet {
                const WaveformSignalColors& signalColors);
 
     template<typename Receiver, typename Slot>
-    void connectSamplePositionChanged(Receiver receiver, Slot slot) const {
+    void connectSamplePositionChanged(Receiver receiver,
+            Slot slot,
+            Qt::ConnectionType connectionType = Qt::AutoConnection) const {
         for (const auto& pMark : std::as_const(m_marks)) {
             if (pMark->isValid()) {
-                pMark->connectSamplePositionChanged(receiver, slot);
+                pMark->connectSamplePositionChanged(receiver, slot, connectionType);
             }
         }
-    };
+    }
 
     template<typename Receiver, typename Slot>
-    void connectSampleEndPositionChanged(Receiver receiver, Slot slot) const {
+    void connectSampleEndPositionChanged(Receiver receiver,
+            Slot slot,
+            Qt::ConnectionType connectionType = Qt::AutoConnection) const {
         for (const auto& pMark : std::as_const(m_marks)) {
             if (pMark->isValid()) {
-                pMark->connectSampleEndPositionChanged(receiver, slot);
+                pMark->connectSampleEndPositionChanged(receiver, slot, connectionType);
             }
         }
-    };
+    }
 
     template<typename Receiver, typename Slot>
     void connectVisibleChanged(Receiver receiver, Slot slot) const {
