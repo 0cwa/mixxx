@@ -31,20 +31,41 @@ jobs:
           $commitParts = ((git rev-list --parents -n 1 HEAD).Trim()) -split '\s+'
           $parent = if ($commitParts.Count -ge 2) { $commitParts[1] } else { '' }
           $singleParent = $commitParts.Count -eq 2
+          $diagnosticCommit = $parent
+          $diagnosticParent = ''
+          $diagnosticSingleParent = $false
+          $diagnosticTestBlob = ''
+          $diagnosticWorkflowBlob = ''
+          $diagnosticPaths = @()
+          if ($singleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+            $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
+            $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
+            $diagnosticSingleParent = $diagnosticParts.Count -eq 2
+            $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
+            $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
+            $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+          }
           $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
           $workflowBlob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
           $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
-          $expectedPaths = @(
+          $expectedPaths = @('.github/workflows/develop.yml') | Sort-Object
+          $expectedDiagnosticPaths = @(
             '.github/workflows/develop.yml'
             'src/test/soundproxy_test.cpp'
           ) | Sort-Object
-          $pathsMatch = [string]::Join('|', $actualPaths) -eq [string]::Join('|', $expectedPaths)
+          $pathsMatch = [string]::Join('|', $actualPaths) -ceq [string]::Join('|', $expectedPaths)
+          $diagnosticPathsMatch = [string]::Join('|', $diagnosticPaths) -ceq [string]::Join('|', $expectedDiagnosticPaths)
           $status = @(git status --porcelain --untracked-files=all)
           $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
           $valid = (
             $head -eq $eventSha -and
             $singleParent -and
-            $parent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $diagnosticSingleParent -and
+            $diagnosticParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $diagnosticTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $diagnosticWorkflowBlob -eq '949347665e4fb0c5a01ba8973d2a035ba6000674' -and
+            $diagnosticPathsMatch -and
             $sourceBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
             $workflowBlob -ne '' -and
             $pathsMatch -and
@@ -57,9 +78,21 @@ jobs:
             valid = $valid
             event_sha = $eventSha
             checked_out_head = $head
-            required_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            required_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
             actual_parent = $parent
             single_parent = $singleParent
+            required_diagnostic_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            actual_diagnostic_commit = $diagnosticCommit
+            required_diagnostic_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            actual_diagnostic_parent = $diagnosticParent
+            diagnostic_single_parent = $diagnosticSingleParent
+            required_diagnostic_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_diagnostic_test_blob = $diagnosticTestBlob
+            required_diagnostic_workflow_blob = '949347665e4fb0c5a01ba8973d2a035ba6000674'
+            actual_diagnostic_workflow_blob = $diagnosticWorkflowBlob
+            expected_diagnostic_commit_paths = $expectedDiagnosticPaths
+            actual_diagnostic_commit_paths = $diagnosticPaths
+            diagnostic_commit_paths_match = $diagnosticPathsMatch
             required_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_test_blob = $sourceBlob
             workflow_blob = $workflowBlob
@@ -71,7 +104,7 @@ jobs:
           }
           $proof | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 "$outDir/source-proof-before.json"
           if (-not $valid) {
-            throw 'Exact source, workflow, worktree, or Windows ARM64 proof failed.'
+            throw 'Exact diagnostic ancestry, source, workflow, worktree, or Windows ARM64 proof failed.'
           }
 
       - name: Set up MSVC ARM64 command environment
@@ -107,8 +140,12 @@ jobs:
       - name: Configure Mixxx with tests enabled
         shell: pwsh
         run: |
-          if (-not $env:CMAKE_PREFIX_PATH) {
-            throw 'The pinned Windows dependency setup did not provide CMAKE_PREFIX_PATH.'
+          if (-not $env:MIXXX_VCPKG_ROOT -or -not $env:VCPKG_TARGET_TRIPLET) {
+            throw 'The pinned Windows dependency setup did not provide its root and target triplet.'
+          }
+          $cmakePrefixPath = Join-Path $env:MIXXX_VCPKG_ROOT "installed\$env:VCPKG_TARGET_TRIPLET"
+          if (-not (Test-Path -LiteralPath $cmakePrefixPath -PathType Container)) {
+            throw "The pinned Windows dependency prefix does not exist: $cmakePrefixPath"
           }
           $cmakeArgs = @(
             '-DBULK=ON'
@@ -123,7 +160,7 @@ jobs:
             '-DVCPKG_TARGET_TRIPLET=arm64-windows-release'
             '-DVCPKG_DEFAULT_HOST_TRIPLET=arm64-windows-release'
             '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
-            "-DCMAKE_PREFIX_PATH=$env:CMAKE_PREFIX_PATH"
+            "-DCMAKE_PREFIX_PATH=$cmakePrefixPath"
             '-DWARNINGS_FATAL=ON'
             '-DDEBUG_ASSERTIONS_FATAL=OFF'
             '-DBATTERY=ON'
@@ -277,20 +314,41 @@ jobs:
           $commitParts = ((git rev-list --parents -n 1 HEAD).Trim()) -split '\s+'
           $parent = if ($commitParts.Count -ge 2) { $commitParts[1] } else { '' }
           $singleParent = $commitParts.Count -eq 2
+          $diagnosticCommit = $parent
+          $diagnosticParent = ''
+          $diagnosticSingleParent = $false
+          $diagnosticTestBlob = ''
+          $diagnosticWorkflowBlob = ''
+          $diagnosticPaths = @()
+          if ($singleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+            $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
+            $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
+            $diagnosticSingleParent = $diagnosticParts.Count -eq 2
+            $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
+            $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
+            $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+          }
           $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
           $workflowBlob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
           $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
-          $expectedPaths = @(
+          $expectedPaths = @('.github/workflows/develop.yml') | Sort-Object
+          $expectedDiagnosticPaths = @(
             '.github/workflows/develop.yml'
             'src/test/soundproxy_test.cpp'
           ) | Sort-Object
-          $pathsMatch = [string]::Join('|', $actualPaths) -eq [string]::Join('|', $expectedPaths)
+          $pathsMatch = [string]::Join('|', $actualPaths) -ceq [string]::Join('|', $expectedPaths)
+          $diagnosticPathsMatch = [string]::Join('|', $diagnosticPaths) -ceq [string]::Join('|', $expectedDiagnosticPaths)
           $status = @(git status --porcelain --untracked-files=all)
           $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
           $valid = (
             $head -eq $eventSha -and
             $singleParent -and
-            $parent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $diagnosticSingleParent -and
+            $diagnosticParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $diagnosticTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $diagnosticWorkflowBlob -eq '949347665e4fb0c5a01ba8973d2a035ba6000674' -and
+            $diagnosticPathsMatch -and
             $sourceBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
             $workflowBlob -ne '' -and
             $pathsMatch -and
@@ -303,9 +361,21 @@ jobs:
             valid = $valid
             event_sha = $eventSha
             checked_out_head = $head
-            required_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            required_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
             actual_parent = $parent
             single_parent = $singleParent
+            required_diagnostic_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            actual_diagnostic_commit = $diagnosticCommit
+            required_diagnostic_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            actual_diagnostic_parent = $diagnosticParent
+            diagnostic_single_parent = $diagnosticSingleParent
+            required_diagnostic_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_diagnostic_test_blob = $diagnosticTestBlob
+            required_diagnostic_workflow_blob = '949347665e4fb0c5a01ba8973d2a035ba6000674'
+            actual_diagnostic_workflow_blob = $diagnosticWorkflowBlob
+            expected_diagnostic_commit_paths = $expectedDiagnosticPaths
+            actual_diagnostic_commit_paths = $diagnosticPaths
+            diagnostic_commit_paths_match = $diagnosticPathsMatch
             required_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_test_blob = $sourceBlob
             workflow_blob = $workflowBlob
@@ -317,7 +387,7 @@ jobs:
           }
           $proof | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 "$outDir/source-proof-after.json"
           if (-not $valid) {
-            throw 'Source, workflow, worktree, or runner identity changed during the run.'
+            throw 'Diagnostic ancestry, source, workflow, worktree, or runner identity changed during the run.'
           }
 
       - name: Upload bounded diagnostic record
