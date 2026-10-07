@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -20,15 +21,75 @@
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
+#include "sources/audiosourcestereoproxy.h"
+#include "sources/soundsourceproxy.h"
 #include "test/mixxxtest.h"
+#include "test/soundsourceproviderregistration.h"
 #include "track/track.h"
 #include "util/assert.h"
 #include "util/defs.h"
 #include "util/fifo.h"
 #include "util/sample.h"
+#include "util/samplebuffer.h"
 
 namespace {
 const QString kGroup = "[test]";
+
+struct SlowQtMessageSink {
+    std::mutex mutex;
+    std::vector<QString> messages;
+    std::atomic<bool> blockNextWarning{false};
+    std::atomic<bool> warningSinkBlocked{false};
+    std::atomic<bool> warningWaitTimedOut{false};
+    std::atomic<bool> callbackFinished{false};
+    std::atomic<bool> callbackFinishedWhileBlocked{false};
+};
+
+std::atomic<SlowQtMessageSink*> s_pSlowQtMessageSink{nullptr};
+
+void slowQtMessageHandler(
+        QtMsgType type,
+        const QMessageLogContext& context,
+        const QString& message) {
+    Q_UNUSED(context);
+    auto* const pSink = s_pSlowQtMessageSink.load(std::memory_order_acquire);
+    if (!pSink) {
+        return;
+    }
+
+    std::lock_guard lock(pSink->mutex);
+    pSink->messages.push_back(message);
+    if (type == QtWarningMsg &&
+            pSink->blockNextWarning.exchange(false, std::memory_order_relaxed)) {
+        pSink->warningSinkBlocked.store(true, std::memory_order_release);
+        const auto deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(500);
+        while (!pSink->callbackFinished.load(std::memory_order_acquire) &&
+                std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        pSink->callbackFinishedWhileBlocked.store(
+                pSink->callbackFinished.load(std::memory_order_acquire),
+                std::memory_order_release);
+    }
+}
+
+class ScopedSlowQtMessageHandler {
+  public:
+    explicit ScopedSlowQtMessageHandler(SlowQtMessageSink* pSink)
+            : m_pPreviousHandler(nullptr) {
+        s_pSlowQtMessageSink.store(pSink, std::memory_order_release);
+        m_pPreviousHandler = qInstallMessageHandler(slowQtMessageHandler);
+    }
+
+    ~ScopedSlowQtMessageHandler() {
+        qInstallMessageHandler(m_pPreviousHandler);
+        s_pSlowQtMessageSink.store(nullptr, std::memory_order_release);
+    }
+
+  private:
+    QtMessageHandler m_pPreviousHandler;
+};
 } // namespace
 
 class StubReader : public CachingReader {
@@ -693,6 +754,351 @@ class ReadAheadManagerTest : public MixxxTest {
     QScopedPointer<ReadAheadManager> m_pReadAheadManager;
 };
 
+class CachingReaderDeferredLoggingTest : public MixxxTest, SoundSourceProviderRegistration {
+  protected:
+    static void setReadableSource(
+            CachingReader& reader, const mixxx::AudioSourcePointer& pSource) {
+        reader.m_state.storeRelease(CachingReader::STATE_TRACK_LOADED);
+        reader.m_readableFrameIndexRange = pSource->frameIndexRange();
+    }
+
+    static CachingReaderChunkForOwner* cacheChunk(
+            CachingReader& reader,
+            const mixxx::AudioSourcePointer& pSource,
+            int chunkIndex) {
+        auto* const pChunk = reader.allocateChunk(chunkIndex);
+        if (!pChunk) {
+            return nullptr;
+        }
+        mixxx::SampleBuffer tempReadBuffer(
+                CachingReaderChunk::frames2samples(
+                        CachingReaderChunk::kFrames,
+                        mixxx::audio::ChannelCount::stereo()));
+        const auto bufferedRange = pChunk->bufferSampleFrames(
+                pSource,
+                mixxx::SampleBuffer::WritableSlice(
+                        tempReadBuffer.data(), tempReadBuffer.size()));
+        if (bufferedRange.empty()) {
+            reader.freeChunk(pChunk);
+            return nullptr;
+        }
+        reader.freshenChunk(pChunk);
+        return pChunk;
+    }
+
+    static void freeChunk(CachingReader& reader, CachingReaderChunkForOwner* pChunk) {
+        reader.freeChunk(pChunk);
+    }
+
+    static CachingReaderChunkForOwner* lookupChunk(
+            CachingReader& reader, SINT chunkIndex) {
+        return reader.lookupChunk(chunkIndex);
+    }
+
+    static void retainChunkSuffix(
+            CachingReaderChunkForOwner* pChunk,
+            SINT firstFrame,
+            mixxx::audio::ChannelCount channelCount) {
+        const auto oldRange = pChunk->m_bufferedSampleFrames.frameIndexRange();
+        ASSERT_TRUE(oldRange.containsIndex(firstFrame));
+        const SINT sampleOffset = CachingReaderChunk::frames2samples(
+                firstFrame - oldRange.start(), channelCount);
+        const SINT sampleCount = CachingReaderChunk::frames2samples(
+                oldRange.end() - firstFrame, channelCount);
+        pChunk->m_bufferedSampleFrames = mixxx::ReadableSampleFrames(
+                mixxx::IndexRange::between(firstFrame, oldRange.end()),
+                mixxx::SampleBuffer::ReadableSlice(
+                        pChunk->m_sampleBuffer.data(sampleOffset), sampleCount));
+    }
+
+    static void reportDiagnostics(CachingReader& reader) {
+        reader.reportDiagnostics();
+    }
+
+    static std::uint32_t missingReadAheadLogEntries(const CachingReader& reader) {
+        return reader.m_deferredCallbackLogCounters.missingReadAheadLogEntries.load(
+                std::memory_order_relaxed);
+    }
+};
+
+TEST_F(CachingReaderDeferredLoggingTest,
+        MissingReadAheadLogDiagnosticIsDeferredAndPreservesPosition) {
+    constexpr auto kChannels = mixxx::audio::ChannelCount::stereo();
+    SlowQtMessageSink sink;
+    ScopedSlowQtMessageHandler messageHandler(&sink);
+
+    // The test-only default manager has no reader. The missing-mapping case
+    // must still return safely when it cannot forward a diagnostic event.
+    ReadAheadManager managerWithoutReader;
+    EXPECT_DOUBLE_EQ(37.5,
+            managerWithoutReader.getFilePlaypositionFromLog(37.5, 8.0));
+
+    CachingReader reader(kGroup, config(), kChannels);
+    StubLoopControl loopControl;
+    StubCueControl cueControl;
+    ReadAheadManager manager(&reader, &loopControl, &cueControl);
+    constexpr double kCurrentFilePlayposition = 1234.5;
+    EXPECT_DOUBLE_EQ(kCurrentFilePlayposition,
+            manager.getFilePlaypositionFromLog(kCurrentFilePlayposition, 8.0));
+    EXPECT_EQ(1U, missingReadAheadLogEntries(reader));
+
+    {
+        std::lock_guard lock(sink.mutex);
+        EXPECT_TRUE(std::none_of(sink.messages.begin(),
+                sink.messages.end(),
+                [](const auto& message) {
+                    return message.contains("No read ahead log entries") ||
+                            message.contains(
+                                    "deferred missing read-ahead log mappings");
+                }));
+    }
+
+    reportDiagnostics(reader);
+    {
+        std::lock_guard lock(sink.mutex);
+        EXPECT_TRUE(std::any_of(sink.messages.begin(),
+                sink.messages.end(),
+                [](const auto& message) {
+                    return message.contains(
+                            "deferred missing read-ahead log mappings");
+                }));
+    }
+}
+
+TEST_F(CachingReaderDeferredLoggingTest, CacheGapLogsAreDeferredFromReadAheadCallback) {
+    constexpr auto kChannels = mixxx::audio::ChannelCount::stereo();
+    constexpr SINT kReadSamples = 4;
+    constexpr SINT kShortReadSamples = 2;
+    constexpr SINT kReferenceFrames = 2;
+    constexpr SINT kGapReadSamples =
+            CachingReaderChunk::frames2samples(kReferenceFrames, kChannels);
+
+    SlowQtMessageSink sink;
+    ScopedSlowQtMessageHandler messageHandler(&sink);
+    CachingReader reader(kGroup, config(), kChannels);
+    const auto pTrack = Track::newTemporary(getTestDir().filePath("sine-30.wav"));
+    mixxx::AudioSource::OpenParams openParams;
+    openParams.setChannelCount(kChannels);
+    auto pAudioSource = SoundSourceProxy(pTrack).openAudioSource(openParams);
+    ASSERT_NE(nullptr, pAudioSource);
+    ASSERT_EQ(0, pAudioSource->frameIndexMin());
+    ASSERT_GT(pAudioSource->frameIndexRange().length(),
+            2 * CachingReaderChunk::kFrames);
+    setReadableSource(reader, pAudioSource);
+    // The WAV provider can return the fixture's mono layout even when stereo
+    // is requested. Normalize only the reference reads to the same stereo
+    // layout as CachingReaderChunk, which must exercise its own mono conversion.
+    mixxx::AudioSourceStereoProxy referenceAudioSource(
+            pAudioSource, kReferenceFrames);
+    ASSERT_EQ(kChannels,
+            referenceAudioSource.getSignalInfo().getChannelCount());
+
+    constexpr SINT kGapStartFrame = CachingReaderChunk::kFrames / 2 - 1;
+    constexpr SINT kGapStartSample = CachingReaderChunk::frames2samples(
+            kGapStartFrame, kChannels);
+    std::array<CSAMPLE, kGapReadSamples> referenceGapSamples{};
+    const auto referenceRange = referenceAudioSource.readSampleFrames(
+            mixxx::WritableSampleFrames(
+                    mixxx::IndexRange::forward(kGapStartFrame, kReferenceFrames),
+                    mixxx::SampleBuffer::WritableSlice(
+                            referenceGapSamples.data(), kGapReadSamples)));
+    ASSERT_EQ(kReferenceFrames, referenceRange.frameIndexRange().length());
+    ASSERT_EQ(kGapReadSamples, referenceRange.readableLength());
+
+    std::array<CSAMPLE, kShortReadSamples> unavailableBuffer{0.25f, -0.25f};
+    EXPECT_EQ(CachingReader::ReadResult::UNAVAILABLE,
+            reader.read(0,
+                    kShortReadSamples,
+                    false,
+                    unavailableBuffer.data(),
+                    kChannels));
+    EXPECT_FLOAT_EQ(0.25f, unavailableBuffer[0]);
+    EXPECT_FLOAT_EQ(-0.25f, unavailableBuffer[1]);
+
+    auto* const pFirstChunk = cacheChunk(reader, pAudioSource, 0);
+    ASSERT_NE(nullptr, pFirstChunk);
+    retainChunkSuffix(pFirstChunk, kGapStartFrame + 1, kChannels);
+
+    StubLoopControl loopControl;
+    StubCueControl cueControl;
+    ReadAheadManager readAheadManager(&reader, &loopControl, &cueControl);
+    readAheadManager.notifySeek(kGapStartSample);
+    loopControl.pushValues(kNoTrigger, kNoTrigger);
+    cueControl.pushValues(kNoTrigger, kNoTrigger);
+    std::array<CSAMPLE, kGapReadSamples> readAheadPartialSamples{};
+    EXPECT_EQ(kGapReadSamples,
+            readAheadManager.getNextSamples(
+                    1.0,
+                    readAheadPartialSamples.data(),
+                    kGapReadSamples,
+                    kChannels));
+    EXPECT_DOUBLE_EQ(kGapStartSample + kGapReadSamples,
+            readAheadManager.getPlaypos());
+    EXPECT_FLOAT_EQ(0.0f, readAheadPartialSamples[0]);
+    EXPECT_FLOAT_EQ(0.0f, readAheadPartialSamples[1]);
+    EXPECT_FLOAT_EQ(referenceGapSamples[2], readAheadPartialSamples[2]);
+    EXPECT_FLOAT_EQ(referenceGapSamples[3], readAheadPartialSamples[3]);
+
+    constexpr SINT kRetryStartFrame = CachingReaderChunk::kFrames + 10;
+    constexpr SINT kRetryStartSample = CachingReaderChunk::frames2samples(
+            kRetryStartFrame, kChannels);
+    readAheadManager.notifySeek(kRetryStartSample);
+    loopControl.pushValues(kNoTrigger, kNoTrigger);
+    cueControl.pushValues(kNoTrigger, kNoTrigger);
+    std::array<CSAMPLE, kReadSamples> retrySamples{};
+    const auto unavailableRetry = readAheadManager.getNextSamplesWithRetry(
+            1.0, retrySamples.data(), kReadSamples, kChannels);
+    EXPECT_TRUE(unavailableRetry.retryPending);
+    EXPECT_EQ(0, unavailableRetry.samplesRead);
+    EXPECT_DOUBLE_EQ(kRetryStartSample, readAheadManager.getPlaypos());
+
+    auto* const pSecondChunk = cacheChunk(reader, pAudioSource, 1);
+    ASSERT_NE(nullptr, pSecondChunk);
+    std::array<CSAMPLE, kReadSamples> retryReferenceSamples{};
+    const auto retryReferenceRange = referenceAudioSource.readSampleFrames(
+            mixxx::WritableSampleFrames(
+                    mixxx::IndexRange::forward(kRetryStartFrame, kReferenceFrames),
+                    mixxx::SampleBuffer::WritableSlice(
+                            retryReferenceSamples.data(), kReadSamples)));
+    ASSERT_EQ(kReferenceFrames, retryReferenceRange.frameIndexRange().length());
+    ASSERT_EQ(kReadSamples, retryReferenceRange.readableLength());
+    std::array<CSAMPLE, kReadSamples> recoveredDirectSamples{};
+    EXPECT_EQ(CachingReader::ReadResult::AVAILABLE,
+            reader.read(kRetryStartSample,
+                    kReadSamples,
+                    false,
+                    recoveredDirectSamples.data(),
+                    kChannels));
+    for (std::size_t i = 0; i < kReadSamples; ++i) {
+        EXPECT_FLOAT_EQ(retryReferenceSamples[i], recoveredDirectSamples[i]);
+    }
+
+    loopControl.pushValues(kNoTrigger, kNoTrigger);
+    cueControl.pushValues(kNoTrigger, kNoTrigger);
+    const auto recoveredRetry = readAheadManager.getNextSamplesWithRetry(
+            1.0, retrySamples.data(), kReadSamples, kChannels);
+    EXPECT_FALSE(recoveredRetry.retryPending);
+    EXPECT_EQ(kReadSamples, recoveredRetry.samplesRead);
+    EXPECT_DOUBLE_EQ(kRetryStartSample + kReadSamples, readAheadManager.getPlaypos());
+    auto expectedRampedSamples = retryReferenceSamples;
+    SampleUtil::applyRampingGain(expectedRampedSamples.data(),
+            CSAMPLE_GAIN_ZERO,
+            CSAMPLE_GAIN_ONE,
+            kReadSamples);
+    for (std::size_t i = 0; i < retrySamples.size(); ++i) {
+        EXPECT_FLOAT_EQ(expectedRampedSamples[i], retrySamples[i]);
+    }
+
+    freeChunk(reader, pSecondChunk);
+    loopControl.pushValues(kNoTrigger, kNoTrigger);
+    cueControl.pushValues(kNoTrigger, kNoTrigger);
+    std::array<CSAMPLE, kShortReadSamples> missingReadAheadSamples{};
+    const double positionBeforeMiss = readAheadManager.getPlaypos();
+    EXPECT_EQ(2,
+            readAheadManager.getNextSamples(1.0,
+                    missingReadAheadSamples.data(),
+                    kShortReadSamples,
+                    kChannels));
+    EXPECT_DOUBLE_EQ(positionBeforeMiss + kShortReadSamples,
+            readAheadManager.getPlaypos());
+
+    ASSERT_NE(nullptr, cacheChunk(reader, pAudioSource, 1));
+    loopControl.pushValues(kNoTrigger, kNoTrigger);
+    cueControl.pushValues(kNoTrigger, kNoTrigger);
+    std::array<CSAMPLE, kShortReadSamples> recoveredReadAheadSamples{};
+    EXPECT_EQ(2,
+            readAheadManager.getNextSamples(1.0,
+                    recoveredReadAheadSamples.data(),
+                    kShortReadSamples,
+                    kChannels));
+
+    {
+        std::lock_guard lock(sink.mutex);
+        EXPECT_TRUE(std::none_of(sink.messages.begin(),
+                sink.messages.end(),
+                [](const auto& message) {
+                    return message.contains("Inserting") ||
+                            message.contains(
+                                    "continue after number cache misses");
+                }));
+    }
+
+    freeChunk(reader, lookupChunk(reader, 1));
+    readAheadManager.notifySeek(kGapStartSample);
+    loopControl.pushValues(kNoTrigger, kNoTrigger);
+    cueControl.pushValues(kNoTrigger, kNoTrigger);
+    sink.callbackFinished.store(false, std::memory_order_relaxed);
+    sink.callbackFinishedWhileBlocked.store(false, std::memory_order_relaxed);
+    sink.warningSinkBlocked.store(false, std::memory_order_relaxed);
+    sink.blockNextWarning.store(true, std::memory_order_relaxed);
+    std::array<CSAMPLE, kReadSamples> concurrentPartialSamples{};
+    SINT concurrentSamplesRead = 0;
+    std::thread callbackThread([&] {
+        const auto warningDeadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(500);
+        while (!sink.warningSinkBlocked.load(std::memory_order_acquire) &&
+                std::chrono::steady_clock::now() < warningDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!sink.warningSinkBlocked.load(std::memory_order_acquire)) {
+            sink.warningWaitTimedOut.store(true, std::memory_order_release);
+        }
+        concurrentSamplesRead = readAheadManager.getNextSamples(
+                1.0,
+                concurrentPartialSamples.data(),
+                kGapReadSamples,
+                kChannels);
+        sink.callbackFinished.store(true, std::memory_order_release);
+    });
+
+    reportDiagnostics(reader);
+    callbackThread.join();
+    EXPECT_FALSE(sink.warningWaitTimedOut.load(std::memory_order_acquire));
+    EXPECT_TRUE(sink.warningSinkBlocked.load(std::memory_order_acquire));
+    EXPECT_TRUE(sink.callbackFinishedWhileBlocked.load(std::memory_order_acquire));
+    EXPECT_EQ(kGapReadSamples, concurrentSamplesRead);
+    EXPECT_DOUBLE_EQ(kGapStartSample + kGapReadSamples,
+            readAheadManager.getPlaypos());
+    EXPECT_FLOAT_EQ(0.0f, concurrentPartialSamples[0]);
+    EXPECT_FLOAT_EQ(0.0f, concurrentPartialSamples[1]);
+    EXPECT_FLOAT_EQ(referenceGapSamples[2], concurrentPartialSamples[2]);
+    EXPECT_FLOAT_EQ(referenceGapSamples[3], concurrentPartialSamples[3]);
+
+    ASSERT_NE(nullptr, cacheChunk(reader, pAudioSource, 1));
+    std::array<CSAMPLE, kReadSamples> finalRecoveredSamples{};
+    EXPECT_EQ(CachingReader::ReadResult::AVAILABLE,
+            reader.read(kRetryStartSample,
+                    kReadSamples,
+                    false,
+                    finalRecoveredSamples.data(),
+                    kChannels));
+    for (std::size_t i = 0; i < retryReferenceSamples.size(); ++i) {
+        EXPECT_FLOAT_EQ(retryReferenceSamples[i], finalRecoveredSamples[i]);
+    }
+
+    reportDiagnostics(reader);
+    {
+        std::lock_guard lock(sink.mutex);
+        EXPECT_TRUE(std::any_of(sink.messages.begin(),
+                sink.messages.end(),
+                [](const auto& message) {
+                    return message.contains("partial-gap insertions") &&
+                            message.contains("partial-gap frames");
+                }));
+        EXPECT_TRUE(std::any_of(sink.messages.begin(),
+                sink.messages.end(),
+                [](const auto& message) {
+                    return message.contains("Latest partial-gap frame range");
+                }));
+        EXPECT_TRUE(std::any_of(sink.messages.begin(),
+                sink.messages.end(),
+                [](const auto& message) {
+                    return message.contains(
+                            "deferred unexpected cache-miss recoveries");
+                }));
+    }
+}
+
 TEST_F(ReadAheadManagerTest, SavedJump) {
     m_pReadAheadManager->notifySeek(0.5);
 
@@ -788,6 +1194,41 @@ TEST_F(ReadAheadManagerTest, RetryableCacheMissDoesNotAdvanceReadAheadPosition) 
     EXPECT_EQ(10, availableResult.samplesRead);
     EXPECT_FALSE(availableResult.retryPending);
     EXPECT_DOUBLE_EQ(10.0, m_pReadAheadManager->getPlaypos());
+    ASSERT_EQ(2, m_pReader->readStartSamples().size());
+    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
+    EXPECT_EQ(0, m_pReader->readStartSamples()[1]);
+    EXPECT_EQ(1, m_pLoopControl->queryCount());
+    EXPECT_EQ(1, m_pCueControl->queryCount());
+}
+
+TEST_F(ReadAheadManagerTest, RetryableMaximumStereoRequestRetriesIdenticalRange) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
+    constexpr SINT kRequestSamples = CachingReaderChunk::frames2samples(
+            static_cast<SINT>(MAX_BUFFER_LEN), kChannelCount);
+    std::vector<CSAMPLE> output(kRequestSamples, -1.0f);
+
+    m_pReadAheadManager->notifySeek(0);
+    m_pReader->setReadAvailable(false);
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    const auto unavailableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), kRequestSamples, kChannelCount);
+    EXPECT_EQ(0, unavailableResult.samplesRead);
+    EXPECT_TRUE(unavailableResult.retryPending);
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.0f;
+    }));
+
+    m_pReader->setReadAvailable(true);
+    const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), kRequestSamples, kChannelCount);
+
+    EXPECT_EQ(kRequestSamples, availableResult.samplesRead);
+    EXPECT_FALSE(availableResult.retryPending);
+    EXPECT_DOUBLE_EQ(kRequestSamples, m_pReadAheadManager->getPlaypos());
+    EXPECT_GT(output.back(), 0.0f);
     ASSERT_EQ(2, m_pReader->readStartSamples().size());
     EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
     EXPECT_EQ(0, m_pReader->readStartSamples()[1]);

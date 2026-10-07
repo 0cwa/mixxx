@@ -8,6 +8,13 @@
 
 namespace {
 
+double playPositionAtNextVSync(VisualPlayPosition* position, VSyncTimeProvider* vsync) {
+    double playPosition = -1.0;
+    double slipPosition = -1.0;
+    EXPECT_TRUE(position->getPlaySlipAtNextVSync(vsync, &playPosition, &slipPosition));
+    return playPosition;
+}
+
 constexpr int kVSyncOffsetMicros = 5000;
 constexpr int kSyncIntervalMicros = 16667;
 constexpr double kAudioBufferMicros = 10000.0;
@@ -59,7 +66,7 @@ TEST(VisualPlayPositionTest, ForwardInterpolationUsesPositionStep) {
     setPosition(&position, 0.4, 1.2, 0.01);
 
     // 5 ms is one half of the declared 10 ms audio buffer.
-    EXPECT_NEAR(0.406, position.getAtNextVSync(&vsync), 1e-12);
+    EXPECT_NEAR(0.406, playPositionAtNextVSync(&position, &vsync), 1e-12);
 }
 
 TEST(VisualPlayPositionTest, ReverseInterpolationUsesSignedPlayRate) {
@@ -67,7 +74,7 @@ TEST(VisualPlayPositionTest, ReverseInterpolationUsesSignedPlayRate) {
     FixedVSyncProvider vsync;
     setPosition(&position, 0.4, -0.6, 0.01);
 
-    EXPECT_NEAR(0.397, position.getAtNextVSync(&vsync), 1e-12);
+    EXPECT_NEAR(0.397, playPositionAtNextVSync(&position, &vsync), 1e-12);
 }
 
 TEST(VisualPlayPositionTest, LoopInterpolationWrapsForwardAndReverse) {
@@ -100,8 +107,8 @@ TEST(VisualPlayPositionTest, LoopInterpolationWrapsForwardAndReverse) {
             0.2,
             0.6);
 
-    EXPECT_NEAR(0.21, forward.getAtNextVSync(&vsync), 1e-12);
-    EXPECT_NEAR(0.59, reverse.getAtNextVSync(&vsync), 1e-12);
+    EXPECT_NEAR(0.21, playPositionAtNextVSync(&forward, &vsync), 1e-12);
+    EXPECT_NEAR(0.59, playPositionAtNextVSync(&reverse, &vsync), 1e-12);
 }
 
 TEST(VisualPlayPositionTest, SlipRunningUsesIndependentSlipClock) {
@@ -117,7 +124,7 @@ TEST(VisualPlayPositionTest, SlipRunningUsesIndependentSlipClock) {
 
     double playPosition = 0.0;
     double slipPosition = 0.0;
-    position.getPlaySlipAtNextVSync(&vsync, &playPosition, &slipPosition);
+    ASSERT_TRUE(position.getPlaySlipAtNextVSync(&vsync, &playPosition, &slipPosition));
 
     EXPECT_NEAR(0.41, playPosition, 1e-12);
     EXPECT_NEAR(0.105, slipPosition, 1e-12);
@@ -140,5 +147,5 @@ TEST(VisualPlayPositionTest, NoAudioBufferDoesNotInventTransportOffset) {
             120.0,
             0.0);
 
-    EXPECT_DOUBLE_EQ(0.37, position.getAtNextVSync(&vsync));
+    EXPECT_DOUBLE_EQ(0.37, playPositionAtNextVSync(&position, &vsync));
 }

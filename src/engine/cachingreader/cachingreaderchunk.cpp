@@ -1,16 +1,11 @@
 #include "engine/cachingreader/cachingreaderchunk.h"
 
-#include <QtDebug>
-
 #include "sources/audiosourcestereoproxy.h"
 #include "engine/engine.h"
 #include "util/sample.h"
-#include "util/logger.h"
 
 
 namespace {
-
-mixxx::Logger kLogger("CachingReaderChunk");
 
 constexpr SINT kInvalidChunkIndex = -1;
 
@@ -172,15 +167,6 @@ void CachingReaderChunkForOwner::insertIntoListBefore(
     DEBUG_ASSERT(this != *ppTail);
     DEBUG_ASSERT(!m_pNext);
     DEBUG_ASSERT(!m_pPrev);
-    if (kLogger.traceEnabled()) {
-        kLogger.trace()
-                << "insertIntoListBefore()"
-                << this
-                << ppHead << *ppHead
-                << ppTail << *ppTail
-                << pBefore;
-    }
-
     if (pBefore) {
         // List must already contain one or more item, i.e. has both
         // a head and a tail
@@ -214,14 +200,6 @@ void CachingReaderChunkForOwner::removeFromList(
     // Both head and tail need to be adjusted
     DEBUG_ASSERT(ppHead);
     DEBUG_ASSERT(ppTail);
-    if (kLogger.traceEnabled()) {
-        kLogger.trace()
-                << "removeFromList()"
-                << this
-                << ppHead << *ppHead
-                << ppTail << *ppTail;
-    }
-
     // Disconnect this chunk from the double-linked list
     auto* const pPrev = m_pPrev;
     auto* const pNext = m_pNext;

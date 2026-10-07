@@ -66,9 +66,6 @@ struct EngineBufferBungeePublishedState {
 };
 class EngineBufferBungeeWorker;
 #endif
-#ifdef __SIGNALSMITH__
-class EngineBufferScaleSignalSmith;
-#endif
 class EngineSync;
 class EngineWorkerScheduler;
 class VisualPlayPosition;
@@ -115,9 +112,6 @@ class EngineBuffer : public EngineObject {
 #ifdef __BUNGEE__
         Bungee = 4,
 #endif
-#ifdef __SIGNALSMITH__
-        SignalSmith = 5,
-#endif
     };
     Q_ENUM(KeylockEngine);
 
@@ -131,9 +125,6 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
             KeylockEngine::Bungee,
-#endif
-#ifdef __SIGNALSMITH__
-            KeylockEngine::SignalSmith,
 #endif
     };
 
@@ -196,7 +187,6 @@ class EngineBuffer : public EngineObject {
     void ejectTrack();
 
     mixxx::audio::FramePos getExactPlayPos() const;
-    double getVisualPlayPos() const;
     mixxx::audio::FramePos getTrackEndPosition() const;
     void setTrackEndPosition(mixxx::audio::FramePos position);
     double getUserOffset() const;
@@ -253,10 +243,6 @@ class EngineBuffer : public EngineObject {
         case KeylockEngine::Bungee:
             return tr("Bungee (high quality)");
 #endif
-#ifdef __SIGNALSMITH__
-        case KeylockEngine::SignalSmith:
-            return tr("Signalsmith Stretch (experimental)");
-#endif
         default:
 #ifdef __RUBBERBAND__
             return tr("Unknown, using Rubberband (fast, medium quality)");
@@ -279,10 +265,6 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __BUNGEE__
         case KeylockEngine::Bungee:
-            return true;
-#endif
-#ifdef __SIGNALSMITH__
-        case KeylockEngine::SignalSmith:
             return true;
 #endif
         default:
@@ -573,7 +555,6 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(EngineBufferBungeeTest, BungeeKeylockEngineSwitch);
     FRIEND_TEST(EngineBufferBungeeTest,
             BungeeRapidReconfigurationAndEngineChanges);
-    FRIEND_TEST(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses);
     FRIEND_TEST(EngineBufferAlignmentTest, CommonScalerPositionTrace);
     FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
 #endif
@@ -614,9 +595,6 @@ class EngineBuffer : public EngineObject {
     // replacement became stale while it was being prepared.
     std::atomic<uint64_t> m_iBungeeConfiguration{0};
     QAtomicInt m_iBungeeConfigurationGeneration;
-#endif
-#ifdef __SIGNALSMITH__
-    EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
 #endif
 
     // Indicates whether the scaler has changed since the last process()
