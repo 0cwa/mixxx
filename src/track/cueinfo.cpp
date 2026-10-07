@@ -23,7 +23,6 @@ void assertEndPosition(
     case CueType::Intro:
     case CueType::Outro:
     case CueType::Invalid:
-    case CueType::Memory:
         break;
     case CueType::Beat: // unused
     default:
@@ -148,9 +147,6 @@ QDebug operator<<(QDebug debug, const CueType& cueType) {
         break;
     case CueType::N60dBSound:
         debug << "CueType::N60dBSound";
-        break;
-    case CueType::Memory:
-        debug << "CueType::Memory";
         break;
     }
     return debug;
