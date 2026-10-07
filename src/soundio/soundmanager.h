@@ -116,10 +116,13 @@ class SoundManager : public QObject {
 
     void underflowHappened(int code) {
         m_underflowHappened = 1;
-        // Disable the engine warnings by default, because printing a warning is a
-        // locking function that will make the problem worse
-        if (CmdlineArgs::Instance().getDeveloper()) {
-            qWarning() << "underflowHappened code:" << code;
+        if (m_underflowWarningsEnabled) {
+            // Codes 1-25 are current call-site values. Bit zero records an
+            // unexpected future code so the callback path remains bounded.
+            const std::uint32_t codeBit =
+                    code >= 1 && code <= 25 ? (std::uint32_t{1} << code) : 1U;
+            m_pendingUnderflowCodeMask.fetch_or(
+                    codeBit, std::memory_order_relaxed);
         }
     }
 
@@ -189,6 +192,7 @@ class SoundManager : public QObject {
   private slots:
     void completeDevicesClosing();
     void reportAudioCallbackDiagnostics();
+    void reportDeferredUnderflowWarnings();
 
   public slots:
     void addDevice(SoundDevicePointer pDevice);
@@ -221,8 +225,10 @@ class SoundManager : public QObject {
     ControlObject* m_pControlObjectSoundStatusCO;
     ControlObject* m_pControlObjectVinylControlGainCO;
 
+    const bool m_underflowWarningsEnabled;
     QAtomicInt m_underflowHappened;
     int m_underflowUpdateCount;
+    std::atomic<std::uint32_t> m_pendingUnderflowCodeMask{0};
     PollingControlProxy m_audioLatencyOverloadCount;
     PollingControlProxy m_audioLatencyOverload;
 
@@ -248,5 +254,6 @@ class SoundManager : public QObject {
     } m_audioCallbackDiagnostics;
     const bool m_audioCallbackDiagnosticsEnabled;
     QTimer m_audioCallbackDiagnosticsTimer;
+    QTimer* m_underflowReporterTimer{nullptr};
     std::uint32_t m_audioCallbackWindowStartMonotonicMs{0};
 };

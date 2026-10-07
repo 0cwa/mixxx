@@ -102,8 +102,10 @@ SoundManager::SoundManager(
           m_pConfig(pConfig),
           m_config(this),
           m_pErrorDevice(nullptr),
+          m_underflowWarningsEnabled(CmdlineArgs::Instance().getDeveloper()),
           m_underflowHappened(0),
           m_underflowUpdateCount(0),
+          m_pendingUnderflowCodeMask(0),
           m_audioLatencyOverloadCount(
                   kAppGroup, QStringLiteral("audio_latency_overload_count")),
           m_audioLatencyOverload(
@@ -116,6 +118,19 @@ SoundManager::SoundManager(
           m_audioCallbackDiagnosticsEnabled(
                   mixxx::isAudioCallbackDiagnosticsEnabled()),
           m_audioCallbackWindowStartMonotonicMs(monotonicMillisecondsModulo()) {
+    if (m_underflowWarningsEnabled) {
+        // This child timer shares SoundManager's QObject thread. Callback
+        // threads only set the atomic code mask; warnings are emitted here.
+        m_underflowReporterTimer = new QTimer(this);
+        m_underflowReporterTimer->setInterval(CPU_OVERLOAD_DURATION);
+        connect(m_underflowReporterTimer,
+                &QTimer::timeout,
+                this,
+                &SoundManager::reportDeferredUnderflowWarnings,
+                Qt::DirectConnection);
+        m_underflowReporterTimer->start();
+    }
+
     if (m_audioCallbackDiagnosticsEnabled) {
         m_audioCallbackDiagnosticsTimer.setInterval(5000);
         connect(&m_audioCallbackDiagnosticsTimer,
@@ -162,7 +177,11 @@ SoundManager::SoundManager(
 }
 
 SoundManager::~SoundManager() {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_audioCallbackDiagnosticsTimer.stop();
+    if (m_underflowReporterTimer) {
+        m_underflowReporterTimer->stop();
+    }
 
     // Clean up devices.
     const bool sleepAfterClosing = false;
@@ -883,6 +902,29 @@ void SoundManager::processUnderflowHappened(SINT framesPerBuffer) {
         }
     } else {
         --m_underflowUpdateCount;
+    }
+}
+
+void SoundManager::reportDeferredUnderflowWarnings() {
+    Q_ASSERT(QThread::currentThread() == thread());
+
+    const std::uint32_t codeMask =
+            m_pendingUnderflowCodeMask.exchange(0, std::memory_order_relaxed);
+    if (codeMask == 0) {
+        return;
+    }
+
+    // The mask records code presence since the previous report, not event counts.
+    for (int code = 1; code <= 25; ++code) {
+        if ((codeMask & (std::uint32_t{1} << code)) != 0) {
+            qWarning()
+                    << "underflowHappened code observed (coalesced since previous report):"
+                    << code;
+        }
+    }
+    if ((codeMask & 1U) != 0) {
+        qWarning() << "one or more underflowHappened codes outside known range 1-25 "
+                      "were observed (coalesced since previous report)";
     }
 }
 
