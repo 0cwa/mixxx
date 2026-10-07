@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "control/controlobject.h"
+#include "engine/controls/cuecontrol.h"
 #include "test/mixxxtest.h"
 #include "track/cue.h"
 #include "util/color/predefinedcolorpalettes.h"
@@ -37,6 +38,27 @@ WaveformMarkPointer makeFixedMark(const QString& group,
     auto pMark = std::get<WaveformMarkPointer>(maybeMark);
     pMark->setSamplePosition(samplePosition);
     return pMark;
+}
+
+WaveformMarkPointer makeControlBackedHotCueMark(const QString& group, int hotCue) {
+    auto maybeMark = WaveformMark::create(
+            group,
+            QString(),
+            QString(),
+            QStringLiteral("#ffffff"),
+            QStringLiteral("AlignBottom"),
+            QString(),
+            QString(),
+            QString(),
+            QColor(),
+            0,
+            hotCue,
+            {});
+    EXPECT_TRUE(std::holds_alternative<WaveformMarkPointer>(maybeMark));
+    if (!std::holds_alternative<WaveformMarkPointer>(maybeMark)) {
+        return {};
+    }
+    return std::get<WaveformMarkPointer>(maybeMark);
 }
 
 } // anonymous namespace
@@ -155,6 +177,7 @@ TEST(WaveformMarkSetTest, CountdownSelectionHonorsIndependentCategories) {
 TEST(WaveformMarkSetTest, CountdownSelectionUsesNearestFutureVisibleMark) {
     constexpr double kNoNextMark = 10000.0;
     constexpr double kPlayPosition = 100.0;
+    constexpr double kEarlierDefaultNextMarkPosition = 100.0;
     WaveformMarkSet marks;
     marks.addMark(makeFixedMark({}, QStringLiteral("memory_cue"), 100.5));
     marks.addMark(makeFixedMark({}, QStringLiteral("memory_cue"), 101.0));
@@ -166,9 +189,88 @@ TEST(WaveformMarkSetTest, CountdownSelectionUsesNearestFutureVisibleMark) {
     EXPECT_DOUBLE_EQ(101.0,
             marks.findNextCountdownMarkPosition(
                     kPlayPosition, kNoNextMark, false, true, false, false));
+
+    // Keep an earlier pre-existing countdown boundary ahead of later cue marks.
+    EXPECT_DOUBLE_EQ(kEarlierDefaultNextMarkPosition,
+            marks.findNextCountdownMarkPosition(
+                    kPlayPosition,
+                    kEarlierDefaultNextMarkPosition,
+                    false,
+                    true,
+                    false,
+                    false));
 }
 
 class WaveformMarkVisibilityTest : public MixxxTest {};
+
+TEST_F(WaveformMarkVisibilityTest, QueuedPositionChangesReorderMarks) {
+    const QString group = QStringLiteral("[WaveformQueuedMarkTest]");
+    ControlObject firstPositionControl(
+            ConfigKey(group, QStringLiteral("hotcue_1_position")));
+    ControlObject firstEndPositionControl(
+            ConfigKey(group, QStringLiteral("hotcue_1_endposition")));
+    ControlObject firstStatusControl(
+            ConfigKey(group, QStringLiteral("hotcue_1_status")));
+    ControlObject firstTypeControl(
+            ConfigKey(group, QStringLiteral("hotcue_1_type")));
+    ControlObject secondPositionControl(
+            ConfigKey(group, QStringLiteral("hotcue_2_position")));
+    ControlObject secondEndPositionControl(
+            ConfigKey(group, QStringLiteral("hotcue_2_endposition")));
+    ControlObject secondStatusControl(
+            ConfigKey(group, QStringLiteral("hotcue_2_status")));
+    ControlObject secondTypeControl(
+            ConfigKey(group, QStringLiteral("hotcue_2_type")));
+    firstPositionControl.set(100.0);
+    firstEndPositionControl.set(150.0);
+    firstStatusControl.set(static_cast<double>(HotcueControl::Status::Set));
+    firstTypeControl.set(static_cast<double>(mixxx::CueType::HotCue));
+    secondPositionControl.set(200.0);
+    secondEndPositionControl.set(Cue::kNoPosition);
+    secondStatusControl.set(static_cast<double>(HotcueControl::Status::Set));
+    secondTypeControl.set(static_cast<double>(mixxx::CueType::HotCue));
+
+    const auto pFirstMark = makeControlBackedHotCueMark(group, 0);
+    const auto pSecondMark = makeControlBackedHotCueMark(group, 1);
+    ASSERT_TRUE(pFirstMark);
+    ASSERT_TRUE(pSecondMark);
+
+    WaveformMarkSet marks;
+    marks.addMark(pFirstMark);
+    marks.addMark(pSecondMark);
+    marks.update();
+    ASSERT_EQ(pFirstMark, *marks.cbegin());
+
+    QObject receiver;
+    int positionCallbacks = 0;
+    int endPositionCallbacks = 0;
+    marks.connectSamplePositionChanged(
+            &receiver,
+            [&marks, &positionCallbacks](double) {
+                ++positionCallbacks;
+                marks.update();
+            },
+            Qt::QueuedConnection);
+    marks.connectSampleEndPositionChanged(
+            &receiver,
+            [&endPositionCallbacks](double) {
+                ++endPositionCallbacks;
+            },
+            Qt::QueuedConnection);
+
+    firstPositionControl.set(300.0);
+    firstEndPositionControl.set(350.0);
+    EXPECT_EQ(0, positionCallbacks);
+    EXPECT_EQ(0, endPositionCallbacks);
+    EXPECT_EQ(pFirstMark, *marks.cbegin());
+
+    application()->processEvents();
+    application()->processEvents();
+
+    EXPECT_EQ(1, positionCallbacks);
+    EXPECT_EQ(1, endPositionCallbacks);
+    EXPECT_EQ(pSecondMark, *marks.cbegin());
+}
 
 TEST_F(WaveformMarkVisibilityTest, HiddenIntroOutroMarkersAreNotCountdownTargets) {
     constexpr double kNoNextMark = 10000.0;

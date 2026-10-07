@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <QTest>
 #include <QtDebug>
 #include <bit>
 #include <memory>
 
 #include "audio/types.h"
+#include "proto/beats.pb.h"
 #include "track/beats.h"
 #include "track/track.h"
 
@@ -289,6 +291,22 @@ TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
     EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
 }
 
+TEST(BeatGridTest, ClearBeatsResetsDownbeatOffset) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0));
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+
+    pTrack->setDownbeatOffset(2);
+    ASSERT_EQ(2, pTrack->getDownbeatOffset());
+
+    ASSERT_TRUE(pTrack->trySetBeats(BeatsPointer()));
+    EXPECT_EQ(nullptr, pTrack->getBeats());
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+}
+
 TEST(BeatGridTest, LegacySerializationIgnoresPartialProtobufDownbeatOffset) {
     if constexpr (std::endian::native != std::endian::little) {
         GTEST_SKIP() << "Legacy raw-double fixture uses little-endian byte order";
@@ -311,6 +329,98 @@ TEST(BeatGridTest, LegacySerializationIgnoresPartialProtobufDownbeatOffset) {
     EXPECT_DOUBLE_EQ(120.00000000001125, pBeats->getLastMarkerBpm().value());
     EXPECT_EQ(mixxx::audio::kStartFramePos, pBeats->getLastMarkerPosition());
     EXPECT_EQ(0, pBeats->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetRoundTrip) {
+    constexpr int kDownbeatsOffset = 3;
+    const auto pGrid = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0),
+            QString(),
+            kDownbeatsOffset);
+    ASSERT_TRUE(pGrid);
+    ASSERT_EQ(QString::fromLatin1(BEAT_GRID_2_VERSION), pGrid->getVersion());
+
+    const auto pRoundTrip = Beats::fromByteArray(
+            kSampleRate,
+            pGrid->getVersion(),
+            pGrid->getSubVersion(),
+            pGrid->toByteArray());
+    ASSERT_TRUE(pRoundTrip);
+    EXPECT_EQ(kDownbeatsOffset, pRoundTrip->getDownbeatsOffset());
+    EXPECT_EQ(pGrid->getMarkers(), pRoundTrip->getMarkers());
+    EXPECT_EQ(pGrid->getLastMarkerPosition(), pRoundTrip->getLastMarkerPosition());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetDefaultsForExistingSerialization) {
+    mixxx::track::io::BeatGrid grid;
+    grid.mutable_first_beat()->set_frame_position(0);
+    grid.mutable_bpm()->set_bpm(120.0);
+    ASSERT_FALSE(grid.has_downbeats_offset());
+
+    const auto pBeats = Beats::fromBeatGridByteArray(
+            kSampleRate,
+            QString(),
+            QByteArray::fromStdString(grid.SerializeAsString()));
+    ASSERT_TRUE(pBeats);
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, DownbeatCacheFollowsReplacementAndUndo) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+    const auto pOriginal = Beats::fromConstTempo(kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0),
+            QString(),
+            3);
+    const auto pReplacement = Beats::fromConstTempo(kSampleRate,
+            mixxx::audio::FramePos(100),
+            mixxx::Bpm(125.0),
+            QString(),
+            7);
+    ASSERT_TRUE(pTrack->trySetBeats(pOriginal));
+    ASSERT_EQ(3, pTrack->getDownbeatOffset());
+
+    QTest::qWait(850);
+    ASSERT_TRUE(pTrack->trySetBeats(pReplacement));
+    EXPECT_EQ(7, pTrack->getDownbeatOffset());
+    ASSERT_TRUE(pTrack->canUndoBeatsChange());
+    pTrack->undoBeatsChange();
+    EXPECT_EQ(pOriginal, pTrack->getBeats());
+    EXPECT_EQ(3, pTrack->getDownbeatOffset());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetSurvivesGridAndMapTransformations) {
+    constexpr int kDownbeatsOffset = 3;
+    const auto pGrid = Beats::fromConstTempo(kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0),
+            QString(),
+            kDownbeatsOffset);
+    const auto pMap = Beats::fromBeatPositions(kSampleRate,
+            {mixxx::audio::FramePos(0),
+                    mixxx::audio::FramePos(10000),
+                    mixxx::audio::FramePos(25000)},
+            QString(),
+            kDownbeatsOffset);
+    for (const auto& pBeats : {pGrid, pMap}) {
+        ASSERT_TRUE(pBeats);
+        for (const auto& transformed : {pBeats->tryTranslate(123.0),
+                     pBeats->tryScale(Beats::BpmScale::Double),
+                     pBeats->trySetBpm(mixxx::Bpm(130.0))}) {
+            ASSERT_TRUE(transformed);
+            ASSERT_TRUE(*transformed);
+            EXPECT_EQ(kDownbeatsOffset, (*transformed)->getDownbeatsOffset());
+        }
+        EXPECT_EQ(kDownbeatsOffset, pBeats->getDownbeatsOffset());
+    }
+    const auto translatedGrid = pGrid->tryTranslateBeats(0.5);
+    ASSERT_TRUE(translatedGrid);
+    ASSERT_TRUE(*translatedGrid);
+    EXPECT_EQ(kDownbeatsOffset, (*translatedGrid)->getDownbeatsOffset());
+    EXPECT_FALSE(pMap->tryTranslateBeats(0.5));
+    EXPECT_EQ(kDownbeatsOffset, pMap->getDownbeatsOffset());
 }
 
 }  // namespace
