@@ -12,19 +12,14 @@
 #include <string>
 #include <thread>
 
-#include "database/mixxxdb.h"
-#include "kaitai/exceptions.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "library/rekordbox/rekordboxparser_test.h"
 #include "library/treeitem.h"
-#include "proto/keys.pb.h"
 #include "rekordbox_test_fixtures.h"
 #include "test/mixxxtest.h"
 #include "track/beats.h"
 #include "track/cue.h"
 #include "track/track.h"
-#include "util/db/dbconnectionpooled.h"
-#include "util/db/dbconnectionpooler.h"
 
 namespace {
 
