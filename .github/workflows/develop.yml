@@ -43,7 +43,13 @@ jobs:
           $diagnosticTestBlob = ''
           $diagnosticWorkflowBlob = ''
           $diagnosticPaths = @()
-          if ($singleParent -and $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83') {
+          $originCommit = ''
+          $originParent = ''
+          $originSingleParent = $false
+          $originTestBlob = ''
+          $originWorkflowBlob = ''
+          $originPaths = @()
+          if ($singleParent -and $repairCommit -eq 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73') {
             $repairParts = ((git rev-list --parents -n 1 $repairCommit).Trim()) -split '\s+'
             $repairParent = if ($repairParts.Count -ge 2) { $repairParts[1] } else { '' }
             $repairSingleParent = $repairParts.Count -eq 2
@@ -51,13 +57,22 @@ jobs:
             $repairWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $repairCommit)).Trim()
             $repairPaths = @(git diff-tree --no-commit-id --name-only -r $repairCommit | Sort-Object)
             $diagnosticCommit = $repairParent
-            if ($repairSingleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+            if ($repairSingleParent -and $diagnosticCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83') {
               $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
               $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
               $diagnosticSingleParent = $diagnosticParts.Count -eq 2
               $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
               $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
               $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+              $originCommit = $diagnosticParent
+              if ($diagnosticSingleParent -and $originCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+                $originParts = ((git rev-list --parents -n 1 $originCommit).Trim()) -split '\s+'
+                $originParent = if ($originParts.Count -ge 2) { $originParts[1] } else { '' }
+                $originSingleParent = $originParts.Count -eq 2
+                $originTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $originCommit)).Trim()
+                $originWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $originCommit)).Trim()
+                $originPaths = @(git diff-tree --no-commit-id --name-only -r $originCommit | Sort-Object)
+              }
             }
           }
           $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
@@ -65,30 +80,38 @@ jobs:
           $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
           $expectedPaths = @('.github/workflows/develop.yml') | Sort-Object
           $expectedRepairPaths = @('.github/workflows/develop.yml') | Sort-Object
-          $expectedDiagnosticPaths = @(
+          $expectedDiagnosticPaths = @('.github/workflows/develop.yml') | Sort-Object
+          $expectedOriginPaths = @(
             '.github/workflows/develop.yml'
             'src/test/soundproxy_test.cpp'
           ) | Sort-Object
           $pathsMatch = [string]::Join('|', $actualPaths) -ceq [string]::Join('|', $expectedPaths)
           $repairPathsMatch = [string]::Join('|', $repairPaths) -ceq [string]::Join('|', $expectedRepairPaths)
           $diagnosticPathsMatch = [string]::Join('|', $diagnosticPaths) -ceq [string]::Join('|', $expectedDiagnosticPaths)
+          $originPathsMatch = [string]::Join('|', $originPaths) -ceq [string]::Join('|', $expectedOriginPaths)
           $status = @(git status --porcelain --untracked-files=all)
           $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
           $valid = (
             $head -eq $eventSha -and
             $singleParent -and
-            $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
+            $repairCommit -eq 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73' -and
             $repairSingleParent -and
-            $repairParent -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $repairParent -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
             $repairTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
-            $repairWorkflowBlob -eq '5c589e4e71f052c7e559fb3b8bb0a64801357faa' -and
+            $repairWorkflowBlob -eq 'a7fe601bb2e910c73657ffc7f2373e33592bdde3' -and
             $repairPathsMatch -and
-            $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $diagnosticCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
             $diagnosticSingleParent -and
-            $diagnosticParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $diagnosticParent -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
             $diagnosticTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
-            $diagnosticWorkflowBlob -eq '949347665e4fb0c5a01ba8973d2a035ba6000674' -and
+            $diagnosticWorkflowBlob -eq '5c589e4e71f052c7e559fb3b8bb0a64801357faa' -and
             $diagnosticPathsMatch -and
+            $originCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $originSingleParent -and
+            $originParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $originTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $originWorkflowBlob -eq '949347665e4fb0c5a01ba8973d2a035ba6000674' -and
+            $originPathsMatch -and
             $sourceBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
             $workflowBlob -ne '' -and
             $pathsMatch -and
@@ -101,33 +124,45 @@ jobs:
             valid = $valid
             event_sha = $eventSha
             checked_out_head = $head
-            required_parent = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
+            required_parent = 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73'
             actual_parent = $parent
             single_parent = $singleParent
-            required_repair_commit = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
+            required_repair_commit = 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73'
             actual_repair_commit = $repairCommit
             actual_repair_parent = $repairParent
             repair_single_parent = $repairSingleParent
-            required_repair_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_repair_parent = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
             required_repair_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_repair_test_blob = $repairTestBlob
-            required_repair_workflow_blob = '5c589e4e71f052c7e559fb3b8bb0a64801357faa'
+            required_repair_workflow_blob = 'a7fe601bb2e910c73657ffc7f2373e33592bdde3'
             actual_repair_workflow_blob = $repairWorkflowBlob
             expected_repair_commit_paths = $expectedRepairPaths
             actual_repair_commit_paths = $repairPaths
             repair_commit_paths_match = $repairPathsMatch
-            required_diagnostic_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_diagnostic_commit = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
             actual_diagnostic_commit = $diagnosticCommit
-            required_diagnostic_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            required_diagnostic_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
             actual_diagnostic_parent = $diagnosticParent
             diagnostic_single_parent = $diagnosticSingleParent
             required_diagnostic_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_diagnostic_test_blob = $diagnosticTestBlob
-            required_diagnostic_workflow_blob = '949347665e4fb0c5a01ba8973d2a035ba6000674'
+            required_diagnostic_workflow_blob = '5c589e4e71f052c7e559fb3b8bb0a64801357faa'
             actual_diagnostic_workflow_blob = $diagnosticWorkflowBlob
             expected_diagnostic_commit_paths = $expectedDiagnosticPaths
             actual_diagnostic_commit_paths = $diagnosticPaths
             diagnostic_commit_paths_match = $diagnosticPathsMatch
+            required_origin_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            actual_origin_commit = $originCommit
+            required_origin_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            actual_origin_parent = $originParent
+            origin_single_parent = $originSingleParent
+            required_origin_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_origin_test_blob = $originTestBlob
+            required_origin_workflow_blob = '949347665e4fb0c5a01ba8973d2a035ba6000674'
+            actual_origin_workflow_blob = $originWorkflowBlob
+            expected_origin_commit_paths = $expectedOriginPaths
+            actual_origin_commit_paths = $originPaths
+            origin_commit_paths_match = $originPathsMatch
             required_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_test_blob = $sourceBlob
             workflow_blob = $workflowBlob
@@ -197,7 +232,7 @@ jobs:
             '-DDEBUG_ASSERTIONS_FATAL=OFF'
             '-DBATTERY=ON'
             '-DBROADCAST=ON'
-            '-DDOWNLOAD_MANUAL=ON'
+            '-DDOWNLOAD_MANUAL=OFF'
             '-DHID=ON'
             '-DKEYFINDER=ON'
             '-DLILV=ON'
@@ -226,6 +261,23 @@ jobs:
         env:
           CC: cl
           CXX: cl
+
+      - name: Stage the Qt offscreen plugin for test discovery
+        shell: pwsh
+        run: |
+          $runtimePrefix = Join-Path $env:GITHUB_WORKSPACE 'build/pr47-test-runtime'
+          cmake --install build --config RelWithDebInfo --prefix $runtimePrefix --component applocal
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $platformPlugin = Join-Path $runtimePrefix 'platforms/qoffscreen.dll'
+          if (-not (Test-Path -LiteralPath $platformPlugin -PathType Leaf)) {
+            throw 'The pinned CMake applocal install did not stage Qt QOffscreenIntegrationPlugin.'
+          }
+          $platformDirectory = Split-Path -Parent $platformPlugin
+          "QT_QPA_PLATFORM_PLUGIN_PATH=$platformDirectory" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Select and run exactly the failing GTest case
         shell: pwsh
@@ -291,6 +343,7 @@ jobs:
           CTEST_PARALLEL_LEVEL: 1
           CTEST_OUTPUT_ON_FAILURE: 1
           GTEST_COLOR: 0
+          QT_QPA_PLATFORM: offscreen
 
       - name: Collect a small dump if Windows already produced one
         if: always()
@@ -358,7 +411,13 @@ jobs:
           $diagnosticTestBlob = ''
           $diagnosticWorkflowBlob = ''
           $diagnosticPaths = @()
-          if ($singleParent -and $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83') {
+          $originCommit = ''
+          $originParent = ''
+          $originSingleParent = $false
+          $originTestBlob = ''
+          $originWorkflowBlob = ''
+          $originPaths = @()
+          if ($singleParent -and $repairCommit -eq 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73') {
             $repairParts = ((git rev-list --parents -n 1 $repairCommit).Trim()) -split '\s+'
             $repairParent = if ($repairParts.Count -ge 2) { $repairParts[1] } else { '' }
             $repairSingleParent = $repairParts.Count -eq 2
@@ -366,13 +425,22 @@ jobs:
             $repairWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $repairCommit)).Trim()
             $repairPaths = @(git diff-tree --no-commit-id --name-only -r $repairCommit | Sort-Object)
             $diagnosticCommit = $repairParent
-            if ($repairSingleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+            if ($repairSingleParent -and $diagnosticCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83') {
               $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
               $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
               $diagnosticSingleParent = $diagnosticParts.Count -eq 2
               $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
               $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
               $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+              $originCommit = $diagnosticParent
+              if ($diagnosticSingleParent -and $originCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+                $originParts = ((git rev-list --parents -n 1 $originCommit).Trim()) -split '\s+'
+                $originParent = if ($originParts.Count -ge 2) { $originParts[1] } else { '' }
+                $originSingleParent = $originParts.Count -eq 2
+                $originTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $originCommit)).Trim()
+                $originWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $originCommit)).Trim()
+                $originPaths = @(git diff-tree --no-commit-id --name-only -r $originCommit | Sort-Object)
+              }
             }
           }
           $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
@@ -380,30 +448,38 @@ jobs:
           $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
           $expectedPaths = @('.github/workflows/develop.yml') | Sort-Object
           $expectedRepairPaths = @('.github/workflows/develop.yml') | Sort-Object
-          $expectedDiagnosticPaths = @(
+          $expectedDiagnosticPaths = @('.github/workflows/develop.yml') | Sort-Object
+          $expectedOriginPaths = @(
             '.github/workflows/develop.yml'
             'src/test/soundproxy_test.cpp'
           ) | Sort-Object
           $pathsMatch = [string]::Join('|', $actualPaths) -ceq [string]::Join('|', $expectedPaths)
           $repairPathsMatch = [string]::Join('|', $repairPaths) -ceq [string]::Join('|', $expectedRepairPaths)
           $diagnosticPathsMatch = [string]::Join('|', $diagnosticPaths) -ceq [string]::Join('|', $expectedDiagnosticPaths)
+          $originPathsMatch = [string]::Join('|', $originPaths) -ceq [string]::Join('|', $expectedOriginPaths)
           $status = @(git status --porcelain --untracked-files=all)
           $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
           $valid = (
             $head -eq $eventSha -and
             $singleParent -and
-            $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
+            $repairCommit -eq 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73' -and
             $repairSingleParent -and
-            $repairParent -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $repairParent -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
             $repairTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
-            $repairWorkflowBlob -eq '5c589e4e71f052c7e559fb3b8bb0a64801357faa' -and
+            $repairWorkflowBlob -eq 'a7fe601bb2e910c73657ffc7f2373e33592bdde3' -and
             $repairPathsMatch -and
-            $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $diagnosticCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
             $diagnosticSingleParent -and
-            $diagnosticParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $diagnosticParent -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
             $diagnosticTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
-            $diagnosticWorkflowBlob -eq '949347665e4fb0c5a01ba8973d2a035ba6000674' -and
+            $diagnosticWorkflowBlob -eq '5c589e4e71f052c7e559fb3b8bb0a64801357faa' -and
             $diagnosticPathsMatch -and
+            $originCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $originSingleParent -and
+            $originParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
+            $originTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $originWorkflowBlob -eq '949347665e4fb0c5a01ba8973d2a035ba6000674' -and
+            $originPathsMatch -and
             $sourceBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
             $workflowBlob -ne '' -and
             $pathsMatch -and
@@ -416,33 +492,45 @@ jobs:
             valid = $valid
             event_sha = $eventSha
             checked_out_head = $head
-            required_parent = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
+            required_parent = 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73'
             actual_parent = $parent
             single_parent = $singleParent
-            required_repair_commit = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
+            required_repair_commit = 'c01ce77a9a77d52e0ae48e7e773a94f3e0c91a73'
             actual_repair_commit = $repairCommit
             actual_repair_parent = $repairParent
             repair_single_parent = $repairSingleParent
-            required_repair_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_repair_parent = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
             required_repair_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_repair_test_blob = $repairTestBlob
-            required_repair_workflow_blob = '5c589e4e71f052c7e559fb3b8bb0a64801357faa'
+            required_repair_workflow_blob = 'a7fe601bb2e910c73657ffc7f2373e33592bdde3'
             actual_repair_workflow_blob = $repairWorkflowBlob
             expected_repair_commit_paths = $expectedRepairPaths
             actual_repair_commit_paths = $repairPaths
             repair_commit_paths_match = $repairPathsMatch
-            required_diagnostic_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_diagnostic_commit = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
             actual_diagnostic_commit = $diagnosticCommit
-            required_diagnostic_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            required_diagnostic_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
             actual_diagnostic_parent = $diagnosticParent
             diagnostic_single_parent = $diagnosticSingleParent
             required_diagnostic_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_diagnostic_test_blob = $diagnosticTestBlob
-            required_diagnostic_workflow_blob = '949347665e4fb0c5a01ba8973d2a035ba6000674'
+            required_diagnostic_workflow_blob = '5c589e4e71f052c7e559fb3b8bb0a64801357faa'
             actual_diagnostic_workflow_blob = $diagnosticWorkflowBlob
             expected_diagnostic_commit_paths = $expectedDiagnosticPaths
             actual_diagnostic_commit_paths = $diagnosticPaths
             diagnostic_commit_paths_match = $diagnosticPathsMatch
+            required_origin_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            actual_origin_commit = $originCommit
+            required_origin_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
+            actual_origin_parent = $originParent
+            origin_single_parent = $originSingleParent
+            required_origin_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_origin_test_blob = $originTestBlob
+            required_origin_workflow_blob = '949347665e4fb0c5a01ba8973d2a035ba6000674'
+            actual_origin_workflow_blob = $originWorkflowBlob
+            expected_origin_commit_paths = $expectedOriginPaths
+            actual_origin_commit_paths = $originPaths
+            origin_commit_paths_match = $originPathsMatch
             required_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
             actual_test_blob = $sourceBlob
             workflow_blob = $workflowBlob
