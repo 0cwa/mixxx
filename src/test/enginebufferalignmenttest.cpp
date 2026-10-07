@@ -30,6 +30,9 @@
 #ifdef __BUNGEE__
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
+#ifdef __SIGNALSMITH__
+#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
+#endif
 #include "engine/bufferscalers/enginebufferscalelinear.h"
 #include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
@@ -73,6 +76,9 @@ constexpr int kEngineMarkerSourceFrame = 15 * kBufferFrames + 400;
 // The impulse is intentionally detected on onset, not peak: the two engines
 // have different smoothing kernels, while the first threshold crossing is a
 // stable emitted-output clock edge in the deterministic source.
+#ifdef __SIGNALSMITH__
+constexpr double kSignalSmithMarkerOnsetThreshold = 0.3;
+#endif
 #ifdef __BUNGEE__
 constexpr double kBungeeMarkerOnsetThreshold = 0.8;
 #endif
@@ -645,7 +651,7 @@ AudibleMarkerComparison compareAudibleMarkers(
     return comparison;
 }
 
-#ifdef __BUNGEE__
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 MarkerSimilarity findEngineMarkerOnset(std::span<const CSAMPLE> output,
         double sourceRate,
         double threshold) {
@@ -694,7 +700,7 @@ class FixedVSyncProvider final : public VSyncTimeProvider {
     const std::chrono::microseconds m_offset;
 };
 
-#ifdef __BUNGEE__
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 struct MarkerPlayheadPixelResult {
     bool rendererInitialized = false;
     double markerPixel = 0.0;
@@ -790,6 +796,10 @@ const char* keylockEngineTraceName(EngineBuffer::KeylockEngine engine) {
 #ifdef __BUNGEE__
     case EngineBuffer::KeylockEngine::Bungee:
         return "Bungee";
+#endif
+#ifdef __SIGNALSMITH__
+    case EngineBuffer::KeylockEngine::SignalSmith:
+        return "SignalSmith";
 #endif
     default:
         return "Unknown";
@@ -904,7 +914,7 @@ void writeCommonScalerPositionTrace(
                      << " (" << records.size() << " records)";
 }
 
-#ifdef __BUNGEE__
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 StretchedMarkerProbeResult runStretchedMarkerProbe(
         EngineBuffer* pEngineBuffer,
         const QString& group,
@@ -1055,7 +1065,7 @@ void writeFailureTrace(const AlignmentObservation* observations,
     }
 }
 
-#ifdef __BUNGEE__
+#if defined(__SIGNALSMITH__) || defined(__BUNGEE__)
 void writeEngineMarkerFailureTrace(const char* engine,
         double correlation,
         double normalizedError,
@@ -1193,6 +1203,11 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
                             std::memory_order_seq_cst)) {
                     expectedKeylockScaler = pState->pScaler;
                 }
+                break;
+#endif
+#ifdef __SIGNALSMITH__
+            case EngineBuffer::KeylockEngine::SignalSmith:
+                expectedKeylockScaler = pEngineBuffer->m_pScaleSignalSmith;
                 break;
 #endif
             default:
@@ -1696,6 +1711,411 @@ TEST_F(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity) {
             recoveryOutput.begin() + kBufferSamples,
             primeOutput.begin()));
 }
+
+#ifdef __SIGNALSMITH__
+TEST_F(EngineBufferAlignmentTest, SignalSmithEngineSelectedAndProcesses) {
+    TrackPointer track = Track::newTemporary();
+    track->setAudioProperties(
+            mixxx::kEngineChannelOutputCount,
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(kTrackSeconds));
+
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock_engine")),
+            static_cast<double>(EngineBuffer::KeylockEngine::SignalSmith));
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rate")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rateSearch")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rate_dir")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rate_ratio")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("pitch")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("pitch_adjust")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("reverse")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("slip_enabled")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("repeat")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("passthrough")), 0.0);
+
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->loadFakeTrack(track, false);
+    pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+    std::array<CSAMPLE, kBufferSamples> output{};
+    pEngineBuffer->process(output.data(), kBufferSamples);
+    pEngineBuffer->postProcess(kBufferSamples);
+
+    EXPECT_EQ(pEngineBuffer->m_pScaleSignalSmith,
+            pEngineBuffer->m_pScaleKeylock.loadAcquire());
+    EXPECT_EQ(pEngineBuffer->m_pScaleSignalSmith, pEngineBuffer->m_pScale);
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return std::isfinite(sample);
+    }));
+}
+
+TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
+    TrackPointer track = Track::newTemporary();
+    track->setAudioProperties(
+            mixxx::kEngineChannelOutputCount,
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(kTrackSeconds));
+
+    ControlObject::set(ConfigKey(QStringLiteral("[App]"),
+                               QStringLiteral("samplerate")),
+            kSampleRate);
+
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock_engine")),
+            static_cast<double>(EngineBuffer::KeylockEngine::SignalSmith));
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rate")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rateSearch")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rate_dir")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("rate_ratio")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("pitch")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("pitch_adjust")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("keylock")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("reverse")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("slip_enabled")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("repeat")), 0.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("passthrough")), 0.0);
+
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->loadFakeTrack(track, false);
+    pEngineBuffer->seekExact(mixxx::audio::kStartFramePos);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("play")), 1.0);
+    const double engineTrackFrames = pEngineBuffer->getTrackEndPosition().value();
+
+    std::array<CSAMPLE, kBufferSamples> output{};
+    std::vector<CSAMPLE> emitted;
+    emitted.reserve(kBufferSamples * 80);
+    std::array<double, 80> playPositionsBefore{};
+    std::array<double, 80> playPositionsAfter{};
+    const auto visualPlayPosition =
+            VisualPlayPosition::getVisualPlayPosition(m_sGroup1);
+    FixedVSyncProvider vsync;
+    WaveformWidgetRenderer renderer(m_sGroup1);
+    const bool rendererInitialized = renderer.init();
+    renderer.setTrack(track);
+    renderer.resizeRenderer(kRendererWidth, 100, 1.0f);
+    std::array<double, 80> visualPlayPositionsBefore{};
+    std::array<double, 80> visualVSyncPositionsBefore{};
+    std::array<double, 80> rendererPositionsBefore{};
+    std::array<double, 80> requestedOutputFrames{};
+    std::array<double, 80> returnedSourceFrames{};
+    std::array<double, 80> readAheadStartFrames{};
+    std::array<double, 80> readAheadEndFrames{};
+    std::array<std::size_t, 80> readAheadObservationCounts{};
+    double maximumOutput = 0.0;
+    g_source.resetReadObservations();
+    for (int callback = 0; callback < 80; ++callback) {
+        playPositionsBefore[callback] = pEngineBuffer->getPlayPos().value();
+        visualPlayPositionsBefore[callback] =
+                visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
+        visualVSyncPositionsBefore[callback] =
+                playPositionAtNextVSync(visualPlayPosition.data(), &vsync)
+                        .value_or(-1.0) *
+                engineTrackFrames;
+        if (rendererInitialized &&
+                playPositionAtNextVSync(visualPlayPosition.data(), &vsync)
+                        .has_value()) {
+            renderer.onPreRender(&vsync);
+            rendererPositionsBefore[callback] = renderer.getTruePosSample();
+        }
+        pEngineBuffer->process(output.data(), kBufferSamples);
+        pEngineBuffer->postProcess(kBufferSamples);
+        playPositionsAfter[callback] = pEngineBuffer->getPlayPos().value();
+        requestedOutputFrames[callback] = kBufferFrames;
+        returnedSourceFrames[callback] =
+                playPositionsAfter[callback] - playPositionsBefore[callback];
+        const ReadAheadSnapshot readAhead = latestReadAheadSnapshot(g_source);
+        readAheadStartFrames[callback] = readAhead.startFrames;
+        readAheadEndFrames[callback] = readAhead.endFrames;
+        readAheadObservationCounts[callback] = readAhead.observationCount;
+        emitted.insert(emitted.end(), output.begin(), output.end());
+        for (CSAMPLE sample : output) {
+            maximumOutput = std::max(maximumOutput,
+                    std::abs(static_cast<double>(sample)));
+        }
+    }
+
+    const MarkerSimilarity bestSimilarity =
+            findBestEngineMarkerSimilarity(emitted);
+    const int bestCallback = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame / kBufferFrames
+            : -1;
+    const int markerOutputFrame = bestSimilarity.outputFrame >= 0
+            ? bestSimilarity.outputFrame % kBufferFrames
+            : -1;
+    const double markerPlayPosBefore = bestCallback >= 0 && bestCallback < 80
+            ? playPositionsBefore[bestCallback]
+            : 0.0;
+    const double markerPlayPosAfter = bestCallback >= 0 && bestCallback < 80
+            ? playPositionsAfter[bestCallback]
+            : 0.0;
+    const double markerVisualPlayPosBefore = bestCallback >= 0 && bestCallback < 80
+            ? visualPlayPositionsBefore[bestCallback]
+            : 0.0;
+    const double markerVisualVSyncPosBefore = bestCallback >= 0 && bestCallback < 80
+            ? visualVSyncPositionsBefore[bestCallback]
+            : 0.0;
+    const double markerRendererPosBefore = bestCallback >= 0 && bestCallback < 80
+            ? rendererPositionsBefore[bestCallback]
+            : 0.0;
+    const double markerRequestedOutputFrames = bestCallback >= 0 && bestCallback < 80
+            ? requestedOutputFrames[bestCallback]
+            : 0.0;
+    const double markerReturnedSourceFrames = bestCallback >= 0 && bestCallback < 80
+            ? returnedSourceFrames[bestCallback]
+            : 0.0;
+    const double markerReadAheadStartFrames = bestCallback >= 0 && bestCallback < 80
+            ? readAheadStartFrames[bestCallback]
+            : 0.0;
+    const double markerReadAheadEndFrames = bestCallback >= 0 && bestCallback < 80
+            ? readAheadEndFrames[bestCallback]
+            : 0.0;
+    const std::size_t markerReadAheadObservationCount = bestCallback >= 0 && bestCallback < 80
+            ? readAheadObservationCounts[bestCallback]
+            : 0;
+    const double markerPixel = renderer.transformSamplePositionInRendererWorld(
+            static_cast<double>(kEngineMarkerSourceFrame * kChannels));
+    const double rendererPlayheadPixel = renderer.transformSamplePositionInRendererWorld(
+            markerRendererPosBefore);
+    const bool markerObserved = bestSimilarity.outputFrame >= 0 &&
+            bestSimilarity.correlation >= 0.3;
+    const double bestPlayPos = markerPlayPosBefore;
+    const int firstDivergentClock = !markerObserved
+            ? 1
+            : (std::abs(kEngineMarkerSourceFrame -
+                       (markerVisualPlayPosBefore + markerOutputFrame)) > 2.0
+                              ? 3
+                              : (std::abs(markerRendererPosBefore -
+                                         markerVisualVSyncPosBefore * kChannels) > 1e-9
+                                                ? 4
+                                                : 0));
+
+    if (!markerObserved) {
+        writeEngineMarkerFailureTrace(
+                "SignalSmith",
+                bestSimilarity.correlation,
+                bestSimilarity.normalizedError,
+                bestSimilarity.outputFrame,
+                bestCallback,
+                markerPlayPosBefore,
+                markerPlayPosAfter,
+                markerVisualPlayPosBefore,
+                markerVisualVSyncPosBefore,
+                markerRendererPosBefore,
+                markerPixel,
+                rendererPlayheadPixel,
+                markerRequestedOutputFrames,
+                markerReturnedSourceFrames,
+                markerReadAheadStartFrames,
+                markerReadAheadEndFrames,
+                markerReadAheadObservationCount,
+                firstDivergentClock,
+                maximumOutput);
+    }
+    ASSERT_TRUE(markerObserved)
+            << "SignalSmith marker was not emitted in 80 callbacks; best correlation="
+            << bestSimilarity.correlation
+            << ", normalized marker error=" << bestSimilarity.normalizedError
+            << " at callback=" << bestCallback
+            << " play position=" << bestPlayPos
+            << " at output frame=" << bestSimilarity.outputFrame
+            << ", maximum output=" << maximumOutput;
+    const bool markerPositionAligned =
+            std::abs(kEngineMarkerSourceFrame -
+                    (markerVisualPlayPosBefore + markerOutputFrame)) <= 2.0;
+    if (!markerPositionAligned) {
+        writeEngineMarkerFailureTrace(
+                "SignalSmith",
+                bestSimilarity.correlation,
+                bestSimilarity.normalizedError,
+                bestSimilarity.outputFrame,
+                bestCallback,
+                markerPlayPosBefore,
+                markerPlayPosAfter,
+                markerVisualPlayPosBefore,
+                markerVisualVSyncPosBefore,
+                markerRendererPosBefore,
+                markerPixel,
+                rendererPlayheadPixel,
+                markerRequestedOutputFrames,
+                markerReturnedSourceFrames,
+                markerReadAheadStartFrames,
+                markerReadAheadEndFrames,
+                markerReadAheadObservationCount,
+                firstDivergentClock,
+                maximumOutput);
+    }
+    EXPECT_NEAR(kEngineMarkerSourceFrame,
+            markerVisualPlayPosBefore + markerOutputFrame,
+            2.0)
+            << "marker output frame=" << markerOutputFrame
+            << " play position before=" << markerPlayPosBefore
+            << " play position after=" << markerPlayPosAfter
+            << " visual play position before=" << markerVisualPlayPosBefore;
+    EXPECT_NEAR(kBufferFrames,
+            markerPlayPosAfter - markerPlayPosBefore,
+            0.5);
+    ASSERT_TRUE(rendererInitialized);
+    EXPECT_NEAR(markerVisualPlayPosBefore + kVSyncOffsetFrames,
+            markerVisualVSyncPosBefore,
+            1e-9);
+    EXPECT_NEAR(markerVisualVSyncPosBefore * kChannels,
+            markerRendererPosBefore,
+            1e-9);
+    const double markerNeighbourPixel = renderer.transformSamplePositionInRendererWorld(
+            static_cast<double>((kEngineMarkerSourceFrame + kMarkerNeighbourFrames) *
+                    kChannels));
+    EXPECT_NEAR(markerNeighbourPixel - markerPixel,
+            kMarkerNeighbourFrames / renderer.getAudioSamplePerPixel(),
+            1e-9);
+    const MarkerPlayheadPixelResult markerPixelReplay =
+            replayMarkerAtSyntheticVSync(
+                    pEngineBuffer,
+                    m_sGroup1,
+                    track,
+                    bestCallback,
+                    markerOutputFrame);
+    ASSERT_TRUE(markerPixelReplay.rendererInitialized);
+    if (std::abs(markerPixelReplay.playheadPixel -
+                markerPixelReplay.markerPixel) > 1.0) {
+        writeEngineMarkerFailureTrace(
+                "SignalSmith",
+                bestSimilarity.correlation,
+                bestSimilarity.normalizedError,
+                bestSimilarity.outputFrame,
+                bestCallback,
+                markerPlayPosBefore,
+                markerPlayPosAfter,
+                markerVisualPlayPosBefore,
+                markerVisualVSyncPosBefore,
+                markerPixelReplay.playheadSample,
+                markerPixelReplay.markerPixel,
+                markerPixelReplay.playheadPixel,
+                markerRequestedOutputFrames,
+                markerReturnedSourceFrames,
+                markerReadAheadStartFrames,
+                markerReadAheadEndFrames,
+                markerReadAheadObservationCount,
+                4,
+                maximumOutput);
+    }
+    EXPECT_NEAR(markerPixelReplay.playheadPixel,
+            markerPixelReplay.markerPixel,
+            1.0);
+}
+
+TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition) {
+    TrackPointer track = Track::newTemporary();
+    track->setAudioProperties(
+            mixxx::kEngineChannelOutputCount,
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(kTrackSeconds));
+
+    constexpr double kRateRatio = 1.25;
+    configureAlignmentControls(
+            m_sGroup1,
+            EngineBuffer::KeylockEngine::SignalSmith,
+            kRateRatio);
+    EngineBuffer* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    const StretchedMarkerProbeResult probe = runStretchedMarkerProbe(
+            pEngineBuffer,
+            m_sGroup1,
+            track,
+            kRateRatio,
+            kSignalSmithMarkerOnsetThreshold);
+    if (probe.callbackIndex < 0 || probe.similarity.correlation < 0.3) {
+        writeEngineMarkerFailureTrace(
+                "SignalSmith",
+                probe.similarity.correlation,
+                probe.similarity.normalizedError,
+                probe.similarity.outputFrame,
+                probe.callbackIndex,
+                probe.playPosBeforeFrames,
+                probe.playPosAfterFrames,
+                probe.visualPlayPosBeforeFrames,
+                probe.visualVSyncPosBeforeFrames,
+                0.0,
+                0.0,
+                0.0,
+                probe.requestedOutputFrames,
+                probe.returnedSourceFrames,
+                probe.readAheadStartFrames,
+                probe.readAheadEndFrames,
+                probe.readAheadObservationCount,
+                1,
+                probe.maximumOutput,
+                "SignalSmithStretchedMarkerTracksEnginePosition");
+    }
+    ASSERT_GE(probe.callbackIndex, 0);
+    ASSERT_GE(probe.similarity.correlation, 0.3)
+            << "SignalSmith stretched marker was not emitted; correlation="
+            << probe.similarity.correlation
+            << ", normalized error=" << probe.similarity.normalizedError
+            << ", output frame=" << probe.similarity.outputFrame
+            << ", maximum output=" << probe.maximumOutput;
+
+    const int markerOutputFrame = probe.similarity.outputFrame >= 0
+            ? probe.similarity.outputFrame % kBufferFrames
+            : -1;
+    qDebug() << "SignalSmith stretched probe" << probe.callbackIndex
+             << probe.similarity.outputFrame << markerOutputFrame
+             << probe.visualPlayPosBeforeFrames << probe.effectiveRate
+             << probe.similarity.correlation;
+    EXPECT_NEAR(kEngineMarkerSourceFrame,
+            probe.visualPlayPosBeforeFrames +
+                    markerOutputFrame * probe.effectiveRate,
+            2.0);
+    EXPECT_NEAR(kBufferFrames * probe.effectiveRate,
+            probe.returnedSourceFrames,
+            0.5);
+    EXPECT_DOUBLE_EQ(kBufferFrames, probe.requestedOutputFrames);
+    EXPECT_GT(probe.readAheadObservationCount, 0u);
+    EXPECT_GE(probe.readAheadEndFrames, probe.readAheadStartFrames);
+    EXPECT_NEAR(probe.visualPlayPosBeforeFrames +
+                    kVSyncOffsetFrames * probe.effectiveRate,
+            probe.visualVSyncPosBeforeFrames,
+            1e-9);
+
+    const MarkerPlayheadPixelResult pixel = replayMarkerAtSyntheticVSync(
+            pEngineBuffer,
+            m_sGroup1,
+            track,
+            probe.callbackIndex,
+            markerOutputFrame);
+    ASSERT_TRUE(pixel.rendererInitialized);
+    const bool stretchedAlignmentPassed =
+            std::abs(kEngineMarkerSourceFrame -
+                    (probe.visualPlayPosBeforeFrames +
+                            markerOutputFrame * probe.effectiveRate)) <= 2.0 &&
+            std::abs(pixel.playheadPixel - pixel.markerPixel) <= 1.0;
+    if (!stretchedAlignmentPassed) {
+        writeEngineMarkerFailureTrace(
+                "SignalSmith",
+                probe.similarity.correlation,
+                probe.similarity.normalizedError,
+                probe.similarity.outputFrame,
+                probe.callbackIndex,
+                probe.playPosBeforeFrames,
+                probe.playPosAfterFrames,
+                probe.visualPlayPosBeforeFrames,
+                probe.visualVSyncPosBeforeFrames,
+                pixel.playheadSample,
+                pixel.markerPixel,
+                pixel.playheadPixel,
+                probe.requestedOutputFrames,
+                probe.returnedSourceFrames,
+                probe.readAheadStartFrames,
+                probe.readAheadEndFrames,
+                probe.readAheadObservationCount,
+                3,
+                probe.maximumOutput,
+                "SignalSmithStretchedMarkerTracksEnginePosition");
+    }
+    EXPECT_NEAR(pixel.playheadPixel, pixel.markerPixel, 1.0);
+}
+#endif
 
 #ifdef __BUNGEE__
 TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {

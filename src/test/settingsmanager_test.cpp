@@ -50,6 +50,9 @@ std::array<EngineBuffer::KeylockEngine, 4> explicitPerDeckKeylockEngines() {
 #ifdef __BUNGEE__
     engines[0] = EngineBuffer::KeylockEngine::Bungee;
 #endif
+#ifdef __SIGNALSMITH__
+    engines[3] = EngineBuffer::KeylockEngine::SignalSmith;
+#endif
     return engines;
 }
 
@@ -172,6 +175,14 @@ TEST_F(SettingsManagerTest, MigratesAvailableOptionalGlobalKeylockEngines) {
         testedEngine = true;
     }
 #endif
+#ifdef __SIGNALSMITH__
+    if (EngineBuffer::isKeylockEngineAvailable(EngineBuffer::KeylockEngine::SignalSmith)) {
+        expectGlobalKeylockEngineMigration(
+                EngineBuffer::KeylockEngine::SignalSmith,
+                EngineBuffer::KeylockEngine::SignalSmith);
+        testedEngine = true;
+    }
+#endif
     if (!testedEngine) {
         GTEST_SKIP() << "No optional keylock engine is available";
     }
@@ -201,6 +212,24 @@ TEST_F(SettingsManagerTest, PreservesBungeePerDeckKeylockEngineDuringMigration) 
 
     ASSERT_TRUE(manager.settings()->exists(key));
     EXPECT_EQ(static_cast<int>(EngineBuffer::KeylockEngine::Bungee),
+            manager.settings()->getValue(key, -1));
+}
+#endif
+
+#ifdef __SIGNALSMITH__
+TEST_F(SettingsManagerTest, PreservesSignalSmithPerDeckKeylockEngineDuringMigration) {
+    QTemporaryDir settingsDir;
+    ASSERT_TRUE(settingsDir.isValid());
+
+    UserSettings existingSettings(QDir(settingsDir.path()).filePath(MIXXX_SETTINGS_FILE));
+    const ConfigKey key = deckKeylockEngineKey("[Channel2]");
+    existingSettings.setValue(key, EngineBuffer::KeylockEngine::SignalSmith);
+    ASSERT_TRUE(existingSettings.save());
+
+    SettingsManager manager(settingsDir.path());
+
+    ASSERT_TRUE(manager.settings()->exists(key));
+    EXPECT_EQ(static_cast<int>(EngineBuffer::KeylockEngine::SignalSmith),
             manager.settings()->getValue(key, -1));
 }
 #endif
