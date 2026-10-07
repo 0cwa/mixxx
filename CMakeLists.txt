@@ -3147,7 +3147,12 @@ if(BUILD_TESTING)
   set_target_properties(mixxx-test PROPERTIES AUTOMOC ON)
   target_link_libraries(
     mixxx-test
-    PRIVATE mixxx-lib mixxx-gitinfostore mixxx-xwax GTest::gtest GTest::gmock
+    PRIVATE
+      mixxx-lib
+      mixxx-gitinfostore
+      "$<TARGET_NAME_IF_EXISTS:mixxx-xwax>"
+      GTest::gtest
+      GTest::gmock
   )
 
   if(BUILD_BENCH)
