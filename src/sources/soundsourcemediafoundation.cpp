@@ -136,7 +136,7 @@ SoundSource::OpenResult SoundSourceMediaFoundation::tryOpen(
     }
     // Initialize the Media Foundation platform.
     m_hrMFStartup = MFStartup(MF_VERSION);
-    if (FAILED(m_hrCoInitialize)) {
+    if (FAILED(m_hrMFStartup)) {
         kLogger.warning()
                 << "failed to initialize Media Foundation";
         return OpenResult::Failed;
@@ -475,7 +475,6 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             settleTerminalRead();
             break; // abort
         }
-        DEBUG_ASSERT(pSample != nullptr);
         SINT readerFrameIndex = m_streamUnitConverter.toFrameIndex(streamPos);
         if (m_streamTickFrameIndex != kUnknownFrameIndex) {
             if (readerFrameIndex > m_streamTickFrameIndex) {
