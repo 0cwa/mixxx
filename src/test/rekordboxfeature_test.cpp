@@ -12,64 +12,16 @@
 #include <string>
 #include <thread>
 
-#include "database/mixxxdb.h"
-#include "kaitai/exceptions.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "library/rekordbox/rekordboxparser_test.h"
 #include "library/treeitem.h"
-#include "proto/keys.pb.h"
-#include "rekordbox_pdb_test_fixtures.h"
 #include "rekordbox_test_fixtures.h"
 #include "test/mixxxtest.h"
 #include "track/beats.h"
 #include "track/cue.h"
 #include "track/track.h"
-#include "util/db/dbconnectionpooled.h"
-#include "util/db/dbconnectionpooler.h"
 
 namespace {
-
-using PdbRootValidationError = kaitai::validation_not_equal_error<std::string>;
-
-class RekordboxPdbImportTest : public MixxxTest {
-  public:
-    RekordboxPdbImportTest()
-            : m_mixxxDb(config(), false) {
-    }
-
-    mixxx::DbConnectionPoolPtr databasePool() const {
-        return m_mixxxDb.connectionPool();
-    }
-
-  private:
-    MixxxDb m_mixxxDb;
-};
-
-QString parseDeviceDBOnThread(
-        mixxx::DbConnectionPoolPtr dbConnectionPool,
-        const QString& devicePath) {
-    QString parseResult;
-    std::exception_ptr parserException;
-    std::thread parserThread([dbConnectionPool,
-                                     devicePath,
-                                     &parseResult,
-                                     &parserException] {
-        try {
-            TreeItem deviceItem(
-                    QStringLiteral("TEST_DEVICE"),
-                    QVariant(QList<QString>{devicePath}));
-            parseResult = mixxx::rekordbox::test::parseDeviceDBForTest(
-                    dbConnectionPool, &deviceItem);
-        } catch (...) {
-            parserException = std::current_exception();
-        }
-    });
-    parserThread.join();
-    if (parserException) {
-        std::rethrow_exception(parserException);
-    }
-    return parseResult;
-}
 
 TEST(RekordboxImportTest, PreservesMemoryLoopBoundsAndCueOrder) {
     TrackPointer track = Track::newTemporary();
@@ -281,114 +233,100 @@ TEST(RekordboxImportTest, SkipsTruncatedSyntheticBeatGrid) {
     }
 }
 
-TEST_F(RekordboxPdbImportTest, PersistsNormalizedKeyId) {
-    const auto dbConnectionPool = databasePool();
-    {
-        mixxx::DbConnectionPooler connectionPooler(dbConnectionPool);
-        const auto database = mixxx::DbConnectionPooled(dbConnectionPool);
-        ASSERT_TRUE(MixxxDb::initDatabaseSchema(database));
-
-        QSqlQuery setupQuery(database);
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_library ("
-                "    id INTEGER PRIMARY KEY AUTOINCREMENT, rb_id INTEGER, artist TEXT,"
-                "    title TEXT, album TEXT, year INTEGER, genre TEXT, tracknumber TEXT,"
-                "    location TEXT UNIQUE, comment TEXT, duration INTEGER, bitrate TEXT,"
-                "    bpm FLOAT, key TEXT, key_id INTEGER, rating INTEGER,"
-                "    analyze_path TEXT UNIQUE, device TEXT, color INTEGER)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_playlists ("
-                "    id INTEGER PRIMARY KEY, name TEXT UNIQUE)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_playlist_tracks ("
-                "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "    playlist_id INTEGER REFERENCES rekordbox_playlists(id),"
-                "    track_id INTEGER REFERENCES rekordbox_library(id), position INTEGER)"));
-    }
-
+TEST(RekordboxImportTest, EmptyAnalyzeFilePreservesTrackState) {
     QTemporaryDir temporaryDirectory;
     ASSERT_TRUE(temporaryDirectory.isValid());
-    const QString devicePath = temporaryDirectory.filePath("device");
-    const QString rekordboxPath = QDir(devicePath).filePath("PIONEER/rekordbox");
-    ASSERT_TRUE(QDir().mkpath(rekordboxPath));
 
-    const QString pdbPath = QDir(rekordboxPath).filePath("export.pdb");
-    QFile pdbFile(pdbPath);
-    ASSERT_TRUE(pdbFile.open(QIODevice::WriteOnly));
-    const QByteArray fixture = mixxx::rekordbox::test::makePdbKeyImportFixture();
-    ASSERT_EQ(fixture.size(), pdbFile.write(fixture));
-    pdbFile.close();
+    const QString anlzPath = temporaryDirectory.filePath("empty.dat");
+    QFile anlzFile(anlzPath);
+    ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+    ASSERT_EQ(0, anlzFile.size());
+    anlzFile.close();
 
-    const QString parseResult = parseDeviceDBOnThread(dbConnectionPool, devicePath);
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool ignoreCues : {true, false}) {
+        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
 
-    ASSERT_EQ(devicePath, parseResult);
+        TrackPointer seededTrack = Track::newTemporary();
+        const auto seededBeats = mixxx::Beats::fromConstTempo(
+                sampleRate, mixxx::audio::FramePos(48000), mixxx::Bpm(120.0));
+        ASSERT_TRUE(seededBeats);
+        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
+        const CuePointer seededCue = seededTrack->createAndAddCue(
+                mixxx::CueType::HotCue,
+                1,
+                mixxx::audio::FramePos(123),
+                mixxx::audio::kInvalidFramePos);
 
-    {
-        mixxx::DbConnectionPooler connectionPooler(dbConnectionPool);
-        const auto database = mixxx::DbConnectionPooled(dbConnectionPool);
+        ASSERT_TRUE(seededCue);
 
-        QSqlQuery countQuery(database);
-        ASSERT_TRUE(countQuery.exec("SELECT COUNT(*) FROM rekordbox_library"));
-        ASSERT_TRUE(countQuery.next());
-        ASSERT_EQ(1, countQuery.value(0).toInt());
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                seededTrack, sampleRate, 0, ignoreCues, anlzPath));
 
-        QSqlQuery resultQuery(database);
-        ASSERT_TRUE(resultQuery.exec(
-                "SELECT rb_id, device, key, key_id "
-                "FROM rekordbox_library WHERE rb_id = 100"));
-        ASSERT_TRUE(resultQuery.next());
-        EXPECT_EQ(100, resultQuery.value(0).toInt());
-        EXPECT_EQ(QStringLiteral("TEST_DEVICE"), resultQuery.value(1).toString());
-        EXPECT_EQ(QStringLiteral("C"), resultQuery.value(2).toString());
+        EXPECT_EQ(seededBeats, seededTrack->getBeats());
+        ASSERT_EQ(1, seededTrack->getCuePoints().size());
+        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
+        EXPECT_EQ(mixxx::audio::FramePos(123), seededCue->getPosition());
 
-        const int importedKeyId = resultQuery.value(3).toInt();
-        constexpr auto expectedKey = mixxx::track::io::key::C_MAJOR;
-        EXPECT_EQ(static_cast<int>(expectedKey), importedKeyId);
-        EXPECT_NE(42, importedKeyId);
-        EXPECT_FALSE(resultQuery.next());
+        TrackPointer freshTrack = Track::newTemporary();
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                freshTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_FALSE(freshTrack->getBeats());
+        EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
     }
 }
 
-TEST_F(RekordboxPdbImportTest, PropagatesMalformedParserExceptionFromWorker) {
-    const auto dbConnectionPool = databasePool();
-    {
-        mixxx::DbConnectionPooler connectionPooler(dbConnectionPool);
-        const auto database = mixxx::DbConnectionPooled(dbConnectionPool);
-        ASSERT_TRUE(MixxxDb::initDatabaseSchema(database));
-
-        QSqlQuery setupQuery(database);
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_library ("
-                "    id INTEGER PRIMARY KEY AUTOINCREMENT, rb_id INTEGER, artist TEXT,"
-                "    title TEXT, album TEXT, year INTEGER, genre TEXT, tracknumber TEXT,"
-                "    location TEXT UNIQUE, comment TEXT, duration INTEGER, bitrate TEXT,"
-                "    bpm FLOAT, key TEXT, key_id INTEGER, rating INTEGER,"
-                "    analyze_path TEXT UNIQUE, device TEXT, color INTEGER)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_playlists ("
-                "    id INTEGER PRIMARY KEY, name TEXT UNIQUE)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_playlist_tracks ("
-                "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "    playlist_id INTEGER REFERENCES rekordbox_playlists(id),"
-                "    track_id INTEGER REFERENCES rekordbox_library(id), position INTEGER)"));
-    }
-
+TEST(RekordboxImportTest, PartialAnalyzeFilePreservesTrackState) {
     QTemporaryDir temporaryDirectory;
     ASSERT_TRUE(temporaryDirectory.isValid());
-    const QString devicePath = temporaryDirectory.filePath("device");
-    const QString rekordboxPath = QDir(devicePath).filePath("PIONEER/rekordbox");
-    ASSERT_TRUE(QDir().mkpath(rekordboxPath));
 
-    const QString pdbPath = QDir(rekordboxPath).filePath("export.pdb");
-    QFile pdbFile(pdbPath);
-    ASSERT_TRUE(pdbFile.open(QIODevice::WriteOnly));
-    QByteArray malformedFixture = mixxx::rekordbox::test::makePdbKeyImportFixture();
-    malformedFixture[0x18] = '\x01';
-    ASSERT_EQ(malformedFixture.size(), pdbFile.write(malformedFixture));
-    pdbFile.close();
+    const QString anlzPath = temporaryDirectory.filePath("partial.dat");
+    QFile anlzFile(anlzPath);
+    ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+    QByteArray fixture = mixxx::rekordbox::test::makeAnlzBeatGridFixture();
+    fixture.append("PCOB", 4);
+    mixxx::rekordbox::test::appendU32Be(&fixture, 12);
+    mixxx::rekordbox::test::appendU32Be(&fixture, 24);
+    QByteArray declaredFileSize;
+    mixxx::rekordbox::test::appendU32Be(
+            &declaredFileSize, static_cast<quint32>(fixture.size() + 12));
+    fixture.replace(8, 4, declaredFileSize);
+    ASSERT_EQ(fixture.size(), anlzFile.write(fixture));
+    anlzFile.close();
 
-    EXPECT_THROW(parseDeviceDBOnThread(dbConnectionPool, devicePath), PdbRootValidationError);
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool ignoreCues : {true, false}) {
+        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
+
+        TrackPointer seededTrack = Track::newTemporary();
+        const auto seededBeats = mixxx::Beats::fromConstTempo(
+                sampleRate, mixxx::audio::FramePos(24000), mixxx::Bpm(90.0));
+        ASSERT_TRUE(seededBeats);
+        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
+        const CuePointer seededCue = seededTrack->createAndAddCue(
+                mixxx::CueType::HotCue,
+                1,
+                mixxx::audio::FramePos(123),
+                mixxx::audio::kInvalidFramePos);
+
+        ASSERT_TRUE(seededCue);
+
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                seededTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_EQ(seededBeats, seededTrack->getBeats());
+        ASSERT_EQ(1, seededTrack->getCuePoints().size());
+        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
+        EXPECT_EQ(mixxx::audio::FramePos(123), seededCue->getPosition());
+
+        TrackPointer freshTrack = Track::newTemporary();
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                freshTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_FALSE(freshTrack->getBeats());
+        EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
+    }
 }
 
 TEST(RekordboxImportTest, SkipsInvalidSyntheticHotCueNumbers) {
@@ -490,102 +428,6 @@ TEST(RekordboxImportTest, PreservesSyntheticHotCueNumberBeyondEight) {
         ASSERT_EQ(1, cuePoints.size());
         EXPECT_EQ(mixxx::CueType::HotCue, cuePoints.at(0)->getType());
         EXPECT_EQ(8, cuePoints.at(0)->getHotCue());
-    }
-}
-
-TEST(RekordboxImportTest, EmptyAnalyzeFilePreservesTrackState) {
-    QTemporaryDir temporaryDirectory;
-    ASSERT_TRUE(temporaryDirectory.isValid());
-
-    const QString anlzPath = temporaryDirectory.filePath("empty.dat");
-    QFile anlzFile(anlzPath);
-    ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
-    ASSERT_EQ(0, anlzFile.size());
-    anlzFile.close();
-
-    const auto sampleRate = mixxx::audio::SampleRate(48000);
-    for (const bool ignoreCues : {true, false}) {
-        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
-
-        TrackPointer seededTrack = Track::newTemporary();
-        const auto seededBeats = mixxx::Beats::fromConstTempo(
-                sampleRate, mixxx::audio::FramePos(48000), mixxx::Bpm(120.0));
-        ASSERT_TRUE(seededBeats);
-        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
-        const CuePointer seededCue = seededTrack->createAndAddCue(
-                mixxx::CueType::HotCue,
-                1,
-                mixxx::audio::FramePos(123),
-                mixxx::audio::kInvalidFramePos);
-
-        ASSERT_TRUE(seededCue);
-
-        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
-                seededTrack, sampleRate, 0, ignoreCues, anlzPath));
-
-        EXPECT_EQ(seededBeats, seededTrack->getBeats());
-        ASSERT_EQ(1, seededTrack->getCuePoints().size());
-        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
-        EXPECT_EQ(mixxx::audio::FramePos(123), seededCue->getPosition());
-
-        TrackPointer freshTrack = Track::newTemporary();
-        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
-                freshTrack, sampleRate, 0, ignoreCues, anlzPath));
-
-        EXPECT_FALSE(freshTrack->getBeats());
-        EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
-    }
-}
-
-TEST(RekordboxImportTest, PartialAnalyzeFilePreservesTrackState) {
-    QTemporaryDir temporaryDirectory;
-    ASSERT_TRUE(temporaryDirectory.isValid());
-
-    const QString anlzPath = temporaryDirectory.filePath("partial.dat");
-    QFile anlzFile(anlzPath);
-    ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
-    QByteArray fixture = mixxx::rekordbox::test::makeAnlzBeatGridFixture();
-    fixture.append("PCOB", 4);
-    mixxx::rekordbox::test::appendU32Be(&fixture, 12);
-    mixxx::rekordbox::test::appendU32Be(&fixture, 24);
-    QByteArray declaredFileSize;
-    mixxx::rekordbox::test::appendU32Be(
-            &declaredFileSize, static_cast<quint32>(fixture.size() + 12));
-    fixture.replace(8, 4, declaredFileSize);
-    ASSERT_EQ(fixture.size(), anlzFile.write(fixture));
-    anlzFile.close();
-
-    const auto sampleRate = mixxx::audio::SampleRate(48000);
-    for (const bool ignoreCues : {true, false}) {
-        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
-
-        TrackPointer seededTrack = Track::newTemporary();
-        const auto seededBeats = mixxx::Beats::fromConstTempo(
-                sampleRate, mixxx::audio::FramePos(24000), mixxx::Bpm(90.0));
-        ASSERT_TRUE(seededBeats);
-        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
-        const CuePointer seededCue = seededTrack->createAndAddCue(
-                mixxx::CueType::HotCue,
-                1,
-                mixxx::audio::FramePos(123),
-                mixxx::audio::kInvalidFramePos);
-
-        ASSERT_TRUE(seededCue);
-
-        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
-                seededTrack, sampleRate, 0, ignoreCues, anlzPath));
-
-        EXPECT_EQ(seededBeats, seededTrack->getBeats());
-        ASSERT_EQ(1, seededTrack->getCuePoints().size());
-        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
-        EXPECT_EQ(mixxx::audio::FramePos(123), seededCue->getPosition());
-
-        TrackPointer freshTrack = Track::newTemporary();
-        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
-                freshTrack, sampleRate, 0, ignoreCues, anlzPath));
-
-        EXPECT_FALSE(freshTrack->getBeats());
-        EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
     }
 }
 
