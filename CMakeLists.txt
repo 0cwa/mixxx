@@ -3046,7 +3046,6 @@ if(BUILD_TESTING)
     src/test/rgbcolor_test.cpp
     src/test/rotary_test.cpp
     src/test/samplebuffertest.cpp
-    src/test/savitzkygolaytest.cpp
     src/test/schemamanager_test.cpp
     src/test/searchqueryparsertest.cpp
     src/test/seratobeatgridtest.cpp
@@ -5714,7 +5713,10 @@ endif()
 default_option(VINYLCONTROL "Vinyl Control support" "NOT MACAPPSTORE")
 if(VINYLCONTROL)
   if(BUILD_TESTING)
-    target_sources(mixxx-test PRIVATE src/test/matrixapitest.cpp)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/matrixapitest.cpp src/test/savitzkygolaytest.cpp
+    )
   endif()
   if(MACAPPSTORE)
     message(
