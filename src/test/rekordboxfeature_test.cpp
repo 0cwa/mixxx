@@ -18,7 +18,6 @@
 #include "library/rekordbox/rekordboxparser_test.h"
 #include "library/treeitem.h"
 #include "proto/keys.pb.h"
-#include "rekordbox_pdb_test_fixtures.h"
 #include "rekordbox_test_fixtures.h"
 #include "test/mixxxtest.h"
 #include "track/beats.h"
