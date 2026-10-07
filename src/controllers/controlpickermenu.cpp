@@ -1052,6 +1052,41 @@ ControlPickerMenu::ControlPickerMenu(QWidget* pParent)
 #endif
     }
 
+    // Memory Cue Controls
+    QMenu* pMemoryCueMenu = addSubmenu(tr("Memory Cues"));
+    for (int i = 1; i <= iNumDecks; ++i) {
+        QMenu* pThisMemMenu = addSubmenu(tr("Channel %1").arg(i), pMemoryCueMenu);
+        addControl(QString("[Channel%1]").arg(i),
+                "seek_30s",
+                tr("Deck %1 Next Memory Cue").arg(i),
+                tr("Jump to Next Memory Cue"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+        addControl(QString("[Channel%1]").arg(i),
+                "seek_30Prev",
+                tr("Deck %1 Previous Memory Cue").arg(i),
+                tr("Jump to Previous Memory Cue"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+        addControl(QString("[Channel%1]").arg(i),
+                "memory_create_at_current",
+                tr("Deck %1 Create New Memory Cue").arg(i),
+                tr("Create a new Memory Cue at the current position"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+        addControl(QString("[Channel%1]").arg(i),
+                "memory_clear_nearest",
+                tr("Deck %1 Remove Memory Cue").arg(i),
+                tr("Remove the Memory Cue nearest to the current position"),
+                pThisMemMenu,
+                false,
+                tr("Memory Cues"));
+    }
+    pMemoryCueMenu->addSeparator();
+
     pEffectsMenu->addSeparator();
 
     for (int iEffectUnitNumber = 1; iEffectUnitNumber <= kNumStandardEffectUnits;
