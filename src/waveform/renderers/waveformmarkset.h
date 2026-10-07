@@ -34,22 +34,26 @@ class WaveformMarkSet {
                const WaveformSignalColors& signalColors);
 
     template<typename Receiver, typename Slot>
-    void connectSamplePositionChanged(Receiver receiver, Slot slot) const {
+    void connectSamplePositionChanged(Receiver receiver,
+            Slot slot,
+            Qt::ConnectionType connectionType = Qt::AutoConnection) const {
         for (const auto& pMark : std::as_const(m_marks)) {
             if (pMark->isValid()) {
-                pMark->connectSamplePositionChanged(receiver, slot);
+                pMark->connectSamplePositionChanged(receiver, slot, connectionType);
             }
         }
-    };
+    }
 
     template<typename Receiver, typename Slot>
-    void connectSampleEndPositionChanged(Receiver receiver, Slot slot) const {
+    void connectSampleEndPositionChanged(Receiver receiver,
+            Slot slot,
+            Qt::ConnectionType connectionType = Qt::AutoConnection) const {
         for (const auto& pMark : std::as_const(m_marks)) {
             if (pMark->isValid()) {
-                pMark->connectSampleEndPositionChanged(receiver, slot);
+                pMark->connectSampleEndPositionChanged(receiver, slot, connectionType);
             }
         }
-    };
+    }
 
     template<typename Receiver, typename Slot>
     void connectVisibleChanged(Receiver receiver, Slot slot) const {
@@ -80,6 +84,16 @@ class WaveformMarkSet {
 
     void update();
 
+    // Returns the nearest valid, visible marker after playPosition whose
+    // category is enabled. Returns defaultNextMarkPosition when no marker
+    // qualifies.
+    double findNextCountdownMarkPosition(double playPosition,
+            double defaultNextMarkPosition,
+            bool showHotCues,
+            bool showMemoryCues,
+            bool showIntroCues,
+            bool showOutroCues) const;
+
     void setBreadth(float breadth);
 
     void clear() {
@@ -87,11 +101,19 @@ class WaveformMarkSet {
         m_marksToRender.clear();
         m_hotCueMarks.clear();
         m_pDefaultMark.reset();
+        m_memoryCueMarks.clear();
     }
 
     void addMark(WaveformMarkPointer pMark) {
         m_marks.push_back(pMark);
     }
+
+    // Build non-hotcue marks (e.g. CueType::Memory) from cues.
+    // Replaces previously created memory marks.
+    void syncMemoryCueMarks(const QString& group,
+            const QList<CuePointer>& cues,
+            int dimBrightThreshold,
+            const WaveformSignalColors& signalColors);
 
     std::optional<WaveformMark::WaveformMarkConstructionError> setDefault(const QString& group,
             const DefaultMarkerStyle& model,
@@ -104,6 +126,9 @@ class WaveformMarkSet {
     QList<WaveformMarkPointer> m_marksToRender;
 
     QMap<int, WaveformMarkPointer> m_hotCueMarks;
+
+    // Ephemeral, CO-unbacked marks for memory cues.
+    QList<WaveformMarkPointer> m_memoryCueMarks;
 
     DISALLOW_COPY_AND_ASSIGN(WaveformMarkSet);
 };

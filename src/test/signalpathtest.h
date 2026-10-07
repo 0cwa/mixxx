@@ -161,6 +161,8 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
 
     void loadTrack(Deck* pDeck, TrackPointer pTrack) {
         EngineDeck* pEngineDeck = pDeck->getEngineDeck();
+        pDeck->slotEjectTrack(1.0);
+        DEBUG_ASSERT(!pEngineDeck->getEngineBuffer()->isTrackLoaded());
         pDeck->slotLoadTrack(pTrack,
 #ifdef __STEM__
                 mixxx::StemChannelSelection(),
@@ -278,7 +280,7 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
     static const double kDefaultRateRange;
     static const double kDefaultRateDir;
     static const double kRateRangeDivisor;
-    static const int kProcessBufferSize;
+    static constexpr int kProcessBufferSize = 1024;
 };
 
 class SignalPathTest : public BaseSignalPathTest {

@@ -99,7 +99,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL Android)
 endif()
 
 if(
-  ((APPLE AND NOT IOS) OR WIN32 OR ANDROID)
+  (DEFINED ENV{BUILDENV_URL} OR (APPLE AND NOT IOS) OR WIN32 OR ANDROID)
   AND NOT IS_DIRECTORY "${MIXXX_VCPKG_ROOT}"
 )
   if(NOT DEFINED BUILDENV_BASEPATH)
@@ -227,7 +227,16 @@ function(fatal_error_missing_env)
     endif()
   elseif(UNIX AND NOT APPLE AND NOT ANDROID)
     # Linux, BSD, Solaris, Minix
-    if(EXISTS "/etc/debian_version") # exists also on Ubuntu and Mint
+    if(DEFINED MIXXX_VCPKG_ROOT)
+      # On Linux a vcpkg build environment is currently only used for the
+      # AppImage build.  Point the user at the right setup script instead of
+      # the generic distro dev-package hint below.
+      message(
+        FATAL_ERROR
+        "The Mixxx vcpkg build environment is not set up correctly. Download and\n"
+        "set it up via `source ${CMAKE_SOURCE_DIR}/tools/appimage_buildenv.sh setup`"
+      )
+    elseif(EXISTS "/etc/debian_version") # exists also on Ubuntu and Mint
       message(
         FATAL_ERROR
         "Did you install the required Debian dev packages via `${CMAKE_SOURCE_DIR}/tools/debian_buildenv.sh setup`?"
@@ -357,13 +366,21 @@ if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_DEFAULT_TRIPLET}")
   endif()
 endif()
-set(
-  X_VCPKG_APPLOCAL_DEPS_INSTALL
-  ON
-  CACHE BOOL
-  "Automatically copy dependencies into the install target directory for executables."
-  FORCE
-)
+# vcpkg's applocal dependency copying is a Windows mechanism (it walks the
+# DLL dependency graph of installed executables).  It only does something on
+# Windows/uwp/xbox platforms, but vcpkg's toolchain hijacks the install()
+# command whenever this variable is ON, so keep it OFF elsewhere (in
+# particular on Linux, where the AppImage packaging uses install(...)
+# RUNTIME_DEPENDENCY_SET).
+if(WIN32)
+  set(
+    X_VCPKG_APPLOCAL_DEPS_INSTALL
+    ON
+    CACHE BOOL
+    "Automatically copy dependencies into the install target directory for executables."
+    FORCE
+  )
+endif()
 
 # Set a default build type if none was specified
 # See https://blog.kitware.com/cmake-and-the-default-build-type/ for details.
@@ -403,14 +420,28 @@ endif()
 include(CMakeDependentOption)
 
 option(QT6 "Build with Qt6" ON)
-cmake_dependent_option(
-  QML
-  "Build with QML"
-  ON
-  "QT6"
+option(
+  MIXXX_APPIMAGE
+  "Build for AppImage distribution (install AppImage-specific desktop file)"
   OFF
 )
-
+# Auto-detect AppImage builds in both directions, so the two flags do not
+# need to be passed independently:
+#   cmake -DCPACK_GENERATOR=AppImage  -> enables the AppImage install rules
+#   cmake -DMIXXX_APPIMAGE=ON         -> cpack defaults to the AppImage generator
+if(CPACK_GENERATOR MATCHES "AppImage")
+  set(MIXXX_APPIMAGE ON CACHE BOOL "" FORCE)
+endif()
+if(MIXXX_APPIMAGE AND NOT DEFINED CPACK_GENERATOR)
+  set(CPACK_GENERATOR "AppImage" CACHE STRING "Package generator")
+endif()
+# mold 1.0.3 emits a .rela.dyn layout the dynamic loader cannot process,
+# which made the AppImage fail to start (verified fixed in mold 2.42).
+# Use the default linker for AppImage builds; users can still opt in
+# explicitly with -DMOLD_SUPPORT=ON.
+if(MIXXX_APPIMAGE OR CPACK_GENERATOR MATCHES "AppImage")
+  set(MOLD_SUPPORT OFF CACHE BOOL "Use 'mold' for linking")
+endif()
 if(QT6)
   set(QOPENGL ON CACHE INTERNAL "Forced ON because QT6=ON")
 else()
@@ -419,10 +450,6 @@ endif()
 
 if(QOPENGL)
   add_compile_definitions(MIXXX_USE_QOPENGL)
-endif()
-
-if(QML)
-  add_compile_definitions(MIXXX_USE_QML)
 endif()
 
 if(VCPKG_TARGET_TRIPLET MATCHES "^wasm(32|64)-emscripten")
@@ -1015,7 +1042,11 @@ if(MSVC)
   else()
     message(STATUS "Could NOT find sccache (missing executable)")
   endif()
-  default_option(SCCACHE_SUPPORT "Enable sccache support" "SCCACHE_EXECUTABLE;CMAKE_DISABLE_PRECOMPILE_HEADERS")
+  default_option(
+    SCCACHE_SUPPORT
+    "Enable sccache support"
+    "SCCACHE_EXECUTABLE;CMAKE_DISABLE_PRECOMPILE_HEADERS"
+  )
   message(STATUS "Support for sccache: ${SCCACHE_SUPPORT}")
   if(SCCACHE_SUPPORT)
     if(NOT CMAKE_DISABLE_PRECOMPILE_HEADERS)
@@ -1035,7 +1066,11 @@ else()
   else()
     message(STATUS "Could NOT find ccache (missing executable)")
   endif()
-  default_option(CCACHE_SUPPORT "Enable ccache support" "CCACHE_EXECUTABLE;NOT ANDROID")
+  default_option(
+    CCACHE_SUPPORT
+    "Enable ccache support"
+    "CCACHE_EXECUTABLE;NOT ANDROID"
+  )
 
   if(NOT DEFINED CMAKE_DISABLE_PRECOMPILE_HEADERS)
     set(CMAKE_DISABLE_PRECOMPILE_HEADERS ${CCACHE_SUPPORT})
@@ -1101,7 +1136,11 @@ if(NOT MSVC)
   if(MOLD_SYMLINK)
     set(MOLD_SYMLINK_FOUND TRUE)
   endif()
-  default_option(MOLD_SUPPORT "Use 'mold' for linking" "MOLD_FUSE_FOUND OR MOLD_SYMLINK_FOUND")
+  default_option(
+    MOLD_SUPPORT
+    "Use 'mold' for linking"
+    "MOLD_FUSE_FOUND OR MOLD_SYMLINK_FOUND"
+  )
   if(MOLD_SUPPORT AND NOT ANDROID)
     if(MOLD_FUSE_FOUND)
       message(STATUS "Selecting mold as linker")
@@ -1141,7 +1180,11 @@ if(NOT MSVC)
       endif()
     endif()
     # LLD 10.0.0 does not work because of https://bugs.llvm.org/show_bug.cgi?id=45769
-    default_option(LLD_SUPPORT "Use 'ld.lld' for linking" "LLD_VERSION VERSION_GREATER 10.0.0")
+    default_option(
+      LLD_SUPPORT
+      "Use 'ld.lld' for linking"
+      "LLD_VERSION VERSION_GREATER 10.0.0"
+    )
     if(LLD_SUPPORT)
       if(LLD_VERSION_STRING)
         if(LLD_VERSION VERSION_GREATER 10.0.0)
@@ -1340,6 +1383,8 @@ add_library(
   src/engine/controls/bpmcontrol.cpp
   src/engine/controls/clockcontrol.cpp
   src/engine/controls/cuecontrol.cpp
+  src/engine/controls/seek30control.cpp
+  src/engine/controls/seek30workerstate.cpp
   src/engine/controls/enginecontrol.cpp
   src/engine/controls/keycontrol.cpp
   src/engine/controls/loopingcontrol.cpp
@@ -1405,6 +1450,7 @@ add_library(
   src/library/coverart.cpp
   src/library/coverartcache.cpp
   src/library/coverartutils.cpp
+  src/library/dateformatbroadcaster.cpp
   src/library/dao/analysisdao.cpp
   src/library/dao/autodjcratesdao.cpp
   src/library/dao/cuedao.cpp
@@ -1779,6 +1825,7 @@ add_library(
   src/widget/weffectselector.cpp
   src/widget/wfindonwebmenu.cpp
   src/widget/whotcuebutton.cpp
+  src/widget/wmemorycuebutton.cpp
   src/widget/wimagestore.cpp
   src/widget/wkey.cpp
   src/widget/wknob.cpp
@@ -1988,26 +2035,6 @@ set(
   src/util/workerthreadscheduler.h
   src/util/xml.h
 )
-if(NOT QML)
-  target_sources(
-    mixxx-lib
-    PRIVATE
-      # The following sources need to be in the QML target in order to get QML_ELEMENT properly interpreted.
-      # However, if we build Mixxx without QML support, these are still required, so it gets appended to the
-      # main target
-      src/control/controlmodel.cpp
-      src/control/controlsortfiltermodel.cpp
-  )
-else()
-  target_sources(
-    mixxx-lib
-    PRIVATE
-      # The following source depends of QML being available but aren't part of the new QML UI
-      src/controllers/rendering/controllerrenderingengine.cpp
-      src/controllers/controllerenginethreadcontrol.cpp
-      src/controllers/controllerscreenpreview.cpp
-  )
-endif()
 if(QOPENGL)
   target_sources(
     mixxx-lib
@@ -2026,6 +2053,9 @@ if(QOPENGL)
       src/waveform/renderers/allshader/matrixforwidgetgeometry.cpp
       src/waveform/renderers/allshader/waveformrenderbackground.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererslipmode.cpp
@@ -2068,7 +2098,10 @@ set_target_properties(
 )
 target_include_directories(
   mixxx-lib
-  PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/src"
+  PUBLIC
+    src
+    "${CMAKE_CURRENT_BINARY_DIR}/src"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/mixxx-lib_autogen/include>"
 )
 if(UNIX AND NOT APPLE)
   target_sources(mixxx-lib PRIVATE src/util/rlimit.cpp)
@@ -2367,6 +2400,21 @@ if(QT6)
   if(NOT Qt6_FOUND)
     fatal_error_missing_env()
   endif()
+
+  # We need Qt 6.4 for ComponentBehavior: Bound
+  cmake_dependent_option(
+    QML
+    "Build with QML"
+    ON
+    "Qt6_VERSION VERSION_GREATER_EQUAL 6.4"
+    OFF
+  )
+  if(QML)
+    add_compile_definitions(MIXXX_USE_QML)
+  else()
+    message(STATUS "Building without QML")
+  endif()
+
   # qt_add_executable() is the recommended initial call for qt_finalize_target()
   # below that takes care of the correct object order in the resulting binary
   # According to https://doc.qt.io/qt-6/qt-finalize-target.html it is importand for
@@ -2464,6 +2512,27 @@ else()
     fatal_error_missing_env()
   endif()
   add_executable(mixxx WIN32 src/main.cpp)
+endif()
+
+if(NOT QML)
+  target_sources(
+    mixxx-lib
+    PRIVATE
+      # The following sources need to be in the QML target in order to get QML_ELEMENT properly interpreted.
+      # However, if we build Mixxx without QML support, these are still required, so it gets appended to the
+      # main target
+      src/control/controlmodel.cpp
+      src/control/controlsortfiltermodel.cpp
+  )
+else()
+  target_sources(
+    mixxx-lib
+    PRIVATE
+      # The following source depends of QML being available but aren't part of the new QML UI
+      src/controllers/rendering/controllerrenderingengine.cpp
+      src/controllers/controllerenginethreadcontrol.cpp
+      src/controllers/controllerscreenpreview.cpp
+  )
 endif()
 
 set_target_properties(mixxx-lib PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY}")
@@ -2632,6 +2701,11 @@ if(UNIX AND NOT APPLE)
     DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
   )
 
+  # AppImage-specific install rules (desktop file, shared libraries).
+  if(MIXXX_APPIMAGE)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/packaging/appimage/appimage.cmake")
+  endif()
+
   # Icon files for menu entry
   install(
     DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/res/images/icons/"
@@ -2750,6 +2824,10 @@ if(BUILD_TESTING)
   else()
     message(FATAL_ERROR "GTest: not found")
   endif()
+  # mixxx-lib is created before this directory definition. Keep the
+  # BUILD_TESTING macro identical for the library and its test executable so
+  # test-only class members cannot cause an ABI mismatch.
+  target_compile_definitions(mixxx-lib PRIVATE BUILD_TESTING)
   add_compile_definitions(BUILD_TESTING)
 endif()
 
@@ -2895,6 +2973,7 @@ if(BUILD_TESTING)
     src/test/colormapperjsproxy_test.cpp
     src/test/colorpalette_test.cpp
     src/test/configobject_test.cpp
+    src/test/settingsmanager_test.cpp
     src/test/controller_mapping_validation_test.cpp
     src/test/controller_mapping_settings_test.cpp
     src/test/controllers/controller_columnid_regression_test.cpp
@@ -2909,6 +2988,8 @@ if(BUILD_TESTING)
     src/test/cratestorage_test.cpp
     src/test/cue_test.cpp
     src/test/cuecontrol_test.cpp
+    src/test/delayringtest.cpp
+    src/test/seek30workerstatetest.cpp
     src/test/dbconnectionpool_test.cpp
     src/test/dbidtest.cpp
     src/test/directorydaotest.cpp
@@ -2917,6 +2998,10 @@ if(BUILD_TESTING)
     #TODO: write useful tests for refactored effects system
     #src/test/effectchainslottest.cpp
     src/test/enginebufferscalelineartest.cpp
+    $<$<BOOL:${BUNGEE}>:src/test/enginebufferscalebungeetest.cpp>
+    $<$<BOOL:${BUNGEE}>:src/test/enginebufferbungeetest.cpp>
+    src/test/enginebufferalignmenttest.cpp
+    src/test/visualplaypositiontest.cpp
     src/test/enginebuffertest.cpp
     src/test/enginefilterbiquadtest.cpp
     src/test/enginemixertest.cpp
@@ -2954,6 +3039,7 @@ if(BUILD_TESTING)
     src/test/portmidicontroller_test.cpp
     src/test/portmidienumeratortest.cpp
     src/test/queryutiltest.cpp
+    src/test/rekordboxfeature_test.cpp
     src/test/rangelist_test.cpp
     src/test/readaheadmanager_test.cpp
     src/test/replaygaintest.cpp
@@ -2987,7 +3073,10 @@ if(BUILD_TESTING)
     src/test/trackupdate_test.cpp
     src/test/uuid_test.cpp
     src/test/wbatterytest.cpp
+    src/test/dlgprefwaveform_test.cpp
+    src/test/wmemorycuebutton_test.cpp
     src/test/wpushbutton_test.cpp
+    src/test/waveformmarkset_test.cpp
     src/test/wwidgetstack_test.cpp
     src/util/moc_included_test.cpp
     src/test/helpers/log_test.cpp
@@ -3014,7 +3103,12 @@ if(BUILD_TESTING)
     )
   endif()
 
-  add_executable(mixxx-test ${src-mixxx-test})
+  if(QT6 AND QML)
+    qt_add_executable(mixxx-test ${src-mixxx-test} MANUAL_FINALIZATION)
+  else()
+    add_executable(mixxx-test ${src-mixxx-test})
+  endif()
+  target_compile_definitions(mixxx-test PRIVATE BUILD_TESTING)
   target_compile_definitions(
     mixxx-test
     PUBLIC RESOURCE_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/res"
@@ -3033,10 +3127,16 @@ if(BUILD_TESTING)
       PRIVATE
         src/test/controller_mapping_file_handler_test.cpp
         src/test/controllerrenderingengine_test.cpp
+        src/test/qml/qmlstartupsmoketest.cpp
         src/test/qmlcontrolproxytest.cpp
+        src/test/qmldurationformattertest.cpp
         src/test/qmleffectsproxytest.cpp
         src/test/qmlkeyutilstest.cpp
+        src/test/qmllibraryproxytest.cpp
+        src/test/qmlspinnypositiontest.cpp
         src/test/qmlskincontrolcreatortest.cpp
+        src/test/qmlwaveformoverviewtest.cpp
+        src/test/latenightlayoutstate_test.cpp
         src/test/themeqml_test.cpp
     )
   endif()
@@ -3090,6 +3190,7 @@ if(BUILD_TESTING)
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     TEST_LIST testsuite
     DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 60
   )
 
   if(BUILD_BENCH)
@@ -3602,6 +3703,28 @@ if(KEYFINDER)
   target_compile_definitions(mixxx-lib PUBLIC __KEYFINDER__)
 endif()
 
+# SignalSmith
+option(
+  SIGNALSMITH
+  "Enable the SignalSmith Stretch engine for pitch-bending (experimental)"
+  ON
+)
+if(SIGNALSMITH)
+  add_subdirectory(lib/signalsmith)
+  target_link_libraries(mixxx-lib PUBLIC signalsmith-stretch)
+  target_sources(
+    mixxx-lib
+    PRIVATE src/engine/bufferscalers/enginebufferscalesignalsmith.cpp
+  )
+  target_compile_definitions(mixxx-lib PUBLIC __SIGNALSMITH__)
+  if(BUILD_TESTING)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/enginebufferscalesignalsmithtest.cpp
+    )
+  endif()
+endif()
+
 # FLAC
 find_package(FLAC REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE FLAC::FLAC)
@@ -3775,7 +3898,11 @@ if(PIPEWIRE)
 endif()
 
 # PortMidi
-default_option(PORTMIDI "Enable the PortMidi backend for MIDI controllers" "NOT ANDROID")
+default_option(
+  PORTMIDI
+  "Enable the PortMidi backend for MIDI controllers"
+  "NOT ANDROID"
+)
 if(PORTMIDI)
   target_compile_definitions(mixxx-lib PUBLIC __PORTMIDI__)
   find_package(PortMidi REQUIRED)
@@ -3924,6 +4051,12 @@ if(QML)
     PROPERTIES QT_RESOURCE_ALIAS MathUtils.mjs
   )
   set_source_files_properties(
+    res/qml/Mixxx/DurationFormatter.qml
+    PROPERTIES
+      QT_QML_SINGLETON_TYPE TRUE
+      QT_RESOURCE_ALIAS DurationFormatter.qml
+  )
+  set_source_files_properties(
     res/qml/Mixxx/PlayerDropArea.qml
     PROPERTIES QT_RESOURCE_ALIAS PlayerDropArea.qml
   )
@@ -3933,6 +4066,7 @@ if(QML)
     RESOURCE_PREFIX /mixxx.org/imports
     IMPORTS QtQuick
     QML_FILES
+      res/qml/Mixxx/DurationFormatter.qml
       res/qml/Mixxx/MathUtils.mjs
       res/qml/Mixxx/PlayerDropArea.qml
   )
@@ -3971,6 +4105,7 @@ if(QML)
       res/qml/Mixxx/Controls/Knob.qml
       res/qml/Mixxx/Controls/Fader.qml
       res/qml/Mixxx/Controls/Spinny.qml
+      res/qml/Mixxx/Controls/KeyColorIndicator.qml
       res/qml/Mixxx/Controls/WaveformOverviewHotcueMarker.qml
       res/qml/Mixxx/Controls/WaveformOverviewMarker.qml
       res/qml/Mixxx/Controls/WaveformOverviewMarkerLayer.qml
@@ -3984,7 +4119,9 @@ if(QML)
     PRIVATE
       src/qml/asyncimageprovider.cpp
       src/qml/qmlapplication.cpp
+      src/qml/qmlapplicationproxy.cpp
       src/qml/qmlautoreload.cpp
+      src/qml/qmlcoreservices.cpp
       src/qml/qmlbatteryproxy.cpp
       src/qml/qmlbeatsmodel.cpp
       src/qml/qmlchainpresetmodel.cpp
@@ -4010,6 +4147,8 @@ if(QML)
       src/qml/qmlsidebarmodelproxy.cpp
       src/qml/qmllibrarytracklistcolumn.cpp
       src/qml/qmltrackproxy.cpp
+      src/qml/qmlspinnyposition.cpp
+      src/qml/qmlvinylsignalquality.cpp
       src/qml/qmlvisibleeffectsmodel.cpp
       src/qml/qmlwaveformdisplay.cpp
       src/qml/qmlwaveformoverview.cpp
@@ -4021,6 +4160,9 @@ if(QML)
       src/qml/qmlpreferencesproxy.cpp
       src/waveform/renderers/allshader/digitsrenderer.cpp
       src/waveform/renderers/allshader/waveformrenderbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat.cpp
+      src/waveform/renderers/allshader/waveformrenderdownbeat16.cpp
+      src/waveform/renderers/allshader/waveformrendermemorycues.cpp
       src/waveform/renderers/allshader/waveformrenderer.cpp
       src/waveform/renderers/allshader/waveformrendererendoftrack.cpp
       src/waveform/renderers/allshader/waveformrendererpreroll.cpp
@@ -4388,6 +4530,13 @@ else()
         COMPONENT applocal
       )
 
+      install(
+        DIRECTORY
+          "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}$<$<CONFIG:Debug>:/debug>/Qt6/qml/QtCore"
+        DESTINATION "${MIXXX_INSTALL_DATADIR}/Qt6/qml"
+        COMPONENT applocal
+      )
+
       # install qml6-module-qtquick-controls
       install(
         DIRECTORY
@@ -4574,6 +4723,9 @@ elseif(UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT ANDROID)
   endif()
   find_package(Qt${QT_VERSION_MAJOR} COMPONENTS DBus REQUIRED)
   target_link_libraries(mixxx-lib PUBLIC Qt${QT_VERSION_MAJOR}::DBus)
+  if(QML)
+    target_link_libraries(mixxx-qml-lib PRIVATE Qt${QT_VERSION_MAJOR}::DBus)
+  endif()
 elseif(WIN32)
   if(Qt_IS_STATIC)
     target_link_libraries(
@@ -4800,6 +4952,196 @@ if(RUBBERBAND)
   )
 endif()
 
+# Bungee
+option(BUNGEE "Enable the Bungee engine for pitch-bending" ON)
+option(
+  BUNGEE_PETRIFY_DEBUG
+  "Freeze Bungee on fatal signals in Debug builds so a debugger can attach (non-Windows only)"
+  OFF
+)
+if(BUNGEE)
+  # pffft library (dependency of bungee)
+  add_library(
+    bungee-pffft
+    STATIC
+    EXCLUDE_FROM_ALL
+    lib/bungee/submodules/pffft/pffft.c
+    lib/bungee/submodules/pffft/fftpack.c
+  )
+  if(NOT MSVC)
+    target_compile_options(
+      bungee-pffft
+      PRIVATE -ffast-math -fno-finite-math-only -fno-exceptions
+    )
+  endif()
+  if(MSVC)
+    target_compile_definitions(bungee-pffft PRIVATE _USE_MATH_DEFINES)
+  endif()
+
+  # Apply Mixxx-specific patches to bungee.
+  # The MSVC-compatibility patch is Windows-only (removes <unistd.h>, adds
+  # Platform.h).  Do NOT apply it on other platforms: the patch path uses
+  # Mixxx-root-relative paths (lib/bungee/src/…) so it must be run from the
+  # Mixxx source root, not from inside lib/bungee.
+  if(MSVC)
+    find_package(Git)
+    if(NOT Git_FOUND)
+      message(
+        FATAL_ERROR
+        "Git is required to apply the Bungee MSVC compatibility patch."
+      )
+    endif()
+
+    set(
+      BUNGEE_MSVC_PATCH
+      "${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/0001-MSVC-compatibility.patch"
+    )
+    execute_process(
+      COMMAND
+        "${GIT_EXECUTABLE}" apply --ignore-whitespace --check
+        "${BUNGEE_MSVC_PATCH}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      RESULT_VARIABLE BUNGEE_MSVC_PATCH_CHECK_RESULT
+      OUTPUT_VARIABLE BUNGEE_MSVC_PATCH_CHECK_OUTPUT
+      ERROR_VARIABLE BUNGEE_MSVC_PATCH_CHECK_ERROR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_STRIP_TRAILING_WHITESPACE
+    )
+
+    if(BUNGEE_MSVC_PATCH_CHECK_RESULT EQUAL 0)
+      execute_process(
+        COMMAND
+          "${GIT_EXECUTABLE}" apply --ignore-whitespace "${BUNGEE_MSVC_PATCH}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE BUNGEE_MSVC_PATCH_APPLY_RESULT
+        OUTPUT_VARIABLE BUNGEE_MSVC_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE BUNGEE_MSVC_PATCH_APPLY_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
+      )
+      if(NOT BUNGEE_MSVC_PATCH_APPLY_RESULT EQUAL 0)
+        message(
+          FATAL_ERROR
+          "Failed to apply the Bungee MSVC compatibility patch.\n"
+          "${BUNGEE_MSVC_PATCH_APPLY_ERROR}\n"
+          "${BUNGEE_MSVC_PATCH_APPLY_OUTPUT}"
+        )
+      endif()
+    else()
+      execute_process(
+        COMMAND
+          "${GIT_EXECUTABLE}" apply --ignore-whitespace --reverse --check
+          "${BUNGEE_MSVC_PATCH}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE BUNGEE_MSVC_PATCH_REVERSE_CHECK_RESULT
+        OUTPUT_VARIABLE BUNGEE_MSVC_PATCH_REVERSE_CHECK_OUTPUT
+        ERROR_VARIABLE BUNGEE_MSVC_PATCH_REVERSE_CHECK_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
+      )
+      if(BUNGEE_MSVC_PATCH_REVERSE_CHECK_RESULT EQUAL 0)
+        message(STATUS "Bungee MSVC compatibility patch is already applied")
+      else()
+        message(
+          FATAL_ERROR
+          "The Bungee MSVC compatibility patch is neither cleanly applicable "
+          "nor already applied.\n"
+          "Forward check:\n${BUNGEE_MSVC_PATCH_CHECK_ERROR}\n"
+          "${BUNGEE_MSVC_PATCH_CHECK_OUTPUT}\n"
+          "Reverse check:\n${BUNGEE_MSVC_PATCH_REVERSE_CHECK_ERROR}\n"
+          "${BUNGEE_MSVC_PATCH_REVERSE_CHECK_OUTPUT}"
+        )
+      endif()
+    endif()
+  endif()
+
+  # Bungee library - built from source files in lib/bungee
+  # This allows easy updates: just cd lib/bungee && git pull
+  add_library(
+    bungee
+    STATIC
+    EXCLUDE_FROM_ALL
+    lib/bungee/src/Assert.cpp
+    lib/bungee/src/Fourier.cpp
+    lib/bungee/src/Grain.cpp
+    lib/bungee/src/Grains.cpp
+    lib/bungee/src/Input.cpp
+    lib/bungee/src/Instrumentation.cpp
+    lib/bungee/src/Output.cpp
+    lib/bungee/src/Partials.cpp
+    lib/bungee/src/Stretch.cpp
+    lib/bungee/src/Stretcher.cpp
+    lib/bungee/src/Synthesis.cpp
+    lib/bungee/src/Timing.cpp
+    lib/bungee/src/version.cpp
+    lib/bungee/src/Window.cpp
+  )
+
+  target_compile_features(bungee PUBLIC cxx_std_20)
+
+  target_include_directories(
+    bungee
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/bungee>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/bungee/submodules/eigen
+  )
+
+  target_compile_definitions(
+    bungee
+    PRIVATE
+      BUNGEE_SELF_TEST=0
+      eigen_assert=BUNGEE_ASSERT1
+      EIGEN_DONT_PARALLELIZE=1
+      $<$<CONFIG:Debug>:EIGEN_RUNTIME_NO_MALLOC=1>
+  )
+
+  if(BUNGEE_PETRIFY_DEBUG)
+    if(WIN32)
+      message(
+        WARNING
+        "BUNGEE_PETRIFY_DEBUG was requested, but BUNGEE_PETRIFY uses POSIX "
+        "signal APIs and is disabled on Windows."
+      )
+    else()
+      target_compile_definitions(
+        bungee
+        PRIVATE $<$<CONFIG:Debug>:BUNGEE_PETRIFY>
+      )
+    endif()
+  endif()
+
+  # BUNGEE_VISIBILITY needs special handling due to parentheses
+  if(NOT MSVC)
+    target_compile_options(
+      bungee
+      PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>
+        "-DBUNGEE_VISIBILITY=__attribute__((visibility(\"default\")))"
+    )
+  endif()
+
+  set_source_files_properties(
+    lib/bungee/src/version.cpp
+    PROPERTIES COMPILE_DEFINITIONS BUNGEE_VERSION=\"0.0.0\"
+  )
+
+  target_link_libraries(bungee PRIVATE bungee-pffft)
+
+  target_link_libraries(mixxx-lib PUBLIC bungee)
+  target_compile_definitions(mixxx-lib PUBLIC __BUNGEE__)
+
+  if(QML)
+    target_link_libraries(mixxx-qml-lib PRIVATE bungee)
+    target_compile_definitions(mixxx-qml-lib PUBLIC __BUNGEE__)
+  endif()
+
+  target_sources(
+    mixxx-lib
+    PRIVATE src/engine/bufferscalers/enginebufferscalebungee.cpp
+  )
+endif()
+
 # SndFile
 find_package(SndFile REQUIRED)
 target_link_libraries(mixxx-lib PRIVATE SndFile::sndfile)
@@ -4955,7 +5297,11 @@ find_package(MP4)
 find_package(MP4v2)
 # It is enabled by default on Linux only, because other targets have other
 # solutions. It requires MP4 or MP4v2.
-default_option(FAAD "FAAD AAC audio file decoder support" "UNIX;NOT APPLE;MP4_FOUND OR MP4v2_FOUND")
+default_option(
+  FAAD
+  "FAAD AAC audio file decoder support"
+  "UNIX;NOT APPLE;MP4_FOUND OR MP4v2_FOUND"
+)
 if(FAAD)
   if(NOT MP4_FOUND AND NOT MP4v2_FOUND)
     message(
@@ -5214,6 +5560,21 @@ if(MEDIAFOUNDATION)
     mixxx-lib
     PRIVATE ${MediaFoundation_LIBRARIES} Version.lib
   )
+  if(BUILD_TESTING)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/soundsourcemediafoundation_test.cpp
+    )
+    target_include_directories(
+      mixxx-test
+      SYSTEM
+      PRIVATE ${MediaFoundation_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+      mixxx-test
+      PRIVATE ${MediaFoundation_LIBRARIES} Version.lib
+    )
+  endif()
 endif()
 
 # Modplug support
@@ -5369,6 +5730,9 @@ if(VINYLCONTROL)
       src/engine/controls/vinylcontrolcontrol.cpp
   )
   target_compile_definitions(mixxx-lib PUBLIC __VINYLCONTROL__)
+  if(QML)
+    target_compile_definitions(mixxx-qml-lib PUBLIC __VINYLCONTROL__)
+  endif()
 
   # Internal xwax library
   add_library(mixxx-xwax STATIC EXCLUDE_FROM_ALL)
@@ -5436,6 +5800,10 @@ if(BUILD_TESTING AND NOT CMAKE_DISABLE_PRECOMPILE_HEADERS)
   target_precompile_headers(mixxx-test REUSE_FROM mixxx-lib)
 endif()
 
+if(BUILD_TESTING AND QT6 AND QML)
+  qt_finalize_target(mixxx-test)
+endif()
+
 # Configure file with build options
 file(
   RELATIVE_PATH
@@ -5452,7 +5820,10 @@ configure_file(
 # Packaging
 set(CPACK_PACKAGE_NAME "Mixxx")
 set(CPACK_PACKAGE_VENDOR "Mixxx Project")
-set(CPACK_PACKAGE_CONTACT "RJ Skerry-Ryan <rryan@mixxx.org>")
+# TODO: Split this into Maintainer field: core-team@mixxx.org for package issues
+# and Uploaders field for personal signing email per Debian Policy.
+# https://www.debian.org/doc/debian-policy/ch-binary.html#the-maintainer-of-a-package
+set(CPACK_PACKAGE_CONTACT "Daniel Schürmann <daschuer@mixxx.org>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Digital DJ Application")
 set(
   CPACK_PACKAGE_DESCRIPTION_FILE

@@ -1,17 +1,28 @@
 #pragma once
 
+#ifdef BUILD_TESTING
+#include <gtest/gtest_prod.h>
+#endif
+
 #include <QAtomicInt>
 #include <QHash>
 #include <QList>
+#include <QTimer>
 #include <QVarLengthArray>
 #include <QVector>
-#include <list>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
 #include "util/fifo.h"
 #include "util/types.h"
+
+class Seek30Control;
+class ReadAheadManager;
 
 // A Hint is an indication to the CachingReader that a certain section of a
 // SoundSource will be used 'soon' and so it should be brought into memory by
@@ -107,6 +118,14 @@ class CachingReader : public QObject {
             CSAMPLE* buffer,
             mixxx::audio::ChannelCount channelCount);
 
+    // Like read(), but treats a cache miss in any required chunk as an
+    // all-or-nothing failure. On ReadResult::UNAVAILABLE, buffer is untouched.
+    ReadResult readWithRetry(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
     // Issue a list of hints, but check whether any of the hints request a chunk
     // that is not in the cache. If any hints do request a chunk not in cache,
     // then wake the reader so that it can process them. Must only be called
@@ -126,6 +145,25 @@ class CachingReader : public QObject {
         m_worker.setScheduler(pScheduler);
     }
 
+    void setSeek30Control(Seek30Control* pControl);
+
+  protected:
+    struct RetryReadResult {
+        ReadResult result;
+        bool retryPending;
+    };
+
+    // Explicit retry hook. Implementations write only to the provided staging
+    // buffer and report whether the same absolute range must be retried. The
+    // default implementation accepts PARTIALLY_AVAILABLE as intentional
+    // padding from legacy readers. Retry-aware subclasses must override this
+    // hook to identify partial cache misses.
+    virtual RetryReadResult readWithRetryHook(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
   signals:
     // Emitted once a new track is loaded and ready to be read from.
     void trackLoading();
@@ -136,12 +174,118 @@ class CachingReader : public QObject {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
+    friend class CachingReaderStatusQueueTest;
+    friend class CachingReaderDeferredLoggingTest;
+    friend class ReadAheadManager;
+#ifdef BUILD_TESTING
+    FRIEND_TEST(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            ProcessDiscardsChunkResultWhileTrackIsUnloading);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            ProcessRecyclesChunkIntoFixedFreePool);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            RecyclesChunksAcrossFreePoolWraparound);
+    FRIEND_TEST(CachingReaderStatusQueueTest,
+            TeardownDrainReclaimsQueuedChunksWithoutStateTransitions);
+#endif
+
+    // Keep callback-side status processing bounded. Unprocessed updates remain
+    // in the FIFO and are handled by a later callback.
+    static constexpr int kMaxStatusUpdatesPerCallback = 4;
+    static constexpr int kNumberOfCachedChunksInMemory = 80;
+
+    void processPendingStatusUpdates();
+    void discardPendingStatusUpdates();
+
+    ReadResult readInternal(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount,
+            bool retryOnCacheMiss);
+
     const UserSettingsPointer m_pConfig;
+    bool m_retryOnCacheMiss;
+    const QString m_group;
+
+    void reportDiagnostics();
 
     // Thread-safe FIFOs for communication between the engine callback and
     // reader thread.
     FIFO<CachingReaderChunkReadRequest> m_chunkReadRequestFIFO;
     FIFO<ReaderStatusUpdate> m_readerStatusUpdateFIFO;
+
+    // Audio-thread counters sampled by reportDiagnostics(). Updating them must
+    // remain allocation-free and lock-free.
+    QAtomicInt m_diagnosticSubmitAttempts;
+    QAtomicInt m_diagnosticSubmitFailures;
+    QAtomicInt m_diagnosticCacheMisses;
+    QAtomicInt m_diagnosticLastFailedChunk;
+    QAtomicInt m_diagnosticStatusConsumed;
+
+    // Counts replace diagnostic log formatting on the audio callback. The
+    // timer exchanges each uint32 counter independently, so updates can split
+    // across neighboring polls and counters wrap modulo 2^32. Callback updates
+    // never wait or retry. One engine callback thread writes per CachingReader;
+    // the timer is the only reader.
+    struct DeferredCallbackLogCounters {
+        std::atomic<std::uint32_t> partialGapEvents{0};
+        std::atomic<std::uint32_t> partialGapFrames{0};
+        std::atomic<std::uint32_t> readMoreFailures{0};
+        std::atomic<std::uint32_t> readAborts{0};
+        std::atomic<std::uint32_t> lruAllocationFailures{0};
+        std::atomic<std::uint32_t> chunkAllocationFailures{0};
+        std::atomic<std::uint32_t> invalidHints{0};
+        std::atomic<std::uint32_t> prerollEvents{0};
+        std::atomic<std::uint32_t> prerollFrames{0};
+        std::atomic<std::uint32_t> traceChunkRequests{0};
+        std::atomic<std::uint32_t> traceCacheMisses{0};
+        std::atomic<std::uint32_t> traceFreshens{0};
+        std::atomic<std::uint32_t> traceLruAllocations{0};
+        std::atomic<std::uint32_t> unexpectedReadAheadRecoveries{0};
+        std::atomic<std::uint32_t> unexpectedReadAheadMisses{0};
+        std::atomic<std::uint32_t> missingReadAheadLogEntries{0};
+        std::atomic<std::uint32_t> crossfadeMisses{0};
+        std::atomic<std::uint32_t> lastRecoveryMissCount{0};
+        std::atomic<SINT> lastMissedChunk{-1};
+        std::atomic<SINT> lastReadMoreFailureChunk{-1};
+        std::atomic<SINT> lastReadAbortChunk{-1};
+        std::atomic<SINT> lastNoLruChunk{-1};
+        std::atomic<SINT> lastChunkAllocationFailure{-1};
+        std::atomic<SINT> lastInvalidHintFrameCount{-1};
+        std::atomic<SINT> lastTraceRequestChunk{-1};
+        std::atomic<SINT> lastTraceMissChunk{-1};
+        std::atomic<SINT> lastTraceFreshenChunk{-1};
+        std::atomic<SINT> lastTraceLruChunk{-1};
+        // A single callback producer publishes this range with an odd/even
+        // sequence. The timer samples once and omits the range if it overlaps
+        // a write; callback code never retries or waits.
+        std::atomic<std::uint32_t> lastGapRangeSequence{0};
+        std::atomic<SINT> lastGapStartFrame{-1};
+        std::atomic<SINT> lastGapEndFrame{-1};
+    } m_deferredCallbackLogCounters;
+
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+            "Callback log counters must be lock-free");
+    static_assert(std::atomic<SINT>::is_always_lock_free,
+            "Callback log sample positions must be lock-free");
+
+    void recordPartialGap(SINT startFrame, SINT endFrame) noexcept;
+    void recordUnexpectedReadAheadRecovery(int cacheMissCount) noexcept;
+    void recordMissingReadAheadLogEntry() noexcept;
+    void recordCrossfadeCacheMiss() noexcept;
+
+    // Reset by process() at the start of each audio callback. Calls made from
+    // readInternal() consume the same budget instead of starting a new one.
+    int m_statusUpdatesRemainingInCallback{kMaxStatusUpdatesPerCallback};
+
+    // Accessed only by the QObject thread that owns the diagnostics timer.
+    QTimer m_diagnosticsTimer;
+    int m_lastReportedSubmitFailures;
+    int m_lastReportedCacheMisses;
+    int m_lastReportedWorkerProgress;
+    int m_lastReportedActiveChunk;
+    bool m_diagnosticEpisodeActive;
 
     // Looks for the provided chunk number in the index of in-memory chunks and
     // returns it if it is present. If not, returns nullptr. If it is present then
@@ -179,9 +323,12 @@ class CachingReader : public QObject {
     // Keeps track of all CachingReaderChunks we've allocated.
     QVector<CachingReaderChunkForOwner*> m_chunks;
 
-    // List of free chunks. Linked list so that we have constant time insertions
-    // and deletions. Iteration is not necessary.
-    std::list<CachingReaderChunkForOwner*> m_freeChunks;
+    // Fixed-capacity FIFO of free chunks. It must not allocate when a chunk is
+    // recycled from the engine callback.
+    std::array<CachingReaderChunkForOwner*, kNumberOfCachedChunksInMemory>
+            m_freeChunks;
+    int m_freeChunkStart{0};
+    int m_freeChunkCount{0};
 
     // Keeps track of what CachingReaderChunks we've allocated and indexes them based on what
     // chunk number they are allocated to.
@@ -193,6 +340,11 @@ class CachingReader : public QObject {
 
     // The raw memory buffer which is divided up into chunks.
     mixxx::SampleBuffer m_sampleBuffer;
+
+    // Preallocated staging storage that preserves the caller's buffer until a
+    // retry read has completed atomically. Its size covers the largest
+    // MAX_BUFFER_LEN request for this reader's channel layout.
+    mixxx::SampleBuffer m_retryReadBuffer;
 
     // The readable frame index range as reported by the worker.
     mixxx::IndexRange m_readableFrameIndexRange;

@@ -14,7 +14,6 @@
 #include "engine/engine.h"
 #include "mixer/playermanager.h"
 #include "moc_woverview.cpp"
-#include "preferences/colorpalettesettings.h"
 #include "track/track.h"
 #include "util/colorcomponents.h"
 #include "util/dnd.h"
@@ -54,7 +53,7 @@ WOverview::WOverview(
           m_devicePixelRatio(1.0),
           m_endOfTrack(false),
           m_bPassthroughEnabled(false),
-          m_pCueMenuPopup(make_parented<WCueMenuPopup>(pConfig, this)),
+          m_pCueMenuPopup(nullptr),
           m_bShowCueTimes(true),
           m_iPosSeconds(0),
           m_bLeftClickDragging(false),
@@ -142,8 +141,6 @@ WOverview::WOverview(
 
     connect(pPlayerManager, &PlayerManager::trackAnalyzerProgress,
             this, &WOverview::onTrackAnalyzerProgress);
-
-    connect(m_pCueMenuPopup.get(), &WCueMenuPopup::aboutToHide, this, &WOverview::slotCueMenuPopupAboutToHide);
 }
 
 void WOverview::setup(const QDomNode& node, const SkinContext& context) {
@@ -197,12 +194,10 @@ void WOverview::setup(const QDomNode& node, const SkinContext& context) {
     // setup hotcues and cue and loop(s)
     m_marks.setup(m_group, node, context, m_signalColors);
 
-    ColorPaletteSettings colorPaletteSettings(m_pConfig);
-    auto colorPalette = colorPaletteSettings.getHotcueColorPalette();
-    m_pCueMenuPopup->setColorPalette(colorPalette);
-
-    m_marks.connectSamplePositionChanged(this, &WOverview::onMarkChanged);
-    m_marks.connectSampleEndPositionChanged(this, &WOverview::onMarkChanged);
+    m_marks.connectSamplePositionChanged(
+            this, &WOverview::onMarkChanged, Qt::QueuedConnection);
+    m_marks.connectSampleEndPositionChanged(
+            this, &WOverview::onMarkChanged, Qt::QueuedConnection);
     m_marks.connectVisibleChanged(this, &WOverview::onMarkChanged);
 
     QDomNode child = node.firstChild();
@@ -276,6 +271,21 @@ void WOverview::setup(const QDomNode& node, const SkinContext& context) {
     }
 
     setFocusPolicy(Qt::NoFocus);
+}
+
+WCueMenuPopup* WOverview::getMenu() {
+    if (m_pCueMenuPopup.get() == nullptr) {
+        m_pCueMenuPopup = make_parented<WCueMenuPopup>(m_pConfig, this);
+        connect(m_pCueMenuPopup.get(),
+                &WCueMenuPopup::aboutToHide,
+                this,
+                &WOverview::slotCueMenuPopupAboutToHide);
+    }
+    return m_pCueMenuPopup.get();
+}
+
+bool WOverview::menuIsCreated() {
+    return m_pCueMenuPopup.get() != nullptr;
 }
 
 void WOverview::initWithTrack(TrackPointer pTrack) {
@@ -409,7 +419,14 @@ void WOverview::slotLoadingTrack(TrackPointer pNewTrack, TrackPointer pOldTrack)
                 this,
                 &WOverview::slotWaveformSummaryUpdated);
         slotWaveformSummaryUpdated();
-        connect(pNewTrack.get(), &Track::cuesUpdated, this, &WOverview::receiveCuesUpdated);
+        // IMPORTANT: make this a QueuedConnection so the slot is called AFTER
+        // objects with DirectConnection (eg. CueControl, which updates the
+        // position COs we need when we iterate over the cues and update marks)
+        connect(pNewTrack.get(),
+                &Track::cuesUpdated,
+                this,
+                &WOverview::receiveCuesUpdated,
+                Qt::QueuedConnection);
     } else {
         m_pCurrentTrack.reset();
         m_pWaveform.clear();
@@ -494,6 +511,8 @@ void WOverview::slotScalingChanged() {
 }
 
 void WOverview::updateCues(const QList<CuePointer> &loadedCues) {
+    m_marks.syncMemoryCueMarks(m_group, loadedCues, m_dimBrightThreshold, m_signalColors);
+
     for (const CuePointer& currentCue : loadedCues) {
         const WaveformMarkPointer pMark = m_marks.getHotCueMark(currentCue->getHotCue());
 
@@ -672,11 +691,12 @@ void WOverview::mousePressEvent(QMouseEvent* e) {
                 } else {
                     // Clear the pickup position display, we have all cue info in the menu.
                     leaveEvent(nullptr);
-                    m_pCueMenuPopup->setTrackCueGroup(m_pCurrentTrack, pHoveredCue, m_group);
+                    auto* pCueMenuPopup = getMenu();
+                    pCueMenuPopup->setTrackCueGroup(m_pCurrentTrack, pHoveredCue, m_group);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-                    m_pCueMenuPopup->popup(e->globalPosition().toPoint());
+                    pCueMenuPopup->popup(e->globalPosition().toPoint());
 #else
-                    m_pCueMenuPopup->popup(e->globalPos());
+                    pCueMenuPopup->popup(e->globalPos());
 #endif
                 }
             }
@@ -703,7 +723,7 @@ void WOverview::leaveEvent(QEvent* pEvent) {
     if (QGuiApplication::mouseButtons() & Qt::LeftButton) {
         return;
     }
-    if (!m_pCueMenuPopup->isVisible()) {
+    if (!menuIsCreated() || !getMenu()->isVisible()) {
         m_pHoveredMark.clear();
     }
     m_bLeftClickDragging = false;

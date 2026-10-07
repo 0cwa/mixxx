@@ -110,7 +110,10 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     PollingControlProxy m_pHeadDelay;
     PollingControlProxy m_pBoothDelay;
     PollingControlProxy m_pMicMonitorMode;
-    PollingControlProxy m_pKeylockEngine;
+    PollingControlProxy m_pKeylockEngine1;
+    PollingControlProxy m_pKeylockEngine2;
+    PollingControlProxy m_pKeylockEngine3;
+    PollingControlProxy m_pKeylockEngine4;
 
     parented_ptr<ControlProxy> m_pAudioLatencyOverloadCount;
     parented_ptr<ControlProxy> m_pOutputLatencyMs;
@@ -131,5 +134,11 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     parented_ptr<QCheckBox> m_pipewireCheckBox;
     parented_ptr<QCheckBox> m_pipewirePatchbayCheckBox;
     parented_ptr<ControlProxy> m_pPipewirePatchbay;
+    parented_ptr<QCheckBox> m_forceBufferSize;
+    parented_ptr<QCheckBox> m_forceSamplerate;
+    parented_ptr<ControlProxy> m_cpSamplerate;
+    parented_ptr<ControlProxy> m_cpBufferSize;
+    parented_ptr<ControlProxy> m_cpLatencyParamsMismatch;
+    QLabel* m_latencyParamsMismatchText;
 #endif
 };

@@ -40,15 +40,29 @@ class allshader::WaveformRenderMark : public ::WaveformRenderMarkBase,
   public slots:
     void setPlayMarkerForegroundColor(const QColor& fgPlayColor) {
         m_playMarkerForegroundColor = fgPlayColor;
+        m_playPosColorsDirty = true;
     }
     void setPlayMarkerBackgroundColor(const QColor& bgPlayColor) {
         m_playMarkerBackgroundColor = bgPlayColor;
+        m_playPosColorsDirty = true;
     }
     void setUntilMarkShowBeats(bool untilMarkShowBeats) {
         m_untilMarkShowBeats = untilMarkShowBeats;
     }
     void setUntilMarkShowTime(bool untilMarkShowTime) {
         m_untilMarkShowTime = untilMarkShowTime;
+    }
+    void setUntilMarkShowHotCues(bool untilMarkShowHotCues) {
+        m_untilMarkShowHotCues = untilMarkShowHotCues;
+    }
+    void setUntilMarkShowMemoryCues(bool untilMarkShowMemoryCues) {
+        m_untilMarkShowMemoryCues = untilMarkShowMemoryCues;
+    }
+    void setUntilMarkShowIntroCues(bool untilMarkShowIntroCues) {
+        m_untilMarkShowIntroCues = untilMarkShowIntroCues;
+    }
+    void setUntilMarkShowOutroCues(bool untilMarkShowOutroCues) {
+        m_untilMarkShowOutroCues = untilMarkShowOutroCues;
     }
     void setUntilMarkAlign(Qt::Alignment untilMarkAlign) {
         m_untilMarkAlign = untilMarkAlign;
@@ -78,6 +92,9 @@ class allshader::WaveformRenderMark : public ::WaveformRenderMarkBase,
     float getMaxHeightForText(float proportion) const;
     void updateRangeNode(rendergraph::GeometryNode* pNode,
             const QRectF& rect,
+            int numBoxes,
+            float boxBreadth,
+            float yOffset,
             QColor color);
 
     int m_beatsUntilMark;
@@ -99,9 +116,14 @@ class allshader::WaveformRenderMark : public ::WaveformRenderMarkBase,
 
     QColor m_playMarkerForegroundColor;
     QColor m_playMarkerBackgroundColor;
+    bool m_playPosColorsDirty{true};
 
     bool m_untilMarkShowBeats;
     bool m_untilMarkShowTime;
+    bool m_untilMarkShowHotCues;
+    bool m_untilMarkShowMemoryCues;
+    bool m_untilMarkShowIntroCues;
+    bool m_untilMarkShowOutroCues;
     Qt::Alignment m_untilMarkAlign;
     int m_untilMarkTextSize;
     float m_untilMarkTextHeightLimit;
