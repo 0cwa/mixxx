@@ -76,8 +76,8 @@ float overlappingMarkerIncrement(const float labelRectHeight, const float breadt
 #define FOO
 
 bool isShowUntilNextPositionControl(const QString& positionControl) {
-    return WaveformMark::countdownCategoryForPositionControl(positionControl) !=
-            WaveformMark::CountdownCategory::None;
+    return WaveformMark::countdownCategoryForPositionControl(positionControl) ==
+            WaveformMark::CountdownCategory::MemoryCue;
 }
 
 } // anonymous namespace
@@ -88,7 +88,7 @@ WaveformMark::CountdownCategory WaveformMark::countdownCategoryForPositionContro
     if (hotCue != Cue::kNoHotCue) {
         return CountdownCategory::HotCue;
     }
-    if (positionControl == QStringLiteral("cue_point")) {
+    if (positionControl == QStringLiteral("memory_cue")) {
         return CountdownCategory::MemoryCue;
     }
     if (positionControl == QStringLiteral("intro_start_position") ||
@@ -139,6 +139,7 @@ WaveformMark::WaveformMark(
     QString endPositionControl;
     QString typeControl;
     QString statusControl;
+    m_countdownCategory = countdownCategoryForPositionControl(aPositionControl, hotCue);
     if (hotCue != Cue::kNoHotCue) {
         QString hotcueNumber = QString::number(hotCue + 1);
         positionControl = QStringLiteral("hotcue_%1_position").arg(hotcueNumber);
@@ -149,7 +150,6 @@ WaveformMark::WaveformMark(
     } else {
         m_showUntilNext = isShowUntilNextPositionControl(positionControl);
     }
-    m_countdownCategory = countdownCategoryForPositionControl(positionControl, hotCue);
 
     if (!positionControl.isEmpty() && !group.isEmpty()) {
         m_pPositionCO = std::make_unique<ControlProxy>(group, positionControl);

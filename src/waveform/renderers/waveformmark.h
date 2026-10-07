@@ -113,21 +113,46 @@ class WaveformMark {
 
     // The m_pPositionCO related function
     bool isValid() const {
-        return m_pPositionCO && m_pPositionCO->valid();
+        return m_pPosition != Cue::kNoPosition || (m_pPositionCO && m_pPositionCO->valid());
     }
 
     template<typename Receiver, typename Slot>
-    void connectSamplePositionChanged(Receiver receiver, Slot slot) const {
-        m_pPositionCO->connectValueChanged(receiver, slot, Qt::AutoConnection);
-    };
-    template<typename Receiver, typename Slot>
-    void connectSampleEndPositionChanged(Receiver receiver, Slot slot) const {
-        if (m_pEndPositionCO) {
-            m_pEndPositionCO->connectValueChanged(receiver, slot, Qt::AutoConnection);
+    void connectSamplePositionChanged(Receiver receiver,
+            Slot slot,
+            Qt::ConnectionType connectionType = Qt::AutoConnection) const {
+        if (m_pPositionCO) {
+            m_pPositionCO->connectValueChanged(receiver, slot, connectionType);
         }
     };
+    template<typename Receiver, typename Slot>
+    void connectSampleEndPositionChanged(Receiver receiver,
+            Slot slot,
+            Qt::ConnectionType connectionType = Qt::AutoConnection) const {
+        if (m_pEndPositionCO) {
+            m_pEndPositionCO->connectValueChanged(receiver, slot, connectionType);
+        }
+    };
+    void setSamplePosition(double newPos) {
+        m_pPosition = newPos;
+    }
+    template<typename Receiver, typename Slot>
+    void connectTypeChanged(Receiver receiver, Slot slot) const {
+        if (m_typeCO) {
+            m_typeCO->connectValueChanged(receiver, slot, Qt::AutoConnection);
+        }
+    };
+    template<typename Receiver, typename Slot>
+    void connectStatusChanged(Receiver receiver, Slot slot) const {
+        if (m_statusCO) {
+            m_statusCO->connectValueChanged(receiver, slot, Qt::AutoConnection);
+        }
+    };
+
     double getSamplePosition() const {
-        return m_pPositionCO->get();
+        if (m_pPosition != Cue::kNoPosition) {
+            return m_pPosition;
+        }
+        return m_pPositionCO ? m_pPositionCO->get() : Cue::kNoPosition;
     }
     bool isJump() const {
         return m_typeCO &&
@@ -156,7 +181,7 @@ class WaveformMark {
         return m_pEndPositionCO->get();
     }
     QString getItem() const {
-        return m_pPositionCO->getKey().item;
+        return m_pPositionCO ? m_pPositionCO->getKey().item : QString();
     }
 
     // The m_pVisibleCO related function
@@ -305,6 +330,7 @@ class WaveformMark {
             const QString& iconPath);
 
     std::unique_ptr<ControlProxy> m_pPositionCO;
+    double m_pPosition{Cue::kNoPosition};
     std::unique_ptr<ControlProxy> m_pEndPositionCO;
     std::unique_ptr<ControlProxy> m_pVisibleCO;
     std::unique_ptr<ControlProxy> m_typeCO;
