@@ -130,6 +130,39 @@ void CachingReader::setSeek30Control(Seek30Control* pControl) {
     }
 }
 
+void CachingReader::recordPartialGap(SINT startFrame, SINT endFrame) noexcept {
+    auto& counters = m_deferredCallbackLogCounters;
+    const std::uint32_t sequence =
+            counters.lastGapRangeSequence.load(std::memory_order_seq_cst);
+    counters.lastGapRangeSequence.store(sequence + 1, std::memory_order_seq_cst);
+    counters.lastGapStartFrame.store(startFrame, std::memory_order_seq_cst);
+    counters.lastGapEndFrame.store(endFrame, std::memory_order_seq_cst);
+    counters.lastGapRangeSequence.store(sequence + 2, std::memory_order_seq_cst);
+    counters.partialGapEvents.fetch_add(1, std::memory_order_relaxed);
+    counters.partialGapFrames.fetch_add(
+            static_cast<std::uint32_t>(endFrame - startFrame),
+            std::memory_order_relaxed);
+}
+
+void CachingReader::recordUnexpectedReadAheadRecovery(int cacheMissCount) noexcept {
+    m_deferredCallbackLogCounters.unexpectedReadAheadRecoveries.fetch_add(
+            1, std::memory_order_relaxed);
+    m_deferredCallbackLogCounters.unexpectedReadAheadMisses.fetch_add(
+            static_cast<std::uint32_t>(cacheMissCount), std::memory_order_relaxed);
+    m_deferredCallbackLogCounters.lastRecoveryMissCount.store(
+            static_cast<std::uint32_t>(cacheMissCount), std::memory_order_relaxed);
+}
+
+void CachingReader::recordMissingReadAheadLogEntry() noexcept {
+    m_deferredCallbackLogCounters.missingReadAheadLogEntries.fetch_add(
+            1, std::memory_order_relaxed);
+}
+
+void CachingReader::recordCrossfadeCacheMiss() noexcept {
+    m_deferredCallbackLogCounters.crossfadeMisses.fetch_add(
+            1, std::memory_order_relaxed);
+}
+
 void CachingReader::reportDiagnostics() {
     const int submitAttempts = m_diagnosticSubmitAttempts.loadAcquire();
     const int submitFailures = m_diagnosticSubmitFailures.loadAcquire();
@@ -148,6 +181,141 @@ void CachingReader::reportDiagnostics() {
 
     const int newSubmitFailures = submitFailures - m_lastReportedSubmitFailures;
     const int newCacheMisses = cacheMisses - m_lastReportedCacheMisses;
+    const std::uint32_t partialGapEvents =
+            m_deferredCallbackLogCounters.partialGapEvents.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t partialGapFrames =
+            m_deferredCallbackLogCounters.partialGapFrames.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t readMoreFailures =
+            m_deferredCallbackLogCounters.readMoreFailures.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t readAborts =
+            m_deferredCallbackLogCounters.readAborts.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t lruAllocationFailures =
+            m_deferredCallbackLogCounters.lruAllocationFailures.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t chunkAllocationFailures =
+            m_deferredCallbackLogCounters.chunkAllocationFailures.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t invalidHints =
+            m_deferredCallbackLogCounters.invalidHints.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t prerollEvents =
+            m_deferredCallbackLogCounters.prerollEvents.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t prerollFrames =
+            m_deferredCallbackLogCounters.prerollFrames.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t traceChunkRequests =
+            m_deferredCallbackLogCounters.traceChunkRequests.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t traceCacheMisses =
+            m_deferredCallbackLogCounters.traceCacheMisses.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t traceFreshens =
+            m_deferredCallbackLogCounters.traceFreshens.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t traceLruAllocations =
+            m_deferredCallbackLogCounters.traceLruAllocations.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t unexpectedReadAheadRecoveries =
+            m_deferredCallbackLogCounters.unexpectedReadAheadRecoveries.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t unexpectedReadAheadMisses =
+            m_deferredCallbackLogCounters.unexpectedReadAheadMisses.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t missingReadAheadLogEntries =
+            m_deferredCallbackLogCounters.missingReadAheadLogEntries.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t crossfadeMisses =
+            m_deferredCallbackLogCounters.crossfadeMisses.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t lastRecoveryMissCount =
+            m_deferredCallbackLogCounters.lastRecoveryMissCount.load(
+                    std::memory_order_relaxed);
+    const SINT lastMissedChunk =
+            m_deferredCallbackLogCounters.lastMissedChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastReadMoreFailureChunk =
+            m_deferredCallbackLogCounters.lastReadMoreFailureChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastReadAbortChunk =
+            m_deferredCallbackLogCounters.lastReadAbortChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastNoLruChunk =
+            m_deferredCallbackLogCounters.lastNoLruChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastChunkAllocationFailure =
+            m_deferredCallbackLogCounters.lastChunkAllocationFailure.load(
+                    std::memory_order_relaxed);
+    const SINT lastInvalidHintFrameCount =
+            m_deferredCallbackLogCounters.lastInvalidHintFrameCount.load(
+                    std::memory_order_relaxed);
+    const std::uint32_t gapRangeSequenceBefore =
+            m_deferredCallbackLogCounters.lastGapRangeSequence.load(
+                    std::memory_order_seq_cst);
+    const SINT lastGapStartFrame =
+            m_deferredCallbackLogCounters.lastGapStartFrame.load(
+                    std::memory_order_seq_cst);
+    const SINT lastGapEndFrame =
+            m_deferredCallbackLogCounters.lastGapEndFrame.load(
+                    std::memory_order_seq_cst);
+    const std::uint32_t gapRangeSequenceAfter =
+            m_deferredCallbackLogCounters.lastGapRangeSequence.load(
+                    std::memory_order_seq_cst);
+    const bool lastGapRangeValid = gapRangeSequenceBefore == gapRangeSequenceAfter &&
+            gapRangeSequenceBefore != 0 && (gapRangeSequenceBefore & 1U) == 0 &&
+            lastGapEndFrame >= lastGapStartFrame;
+    const SINT lastTraceRequestChunk =
+            m_deferredCallbackLogCounters.lastTraceRequestChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastTraceMissChunk =
+            m_deferredCallbackLogCounters.lastTraceMissChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastTraceFreshenChunk =
+            m_deferredCallbackLogCounters.lastTraceFreshenChunk.load(
+                    std::memory_order_relaxed);
+    const SINT lastTraceLruChunk =
+            m_deferredCallbackLogCounters.lastTraceLruChunk.load(
+                    std::memory_order_relaxed);
+    const bool deferredWarnings = partialGapEvents > 0 || partialGapFrames > 0 ||
+            readMoreFailures > 0 || readAborts > 0 || lruAllocationFailures > 0 ||
+            chunkAllocationFailures > 0 || invalidHints > 0;
+
+    if ((traceChunkRequests > 0 || traceCacheMisses > 0 || traceFreshens > 0 ||
+                traceLruAllocations > 0) &&
+            kLogger.traceEnabled()) {
+        kLogger.trace() << m_group << "Deferred callback trace events (sampled interval):"
+                        << "chunk requests" << traceChunkRequests
+                        << "last request chunk" << lastTraceRequestChunk
+                        << "cache misses" << traceCacheMisses
+                        << "last miss chunk" << lastTraceMissChunk
+                        << "chunk freshens" << traceFreshens
+                        << "last freshened chunk" << lastTraceFreshenChunk
+                        << "LRU allocation attempts" << traceLruAllocations
+                        << "last LRU chunk" << lastTraceLruChunk;
+    }
+    if ((prerollEvents > 0 || prerollFrames > 0) && kLogger.debugEnabled()) {
+        kLogger.debug() << m_group << "Deferred callback preroll events (sampled interval):"
+                        << "events" << prerollEvents << "frames" << prerollFrames;
+    }
+    if (unexpectedReadAheadRecoveries > 0 || unexpectedReadAheadMisses > 0) {
+        qDebug() << "ReadAheadManager: deferred unexpected cache-miss recoveries:"
+                 << unexpectedReadAheadRecoveries << "recoveries across"
+                 << unexpectedReadAheadMisses << "cache misses; last recovery episode had"
+                 << lastRecoveryMissCount << "cache misses";
+    }
+    if (missingReadAheadLogEntries > 0) {
+        qDebug() << "ReadAheadManager: deferred missing read-ahead log mappings:"
+                 << missingReadAheadLogEntries;
+    }
+    if (crossfadeMisses > 0) {
+        qDebug() << "ERROR: deferred crossfade cache misses:"
+                 << crossfadeMisses;
+    }
+
     const bool statusBackpressure =
             workerState == CachingReaderWorker::DiagnosticState::PublishingStatus &&
             statusPending >= statusCapacity;
@@ -155,7 +323,7 @@ void CachingReader::reportDiagnostics() {
             workerState == CachingReaderWorker::DiagnosticState::Decoding &&
             activeChunk >= 0 && activeChunk == m_lastReportedActiveChunk &&
             workerProgress == m_lastReportedWorkerProgress;
-    if (newSubmitFailures == 0 && newCacheMisses == 0 &&
+    if (newSubmitFailures == 0 && newCacheMisses == 0 && !deferredWarnings &&
             !statusBackpressure && !decoderStall) {
         if (m_diagnosticEpisodeActive) {
             kLogger.info() << m_group
@@ -186,7 +354,8 @@ void CachingReader::reportDiagnostics() {
         break;
     }
 
-    const char* classification = "cache-miss";
+    const char* classification =
+            newCacheMisses > 0 ? "cache-miss" : "callback-log-deferral";
     if (statusBackpressure) {
         classification = "status-backpressure";
     } else if (decoderStall) {
@@ -203,11 +372,31 @@ void CachingReader::reportDiagnostics() {
                       << "total submit failures" << submitFailures
                       << "new cache misses" << newCacheMisses
                       << "total cache misses" << cacheMisses << "last failed chunk"
-                      << m_diagnosticLastFailedChunk.loadAcquire() << "worker state"
+                      << m_diagnosticLastFailedChunk.loadAcquire()
+                      << "last cache-missed chunk" << lastMissedChunk << "worker state"
                       << stateName << "active chunk" << activeChunk
                       << "last completed chunk"
                       << m_worker.diagnosticLastCompletedChunk() << "worker progress"
-                      << workerProgress;
+                      << workerProgress
+                      << "deferred callback warning events in sampled interval"
+                      << "partial-gap insertions" << partialGapEvents
+                      << "partial-gap frames" << partialGapFrames
+                      << "unreadable-data warnings" << readMoreFailures
+                      << "aborted-read warnings" << readAborts
+                      << "no-LRU-chunk warnings" << lruAllocationFailures
+                      << "chunk-allocation warnings" << chunkAllocationFailures
+                      << "last no-LRU chunk" << lastNoLruChunk
+                      << "last failed allocation chunk" << lastChunkAllocationFailure
+                      << "invalid-hint warnings" << invalidHints
+                      << "last invalid hint frame count" << lastInvalidHintFrameCount
+                      << "last read-more failure chunk" << lastReadMoreFailureChunk
+                      << "last read-abort chunk" << lastReadAbortChunk
+                      << "latest partial-gap range valid" << lastGapRangeValid;
+    if (lastGapRangeValid) {
+        kLogger.warning() << m_group << "Latest partial-gap frame range ["
+                          << lastGapStartFrame << "," << lastGapEndFrame << ") has"
+                          << lastGapEndFrame - lastGapStartFrame << "frames";
+    }
 
     m_diagnosticEpisodeActive = true;
     m_lastReportedSubmitFailures = submitFailures;
@@ -285,11 +474,17 @@ CachingReaderChunkForOwner* CachingReader::allocateChunkExpireLRU(SINT chunkInde
             freeChunk(m_lruCachingReaderChunk);
             pChunk = allocateChunk(chunkIndex);
         } else {
-            kLogger.warning() << "No cached LRU chunk available for freeing";
+            m_deferredCallbackLogCounters.lruAllocationFailures.fetch_add(
+                    1, std::memory_order_relaxed);
+            m_deferredCallbackLogCounters.lastNoLruChunk.store(
+                    chunkIndex, std::memory_order_relaxed);
         }
     }
     if (kLogger.traceEnabled()) {
-        kLogger.trace() << "allocateChunkExpireLRU" << chunkIndex << pChunk;
+        m_deferredCallbackLogCounters.traceLruAllocations.fetch_add(
+                1, std::memory_order_relaxed);
+        m_deferredCallbackLogCounters.lastTraceLruChunk.store(
+                chunkIndex, std::memory_order_relaxed);
     }
     return pChunk;
 }
@@ -305,10 +500,10 @@ void CachingReader::freshenChunk(CachingReaderChunkForOwner* pChunk) {
     DEBUG_ASSERT(pChunk);
     DEBUG_ASSERT(pChunk->getState() == CachingReaderChunkForOwner::READY);
     if (kLogger.traceEnabled()) {
-        kLogger.trace()
-                << "freshenChunk()"
-                << pChunk->getIndex()
-                << pChunk;
+        m_deferredCallbackLogCounters.traceFreshens.fetch_add(
+                1, std::memory_order_relaxed);
+        m_deferredCallbackLogCounters.lastTraceFreshenChunk.store(
+                pChunk->getIndex(), std::memory_order_relaxed);
     }
 
     // Remove the chunk from the MRU/LRU list
@@ -623,13 +818,11 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
                             m_readableFrameIndexRange.start());
             DEBUG_ASSERT(prerollFrameIndexRange.length() <= remainingFrameIndexRange.length());
             if (kLogger.debugEnabled()) {
-                kLogger.debug()
-                        << "Preroll: Filling the first"
-                        << prerollFrameIndexRange.length()
-                        << "sample frames in"
-                        << remainingFrameIndexRange
-                        << "with silence. Audio signal starts at"
-                        << m_readableFrameIndexRange.start();
+                m_deferredCallbackLogCounters.prerollEvents.fetch_add(
+                        1, std::memory_order_relaxed);
+                m_deferredCallbackLogCounters.prerollFrames.fetch_add(
+                        static_cast<std::uint32_t>(prerollFrameIndexRange.length()),
+                        std::memory_order_relaxed);
             }
             const SINT prerollFrames = prerollFrameIndexRange.length();
             const SINT prerollSamples = CachingReaderChunk::frames2samples(
@@ -680,7 +873,10 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
                 if (remainingFrameIndexRange.empty()) {
                     // No more readable data available. Exit the loop and
                     // fill the remaining buffer with silence.
-                    kLogger.warning() << "Failed to read more sample data";
+                    m_deferredCallbackLogCounters.readMoreFailures.fetch_add(
+                            1, std::memory_order_relaxed);
+                    m_deferredCallbackLogCounters.lastReadMoreFailureChunk.store(
+                            chunkIndex, std::memory_order_relaxed);
                     break;
                 }
                 lastChunkIndex =
@@ -688,7 +884,10 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
                 if (lastChunkIndex < chunkIndex) {
                     // No more readable data available. Exit the loop and
                     // fill the remaining buffer with silence.
-                    kLogger.warning() << "Abort reading of sample data";
+                    m_deferredCallbackLogCounters.readAborts.fetch_add(
+                            1, std::memory_order_relaxed);
+                    m_deferredCallbackLogCounters.lastReadAbortChunk.store(
+                            chunkIndex, std::memory_order_relaxed);
                     break;
                 }
 
@@ -716,11 +915,13 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
                             (pChunk->getState() == CachingReaderChunkForOwner::READ_PENDING));
                     Counter("CachingReader::read(): Failed to read chunk on cache miss")++;
                     m_diagnosticCacheMisses.fetchAndAddRelaxed(1);
+                    m_deferredCallbackLogCounters.lastMissedChunk.store(
+                            chunkIndex, std::memory_order_relaxed);
                     if (kLogger.traceEnabled()) {
-                        kLogger.trace()
-                                << "Cache miss for chunk with index"
-                                << chunkIndex
-                                << "- abort reading";
+                        m_deferredCallbackLogCounters.traceCacheMisses.fetch_add(
+                                1, std::memory_order_relaxed);
+                        m_deferredCallbackLogCounters.lastTraceMissChunk.store(
+                                chunkIndex, std::memory_order_relaxed);
                     }
                     // Abort reading (see below)
                     DEBUG_ASSERT(bufferedFrameIndexRange.empty());
@@ -744,10 +945,9 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
                             mixxx::IndexRange::between(
                                     remainingFrameIndexRange.start(),
                                     bufferedFrameIndexRange.start());
-                    kLogger.warning()
-                            << "Inserting"
-                            << paddingFrameIndexRange.length()
-                            << "frames of silence for unreadable audio data";
+                    recordPartialGap(
+                            paddingFrameIndexRange.start(),
+                            paddingFrameIndexRange.end());
                     SINT paddingSamples = CachingReaderChunk::frames2samples(
                             paddingFrameIndexRange.length(), channelCount);
                     DEBUG_ASSERT(samplesRemaining >= paddingSamples);
@@ -812,7 +1012,10 @@ void CachingReader::hintAndMaybeWake(const HintVector& hintList) {
         }
 
         VERIFY_OR_DEBUG_ASSERT(hintFrameCount >= 0) {
-            kLogger.warning() << "CachingReader: Ignoring negative hint length.";
+            m_deferredCallbackLogCounters.invalidHints.fetch_add(
+                    1, std::memory_order_relaxed);
+            m_deferredCallbackLogCounters.lastInvalidHintFrameCount.store(
+                    hintFrameCount, std::memory_order_relaxed);
             continue;
         }
 
@@ -831,10 +1034,10 @@ void CachingReader::hintAndMaybeWake(const HintVector& hintList) {
                 shouldWake = true;
                 pChunk = allocateChunkExpireLRU(chunkIndex);
                 if (!pChunk) {
-                    kLogger.warning()
-                            << "Failed to allocate chunk"
-                            << chunkIndex
-                            << "for read request";
+                    m_deferredCallbackLogCounters.chunkAllocationFailures.fetch_add(
+                            1, std::memory_order_relaxed);
+                    m_deferredCallbackLogCounters.lastChunkAllocationFailure.store(
+                            chunkIndex, std::memory_order_relaxed);
                     continue;
                 }
                 // Do not insert the allocated chunk into the MRU/LRU list,
@@ -842,9 +1045,10 @@ void CachingReader::hintAndMaybeWake(const HintVector& hintList) {
                 CachingReaderChunkReadRequest request;
                 request.giveToWorker(pChunk);
                 if (kLogger.traceEnabled()) {
-                    kLogger.trace()
-                            << "Requesting read of chunk"
-                            << request.chunk;
+                    m_deferredCallbackLogCounters.traceChunkRequests.fetch_add(
+                            1, std::memory_order_relaxed);
+                    m_deferredCallbackLogCounters.lastTraceRequestChunk.store(
+                            chunkIndex, std::memory_order_relaxed);
                 }
                 m_diagnosticSubmitAttempts.fetchAndAddRelaxed(1);
                 if (m_chunkReadRequestFIFO.write(&request, 1) != 1) {

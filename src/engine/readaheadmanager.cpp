@@ -301,7 +301,7 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
                 plan.samplesFromReader);
         // Reset the cache miss flag, because we are now back on track.
         if (!m_cacheMissExpected) {
-            qDebug() << "ReadAheadManager: continue after number cache misses:" << m_cacheMissCount;
+            m_pReader->recordUnexpectedReadAheadRecovery(m_cacheMissCount);
         }
         m_cacheMissCount = 0;
         m_cacheMissExpected = false;
@@ -350,7 +350,7 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
                     m_pCrossFadeBuffer,
                     channelCount);
             if (readResult == CachingReader::ReadResult::UNAVAILABLE) {
-                qDebug() << "ERROR: Couldn't get all needed samples for crossfade.";
+                m_pReader->recordCrossfadeCacheMiss();
                 // Cache miss - no samples written
                 SampleUtil::clear(
                         m_pCrossFadeBuffer, plan.samplesFromReader);
@@ -533,9 +533,10 @@ double ReadAheadManager::getFilePlaypositionFromLog(
     }
 
     if (m_readAheadLogSize == 0 && m_readAheadLogOverflowSize == 0) {
-        // No log entries to read from.
-        qDebug() << this << "No read ahead log entries to read from. Case not currently handled.";
-        // TODO(rryan) log through a stats pipe eventually
+        // Defer this diagnostic because this method runs on the engine callback.
+        if (m_pReader != nullptr) {
+            m_pReader->recordMissingReadAheadLogEntry();
+        }
         return currentFilePlayposition;
     }
 

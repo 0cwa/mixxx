@@ -1843,7 +1843,10 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     trace.back().normalizedSourcePosition = newGrainSourcePosition;
     trace.back().visualPositionStep = newGrainPositionStep;
     trace.back().visualPlayRate = newGrainPlayRate;
-    trace.back().predictedDisplayPosition = visualPosition.getAtNextVSync(&vsync);
+    double slipPosition;
+    ASSERT_TRUE(visualPosition.getPlaySlipAtNextVSync(&vsync,
+            &trace.back().predictedDisplayPosition,
+            &slipPosition));
     const double displayedSamplePosition = trace.back().predictedDisplayPosition *
             static_cast<double>(kOracleFeedFrames * kChannelCount);
     trace.back().markerPixel = oracleRendererPixel(
