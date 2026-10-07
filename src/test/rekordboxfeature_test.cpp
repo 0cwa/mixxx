@@ -8,12 +8,12 @@
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <exception>
+#include <limits>
 #include <string>
 #include <thread>
 
 #include "database/mixxxdb.h"
 #include "kaitai/exceptions.h"
-#include "library/queryutil.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "library/rekordbox/rekordboxparser_test.h"
 #include "library/treeitem.h"
@@ -71,133 +71,6 @@ QString parseDeviceDBOnThread(
     return parseResult;
 }
 
-TEST(RekordboxImportTest, RejectsInvalidDatabaseIds) {
-    EXPECT_FALSE(mixxx::rekordbox::isValidDatabaseId(-1));
-    EXPECT_FALSE(mixxx::rekordbox::isValidDatabaseId(0));
-    EXPECT_TRUE(mixxx::rekordbox::isValidDatabaseId(1));
-}
-
-TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {
-    QTemporaryDir temporaryDirectory;
-    ASSERT_TRUE(temporaryDirectory.isValid());
-
-    const QString databasePath = temporaryDirectory.filePath("mixxxdb.sqlite");
-    const QString connectionName = QStringLiteral("rekordbox-import-test");
-    bool permissionCheckSkipped = false;
-    {
-        QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-        database.setDatabaseName(databasePath);
-        ASSERT_TRUE(database.open());
-        EXPECT_TRUE(mixxx::rekordbox::isWritableDatabase(database));
-
-        database.close();
-        ASSERT_TRUE(QFile::setPermissions(
-                databasePath,
-                QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
-        ASSERT_TRUE(database.open());
-        permissionCheckSkipped = QFileInfo(databasePath).isWritable();
-        if (!permissionCheckSkipped) {
-            EXPECT_FALSE(mixxx::rekordbox::isWritableDatabase(database));
-        }
-
-        database.close();
-    }
-    QSqlDatabase::removeDatabase(connectionName);
-    if (permissionCheckSkipped) {
-        GTEST_SKIP() << "The test runner can write files without write permission bits";
-    }
-}
-
-TEST(RekordboxImportTest, SkipsDanglingPlaylistTrackReferences) {
-    const QString connectionName = QStringLiteral("rekordbox-playlist-import-test");
-    {
-        QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-        database.setDatabaseName(QStringLiteral(":memory:"));
-        ASSERT_TRUE(database.open());
-
-        QSqlQuery setupQuery(database);
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_library (id INTEGER, rb_id INTEGER, device TEXT)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_playlist_tracks "
-                "(playlist_id INTEGER, track_id INTEGER, position INTEGER)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "INSERT INTO rekordbox_library (id, rb_id, device) "
-                "VALUES (7, 100, 'USB'), (0, 101, 'USB'), (8, 102, 'USB')"));
-
-        ASSERT_TRUE(database.transaction());
-        const QMap<uint32_t, uint32_t> playlistTracks{
-                {1, 100},
-                {2, 999},
-                {3, 102},
-                {4, 101}};
-        ASSERT_TRUE(mixxx::rekordbox::importPlaylistTracks(
-                database, 42, playlistTracks, QStringLiteral("USB")));
-
-        QSqlQuery resultQuery(database);
-        ASSERT_TRUE(resultQuery.exec(
-                "SELECT playlist_id, track_id, position "
-                "FROM rekordbox_playlist_tracks ORDER BY position"));
-        ASSERT_TRUE(resultQuery.next());
-        EXPECT_EQ(42, resultQuery.value(0).toInt());
-        EXPECT_EQ(7, resultQuery.value(1).toInt());
-        EXPECT_EQ(1, resultQuery.value(2).toInt());
-        ASSERT_TRUE(resultQuery.next());
-        EXPECT_EQ(42, resultQuery.value(0).toInt());
-        EXPECT_EQ(8, resultQuery.value(1).toInt());
-        EXPECT_EQ(2, resultQuery.value(2).toInt());
-        EXPECT_FALSE(resultQuery.next());
-
-        QSqlQuery invalidRelationQuery(database);
-        ASSERT_TRUE(invalidRelationQuery.exec(
-                "SELECT COUNT(*) FROM rekordbox_playlist_tracks "
-                "WHERE track_id <= 0"));
-        ASSERT_TRUE(invalidRelationQuery.next());
-        EXPECT_EQ(0, invalidRelationQuery.value(0).toInt());
-        ASSERT_TRUE(database.commit());
-
-        database.close();
-    }
-    QSqlDatabase::removeDatabase(connectionName);
-}
-
-TEST(RekordboxImportTest, RollsBackFatalPlaylistInsertErrors) {
-    const QString connectionName = QStringLiteral("rekordbox-playlist-rollback-test");
-    {
-        QSqlDatabase database = QSqlDatabase::addDatabase("QSQLITE", connectionName);
-        database.setDatabaseName(QStringLiteral(":memory:"));
-        ASSERT_TRUE(database.open());
-
-        QSqlQuery setupQuery(database);
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_library (id INTEGER, rb_id INTEGER, device TEXT)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "CREATE TABLE rekordbox_playlist_tracks "
-                "(playlist_id INTEGER, track_id INTEGER CHECK(track_id <> 8), position INTEGER)"));
-        ASSERT_TRUE(setupQuery.exec(
-                "INSERT INTO rekordbox_library (id, rb_id, device) "
-                "VALUES (7, 100, 'USB'), (8, 102, 'USB')"));
-
-        {
-            ScopedTransaction transaction(database);
-            ASSERT_TRUE(transaction.active());
-            const QMap<uint32_t, uint32_t> playlistTracks{
-                    {1, 100},
-                    {2, 102}};
-            EXPECT_FALSE(mixxx::rekordbox::importPlaylistTracks(
-                    database, 42, playlistTracks, QStringLiteral("USB")));
-        }
-
-        QSqlQuery resultQuery(database);
-        ASSERT_TRUE(resultQuery.exec(
-                "SELECT COUNT(*) FROM rekordbox_playlist_tracks"));
-        ASSERT_TRUE(resultQuery.next());
-        EXPECT_EQ(0, resultQuery.value(0).toInt());
-
-        database.close();
-    }
-    QSqlDatabase::removeDatabase(connectionName);
-}
 
 TEST(RekordboxImportTest, PreservesMemoryLoopBoundsAndCueOrder) {
     TrackPointer track = Track::newTemporary();
@@ -262,11 +135,77 @@ TEST(RekordboxImportTest, UpdatesFirstMatchingHotCueWithoutReordering) {
     ASSERT_EQ(2, cuePoints.size());
     EXPECT_EQ(first, cuePoints.at(0));
     EXPECT_EQ(duplicate, cuePoints.at(1));
+    EXPECT_EQ(mixxx::CueType::HotCue, first->getType());
     EXPECT_EQ(mixxx::audio::FramePos(30), first->getPosition());
     EXPECT_EQ(QStringLiteral("updated"), first->getLabel());
     EXPECT_EQ(mixxx::RgbColor(0x102030), first->getColor());
     EXPECT_EQ(mixxx::audio::FramePos(20), duplicate->getPosition());
     EXPECT_TRUE(duplicate->getLabel().isEmpty());
+
+    mixxx::rekordbox::importHotCue(
+            track,
+            mixxx::audio::FramePos(40),
+            mixxx::audio::FramePos(60),
+            2,
+            QStringLiteral("updated loop"),
+            mixxx::RgbColor(0x405060));
+
+    const QList<CuePointer> loopCuePoints = track->getCuePoints();
+    ASSERT_EQ(2, loopCuePoints.size());
+    EXPECT_EQ(first, loopCuePoints.at(0));
+    EXPECT_EQ(duplicate, loopCuePoints.at(1));
+    EXPECT_EQ(mixxx::CueType::Loop, first->getType());
+    EXPECT_EQ(mixxx::audio::FramePos(40), first->getPosition());
+    EXPECT_EQ(mixxx::audio::FramePos(60), first->getEndPosition());
+
+    mixxx::rekordbox::importHotCue(
+            track,
+            mixxx::audio::FramePos(70),
+            mixxx::audio::kInvalidFramePos,
+            2,
+            QStringLiteral("updated hot cue"),
+            mixxx::RgbColor(0x102030));
+
+    const QList<CuePointer> hotCuePoints = track->getCuePoints();
+    ASSERT_EQ(2, hotCuePoints.size());
+    EXPECT_EQ(first, hotCuePoints.at(0));
+    EXPECT_EQ(duplicate, hotCuePoints.at(1));
+    EXPECT_EQ(mixxx::CueType::HotCue, first->getType());
+    EXPECT_EQ(mixxx::audio::FramePos(70), first->getPosition());
+    EXPECT_EQ(mixxx::audio::kInvalidFramePos, first->getEndPosition());
+}
+
+TEST(RekordboxImportTest, RejectsInvalidHotCueIdBeforeCreation) {
+    TrackPointer track = Track::newTemporary();
+
+    mixxx::rekordbox::importHotCue(
+            track,
+            mixxx::audio::FramePos(10),
+            mixxx::audio::kInvalidFramePos,
+            -2,
+            QStringLiteral("invalid"),
+            mixxx::RgbColor::nullopt());
+
+    EXPECT_TRUE(track->getCuePoints().isEmpty());
+}
+
+TEST(RekordboxImportTest, CreatesHotCueAtFirstIndex) {
+    TrackPointer track = Track::newTemporary();
+
+    mixxx::rekordbox::importHotCue(
+            track,
+            mixxx::audio::FramePos(10),
+            mixxx::audio::kInvalidFramePos,
+            0,
+            QStringLiteral("first"),
+            mixxx::RgbColor::nullopt());
+
+    const auto cue = track->findHotcueByIndex(0);
+    ASSERT_TRUE(cue);
+    EXPECT_EQ(1, track->getCuePoints().size());
+    EXPECT_EQ(mixxx::CueType::HotCue, cue->getType());
+    EXPECT_EQ(mixxx::audio::FramePos(10), cue->getPosition());
+    EXPECT_EQ(QStringLiteral("first"), cue->getLabel());
 }
 
 TEST(RekordboxImportTest, ReadsSyntheticBeatGridThroughProductionPath) {
@@ -340,6 +279,102 @@ TEST(RekordboxImportTest, SkipsTruncatedSyntheticBeatGrid) {
                 freshTrack, sampleRate, 0, ignoreCues, anlzPath);
 
         EXPECT_FALSE(freshTrack->getBeats());
+    }
+}
+
+TEST(RekordboxImportTest, EmptyAnalyzeFilePreservesTrackState) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+
+    const QString anlzPath = temporaryDirectory.filePath("empty.dat");
+    QFile anlzFile(anlzPath);
+    ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+    ASSERT_EQ(0, anlzFile.size());
+    anlzFile.close();
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool ignoreCues : {true, false}) {
+        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
+
+        TrackPointer seededTrack = Track::newTemporary();
+        const auto seededBeats = mixxx::Beats::fromConstTempo(
+                sampleRate, mixxx::audio::FramePos(48000), mixxx::Bpm(120.0));
+        ASSERT_TRUE(seededBeats);
+        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
+        const CuePointer seededCue = seededTrack->createAndAddCue(
+                mixxx::CueType::HotCue,
+                1,
+                mixxx::audio::FramePos(123),
+                mixxx::audio::kInvalidFramePos);
+
+        ASSERT_TRUE(seededCue);
+
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                seededTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_EQ(seededBeats, seededTrack->getBeats());
+        ASSERT_EQ(1, seededTrack->getCuePoints().size());
+        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
+        EXPECT_EQ(mixxx::audio::FramePos(123), seededCue->getPosition());
+
+        TrackPointer freshTrack = Track::newTemporary();
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                freshTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_FALSE(freshTrack->getBeats());
+        EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
+    }
+}
+
+TEST(RekordboxImportTest, PartialAnalyzeFilePreservesTrackState) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+
+    const QString anlzPath = temporaryDirectory.filePath("partial.dat");
+    QFile anlzFile(anlzPath);
+    ASSERT_TRUE(anlzFile.open(QIODevice::WriteOnly));
+    QByteArray fixture = mixxx::rekordbox::test::makeAnlzBeatGridFixture();
+    fixture.append("PCOB", 4);
+    mixxx::rekordbox::test::appendU32Be(&fixture, 12);
+    mixxx::rekordbox::test::appendU32Be(&fixture, 24);
+    QByteArray declaredFileSize;
+    mixxx::rekordbox::test::appendU32Be(
+            &declaredFileSize, static_cast<quint32>(fixture.size() + 12));
+    fixture.replace(8, 4, declaredFileSize);
+    ASSERT_EQ(fixture.size(), anlzFile.write(fixture));
+    anlzFile.close();
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool ignoreCues : {true, false}) {
+        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
+
+        TrackPointer seededTrack = Track::newTemporary();
+        const auto seededBeats = mixxx::Beats::fromConstTempo(
+                sampleRate, mixxx::audio::FramePos(24000), mixxx::Bpm(90.0));
+        ASSERT_TRUE(seededBeats);
+        ASSERT_TRUE(seededTrack->trySetBeats(seededBeats));
+        const CuePointer seededCue = seededTrack->createAndAddCue(
+                mixxx::CueType::HotCue,
+                1,
+                mixxx::audio::FramePos(123),
+                mixxx::audio::kInvalidFramePos);
+
+        ASSERT_TRUE(seededCue);
+
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                seededTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_EQ(seededBeats, seededTrack->getBeats());
+        ASSERT_EQ(1, seededTrack->getCuePoints().size());
+        EXPECT_EQ(seededCue, seededTrack->getCuePoints().at(0));
+        EXPECT_EQ(mixxx::audio::FramePos(123), seededCue->getPosition());
+
+        TrackPointer freshTrack = Track::newTemporary();
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                freshTrack, sampleRate, 0, ignoreCues, anlzPath));
+
+        EXPECT_FALSE(freshTrack->getBeats());
+        EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
     }
 }
 

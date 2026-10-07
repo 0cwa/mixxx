@@ -1,26 +1,17 @@
 #pragma once
 
-#ifdef BUILD_TESTING
-#include <gtest/gtest_prod.h>
-#endif
-
 #include <QMutex>
 #include <QString>
-#include <atomic>
-#include <cstdint>
 
 #include "audio/frame.h"
 #include "audio/types.h"
 #include "engine/cachingreader/cachingreaderchunk.h"
-#include "engine/controls/seek30workerstate.h"
 #include "engine/engineworker.h"
 #include "sources/audiosource.h"
 #include "track/track_decl.h"
 
 template<class DataType>
 class FIFO;
-
-class Seek30Control;
 
 // POD with trivial ctor/dtor/copy for passing through FIFO
 typedef struct CachingReaderChunkReadRequest {
@@ -125,49 +116,6 @@ class CachingReaderWorker : public EngineWorker {
 
     void quitWait();
 
-    // Configure the worker-side Seek30 owner. The pointer is published before
-    // any track-loaded callback or command can use it.
-    void setSeek30Control(Seek30Control* pControl);
-
-    // Called by DirectConnection callbacks. The newest command is dropped when
-    // the fixed mailbox is full; the overflow count is saturating.
-    bool enqueueSeek30Command(Seek30Operation operation);
-
-    std::uint64_t seek30Generation() const {
-        return m_seek30Generation.load(std::memory_order_acquire);
-    }
-
-    std::uint64_t seek30CommandOverflowCount() const {
-        return m_seek30CommandOverflowCount.load(std::memory_order_relaxed);
-    }
-
-    enum class DiagnosticState {
-        Waiting,
-        LoadingTrack,
-        Decoding,
-        PublishingStatus,
-    };
-
-    DiagnosticState diagnosticState() const {
-        return static_cast<DiagnosticState>(m_diagnosticState.loadAcquire());
-    }
-    int diagnosticActiveChunk() const {
-        return m_diagnosticActiveChunk.loadAcquire();
-    }
-    int diagnosticLastCompletedChunk() const {
-        return m_diagnosticLastCompletedChunk.loadAcquire();
-    }
-    int diagnosticCompletedRequests() const {
-        return m_diagnosticCompletedRequests.loadAcquire();
-    }
-    int diagnosticDequeuedRequests() const {
-        return m_diagnosticDequeuedRequests.loadAcquire();
-    }
-    int diagnosticPublishedStatuses() const {
-        return m_diagnosticPublishedStatuses.loadAcquire();
-    }
-    int diagnosticStatusCapacity() const;
-
   signals:
     // Emitted once a new track is loaded and ready to be read from.
     void trackLoading();
@@ -178,12 +126,6 @@ class CachingReaderWorker : public EngineWorker {
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
-    friend class CachingReaderWorkerTest;
-#ifdef BUILD_TESTING
-    FRIEND_TEST(CachingReaderWorkerTest,
-            ShutdownPublicationFailureSuppressesLoadFailureSignal);
-#endif
-
 #ifdef __STEM__
     struct NewTrackRequest {
         TrackPointer track;
@@ -208,25 +150,21 @@ class CachingReaderWorker : public EngineWorker {
     TrackPointer m_pNewTrack;
 #endif
 
-    bool discardAllPendingRequests();
-    // Publish without spinning when the callback-side FIFO is full. Returns
-    // false only during shutdown; an unpublished chunk is returned to the
-    // owner in that case.
-    bool publishStatus(ReaderStatusUpdate update);
+    void discardAllPendingRequests();
 
     /// call to be prepare for new tracks
     /// Make sure engine has been stopped before
-    bool closeAudioSource();
+    void closeAudioSource();
 
     /// Internal method to unload a track.
     /// does not emit signals
-    bool unloadTrack();
+    void unloadTrack();
 
     /// Internal method to load a track. Emits trackLoaded when finished.
 #ifdef __STEM__
-    bool loadTrack(const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask);
+    void loadTrack(const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask);
 #else
-    bool loadTrack(const TrackPointer& pTrack);
+    void loadTrack(const TrackPointer& pTrack);
 #endif
 
     ReaderStatusUpdate processReadRequest(
@@ -234,11 +172,6 @@ class CachingReaderWorker : public EngineWorker {
 
     void verifyFirstSound(const CachingReaderChunk* pChunk,
             mixxx::audio::ChannelCount channelCount);
-
-    // Track and cue ownership is updated only from run()'s worker thread.
-    void updateSeek30Track(TrackPointer pNewTrack);
-    void processSeek30Commands();
-    void recordSeek30CommandOverflow();
 
     // The current audio source of the track loaded
     mixxx::AudioSourcePointer m_pAudioSource;
@@ -253,20 +186,4 @@ class CachingReaderWorker : public EngineWorker {
     mixxx::audio::ChannelCount m_maxSupportedChannel;
 
     QAtomicInt m_stop;
-
-    std::atomic<Seek30Control*> m_pSeek30Control{nullptr};
-    Seek30CommandMailbox m_seek30CommandMailbox;
-    Seek30WorkerState m_seek30State;
-    std::atomic<std::uint64_t> m_seek30Generation{0};
-    std::atomic<std::uint64_t> m_seek30CommandOverflowCount{0};
-    std::uint64_t m_seek30TargetSequence{0};
-
-    // Lock-free snapshots written by the reader thread and sampled by the
-    // CachingReader's diagnostics timer. They never affect worker behavior.
-    QAtomicInt m_diagnosticState;
-    QAtomicInt m_diagnosticActiveChunk;
-    QAtomicInt m_diagnosticLastCompletedChunk;
-    QAtomicInt m_diagnosticCompletedRequests;
-    QAtomicInt m_diagnosticDequeuedRequests;
-    QAtomicInt m_diagnosticPublishedStatuses;
 };

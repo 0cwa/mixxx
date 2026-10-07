@@ -8,7 +8,6 @@
 #ifdef __STEM__
 #include "engine/engine.h"
 #endif
-#include "control/pollingcontrolproxy.h"
 #include "engine/channels/enginechannel.h"
 #include "mixer/baseplayer.h"
 #include "preferences/colorpalettesettings.h"
@@ -173,7 +172,6 @@ class BaseTrackPlayerImpl : public BaseTrackPlayer {
     EngineDeck* m_pChannel;
     bool m_replaygainPending;
     EngineChannel* m_pChannelToCloneFrom;
-    PollingControlProxy m_pWaveformMaxZoomOut;
 
     PerformanceTimer m_ejectTimer;
 
