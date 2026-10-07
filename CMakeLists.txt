@@ -3024,7 +3024,6 @@ if(BUILD_TESTING)
     src/test/looping_control_test.cpp
     src/test/main.cpp
     src/test/mathutiltest.cpp
-    src/test/matrixapitest.cpp
     src/test/metadatatest.cpp
     #TODO: make this build again
     #src/test/metaknob_link_test.cpp
@@ -5711,6 +5710,9 @@ endif()
 # Vinyl Control
 default_option(VINYLCONTROL "Vinyl Control support" "NOT MACAPPSTORE")
 if(VINYLCONTROL)
+  if(BUILD_TESTING)
+    target_sources(mixxx-test PRIVATE src/test/matrixapitest.cpp)
+  endif()
   if(MACAPPSTORE)
     message(
       FATAL_ERROR
