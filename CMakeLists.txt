@@ -2988,6 +2988,7 @@ if(BUILD_TESTING)
     src/test/librarytest.cpp
     src/test/looping_control_test.cpp
     src/test/main.cpp
+    src/test/effectsbackendmanager_test.cpp
     src/test/mathutiltest.cpp
     src/test/matrixapitest.cpp
     src/test/metadatatest.cpp
