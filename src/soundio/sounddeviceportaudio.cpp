@@ -1175,6 +1175,13 @@ void SoundDevicePortAudio::updateCallbackEntryToDacTime(
     }
 
     VisualPlayPosition::setCallbackEntryToDacSecs(callbackEntrytoDacSecs, m_clkRefTimer);
+    if (m_pSoundManager->audioCallbackDiagnosticsEnabled()) {
+        m_pSoundManager->recordOutputCallbackInterval(
+                AudioCallbackBackend::PortAudio,
+                timeSinceLastCbSecs,
+                framesPerBuffer,
+                m_sampleRate.toDouble());
+    }
     m_lastCallbackEntrytoDacSecs = callbackEntrytoDacSecs;
 
     //qDebug() << callbackEntrytoDacSecs << timeSinceLastCbSecs;

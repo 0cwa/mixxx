@@ -5,6 +5,9 @@
 #include <QObject>
 #include <QSharedPointer>
 #include <QString>
+#include <QTimer>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 
 #include "audio/types.h"
@@ -28,6 +31,15 @@ class PipewireEnumerator;
 #define SOUNDMANAGER_CONNECTING 1
 #define SOUNDMANAGER_CONNECTED 2
 
+enum class AudioCallbackBackend : std::uint32_t {
+    Unknown = 0,
+    PortAudio = 1,
+    PipeWire = 2,
+    Network = 3,
+};
+
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+        "Audio callback diagnostics require lock-free 32-bit atomics");
 
 class SoundManager : public QObject {
     Q_OBJECT
@@ -76,6 +88,13 @@ class SoundManager : public QObject {
     void checkConfig();
 
     void onDeviceOutputCallback(const SINT iFramesPerBuffer);
+    bool audioCallbackDiagnosticsEnabled() const {
+        return m_audioCallbackDiagnosticsEnabled;
+    }
+    void recordOutputCallbackInterval(AudioCallbackBackend backend,
+            double intervalSeconds,
+            SINT framesPerBuffer,
+            double sampleRate) noexcept;
 
     // Used by SoundDevices to "push" any audio from their inputs that they have
     // into the mixing engine.
@@ -169,6 +188,7 @@ class SoundManager : public QObject {
 
   private slots:
     void completeDevicesClosing();
+    void reportAudioCallbackDiagnostics();
 
   public slots:
     void addDevice(SoundDevicePointer pDevice);
@@ -211,4 +231,22 @@ class SoundManager : public QObject {
     QSharedPointer<EngineNetworkStream> m_pNetworkStream;
     QSharedPointer<SoundDeviceNetwork> m_pNetworkDevice;
     bool m_pipewireEnabled;
+
+    struct AudioCallbackDiagnostics {
+        std::atomic<std::uint32_t> backend{
+                static_cast<std::uint32_t>(AudioCallbackBackend::Unknown)};
+        std::atomic<std::uint32_t> expectedPeriodUs{0};
+        std::atomic<std::uint32_t> callbackEntries{0};
+        std::atomic<std::uint32_t> entryIntervals{0};
+        std::atomic<std::uint32_t> lateEntryIntervals{0};
+        std::atomic<std::uint32_t> maxEntryIntervalUs{0};
+        std::atomic<std::uint32_t> lastLateEntryMonotonicMs{0};
+        std::atomic<std::uint32_t> engineSamples{0};
+        std::atomic<std::uint32_t> engineOverBudget{0};
+        std::atomic<std::uint32_t> maxEngineDurationUs{0};
+        std::atomic<std::uint32_t> lastOverBudgetMonotonicMs{0};
+    } m_audioCallbackDiagnostics;
+    const bool m_audioCallbackDiagnosticsEnabled;
+    QTimer m_audioCallbackDiagnosticsTimer;
+    std::uint32_t m_audioCallbackWindowStartMonotonicMs{0};
 };

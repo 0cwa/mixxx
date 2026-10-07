@@ -2,10 +2,12 @@
 
 #include <QtDebug>
 #include <algorithm>
+#include <chrono>
 
 #include "engine/controls/seek30control.h"
 #include "moc_cachingreader.cpp"
 #include "util/assert.h"
+#include "util/audiocallbackdiagnostics.h"
 #include "util/compatibility/qatomic.h"
 #include "util/counter.h"
 #include "util/defs.h"
@@ -15,6 +17,14 @@
 namespace {
 
 mixxx::Logger kLogger("CachingReader");
+
+std::uint32_t monotonicMillisecondsModulo() noexcept {
+    using Clock = std::chrono::steady_clock;
+    static_assert(Clock::is_steady);
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now().time_since_epoch());
+    return static_cast<std::uint32_t>(milliseconds.count());
+}
 
 // This is the default hint frameCount that is adopted in case of Hint::kFrameCountForward and
 // Hint::kFrameCountBackward count is provided. It matches 23 ms @ 44.1 kHz
@@ -44,6 +54,8 @@ CachingReader::CachingReader(const QString& group,
         : m_pConfig(config),
           m_retryOnCacheMiss(false),
           m_group(group),
+          m_audioCallbackDiagnosticsEnabled(
+                  mixxx::isAudioCallbackDiagnosticsEnabled()),
           // Limit the number of in-flight requests to the worker. This should
           // prevent to overload the worker when it is not able to fetch those
           // requests from the FIFO timely. Otherwise outdated requests pile up
@@ -167,6 +179,13 @@ void CachingReader::reportDiagnostics() {
     const int submitAttempts = m_diagnosticSubmitAttempts.loadAcquire();
     const int submitFailures = m_diagnosticSubmitFailures.loadAcquire();
     const int cacheMisses = m_diagnosticCacheMisses.loadAcquire();
+    const std::uint32_t diagnosticMonotonicMs = m_audioCallbackDiagnosticsEnabled
+            ? monotonicMillisecondsModulo()
+            : 0;
+    const std::uint32_t lastCacheMissMonotonicMs =
+            m_diagnosticLastCacheMissMonotonicMs.load(std::memory_order_relaxed);
+    const bool cacheMissTimestampValid =
+            m_audioCallbackDiagnosticsEnabled && lastCacheMissMonotonicMs != 0;
     const int workerProgress = m_worker.diagnosticCompletedRequests();
     const int activeChunk = m_worker.diagnosticActiveChunk();
     const auto workerState = m_worker.diagnosticState();
@@ -373,7 +392,15 @@ void CachingReader::reportDiagnostics() {
                       << "new cache misses" << newCacheMisses
                       << "total cache misses" << cacheMisses << "last failed chunk"
                       << m_diagnosticLastFailedChunk.loadAcquire()
-                      << "last cache-missed chunk" << lastMissedChunk << "worker state"
+                      << "last cache-missed chunk" << lastMissedChunk
+                      << "monotonic ms modulo 2^32" << diagnosticMonotonicMs
+                      << "last cache miss timestamp valid" << cacheMissTimestampValid
+                      << "last cache miss monotonic ms" << lastCacheMissMonotonicMs
+                      << "last cache miss age ms"
+                      << (cacheMissTimestampValid
+                                         ? diagnosticMonotonicMs - lastCacheMissMonotonicMs
+                                         : 0)
+                      << "worker state"
                       << stateName << "active chunk" << activeChunk
                       << "last completed chunk"
                       << m_worker.diagnosticLastCompletedChunk() << "worker progress"
@@ -915,6 +942,10 @@ CachingReader::ReadResult CachingReader::readInternal(SINT startSample,
                             (pChunk->getState() == CachingReaderChunkForOwner::READ_PENDING));
                     Counter("CachingReader::read(): Failed to read chunk on cache miss")++;
                     m_diagnosticCacheMisses.fetchAndAddRelaxed(1);
+                    if (m_audioCallbackDiagnosticsEnabled) {
+                        m_diagnosticLastCacheMissMonotonicMs.store(
+                                monotonicMillisecondsModulo(), std::memory_order_relaxed);
+                    }
                     m_deferredCallbackLogCounters.lastMissedChunk.store(
                             chunkIndex, std::memory_order_relaxed);
                     if (kLogger.traceEnabled()) {

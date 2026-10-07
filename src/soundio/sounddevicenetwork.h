@@ -68,6 +68,7 @@ class SoundDeviceNetwork : public SoundDevice {
     /// The deadline for the next buffer, in microseconds since the Unix epoch.
     qint64 m_targetTime;
     PerformanceTimer m_clkRefTimer;
+    PerformanceTimer m_callbackIntervalTimer;
 };
 
 class SoundDeviceNetworkThread : public QThread {

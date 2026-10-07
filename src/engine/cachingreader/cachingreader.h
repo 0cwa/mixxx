@@ -207,6 +207,7 @@ class CachingReader : public QObject {
     const UserSettingsPointer m_pConfig;
     bool m_retryOnCacheMiss;
     const QString m_group;
+    const bool m_audioCallbackDiagnosticsEnabled;
 
     void reportDiagnostics();
 
@@ -220,6 +221,7 @@ class CachingReader : public QObject {
     QAtomicInt m_diagnosticSubmitAttempts;
     QAtomicInt m_diagnosticSubmitFailures;
     QAtomicInt m_diagnosticCacheMisses;
+    std::atomic<std::uint32_t> m_diagnosticLastCacheMissMonotonicMs{0};
     QAtomicInt m_diagnosticLastFailedChunk;
     QAtomicInt m_diagnosticStatusConsumed;
 

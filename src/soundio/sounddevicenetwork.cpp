@@ -523,12 +523,29 @@ void SoundDeviceNetwork::callbackProcessClkRef() {
 
 void SoundDeviceNetwork::updateCallbackEntryToDacTime(SINT framesPerBuffer) {
     m_clkRefTimer.start();
+    double timeSinceLastCallbackSeconds = 0.0;
+    const bool diagnosticsEnabled = m_pSoundManager->audioCallbackDiagnosticsEnabled();
+    if (diagnosticsEnabled) {
+        if (m_callbackIntervalTimer.running()) {
+            timeSinceLastCallbackSeconds =
+                    m_callbackIntervalTimer.restart().toDoubleSeconds();
+        } else {
+            m_callbackIntervalTimer.start();
+        }
+    }
     qint64 currentTime = m_pNetworkStream->getInputStreamTimeUs();
     // This deadline for the next buffer in microseconds since the Unix epoch
     m_targetTime += static_cast<qint64>(framesPerBuffer / m_sampleRate.toDouble() * 1000000);
     double callbackEntrytoDacSecs = (m_targetTime - currentTime) / 1000000.0;
     callbackEntrytoDacSecs = math_max(callbackEntrytoDacSecs, 0.0001);
     VisualPlayPosition::setCallbackEntryToDacSecs(callbackEntrytoDacSecs, m_clkRefTimer);
+    if (diagnosticsEnabled) {
+        m_pSoundManager->recordOutputCallbackInterval(
+                AudioCallbackBackend::Network,
+                timeSinceLastCallbackSeconds,
+                framesPerBuffer,
+                m_sampleRate.toDouble());
+    }
     //qDebug() << callbackEntrytoDacSecs << timeSinceLastCbSecs;
 }
 

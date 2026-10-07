@@ -5,7 +5,9 @@
 #include <QLibrary>
 #include <QThread>
 #include <QtGlobal>
+#include <chrono>
 #include <cstring> // for memcpy and strcmp
+#include <limits>
 #include <memory>
 
 #include "audio/types.h"
@@ -21,6 +23,7 @@
 #include "soundio/sounddeviceportaudio.h"
 #include "soundio/soundmanagerconfig.h"
 #include "soundio/soundmanagerutil.h"
+#include "util/audiocallbackdiagnostics.h"
 #include "util/cmdlineargs.h"
 #include "util/compatibility/qatomic.h"
 #include "util/defs.h"
@@ -46,6 +49,51 @@ struct DeviceMode {
 #ifdef __LINUX__
 constexpr unsigned int kSleepSecondsAfterClosingDevice = 5;
 #endif
+
+std::uint32_t monotonicMillisecondsModulo() noexcept {
+    using Clock = std::chrono::steady_clock;
+    static_assert(Clock::is_steady);
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now().time_since_epoch());
+    return static_cast<std::uint32_t>(milliseconds.count());
+}
+
+std::uint32_t secondsToMicroseconds(double seconds) noexcept {
+    if (!(seconds > 0.0)) {
+        return 0;
+    }
+    const double microseconds = seconds * 1'000'000.0;
+    if (microseconds >= std::numeric_limits<std::uint32_t>::max()) {
+        return std::numeric_limits<std::uint32_t>::max();
+    }
+    return static_cast<std::uint32_t>(microseconds);
+}
+
+void updateAtomicMaximumOnce(
+        std::atomic<std::uint32_t>& maximum, std::uint32_t value) noexcept {
+    std::uint32_t current = maximum.load(std::memory_order_relaxed);
+    if (value > current) {
+        // One bounded attempt keeps the callback off any retry loop. A race at
+        // the reporting boundary can omit this maximum, while the event count
+        // and timestamp still record an over-budget sample.
+        maximum.compare_exchange_strong(
+                current, value, std::memory_order_relaxed);
+    }
+}
+
+const char* audioCallbackBackendName(std::uint32_t backend) noexcept {
+    switch (static_cast<AudioCallbackBackend>(backend)) {
+    case AudioCallbackBackend::PortAudio:
+        return "PortAudio";
+    case AudioCallbackBackend::PipeWire:
+        return "PipeWire";
+    case AudioCallbackBackend::Network:
+        return "Network";
+    case AudioCallbackBackend::Unknown:
+        return "unknown";
+    }
+    return "unknown";
+}
 } // anonymous namespace
 
 SoundManager::SoundManager(
@@ -64,7 +112,19 @@ SoundManager::SoundManager(
           m_pNetworkDevice(QSharedPointer<SoundDeviceNetwork>::create(
                   pConfig, this, m_pNetworkStream)),
           m_pipewireEnabled(m_pConfig->getValue(
-                  ConfigKey(kAppGroup, QStringLiteral("pipewire")), false)) {
+                  ConfigKey(kAppGroup, QStringLiteral("pipewire")), false)),
+          m_audioCallbackDiagnosticsEnabled(
+                  mixxx::isAudioCallbackDiagnosticsEnabled()),
+          m_audioCallbackWindowStartMonotonicMs(monotonicMillisecondsModulo()) {
+    if (m_audioCallbackDiagnosticsEnabled) {
+        m_audioCallbackDiagnosticsTimer.setInterval(5000);
+        connect(&m_audioCallbackDiagnosticsTimer,
+                &QTimer::timeout,
+                this,
+                &SoundManager::reportAudioCallbackDiagnostics);
+        m_audioCallbackDiagnosticsTimer.start();
+    }
+
     // TODO(xxx) some of these ControlObject are not needed by soundmanager, or are unused here.
     // It is possible to take them out?
     m_pControlObjectSoundStatusCO = new ControlObject(
@@ -102,9 +162,25 @@ SoundManager::SoundManager(
 }
 
 SoundManager::~SoundManager() {
+    m_audioCallbackDiagnosticsTimer.stop();
+
     // Clean up devices.
     const bool sleepAfterClosing = false;
     clearDeviceList(sleepAfterClosing);
+
+#ifdef __PIPEWIRE__
+    // clearDeviceList closes PipeWire ports but leaves the enumerator running
+    // for normal device reconfiguration. Stop its callback thread now, while
+    // the SoundManager callback state is still alive.
+    if (auto* pPipewireEnumerator =
+                    dynamic_cast<PipewireEnumerator*>(m_pEnumerator.get())) {
+        // deinitialize() emits devicesUpdated. Listeners may already be in
+        // teardown along with this SoundManager.
+        const bool signalsWereBlocked = blockSignals(true);
+        pPipewireEnumerator->deinitialize();
+        blockSignals(signalsWereBlocked);
+    }
+#endif
 
     // vinyl control proxies and input buffers are freed in closeDevices, called
     // by clearDeviceList -- bkgood
@@ -184,6 +260,14 @@ void SoundManager::closeDevices(
 #endif
         }
     }
+
+    if (m_audioCallbackDiagnosticsEnabled) {
+        reportAudioCallbackDiagnostics();
+    }
+    m_audioCallbackDiagnostics.backend.store(
+            static_cast<std::uint32_t>(AudioCallbackBackend::Unknown),
+            std::memory_order_relaxed);
+    m_audioCallbackDiagnostics.expectedPeriodUs.store(0, std::memory_order_relaxed);
 
 #ifdef __LINUX__
     if (closed && sleepAfterClosing) {
@@ -564,7 +648,139 @@ void SoundManager::checkConfig() {
 void SoundManager::onDeviceOutputCallback(const SINT iFramesPerBuffer) {
     // Produce a block of samples for output. EngineMixer expects stereo
     // samples so multiply iFramesPerBuffer by 2.
+    if (!m_audioCallbackDiagnosticsEnabled) {
+        m_pEngineMixer->process(iFramesPerBuffer * 2);
+        return;
+    }
+
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
     m_pEngineMixer->process(iFramesPerBuffer * 2);
+    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+            Clock::now() - start);
+    const auto durationCountUs = static_cast<std::uint64_t>(duration.count());
+    const std::uint32_t durationUs = durationCountUs >
+                    std::numeric_limits<std::uint32_t>::max()
+            ? std::numeric_limits<std::uint32_t>::max()
+            : static_cast<std::uint32_t>(durationCountUs);
+    m_audioCallbackDiagnostics.engineSamples.fetch_add(1, std::memory_order_relaxed);
+    updateAtomicMaximumOnce(m_audioCallbackDiagnostics.maxEngineDurationUs, durationUs);
+    const std::uint32_t expectedPeriodUs =
+            m_audioCallbackDiagnostics.expectedPeriodUs.load(std::memory_order_relaxed);
+    if (expectedPeriodUs > 0 && durationUs > expectedPeriodUs) {
+        m_audioCallbackDiagnostics.engineOverBudget.fetch_add(
+                1, std::memory_order_relaxed);
+        m_audioCallbackDiagnostics.lastOverBudgetMonotonicMs.store(
+                monotonicMillisecondsModulo(), std::memory_order_relaxed);
+    }
+}
+
+void SoundManager::recordOutputCallbackInterval(
+        AudioCallbackBackend backend,
+        double intervalSeconds,
+        SINT framesPerBuffer,
+        double sampleRate) noexcept {
+    if (!m_audioCallbackDiagnosticsEnabled) {
+        return;
+    }
+
+    std::uint32_t expectedPeriodUs = 0;
+    if (framesPerBuffer > 0 && sampleRate > 0.0) {
+        expectedPeriodUs = secondsToMicroseconds(
+                static_cast<double>(framesPerBuffer) / sampleRate);
+    }
+    m_audioCallbackDiagnostics.expectedPeriodUs.store(
+            expectedPeriodUs, std::memory_order_relaxed);
+    m_audioCallbackDiagnostics.callbackEntries.fetch_add(1, std::memory_order_relaxed);
+
+    const std::uint32_t backendValue = static_cast<std::uint32_t>(backend);
+    const std::uint32_t previousBackend = m_audioCallbackDiagnostics.backend.exchange(
+            backendValue, std::memory_order_relaxed);
+    if (previousBackend != backendValue) {
+        // The first timer interval after startup or device reconfiguration is
+        // measured from timer start, not from a preceding callback.
+        return;
+    }
+
+    const std::uint32_t intervalUs = secondsToMicroseconds(intervalSeconds);
+    if (intervalUs == 0) {
+        return;
+    }
+    m_audioCallbackDiagnostics.entryIntervals.fetch_add(1, std::memory_order_relaxed);
+    updateAtomicMaximumOnce(m_audioCallbackDiagnostics.maxEntryIntervalUs, intervalUs);
+
+    if (expectedPeriodUs > 0 &&
+            static_cast<std::uint64_t>(intervalUs) * 2 >
+                    static_cast<std::uint64_t>(expectedPeriodUs) * 3) {
+        m_audioCallbackDiagnostics.lateEntryIntervals.fetch_add(
+                1, std::memory_order_relaxed);
+        m_audioCallbackDiagnostics.lastLateEntryMonotonicMs.store(
+                monotonicMillisecondsModulo(), std::memory_order_relaxed);
+    }
+}
+
+void SoundManager::reportAudioCallbackDiagnostics() {
+    if (!m_audioCallbackDiagnosticsEnabled) {
+        return;
+    }
+
+    const std::uint32_t windowEndMonotonicMs = monotonicMillisecondsModulo();
+    const std::uint32_t windowDurationMs =
+            windowEndMonotonicMs - m_audioCallbackWindowStartMonotonicMs;
+    const std::uint32_t backend =
+            m_audioCallbackDiagnostics.backend.load(std::memory_order_relaxed);
+    const std::uint32_t expectedPeriodUs =
+            m_audioCallbackDiagnostics.expectedPeriodUs.load(std::memory_order_relaxed);
+    const std::uint32_t callbackEntries =
+            m_audioCallbackDiagnostics.callbackEntries.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t entryIntervals =
+            m_audioCallbackDiagnostics.entryIntervals.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t lateEntryIntervals =
+            m_audioCallbackDiagnostics.lateEntryIntervals.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t maxEntryIntervalUs =
+            m_audioCallbackDiagnostics.maxEntryIntervalUs.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t lastLateEntryMonotonicMs =
+            m_audioCallbackDiagnostics.lastLateEntryMonotonicMs.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t engineSamples =
+            m_audioCallbackDiagnostics.engineSamples.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t engineOverBudget =
+            m_audioCallbackDiagnostics.engineOverBudget.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t maxEngineDurationUs =
+            m_audioCallbackDiagnostics.maxEngineDurationUs.exchange(
+                    0, std::memory_order_relaxed);
+    const std::uint32_t lastOverBudgetMonotonicMs =
+            m_audioCallbackDiagnostics.lastOverBudgetMonotonicMs.exchange(
+                    0, std::memory_order_relaxed);
+
+    const std::uint64_t expectedCallbackEntries = expectedPeriodUs > 0
+            ? (static_cast<std::uint64_t>(windowDurationMs) * 1000) / expectedPeriodUs
+            : 0;
+    qInfo() << "Audio callback timing (steady_clock ms modulo 2^32):"
+            << "window start" << m_audioCallbackWindowStartMonotonicMs
+            << "window end" << windowEndMonotonicMs
+            << "callback entry sample state"
+            << (callbackEntries == 0 ? "unsampled" : "sampled")
+            << "backend" << audioCallbackBackendName(backend)
+            << "expected period us" << expectedPeriodUs
+            << "callback entries" << callbackEntries
+            << "expected entries approx" << expectedCallbackEntries
+            << "entry intervals" << entryIntervals
+            << "entry intervals over 1.5x period" << lateEntryIntervals
+            << "best observed max entry interval us" << maxEntryIntervalUs
+            << "last late-entry monotonic ms" << lastLateEntryMonotonicMs
+            << "engine samples" << engineSamples
+            << "engine samples over period" << engineOverBudget
+            << "best observed max EngineMixer::process duration us"
+            << maxEngineDurationUs
+            << "last over-budget engine monotonic ms" << lastOverBudgetMonotonicMs;
+    m_audioCallbackWindowStartMonotonicMs = windowEndMonotonicMs;
 }
 
 void SoundManager::pushInputBuffer(const AudioInput& input, const SINT iFramesPerBuffer) {

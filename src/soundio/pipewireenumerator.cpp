@@ -680,9 +680,19 @@ void PipewireEnumerator::closeDevices() {
 
 void PipewireEnumerator::callback(const spa_io_position* pos) {
     // This must be the very first call, else timeInfo becomes invalid
-    m_clkRefTimer.restart();
+    const double timeSinceLastCallbackSeconds = m_clkRefTimer.restart().toDoubleSeconds();
     VisualPlayPosition::setCallbackEntryToDacSecs(
             pos->clock.delay / pos->clock.rate.denom, m_clkRefTimer);
+
+    const uint32_t sampleRate = pos->clock.rate.denom;
+    const uint64_t framesPerBuffer = pos->clock.duration;
+    if (m_pSoundManager->audioCallbackDiagnosticsEnabled()) {
+        m_pSoundManager->recordOutputCallbackInterval(
+                AudioCallbackBackend::PipeWire,
+                timeSinceLastCallbackSeconds,
+                static_cast<SINT>(framesPerBuffer),
+                sampleRate);
+    }
 
     Trace trace("SoundDevicePw::callbackProcessClkRef");
 
@@ -692,9 +702,6 @@ void PipewireEnumerator::callback(const spa_io_position* pos) {
         m_pSoundManager->underflowHappened(6);
     }
 #endif
-
-    const uint32_t sampleRate = pos->clock.rate.denom;
-    const uint64_t framesPerBuffer = pos->clock.duration;
 
     if (sampleRate != m_sampleRate || framesPerBuffer != m_framesPerBuffer) {
         qDebug() << "PipewireEnumerator::callback"
