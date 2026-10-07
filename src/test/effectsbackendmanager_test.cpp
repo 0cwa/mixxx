@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include "control/controlobject.h"
 #include "control/controlproxy.h"
 #include "effects/backends/effectmanifest.h"
 #include "effects/backends/effectprocessor.h"
