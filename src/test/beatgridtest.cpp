@@ -290,6 +290,46 @@ TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
     EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
 }
 
+TEST(BeatGridTest, ClearBeatsResetsDownbeatOffset) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0));
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+
+    pTrack->setDownbeatOffset(2);
+    ASSERT_EQ(2, pTrack->getDownbeatOffset());
+
+    ASSERT_TRUE(pTrack->trySetBeats(BeatsPointer()));
+    EXPECT_EQ(nullptr, pTrack->getBeats());
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+}
+
+TEST(BeatGridTest, LegacySerializationIgnoresPartialProtobufDownbeatOffset) {
+    if constexpr (std::endian::native != std::endian::little) {
+        GTEST_SKIP() << "Legacy raw-double fixture uses little-endian byte order";
+    }
+
+    // These legacy BPM/first-beat doubles also begin with protobuf field 3
+    // (downbeats_offset = 3), followed by an invalid tag. The failed protobuf
+    // parse must not contribute an offset to the legacy fallback.
+    const QByteArray legacyBytes =
+            QByteArray::fromHex("1803000000005e400000000000000000");
+    const auto pBeats = Beats::fromByteArray(
+            kSampleRate,
+            QString::fromLatin1(BEAT_GRID_1_VERSION),
+            QString(),
+            legacyBytes);
+
+    ASSERT_TRUE(pBeats);
+    ASSERT_TRUE(pBeats->getLastMarkerBpm().isValid());
+    ASSERT_TRUE(pBeats->getLastMarkerPosition().isValid());
+    EXPECT_DOUBLE_EQ(120.00000000001125, pBeats->getLastMarkerBpm().value());
+    EXPECT_EQ(mixxx::audio::kStartFramePos, pBeats->getLastMarkerPosition());
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
+}
+
 TEST(BeatGridTest, DownbeatsOffsetRoundTrip) {
     constexpr int kDownbeatsOffset = 3;
     const auto pGrid = Beats::fromConstTempo(
@@ -323,30 +363,6 @@ TEST(BeatGridTest, DownbeatsOffsetDefaultsForExistingSerialization) {
             QString(),
             QByteArray::fromStdString(grid.SerializeAsString()));
     ASSERT_TRUE(pBeats);
-    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
-}
-
-TEST(BeatGridTest, LegacySerializationIgnoresPartialProtobufDownbeatOffset) {
-    if constexpr (std::endian::native != std::endian::little) {
-        GTEST_SKIP() << "Legacy raw-double fixture uses little-endian byte order";
-    }
-
-    // These legacy BPM/first-beat doubles also begin with protobuf field 3
-    // (downbeats_offset = 3), followed by an invalid tag. The failed protobuf
-    // parse must not contribute an offset to the legacy fallback.
-    const QByteArray legacyBytes =
-            QByteArray::fromHex("1803000000005e400000000000000000");
-    const auto pBeats = Beats::fromByteArray(
-            kSampleRate,
-            QString::fromLatin1(BEAT_GRID_1_VERSION),
-            QString(),
-            legacyBytes);
-
-    ASSERT_TRUE(pBeats);
-    ASSERT_TRUE(pBeats->getLastMarkerBpm().isValid());
-    ASSERT_TRUE(pBeats->getLastMarkerPosition().isValid());
-    EXPECT_DOUBLE_EQ(120.00000000001125, pBeats->getLastMarkerBpm().value());
-    EXPECT_EQ(mixxx::audio::kStartFramePos, pBeats->getLastMarkerPosition());
     EXPECT_EQ(0, pBeats->getDownbeatsOffset());
 }
 
