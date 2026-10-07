@@ -29,6 +29,9 @@
 #include "dialog/dlgabout.h"
 #include "dialog/dlgdevelopertools.h"
 #include "dialog/dlgkeywheel.h"
+#ifdef __STEM_CONVERSION__
+#include "stems/dlgstemconversion.h"
+#endif
 #include "moc_mixxxmainwindow.cpp"
 #include "preferences/dialog/dlgpreferences.h"
 #ifdef __BROADCAST__
@@ -63,6 +66,9 @@
 #include "waveform/waveformwidgetfactory.h"
 #include "widget/wglwidget.h"
 #include "widget/wmainmenubar.h"
+#ifdef __STEM_CONVERSION__
+#include "widget/wtrackmenu.h"
+#endif
 
 #ifdef __VINYLCONTROL__
 #include "vinylcontrol/vinylcontrolmanager.h"
@@ -110,8 +116,15 @@ MixxxMainWindow::MixxxMainWindow(std::shared_ptr<mixxx::CoreServices> pCoreServi
           m_inRebootMixxxView(false),
           m_pDeveloperToolsDlg(nullptr),
           m_pPrefDlg(nullptr),
+#ifdef __STEM_CONVERSION__
+          m_pStemConversionDlg(nullptr),
+#endif
           m_toolTipsCfg(mixxx::preferences::Tooltips::On) {
     DEBUG_ASSERT(pCoreServices);
+#ifdef __STEM_CONVERSION__
+    WTrackMenu::setStemConversionManager(
+            m_pCoreServices->getStemConversionManager().get());
+#endif
     // These depend on the settings
 #ifdef __LINUX__
     // If the desktop features a global menubar and we'll go fullscreen during
@@ -477,6 +490,10 @@ void MixxxMainWindow::initialize() {
 MixxxMainWindow::~MixxxMainWindow() {
     Timer t("~MixxxMainWindow");
     t.start();
+
+#ifdef __STEM_CONVERSION__
+    WTrackMenu::setStemConversionManager(nullptr);
+#endif
 
     // Save the current window state (position, maximized, etc)
     // Note(ronso0): Unfortunately saveGeometry() also stores the fullscreen state.
@@ -861,6 +878,14 @@ void MixxxMainWindow::connectMenuBar() {
             this,
             &MixxxMainWindow::slotFileLoadSongPlayer,
             Qt::UniqueConnection);
+
+#ifdef __STEM_CONVERSION__
+    connect(m_pMenuBar,
+            &WMainMenuBar::showStemConversionDialog,
+            this,
+            &MixxxMainWindow::slotShowStemConversionDialog,
+            Qt::UniqueConnection);
+#endif
 
     connect(m_pMenuBar,
             &WMainMenuBar::showKeywheel,
@@ -1650,3 +1675,15 @@ void MixxxMainWindow::initializationProgressUpdate(int progress, const QString& 
     }
     qApp->processEvents();
 }
+
+#ifdef __STEM_CONVERSION__
+void MixxxMainWindow::slotShowStemConversionDialog() {
+    if (!m_pStemConversionDlg) {
+        m_pStemConversionDlg = make_parented<DlgStemConversion>(
+                m_pCoreServices->getStemConversionManager().get(), this);
+    }
+    m_pStemConversionDlg->show();
+    m_pStemConversionDlg->raise();
+    m_pStemConversionDlg->activateWindow();
+}
+#endif

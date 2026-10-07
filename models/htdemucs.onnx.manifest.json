@@ -1,0 +1,23 @@
+{
+  "filename": "htdemucs.onnx",
+  "source": {
+    "release_url": "https://github.com/mixxxdj/demucs/releases/tag/v4.0.1-19-gd182d42-onnxmodel",
+    "asset_url": "https://github.com/mixxxdj/demucs/releases/download/v4.0.1-19-gd182d42-onnxmodel/htdemucs.onnx",
+    "commit": "d182d421f6c7add3dc9bfdba42ed5ab1e2cff073"
+  },
+  "size_bytes": 304413278,
+  "sha256": "db37d1314ac1e1051e7978d25ef45b3f1d3f43c837678752f592c0f2deca752d",
+  "architecture": "HTDemucs v4, single non-fine-tuned four-source model",
+  "input_contract": {
+    "type": "float32",
+    "shape": [1, 2, 343980],
+    "sample_rate_hz": 44100,
+    "channels": ["left", "right"]
+  },
+  "output_contract": {
+    "type": "float32",
+    "shape": [1, 4, 2, "samples<=343980"],
+    "sources": ["drums", "bass", "other", "vocals"]
+  },
+  "weight_license_caveat": "The upstream release documents the Demucs source code under MIT, but does not grant a separate MIT license for these pretrained weights. Public documentation describes the official pretrained weights as subject to research/scientific-use constraints related to their training data, including MUSDB. This manifest makes no broader license or redistribution-rights claim for the weights; publication and downstream use require review of the applicable upstream and training-data terms."
+}
