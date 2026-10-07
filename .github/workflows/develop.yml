@@ -31,35 +31,58 @@ jobs:
           $commitParts = ((git rev-list --parents -n 1 HEAD).Trim()) -split '\s+'
           $parent = if ($commitParts.Count -ge 2) { $commitParts[1] } else { '' }
           $singleParent = $commitParts.Count -eq 2
-          $diagnosticCommit = $parent
+          $repairCommit = $parent
+          $repairParent = ''
+          $repairSingleParent = $false
+          $repairTestBlob = ''
+          $repairWorkflowBlob = ''
+          $repairPaths = @()
+          $diagnosticCommit = ''
           $diagnosticParent = ''
           $diagnosticSingleParent = $false
           $diagnosticTestBlob = ''
           $diagnosticWorkflowBlob = ''
           $diagnosticPaths = @()
-          if ($singleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
-            $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
-            $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
-            $diagnosticSingleParent = $diagnosticParts.Count -eq 2
-            $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
-            $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
-            $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+          if ($singleParent -and $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83') {
+            $repairParts = ((git rev-list --parents -n 1 $repairCommit).Trim()) -split '\s+'
+            $repairParent = if ($repairParts.Count -ge 2) { $repairParts[1] } else { '' }
+            $repairSingleParent = $repairParts.Count -eq 2
+            $repairTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $repairCommit)).Trim()
+            $repairWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $repairCommit)).Trim()
+            $repairPaths = @(git diff-tree --no-commit-id --name-only -r $repairCommit | Sort-Object)
+            $diagnosticCommit = $repairParent
+            if ($repairSingleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+              $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
+              $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
+              $diagnosticSingleParent = $diagnosticParts.Count -eq 2
+              $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
+              $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
+              $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+            }
           }
           $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
           $workflowBlob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
           $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
           $expectedPaths = @('.github/workflows/develop.yml') | Sort-Object
+          $expectedRepairPaths = @('.github/workflows/develop.yml') | Sort-Object
           $expectedDiagnosticPaths = @(
             '.github/workflows/develop.yml'
             'src/test/soundproxy_test.cpp'
           ) | Sort-Object
           $pathsMatch = [string]::Join('|', $actualPaths) -ceq [string]::Join('|', $expectedPaths)
+          $repairPathsMatch = [string]::Join('|', $repairPaths) -ceq [string]::Join('|', $expectedRepairPaths)
           $diagnosticPathsMatch = [string]::Join('|', $diagnosticPaths) -ceq [string]::Join('|', $expectedDiagnosticPaths)
           $status = @(git status --porcelain --untracked-files=all)
           $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
           $valid = (
             $head -eq $eventSha -and
             $singleParent -and
+            $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
+            $repairSingleParent -and
+            $repairParent -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $repairTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $repairWorkflowBlob -eq '5c589e4e71f052c7e559fb3b8bb0a64801357faa' -and
+            $repairPathsMatch -and
             $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
             $diagnosticSingleParent -and
             $diagnosticParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
@@ -78,9 +101,21 @@ jobs:
             valid = $valid
             event_sha = $eventSha
             checked_out_head = $head
-            required_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_parent = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
             actual_parent = $parent
             single_parent = $singleParent
+            required_repair_commit = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
+            actual_repair_commit = $repairCommit
+            actual_repair_parent = $repairParent
+            repair_single_parent = $repairSingleParent
+            required_repair_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_repair_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_repair_test_blob = $repairTestBlob
+            required_repair_workflow_blob = '5c589e4e71f052c7e559fb3b8bb0a64801357faa'
+            actual_repair_workflow_blob = $repairWorkflowBlob
+            expected_repair_commit_paths = $expectedRepairPaths
+            actual_repair_commit_paths = $repairPaths
+            repair_commit_paths_match = $repairPathsMatch
             required_diagnostic_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
             actual_diagnostic_commit = $diagnosticCommit
             required_diagnostic_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
@@ -144,9 +179,6 @@ jobs:
             throw 'The pinned Windows dependency setup did not provide its root and target triplet.'
           }
           $cmakePrefixPath = Join-Path $env:MIXXX_VCPKG_ROOT "installed\$env:VCPKG_TARGET_TRIPLET"
-          if (-not (Test-Path -LiteralPath $cmakePrefixPath -PathType Container)) {
-            throw "The pinned Windows dependency prefix does not exist: $cmakePrefixPath"
-          }
           $cmakeArgs = @(
             '-DBULK=ON'
             '-DHSS1394=ON'
@@ -314,35 +346,58 @@ jobs:
           $commitParts = ((git rev-list --parents -n 1 HEAD).Trim()) -split '\s+'
           $parent = if ($commitParts.Count -ge 2) { $commitParts[1] } else { '' }
           $singleParent = $commitParts.Count -eq 2
-          $diagnosticCommit = $parent
+          $repairCommit = $parent
+          $repairParent = ''
+          $repairSingleParent = $false
+          $repairTestBlob = ''
+          $repairWorkflowBlob = ''
+          $repairPaths = @()
+          $diagnosticCommit = ''
           $diagnosticParent = ''
           $diagnosticSingleParent = $false
           $diagnosticTestBlob = ''
           $diagnosticWorkflowBlob = ''
           $diagnosticPaths = @()
-          if ($singleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
-            $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
-            $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
-            $diagnosticSingleParent = $diagnosticParts.Count -eq 2
-            $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
-            $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
-            $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+          if ($singleParent -and $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83') {
+            $repairParts = ((git rev-list --parents -n 1 $repairCommit).Trim()) -split '\s+'
+            $repairParent = if ($repairParts.Count -ge 2) { $repairParts[1] } else { '' }
+            $repairSingleParent = $repairParts.Count -eq 2
+            $repairTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $repairCommit)).Trim()
+            $repairWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $repairCommit)).Trim()
+            $repairPaths = @(git diff-tree --no-commit-id --name-only -r $repairCommit | Sort-Object)
+            $diagnosticCommit = $repairParent
+            if ($repairSingleParent -and $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8') {
+              $diagnosticParts = ((git rev-list --parents -n 1 $diagnosticCommit).Trim()) -split '\s+'
+              $diagnosticParent = if ($diagnosticParts.Count -ge 2) { $diagnosticParts[1] } else { '' }
+              $diagnosticSingleParent = $diagnosticParts.Count -eq 2
+              $diagnosticTestBlob = (git rev-parse ('{0}:src/test/soundproxy_test.cpp' -f $diagnosticCommit)).Trim()
+              $diagnosticWorkflowBlob = (git rev-parse ('{0}:.github/workflows/develop.yml' -f $diagnosticCommit)).Trim()
+              $diagnosticPaths = @(git diff-tree --no-commit-id --name-only -r $diagnosticCommit | Sort-Object)
+            }
           }
           $sourceBlob = (git rev-parse 'HEAD:src/test/soundproxy_test.cpp').Trim()
           $workflowBlob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
           $actualPaths = @(git diff-tree --no-commit-id --name-only -r HEAD | Sort-Object)
           $expectedPaths = @('.github/workflows/develop.yml') | Sort-Object
+          $expectedRepairPaths = @('.github/workflows/develop.yml') | Sort-Object
           $expectedDiagnosticPaths = @(
             '.github/workflows/develop.yml'
             'src/test/soundproxy_test.cpp'
           ) | Sort-Object
           $pathsMatch = [string]::Join('|', $actualPaths) -ceq [string]::Join('|', $expectedPaths)
+          $repairPathsMatch = [string]::Join('|', $repairPaths) -ceq [string]::Join('|', $expectedRepairPaths)
           $diagnosticPathsMatch = [string]::Join('|', $diagnosticPaths) -ceq [string]::Join('|', $expectedDiagnosticPaths)
           $status = @(git status --porcelain --untracked-files=all)
           $unexpectedStatus = @($status | Where-Object { $_ -notmatch '^\?\? tmp/pr47-arm64-origin-diagnostic/' })
           $valid = (
             $head -eq $eventSha -and
             $singleParent -and
+            $repairCommit -eq 'f35f0c642c2678fe49fb356da91f93ac83269e83' -and
+            $repairSingleParent -and
+            $repairParent -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
+            $repairTestBlob -eq 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997' -and
+            $repairWorkflowBlob -eq '5c589e4e71f052c7e559fb3b8bb0a64801357faa' -and
+            $repairPathsMatch -and
             $diagnosticCommit -eq '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8' -and
             $diagnosticSingleParent -and
             $diagnosticParent -eq 'b7006f303e274287cdbf14a4c17d8f2e38245ca1' -and
@@ -361,9 +416,21 @@ jobs:
             valid = $valid
             event_sha = $eventSha
             checked_out_head = $head
-            required_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_parent = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
             actual_parent = $parent
             single_parent = $singleParent
+            required_repair_commit = 'f35f0c642c2678fe49fb356da91f93ac83269e83'
+            actual_repair_commit = $repairCommit
+            actual_repair_parent = $repairParent
+            repair_single_parent = $repairSingleParent
+            required_repair_parent = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
+            required_repair_test_blob = 'f4a5a5a6e29652434db5062c3d7b1f902bb4e997'
+            actual_repair_test_blob = $repairTestBlob
+            required_repair_workflow_blob = '5c589e4e71f052c7e559fb3b8bb0a64801357faa'
+            actual_repair_workflow_blob = $repairWorkflowBlob
+            expected_repair_commit_paths = $expectedRepairPaths
+            actual_repair_commit_paths = $repairPaths
+            repair_commit_paths_match = $repairPathsMatch
             required_diagnostic_commit = '9c7fc31d3aa10bb266977c1f837d3b7e0d3864c8'
             actual_diagnostic_commit = $diagnosticCommit
             required_diagnostic_parent = 'b7006f303e274287cdbf14a4c17d8f2e38245ca1'
