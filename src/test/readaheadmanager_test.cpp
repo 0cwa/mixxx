@@ -36,6 +36,7 @@ class StubReader : public CachingReader {
         Q_UNUSED(reverse);
         Q_UNUSED(channelCount);
         m_readStartSamples.push_back(startSample);
+        m_readSampleCounts.push_back(numSamples);
         if (!m_readAvailable) {
             return CachingReader::ReadResult::UNAVAILABLE;
         }
@@ -51,6 +52,10 @@ class StubReader : public CachingReader {
         return m_readStartSamples;
     }
 
+    const QList<SINT>& readSampleCounts() const {
+        return m_readSampleCounts;
+    }
+
   protected:
     RetryReadResult readWithRetryHook(SINT startSample,
             SINT numSamples,
@@ -60,6 +65,7 @@ class StubReader : public CachingReader {
         Q_UNUSED(reverse);
         Q_UNUSED(channelCount);
         m_readStartSamples.push_back(startSample);
+        m_readSampleCounts.push_back(numSamples);
         if (!m_readAvailable) {
             return {CachingReader::ReadResult::UNAVAILABLE, true};
         }
@@ -70,6 +76,7 @@ class StubReader : public CachingReader {
   private:
     bool m_readAvailable{true};
     QList<SINT> m_readStartSamples;
+    QList<SINT> m_readSampleCounts;
 };
 
 class ChunkBoundaryRetryReader : public CachingReader {
@@ -390,9 +397,9 @@ TEST_F(ReadAheadManagerTest, RetryableCacheMissDoesNotAdvanceReadAheadPosition) 
 
 TEST_F(ReadAheadManagerTest, RetryableMaximumStereoRequestRetriesIdenticalRange) {
     constexpr auto kChannelCount = mixxx::audio::ChannelCount::stereo();
-    constexpr SINT kRequestSamples =
-            static_cast<SINT>(MAX_BUFFER_LEN) * kChannelCount;
-    std::vector<CSAMPLE> output(kRequestSamples, 1.0f);
+    constexpr SINT kRequestSamples = CachingReaderChunk::frames2samples(
+            static_cast<SINT>(MAX_BUFFER_LEN), kChannelCount);
+    std::vector<CSAMPLE> output(kRequestSamples, -1.0f);
 
     m_pReadAheadManager->notifySeek(0);
     m_pReader->setReadAvailable(false);
@@ -407,24 +414,41 @@ TEST_F(ReadAheadManagerTest, RetryableMaximumStereoRequestRetriesIdenticalRange)
     EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
         return sample == 0.0f;
     }));
-    ASSERT_EQ(1, m_pReader->readStartSamples().size());
-    EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
 
     m_pReader->setReadAvailable(true);
-
     const auto availableResult = m_pReadAheadManager->getNextSamplesWithRetry(
             1.0, output.data(), kRequestSamples, kChannelCount);
+
     EXPECT_EQ(kRequestSamples, availableResult.samplesRead);
     EXPECT_FALSE(availableResult.retryPending);
     EXPECT_DOUBLE_EQ(kRequestSamples, m_pReadAheadManager->getPlaypos());
-    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
-        return sample == 0.0f;
-    }));
     ASSERT_EQ(2, m_pReader->readStartSamples().size());
     EXPECT_EQ(0, m_pReader->readStartSamples()[0]);
     EXPECT_EQ(0, m_pReader->readStartSamples()[1]);
+    ASSERT_EQ(2, m_pReader->readSampleCounts().size());
+    EXPECT_EQ(kRequestSamples, m_pReader->readSampleCounts()[0]);
+    EXPECT_EQ(kRequestSamples, m_pReader->readSampleCounts()[1]);
     EXPECT_EQ(1, m_pLoopControl->queryCount());
     EXPECT_EQ(1, m_pCueControl->queryCount());
+
+    std::vector<CSAMPLE> controlOutput(kRequestSamples, -1.0f);
+    m_pReadAheadManager->notifySeek(0);
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    const auto controlResult = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, controlOutput.data(), kRequestSamples, kChannelCount);
+    ASSERT_EQ(kRequestSamples, controlResult.samplesRead);
+    ASSERT_FALSE(controlResult.retryPending);
+    for (SINT sample = 0; sample < kRequestSamples; ++sample) {
+        ASSERT_FLOAT_EQ(static_cast<CSAMPLE>(sample + 1), controlOutput[sample]);
+    }
+    SampleUtil::applyRampingGain(controlOutput.data(),
+            CSAMPLE_GAIN_ZERO,
+            CSAMPLE_GAIN_ONE,
+            kRequestSamples);
+    for (SINT sample = 0; sample < kRequestSamples; ++sample) {
+        ASSERT_FLOAT_EQ(controlOutput[sample], output[sample]);
+    }
 }
 
 TEST_F(ReadAheadManagerTest, RetryableCacheMissRetainsStatefulTriggerPlan) {
