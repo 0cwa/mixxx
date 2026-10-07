@@ -192,6 +192,7 @@ DlgAbout::DlgAbout()
             << "Abdelrahman Medhat Saber"
             << "Aleksei Kubantsev"
             << "Felicia Hummel"
+            << "Pranav Jadhav"
             << "Spgamer0407"
             << "marcelomar21";
 
