@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMap>
+#include <QScopeGuard>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -326,6 +327,54 @@ TEST(RekordboxImportTest, PartialAnalyzeFilePreservesTrackState) {
 
         EXPECT_FALSE(freshTrack->getBeats());
         EXPECT_TRUE(freshTrack->getCuePoints().isEmpty());
+    }
+}
+
+TEST(RekordboxImportTest, ExistingUnreadableAnalyzeFilePreservesTrackState) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+    const QString path = temporaryDirectory.filePath("unreadable.dat");
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(4, file.write("PMAI", 4));
+    file.close();
+    const auto originalPermissions = file.permissions();
+    if (!file.setPermissions(QFileDevice::Permissions{})) {
+        GTEST_SKIP() << "Local filesystem cannot remove fixture read permissions";
+    }
+    const auto restorePermissions = qScopeGuard([&file, originalPermissions] {
+        EXPECT_TRUE(file.setPermissions(originalPermissions));
+    });
+    ASSERT_TRUE(file.exists());
+    QFile readProbe(path);
+    if (readProbe.open(QIODevice::ReadOnly)) {
+        GTEST_SKIP() << "Filesystem or current user still permits reading the fixture";
+    }
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool ignoreCues : {true, false}) {
+        SCOPED_TRACE(ignoreCues ? "ignoreCues=true" : "ignoreCues=false");
+        TrackPointer track = Track::newTemporary();
+        const auto beats = mixxx::Beats::fromConstTempo(
+                sampleRate, mixxx::audio::FramePos(24000), mixxx::Bpm(90.0));
+        ASSERT_TRUE(beats);
+        ASSERT_TRUE(track->trySetBeats(beats));
+        const CuePointer cue = track->createAndAddCue(mixxx::CueType::HotCue,
+                0,
+                mixxx::audio::FramePos(123),
+                mixxx::audio::kInvalidFramePos);
+        ASSERT_TRUE(cue);
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                track, sampleRate, 0, ignoreCues, path));
+        EXPECT_EQ(beats, track->getBeats());
+        ASSERT_EQ(1, track->getCuePoints().size());
+        EXPECT_EQ(cue, track->getCuePoints().at(0));
+        EXPECT_EQ(mixxx::audio::FramePos(123), cue->getPosition());
+        TrackPointer fresh = Track::newTemporary();
+        EXPECT_NO_THROW(mixxx::rekordbox::test::readAnalyzeForTest(
+                fresh, sampleRate, 0, ignoreCues, path));
+        EXPECT_FALSE(fresh->getBeats());
+        EXPECT_TRUE(fresh->getCuePoints().isEmpty());
     }
 }
 
