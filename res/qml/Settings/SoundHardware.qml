@@ -332,6 +332,11 @@ Category {
                                 RatioChoice {
                                     id: keylock
 
+                                    property var engineIds: []
+                                    property int loadedEngineId: -1
+                                    property bool loading: false
+                                    property bool selectionChanged: false
+
                                     function update() {
                                         let engineIds = [];
                                         let options = [];
@@ -378,10 +383,6 @@ Category {
                                     maxWidth: tabSection.width * 0.4
                                     normalizedWidth: false
                                     options: []
-                                    property var engineIds: []
-                                    property int loadedEngineId: -1
-                                    property bool loading: false
-                                    property bool selectionChanged: false
                                     tooltips: []
 
                                     onSelectedChanged: {

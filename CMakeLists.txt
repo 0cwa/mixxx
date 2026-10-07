@@ -5275,7 +5275,11 @@ find_package(MP4)
 find_package(MP4v2)
 # It is enabled by default on Linux only, because other targets have other
 # solutions. It requires MP4 or MP4v2.
-default_option(FAAD "FAAD AAC audio file decoder support" "UNIX;NOT APPLE;MP4_FOUND OR MP4v2_FOUND")
+default_option(
+  FAAD
+  "FAAD AAC audio file decoder support"
+  "UNIX;NOT APPLE;MP4_FOUND OR MP4v2_FOUND"
+)
 if(FAAD)
   if(NOT MP4_FOUND AND NOT MP4v2_FOUND)
     message(

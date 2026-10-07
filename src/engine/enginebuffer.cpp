@@ -48,7 +48,6 @@
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
 
-
 #ifdef __VINYLCONTROL__
 #include "engine/controls/vinylcontrolcontrol.h"
 #endif
