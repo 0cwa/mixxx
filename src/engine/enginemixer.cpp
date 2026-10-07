@@ -33,20 +33,8 @@ namespace {
 const QString kAppGroup = QStringLiteral("[App]");
 const QString kLegacyGroup = QStringLiteral("[Master]");
 const QString kMainGroup = QStringLiteral("[Main]");
-const ConfigKey kWaveformMaxZoomOutKey{QStringLiteral("[Waveform]"),
-        QStringLiteral("MaxZoomOut")};
 
-const ConfigKey kGlobalKeylockEngineKey{kAppGroup, QStringLiteral("keylock_engine")};
 const ConfigKey kInternalClockBpmKey{QStringLiteral("[InternalClock]"), QStringLiteral("bpm")};
-
-EngineBuffer::KeylockEngine defaultKeylockEngineForDeck(
-        const UserSettingsPointer& pConfig,
-        const ConfigKey& deckKey) {
-    return pConfig->getValue(deckKey,
-            pConfig->getValue(
-                    kGlobalKeylockEngineKey,
-                    EngineBuffer::defaultKeylockEngine()));
-}
 } // namespace
 
 EngineMixer::EngineMixer(UserSettingsPointer pConfig,
@@ -89,8 +77,6 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
                   ConfigKey(kAppGroup, QStringLiteral("output_latency_ms")),
                   true,
                   true)),
-          m_pWaveformMaxZoomOut(std::make_unique<ControlObject>(
-                  kWaveformMaxZoomOutKey, true, false, false, 10.0)),
           m_pAudioLatencyOverloadCount(
                   std::make_unique<ControlObject>(ConfigKey(kAppGroup,
                           QStringLiteral("audio_latency_overload_count")))),
@@ -144,42 +130,6 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
                   static_cast<double>(pConfig->getValue(
                           ConfigKey(group, "keylock_engine"),
                           EngineBuffer::defaultKeylockEngine())))),
-          m_pKeylockEngine1(std::make_unique<ControlObject>(
-                  ConfigKey(QStringLiteral("[Channel1]"), QStringLiteral("keylock_engine")),
-                  false,
-                  false,
-                  true,
-                  static_cast<double>(defaultKeylockEngineForDeck(
-                          pConfig,
-                          ConfigKey(QStringLiteral("[Channel1]"),
-                                  QStringLiteral("keylock_engine")))))),
-          m_pKeylockEngine2(std::make_unique<ControlObject>(
-                  ConfigKey(QStringLiteral("[Channel2]"), QStringLiteral("keylock_engine")),
-                  false,
-                  false,
-                  true,
-                  static_cast<double>(defaultKeylockEngineForDeck(
-                          pConfig,
-                          ConfigKey(QStringLiteral("[Channel2]"),
-                                  QStringLiteral("keylock_engine")))))),
-          m_pKeylockEngine3(std::make_unique<ControlObject>(
-                  ConfigKey(QStringLiteral("[Channel3]"), QStringLiteral("keylock_engine")),
-                  false,
-                  false,
-                  true,
-                  static_cast<double>(defaultKeylockEngineForDeck(
-                          pConfig,
-                          ConfigKey(QStringLiteral("[Channel3]"),
-                                  QStringLiteral("keylock_engine")))))),
-          m_pKeylockEngine4(std::make_unique<ControlObject>(
-                  ConfigKey(QStringLiteral("[Channel4]"), QStringLiteral("keylock_engine")),
-                  false,
-                  false,
-                  true,
-                  static_cast<double>(defaultKeylockEngineForDeck(
-                          pConfig,
-                          ConfigKey(QStringLiteral("[Channel4]"),
-                                  QStringLiteral("keylock_engine")))))),
           m_mainGainOld(0.0),
           m_boothGainOld(0.0),
           m_headphoneMainGainOld(0.0),
@@ -820,28 +770,27 @@ void EngineMixer::process(const std::size_t bufferSize) {
         if (m_pVumeter != nullptr) {
             m_pVumeter->process(m_main.data(), bufferSize);
         }
-    }
 
-    // Handle mono mixdown for the main output and booth.
-    // Headphone mixdown is handled separately since they have more complicated
-    // processing.
-    if (m_pMainMonoMixdown->toBool()) {
-        SampleUtil::mixStereoToMono(m_main.data(), bufferSize);
-        if (boothEnabled) {
-            SampleUtil::mixStereoToMono(m_booth.data(), bufferSize);
+        // Handle mono mixdown for the main output and booth.
+        // Headphone mixdown is handled separately since they have more
+        // complicated processing.
+        if (m_pMainMonoMixdown->toBool()) {
+            SampleUtil::mixStereoToMono(m_main.data(), bufferSize);
+            if (boothEnabled) {
+                SampleUtil::mixStereoToMono(m_booth.data(), bufferSize);
+            }
         }
-    }
-
-    if (mainEnabled) {
         m_pMainDelay->process(m_main.data(), bufferSize);
+
+        if (boothEnabled) {
+            m_pBoothDelay->process(m_booth.data(), bufferSize);
+        }
     } else {
         m_main.clear(bufferSize);
+        m_booth.clear(bufferSize);
     }
     if (headphoneEnabled) {
         m_pHeadDelay->process(m_head.data(), bufferSize);
-    }
-    if (boothEnabled) {
-        m_pBoothDelay->process(m_booth.data(), bufferSize);
     }
 
     // We're close to the end of the callback. Wake up the engine worker
