@@ -11,7 +11,9 @@
 #include <QVarLengthArray>
 #include <QVector>
 #include <array>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "preferences/usersettings.h"
@@ -20,6 +22,7 @@
 #include "util/types.h"
 
 class Seek30Control;
+class ReadAheadManager;
 
 // A Hint is an indication to the CachingReader that a certain section of a
 // SoundSource will be used 'soon' and so it should be brought into memory by
@@ -172,6 +175,8 @@ class CachingReader : public QObject {
 
   private:
     friend class CachingReaderStatusQueueTest;
+    friend class CachingReaderDeferredLoggingTest;
+    friend class ReadAheadManager;
 #ifdef BUILD_TESTING
     FRIEND_TEST(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget);
     FRIEND_TEST(CachingReaderStatusQueueTest,
@@ -217,6 +222,58 @@ class CachingReader : public QObject {
     QAtomicInt m_diagnosticCacheMisses;
     QAtomicInt m_diagnosticLastFailedChunk;
     QAtomicInt m_diagnosticStatusConsumed;
+
+    // Counts replace diagnostic log formatting on the audio callback. The
+    // timer exchanges each uint32 counter independently, so updates can split
+    // across neighboring polls and counters wrap modulo 2^32. Callback updates
+    // never wait or retry. One engine callback thread writes per CachingReader;
+    // the timer is the only reader.
+    struct DeferredCallbackLogCounters {
+        std::atomic<std::uint32_t> partialGapEvents{0};
+        std::atomic<std::uint32_t> partialGapFrames{0};
+        std::atomic<std::uint32_t> readMoreFailures{0};
+        std::atomic<std::uint32_t> readAborts{0};
+        std::atomic<std::uint32_t> lruAllocationFailures{0};
+        std::atomic<std::uint32_t> chunkAllocationFailures{0};
+        std::atomic<std::uint32_t> invalidHints{0};
+        std::atomic<std::uint32_t> prerollEvents{0};
+        std::atomic<std::uint32_t> prerollFrames{0};
+        std::atomic<std::uint32_t> traceChunkRequests{0};
+        std::atomic<std::uint32_t> traceCacheMisses{0};
+        std::atomic<std::uint32_t> traceFreshens{0};
+        std::atomic<std::uint32_t> traceLruAllocations{0};
+        std::atomic<std::uint32_t> unexpectedReadAheadRecoveries{0};
+        std::atomic<std::uint32_t> unexpectedReadAheadMisses{0};
+        std::atomic<std::uint32_t> missingReadAheadLogEntries{0};
+        std::atomic<std::uint32_t> crossfadeMisses{0};
+        std::atomic<std::uint32_t> lastRecoveryMissCount{0};
+        std::atomic<SINT> lastMissedChunk{-1};
+        std::atomic<SINT> lastReadMoreFailureChunk{-1};
+        std::atomic<SINT> lastReadAbortChunk{-1};
+        std::atomic<SINT> lastNoLruChunk{-1};
+        std::atomic<SINT> lastChunkAllocationFailure{-1};
+        std::atomic<SINT> lastInvalidHintFrameCount{-1};
+        std::atomic<SINT> lastTraceRequestChunk{-1};
+        std::atomic<SINT> lastTraceMissChunk{-1};
+        std::atomic<SINT> lastTraceFreshenChunk{-1};
+        std::atomic<SINT> lastTraceLruChunk{-1};
+        // A single callback producer publishes this range with an odd/even
+        // sequence. The timer samples once and omits the range if it overlaps
+        // a write; callback code never retries or waits.
+        std::atomic<std::uint32_t> lastGapRangeSequence{0};
+        std::atomic<SINT> lastGapStartFrame{-1};
+        std::atomic<SINT> lastGapEndFrame{-1};
+    } m_deferredCallbackLogCounters;
+
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+            "Callback log counters must be lock-free");
+    static_assert(std::atomic<SINT>::is_always_lock_free,
+            "Callback log sample positions must be lock-free");
+
+    void recordPartialGap(SINT startFrame, SINT endFrame) noexcept;
+    void recordUnexpectedReadAheadRecovery(int cacheMissCount) noexcept;
+    void recordMissingReadAheadLogEntry() noexcept;
+    void recordCrossfadeCacheMiss() noexcept;
 
     // Reset by process() at the start of each audio callback. Calls made from
     // readInternal() consume the same budget instead of starting a new one.

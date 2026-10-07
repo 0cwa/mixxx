@@ -48,10 +48,6 @@
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
 
-#ifdef __SIGNALSMITH__
-#include "engine/bufferscalers/enginebufferscalesignalsmith.h"
-#endif
-
 #ifdef __VINYLCONTROL__
 #include "engine/controls/vinylcontrolcontrol.h"
 #endif
@@ -386,6 +382,10 @@ EngineBuffer::EngineBuffer(const QString& group,
     m_pLoopingControl = new LoopingControl(group, pConfig);
     addControl(m_pLoopingControl);
 
+    m_pEngineSync = pMixingEngine->getEngineSync();
+
+    m_pSyncControl = new SyncControl(group, pConfig, pChannel, m_pEngineSync);
+
 #ifdef __VINYLCONTROL__
     if (PlayerManager::isDeckGroup(group)) {
         m_pVinylControlControl = new VinylControlControl(group, pConfig);
@@ -397,10 +397,6 @@ EngineBuffer::EngineBuffer(const QString& group,
         addControl(m_pVinylControlControl);
     }
 #endif
-
-    m_pEngineSync = pMixingEngine->getEngineSync();
-
-    m_pSyncControl = new SyncControl(group, pConfig, pChannel, m_pEngineSync);
 
     // Create the Rate Controller
     m_pRateControl = new RateControl(group, pConfig);
@@ -483,9 +479,6 @@ EngineBuffer::EngineBuffer(const QString& group,
     if (initialSampleRate.isValid()) {
         pInitialBungee->setSignal(initialSampleRate, m_channelCount);
     }
-#endif
-#ifdef __SIGNALSMITH__
-    m_pScaleSignalSmith = new EngineBufferScaleSignalSmith(m_pReadAheadManager);
 #endif
 #ifdef __BUNGEE__
     m_pSampleRate->connectValueChanged(this,
@@ -573,9 +566,6 @@ EngineBuffer::~EngineBuffer() {
 #ifdef __RUBBERBAND__
     delete m_pScaleRB;
 #endif
-#ifdef __SIGNALSMITH__
-    delete m_pScaleSignalSmith;
-#endif
 
     delete m_pKeylock;
     delete m_pReplayGain;
@@ -643,11 +633,6 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
             // Keep using the already prepared scaler until the worker publishes
             // a state for the new signal. Falling back to vinyl here avoids
             // feeding a stale channel/sample-rate layout to Bungee.
-            break;
-#endif
-#ifdef __SIGNALSMITH__
-        case KeylockEngine::SignalSmith:
-            keylock_scale = m_pScaleSignalSmith;
             break;
 #endif
         default:
@@ -1243,10 +1228,6 @@ void EngineBuffer::slotKeylockEngineChanged(double dIndex) {
     case KeylockEngine::Bungee:
         break;
 #endif
-#ifdef __SIGNALSMITH__
-    case KeylockEngine::SignalSmith:
-        break;
-#endif
     default:
         slotKeylockEngineChanged(static_cast<double>(defaultKeylockEngine()));
         return;
@@ -1648,9 +1629,6 @@ void EngineBuffer::processWithChannelLayout(
     m_pScaleST->setSignal(m_sampleRate, callbackChannelCount);
 #ifdef __RUBBERBAND__
     m_pScaleRB->setSignal(m_sampleRate, callbackChannelCount);
-#endif
-#ifdef __SIGNALSMITH__
-    m_pScaleSignalSmith->setSignal(m_sampleRate, callbackChannelCount);
 #endif
 
 #ifdef __BUNGEE__
@@ -2056,8 +2034,7 @@ void EngineBuffer::updateIndicators(double speed, std::size_t bufferSize) {
     m_visualPlayPos->set(
             fFractionalPlaypos,
             speed * m_baserate_old,
-            static_cast<int>(bufferSize) /
-                    m_trackEndPositionOld.toEngineSamplePos(),
+            bufferSize / m_trackEndPositionOld.toEngineSamplePos(),
             fFractionalSlipPos,
             effectiveSlipRate,
             m_slipModeState,
@@ -2146,14 +2123,7 @@ TrackPointer EngineBuffer::getLoadedTrack() const {
 
 mixxx::audio::FramePos EngineBuffer::getExactPlayPos() const {
     // Is updated during postProcess(), after all decks already have been processed
-    if (!m_visualPlayPos->isValid()) {
-        return mixxx::audio::kStartFramePos;
-    }
     return getTrackEndPosition() * m_visualPlayPos->getEnginePlayPos();
-}
-
-double EngineBuffer::getVisualPlayPos() const {
-    return m_visualPlayPos->getEnginePlayPos();
 }
 
 mixxx::audio::FramePos EngineBuffer::getTrackEndPosition() const {

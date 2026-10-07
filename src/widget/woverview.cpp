@@ -14,7 +14,6 @@
 #include "engine/engine.h"
 #include "mixer/playermanager.h"
 #include "moc_woverview.cpp"
-#include "preferences/colorpalettesettings.h"
 #include "track/track.h"
 #include "util/colorcomponents.h"
 #include "util/dnd.h"
@@ -195,6 +194,10 @@ void WOverview::setup(const QDomNode& node, const SkinContext& context) {
     // setup hotcues and cue and loop(s)
     m_marks.setup(m_group, node, context, m_signalColors);
 
+    m_marks.connectSamplePositionChanged(
+            this, &WOverview::onMarkChanged, Qt::QueuedConnection);
+    m_marks.connectSampleEndPositionChanged(
+            this, &WOverview::onMarkChanged, Qt::QueuedConnection);
     m_marks.connectVisibleChanged(this, &WOverview::onMarkChanged);
 
     QDomNode child = node.firstChild();
