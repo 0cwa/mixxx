@@ -4,6 +4,9 @@
 
 #include "audio/types.h"
 #include "track/track_decl.h"
+#include "util/db/dbconnectionpool.h"
+
+class TreeItem;
 
 namespace mixxx::rekordbox::test {
 
@@ -16,5 +19,9 @@ void readAnalyzeForTest(
         int timingOffset,
         bool ignoreCues,
         const QString& anlzPath);
+
+QString parseDeviceDBForTest(
+        mixxx::DbConnectionPoolPtr dbConnectionPool,
+        TreeItem* deviceItem);
 
 } // namespace mixxx::rekordbox::test
