@@ -953,10 +953,12 @@ void readAnalyze(TrackPointer track,
 
     qDebug() << "Rekordbox ANLZ path:" << anlzPath << " for: " << track->getTitle();
 
-    std::ifstream ifs(anlzPath.toStdString(), std::ifstream::binary);
-    kaitai::kstream ks(&ifs);
-
     try {
+        std::ifstream ifs(anlzPath.toStdString(), std::ifstream::binary);
+        if (!ifs.is_open()) {
+            return;
+        }
+        kaitai::kstream ks(&ifs);
         rekordbox_anlz_t anlz = rekordbox_anlz_t(&ks);
         if (!anlz.sections()) {
             return;
