@@ -3073,6 +3073,12 @@ if(BUILD_TESTING)
   target_sources(mixxx-test PRIVATE src/test/waveformmarkset_test.cpp)
 
   target_sources(mixxx-test PRIVATE src/test/dlgprefwaveform_test.cpp)
+
+  target_include_directories(
+    mixxx-test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/mixxx-lib_autogen/include"
+    "${CMAKE_CURRENT_BINARY_DIR}/mixxx-lib_autogen/include_$<CONFIG>"
+  )
   target_compile_definitions(
     mixxx-test
     PUBLIC RESOURCE_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/res"
