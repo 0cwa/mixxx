@@ -1,3 +1,5 @@
+#include "control/controlobject.h"
+#include "control/controlpushbutton.h"
 #include "preferences/dialog/dlgprefwaveform.h"
 
 #include <gtest/gtest.h>
