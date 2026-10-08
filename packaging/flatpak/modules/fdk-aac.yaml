@@ -21,6 +21,6 @@ cleanup:
   - /lib/cmake
   - /lib/pkgconfig
 post-install:
-  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/fdk-aac NOTICE
-  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/fdk-aac fdk-aac-v2.0.3.tar.gz
+  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/org.mixxx.Mixxx/fdk-aac NOTICE
+  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/org.mixxx.Mixxx/fdk-aac fdk-aac-v2.0.3.tar.gz
 # AI-generated proposal ends; no license acceptance or runtime qualification.
