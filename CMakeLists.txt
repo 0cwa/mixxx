@@ -3062,7 +3062,6 @@ if(BUILD_TESTING)
       src/test/nativeeffects_test.cpp
       src/test/ringdelaybuffer_test.cpp
       src/test/sampleutiltest.cpp
-    src/test/seek30workerstatetest.cpp
       src/test/waveform_upgrade_test.cpp
     )
   endif()
@@ -3072,6 +3071,8 @@ if(BUILD_TESTING)
   else()
     add_executable(mixxx-test ${src-mixxx-test})
   endif()
+
+  target_sources(mixxx-test PRIVATE src/test/seek30workerstatetest.cpp)
   target_compile_definitions(
     mixxx-test
     PUBLIC RESOURCE_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/res"
