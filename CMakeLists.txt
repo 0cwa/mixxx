@@ -5307,7 +5307,10 @@ if(MEDIAFOUNDATION)
     PRIVATE ${MediaFoundation_LIBRARIES} Version.lib
   )
   if(BUILD_TESTING)
-    target_sources(mixxx-test PRIVATE src/test/soundsourcemediafoundation_test.cpp)
+    target_sources(
+      mixxx-test
+      PRIVATE src/test/soundsourcemediafoundation_test.cpp
+    )
   endif()
 endif()
 
