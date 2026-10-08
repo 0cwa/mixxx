@@ -1,0 +1,624 @@
+# AI-generated dedicated PR23 Flatpak artifact workflow begins.
+name: PR23 full-FDK technical prototype
+
+on:
+  push:
+    branches:
+      - audit/pr23-full-fdk-technical-prototype-20261008
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SOURCE_SHA: 71426352b9917a83c2f530fd7c3c408208837ec7
+
+jobs:
+  build-flatpak:
+    name: "Flatpak"
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions@sha256:6b90b58b2f100fc12c10a24da62c5a47163e1f9013bd200df0ca60fe3cc7255a
+      options: --privileged
+      volumes:
+        - /usr:/host/usr
+        - /opt:/host/opt
+    strategy:
+      matrix:
+        variant:
+          - arch: x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.variant.runner }}
+    steps:
+      - name: "Recover host disk space"
+        run: |
+          rm -rf /host/opt/hostedtoolcache/CodeQL
+          rm -rf /host/opt/hostedtoolcache/go
+          rm -rf /host/usr/local/lib/android
+          rm -rf /host/usr/local/.ghcup
+          rm -rf /host/usr/local/share/powershell
+          rm -rf /host/usr/share/swift
+          rm -rf /host/usr/share/dotnet
+
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: 71426352b9917a83c2f530fd7c3c408208837ec7
+
+      - name: "Store Git version"
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          GIT_DESC=$(git describe --always --first-parent --dirty=-modified)
+          if [ -z "$GIT_DESC" ]; then
+            GIT_DESC="unknown"
+          fi
+          echo "GIT_DESC=$GIT_DESC" >> $GITHUB_ENV
+
+      - name: "Record immutable source and manifest"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse HEAD:src)" = "1de8e2c8b22617d7723ccd97745cd87fb73a44c7"
+          mkdir -p flatpak-evidence
+          {
+            echo "expected_source_sha=$EXPECTED_SOURCE_SHA"
+            echo "source_sha=$(git rev-parse HEAD)"
+            echo "source_tree=$(git rev-parse HEAD^{tree})"
+            echo "src_tree=$(git rev-parse HEAD:src)"
+            echo "workflow_commit=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_url=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            git status --porcelain
+          } > flatpak-evidence/source-provenance.txt
+          cp packaging/flatpak/org.mixxx.Mixxx.yaml flatpak-evidence/manifest.yaml
+          sha256sum packaging/flatpak/org.mixxx.Mixxx.yaml CMakeLists.txt \
+            > flatpak-evidence/source-config-sha256.txt
+          flatpak --version > flatpak-evidence/flatpak-version.txt
+          flatpak-builder --version > flatpak-evidence/flatpak-builder-version.txt
+
+      - name: "Build Flatpak"
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/org.mixxx.Mixxx.yaml
+          arch: ${{ matrix.variant.arch }}
+          build-bundle: false
+          upload-artifact: false
+          keep-build-dirs: true
+          build-dir: flatpak_app
+          # The Flatpak caches (~1.4 GB per arch) are only saved by branch pushes
+          # (main and the release branches) to stay within the 10 GB quota.
+          # Pull requests can still restore the cache of their base branch.
+          save-cache: false
+
+      - name: "Collect staged feature and loader evidence"
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p flatpak-evidence
+          trap 'rc=$?; echo "Collection command failed ($rc): $BASH_COMMAND" >&2; for receipt in flatpak-evidence/sdk-ldd.txt flatpak-evidence/staged-readelf.txt flatpak-evidence/cache-paths.txt; do if test -f "$receipt"; then echo "=== $receipt ===" >&2; cat "$receipt" >&2; fi; done; exit "$rc"' ERR
+          flatpak list --columns=application,arch,branch \
+            > flatpak-evidence/runtime-inventory.txt
+          for runtime_ref in org.kde.Platform/x86_64/6.10 org.kde.Sdk/x86_64/6.10; do
+            printf '%s ' "$runtime_ref" >> flatpak-evidence/runtime-commits.txt
+            flatpak info --show-commit "$runtime_ref" \
+              >> flatpak-evidence/runtime-commits.txt
+          done
+          if test -d .flatpak-builder/build; then
+            if command -v rg >/dev/null; then
+              rg --files --hidden --no-ignore --follow .flatpak-builder/build \
+                | sort > flatpak-evidence/build-file-paths.txt
+            else
+              find -L .flatpak-builder/build -type f | sort \
+                > flatpak-evidence/build-file-paths.txt
+            fi
+            awk '/\/(mixxx-[^/]+|build-mixxx)\/.*CMakeCache\.txt$/' \
+              flatpak-evidence/build-file-paths.txt > flatpak-evidence/cache-paths.txt
+            while IFS= read -r cache_path; do
+              cache_parent="$(dirname "$cache_path")"
+              evidence_id="cache_$(echo "$cache_path" | tr / _)"
+              cp "$cache_path" "flatpak-evidence/$evidence_id"
+              if test -f "$cache_parent/compile_commands.json"; then
+                cp "$cache_parent/compile_commands.json" \
+                  "flatpak-evidence/${evidence_id%.txt}-compile_commands.json"
+              fi
+            done < flatpak-evidence/cache-paths.txt
+            awk 'tolower($0) ~ /bungee|signalsmith|rubberband|soundtouch|fdk|keyfinder|hidapi|libusb|lv2|lilv|vinyl/' \
+              flatpak-evidence/build-file-paths.txt \
+              > flatpak-evidence/feature-build-paths.txt
+          fi
+          if test -f flatpak_app/files/bin/mixxx.bin; then
+            sha256sum flatpak_app/files/bin/mixxx.bin \
+              > flatpak-evidence/staged-binary-sha256.txt
+            find flatpak_app/files -type f | sort \
+              > flatpak-evidence/staged-file-paths.txt
+            awk '/plugins|qml|lv2|mixxx.bin|fdk|keyfinder|hidapi|libusb/' \
+              flatpak-evidence/staged-file-paths.txt \
+              > flatpak-evidence/plugin-library-inventory.txt
+            # SDK sandbox invocation is auxiliary evidence; the installed
+            # production Platform closure remains a mandatory later gate.
+            if flatpak-builder --run flatpak_app packaging/flatpak/org.mixxx.Mixxx.yaml \
+                sh -c 'ldd /app/bin/mixxx.bin' \
+                > flatpak-evidence/sdk-ldd.txt 2>&1; then
+              echo 'SDK loader invocation succeeded' > flatpak-evidence/sdk-loader-status.txt
+              if grep -q 'not found' flatpak-evidence/sdk-ldd.txt; then
+                echo "Staged binary has unresolved SDK dependencies" >&2
+                exit 1
+              fi
+            else
+              sdk_rc=$?
+              echo "SDK loader invocation unavailable (exit $sdk_rc); production runtime gate is still required" \
+                | tee flatpak-evidence/sdk-loader-status.txt
+              cat flatpak-evidence/sdk-ldd.txt
+            fi
+            if command -v readelf >/dev/null; then
+              readelf -h -d flatpak_app/files/bin/mixxx.bin \
+                > flatpak-evidence/staged-readelf.txt 2>&1
+            else
+              flatpak run --command=readelf --filesystem="$PWD/flatpak_app/files:ro" \
+                org.kde.Sdk/x86_64/6.10 -h -d "$PWD/flatpak_app/files/bin/mixxx.bin" \
+                > flatpak-evidence/staged-readelf.txt 2>&1
+            fi
+            if ! test -s flatpak-evidence/cache-paths.txt; then
+              echo 'No retained Mixxx CMakeCache found' >&2
+              cat flatpak-evidence/build-file-paths.txt >&2
+              exit 1
+            fi
+          fi
+
+      - name: "Create Flatpak bundle"
+        run: |
+          flatpak build-bundle repo \
+            --arch=${{ matrix.variant.arch }} \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.flatpak org.mixxx.Mixxx
+
+      - name: "Hash the application bundle"
+        shell: bash
+        run: |
+          sha256sum "Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.flatpak" > flatpak-evidence/application-bundle-sha256.txt
+
+      - name: "Check shipped runtime dependency closure"
+        shell: bash
+        run: |
+          bundle="Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.flatpak"
+          set -- "$bundle" flatpak-evidence
+          # AI-generated production-runtime dependency capture begins.
+          set -euo pipefail
+          bundle=$1
+          receipt_dir=$2
+          mkdir -p "$receipt_dir"
+          receipt_dir=$(realpath "$receipt_dir")
+          trap 'rc=$?; echo "Runtime command failed ($rc): $BASH_COMMAND" >&2; for receipt in "$receipt_dir/runtime-install.txt" "$receipt_dir/platform-runtime-install.txt" "$receipt_dir/production-runtime-closure.txt"; do if test -f "$receipt"; then echo "=== $receipt ===" >&2; tail -n 120 "$receipt" >&2; fi; done; exit "$rc"' ERR
+          # This installation is confined to the CI task workspace.
+          export XDG_DATA_HOME="$PWD/.pr23-parity-data"
+          export FLATPAK_USER_DIR="$PWD/.pr23-parity-data/flatpak"
+          mkdir -p "$FLATPAK_USER_DIR"
+          flatpak --user install -y --no-deps --no-related "$bundle" > "$receipt_dir/runtime-install.txt" 2>&1
+          flatpak --user info --show-metadata org.mixxx.Mixxx > "$receipt_dir/installed-app-metadata.txt"
+          flatpak --user info --show-runtime org.mixxx.Mixxx > "$receipt_dir/installed-runtime-ref.txt"
+          runtime_ref="$(cat "$receipt_dir/installed-runtime-ref.txt")"
+          test "$runtime_ref" = "org.kde.Platform/x86_64/6.10"
+          flatpak --user remote-add --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y flathub "$runtime_ref" \
+            > "$receipt_dir/platform-runtime-install.txt" 2>&1
+          flatpak --user info --show-commit "$runtime_ref" \
+            > "$receipt_dir/installed-platform-commit.txt"
+          flatpak --user info --show-metadata "$runtime_ref" \
+            > "$receipt_dir/installed-platform-metadata.txt"
+          # Only the runtime shell and loader are invoked; Mixxx is never launched.
+          flatpak run --user --nofilesystem=home --nofilesystem=host --command=sh org.mixxx.Mixxx -c '
+            set -eu
+            echo "PRODUCTION RUNTIME: $(cat /.flatpak-info)"
+            echo "=== app executable loader closure ==="
+            ldd /app/bin/mixxx.bin
+            echo "=== required dynamic FDK encoder provider ==="
+            provider=$(find /app/lib /usr/lib -name "libfdk-aac.so.2" -print -quit)
+            test -n "$provider"
+            ls -l "$provider"
+            ldd "$provider"
+            echo "=== Qt SQL, SVG, platform and QML plugin inventory ==="
+            find /app/lib /usr/lib -type f \( -name "libqsqlite.so" -o -name "libqsvg.so" -o -name "libqxcb.so" -o -name "libqwayland*.so" -o -name "qmldir" \) -print
+            for kind in libqsqlite.so libqsvg.so libqxcb.so; do
+              plugin=$(find /app/lib /usr/lib -type f -name "$kind" -print -quit)
+              test -n "$plugin"
+              echo "=== $plugin ==="
+              ldd "$plugin"
+            done
+            echo "=== QML shared module loader closure ==="
+            find /app/lib /usr/lib -path "*/qml/*" -type f -name "*.so" -exec sh -c '\''for p do echo "=== $p ==="; ldd "$p"; done'\'' sh {} +
+            echo "=== app shipped library inventory ==="
+            find /app/lib -type f -name "*.so*" -print
+          ' > "$receipt_dir/production-runtime-closure.txt" 2>&1
+          if grep -q 'not found' "$receipt_dir/production-runtime-closure.txt"; then
+            echo 'Production runtime closure contains a missing library.' >&2
+            exit 1
+          fi
+          # End AI-generated production-runtime dependency capture.
+
+      - name: "Require source QML modules and Wayland integrations"
+        shell: bash
+        env:
+          XDG_DATA_HOME: ${{ github.workspace }}/.pr23-parity-data
+          FLATPAK_USER_DIR: ${{ github.workspace }}/.pr23-parity-data/flatpak
+        run: |
+          #!/usr/bin/env bash
+          # AI-generated source-derived QML and Wayland runtime gate begins.
+          set -euo pipefail
+          receipt_dir=flatpak-evidence
+          mkdir -p "$receipt_dir"
+          receipt_dir=$(realpath "$receipt_dir")
+          trap 'rc=$?; echo "QML/Wayland command failed ($rc): $BASH_COMMAND" >&2; if test -f "$receipt_dir/qml-wayland-runtime-gate.txt"; then tail -n 160 "$receipt_dir/qml-wayland-runtime-gate.txt" >&2; fi; exit "$rc"' ERR
+          # Run from the immutable source checkout. Only actual external Qt imports count.
+          python3 - "$receipt_dir/required-qt-qml-modules.txt" <<'PY_MODULES'
+          import pathlib,re,sys
+          modules=set()
+          for root in [pathlib.Path("res/qml"),pathlib.Path("res/skins")]:
+              for path in root.rglob("*.qml"):
+                  for module in re.findall(r"^\s*import\s+(Qt[\w.]*)",path.read_text(),re.M):
+                      modules.add(module)
+          assert modules
+          pathlib.Path(sys.argv[1]).write_text("\n".join(sorted(modules))+"\n")
+          PY_MODULES
+          mapfile -t required < "$receipt_dir/required-qt-qml-modules.txt"
+          # No QML engine, Mixxx binary, display or audio device is launched.
+          runtime_script=$(cat <<'PR23_QML_RUNTIME'
+            set -eu
+            queue=$(mktemp -d)
+            trap 'rm -rf "$queue"' EXIT
+            printf "%s\n" "$@" > "$queue/pending"
+            touch "$queue/seen"
+            while IFS= read -r uri; do
+              if grep -Fxq "$uri" "$queue/seen"; then continue; fi
+              printf "%s\n" "$uri" >> "$queue/seen"
+              relative=$(printf "%s" "$uri" | tr . /)
+              descriptor=$(find /app/lib /usr/lib /app/share /usr/share -path "*/qml/$relative/qmldir" -print -quit)
+              test -n "$descriptor" || { echo "MISSING_QML_MODULE $uri"; exit 1; }
+              awk -v uri="$uri" '$1=="module" && $2==uri {found=1} END {exit !found}' "$descriptor"
+              echo "QML_MODULE $uri $descriptor"
+              awk '$1=="depends" || $1=="import" {print $2}' "$descriptor" >> "$queue/pending"
+              directory=${descriptor%/*}
+              for name in $(awk '$1=="plugin" {print $2} $1=="optional" && $2=="plugin" {print $3}' "$descriptor"); do
+                plugin=$(find "$directory" -name "lib$name.so" -print -quit)
+                test -n "$plugin" || { echo "MISSING_QML_PLUGIN $uri $name"; exit 1; }
+                echo "QML_PLUGIN $plugin"
+                closure=$(ldd "$plugin"); printf "%s\n" "$closure"
+                case "$closure" in *"not found"*) exit 1;; esac
+              done
+            done < "$queue/pending"
+            descriptor=$(find /app/share -path "*/qml/Mixxx/qmldir" -print -quit)
+            test -n "$descriptor"
+            awk '$1=="module" && $2=="Mixxx" {found=1} END {exit !found}' "$descriptor"
+            app_qml=${descriptor%/Mixxx/qmldir}
+            for resource in Mixxx/DurationFormatter.qml Mixxx/MathUtils.mjs Mixxx/Controls/WaveformDisplay.qml Mixxx/Controls/WaveformOverview.qml; do
+              test -f "$app_qml/$resource"
+              echo "APP_QML_FILE $app_qml/$resource"
+            done
+            echo "APP_QML_EMBEDDED_DECLARATIONS :/mixxx.org/imports/Mixxx/qmldir :/mixxx.org/imports/Mixxx/Controls/qmldir"
+            # Embedded registrations are canonical source provenance, not executed resource lookup.
+            wayland=$(find /app/lib /usr/lib -type f \( -path "*/platforms/libqwayland.so" -o -path "*/platforms/libqwayland-generic.so" -o -path "*/platforms/libqwayland-egl.so" \) -print -quit)
+            test -n "$wayland" || { echo "MISSING_WAYLAND_PLATFORM_PLUGIN"; exit 1; }
+            echo "WAYLAND_PLATFORM_PLUGIN $wayland"
+            closure=$(ldd "$wayland"); printf "%s\n" "$closure"
+            case "$closure" in *"not found"*) exit 1;; esac
+            for integration in wayland-graphics-integration-client wayland-shell-integration; do
+              providers=$(find /app/lib /usr/lib -type f -path "*/$integration/*.so" -print)
+              test -n "$providers" || { echo "MISSING_WAYLAND_INTEGRATION $integration"; exit 1; }
+              printf "%s\n" "$providers" | while IFS= read -r provider; do
+                echo "WAYLAND_INTEGRATION $provider"
+                closure=$(ldd "$provider"); printf "%s\n" "$closure"
+                case "$closure" in *"not found"*) exit 1;; esac
+              done
+            done
+          PR23_QML_RUNTIME
+          )
+          flatpak run --user --nofilesystem=home --nofilesystem=host --command=sh org.mixxx.Mixxx \
+            -c "$runtime_script" sh "${required[@]}" > "$receipt_dir/qml-wayland-runtime-gate.txt" 2>&1
+          # End AI-generated source-derived QML and Wayland runtime gate.
+
+      - name: "Prepare exact audited codec probes"
+        shell: bash
+        run: |
+          mkdir -p parity-tools parity-evidence
+          set -euo pipefail
+          cat > parity-tools/runtime-codec-probe.c <<'PR23_CODEC_ABI'
+          /* AI-generated runtime codec ABI probe begins. */
+          #include <dlfcn.h>
+          #include <stdio.h>
+          #include <string.h>
+          
+          typedef struct {
+              const char *title, *build_date, *build_time;
+              int module_id, version;
+              unsigned flags;
+              char versionStr[32];
+          } FdkInfo;
+          
+          int main(int argc, char **argv) {
+              const char *fdkpath = argc > 1 ? argv[1] : "libfdk-aac.so.2";
+              void *fdk = dlopen(fdkpath, RTLD_NOW | RTLD_LOCAL);
+              if (!fdk) { fprintf(stderr, "FDK load failure: %s\n", dlerror()); return 1; }
+              const char *symbols[] = {"aacEncGetLibInfo", "aacEncOpen", "aacEncClose",
+                                      "aacEncEncode", "aacEncInfo", "aacEncoder_SetParam"};
+              for (unsigned i = 0; i < sizeof(symbols)/sizeof(symbols[0]); i++) {
+                  void *symbol = dlsym(fdk, symbols[i]);
+                  printf("FDK_SYMBOL %s %s\n", symbols[i], symbol ? "PASS" : "MISSING");
+                  if (!symbol) return 1;
+              }
+              FdkInfo info[128] = {{0}};
+              int (*getInfo)(FdkInfo *) = dlsym(fdk, "aacEncGetLibInfo");
+              int status = getInfo(info), sbr = 0;
+              printf("FDK_INFO_STATUS %d\n", status);
+              if (status) return 1;
+              for (unsigned i = 0; i < 128 && info[i].module_id; i++) {
+                  printf("FDK_MODULE id=%d title=%s version=%.32s flags=%u\n",
+                         info[i].module_id, info[i].title ? info[i].title : "",
+                         info[i].versionStr, info[i].flags);
+                  if (info[i].module_id == 6) sbr = 1;
+              }
+              printf("FDK_SBR_ENCODER_MODULE %s\n", sbr ? "PRESENT" : "ABSENT");
+              /* Mixxx uses module 6 presence to offer HE modes. No audio is encoded. */
+              void *av = NULL;
+              char soname[64];
+              for (int version = 65; version >= 58 && !av; version--) {
+                  snprintf(soname, sizeof(soname), "libavcodec.so.%d", version);
+                  av = dlopen(soname, RTLD_NOW | RTLD_LOCAL);
+              }
+              if (!av) { fprintf(stderr, "AVCODEC load failure: %s\n", dlerror()); return 1; }
+              unsigned (*avVersion)(void) = dlsym(av, "avcodec_version");
+              const void *(*findDecoder)(const char *) = dlsym(av, "avcodec_find_decoder_by_name");
+              if (!avVersion || !findDecoder) return 1;
+              unsigned version = avVersion();
+              printf("AVCODEC_VERSION %u.%u.%u\n", version >> 16, (version >> 8) & 255, version & 255);
+              const char *decoders[] = {"aac", "alac", "mp3", "mp3float", "flac", "opus", "pcm_s16le"};
+              int aac = 0, alac = 0, mp3 = 0, flac = 0, opus = 0, pcm = 0;
+              for (unsigned i = 0; i < sizeof(decoders)/sizeof(decoders[0]); i++) {
+                  int present = findDecoder(decoders[i]) != NULL;
+                  printf("AVCODEC_DECODER %s %s\n", decoders[i], present ? "PRESENT" : "ABSENT");
+                  if (!strcmp(decoders[i], "aac")) aac = present;
+                  if (!strcmp(decoders[i], "alac")) alac = present;
+                  if (!strcmp(decoders[i], "mp3") || !strcmp(decoders[i], "mp3float")) mp3 |= present;
+                  if (!strcmp(decoders[i], "flac")) flac = present;
+                  if (!strcmp(decoders[i], "opus")) opus = present;
+                  if (!strcmp(decoders[i], "pcm_s16le")) pcm = present;
+              }
+              dlclose(av);
+              dlclose(fdk);
+              int required = aac && alac && mp3 && flac && opus && pcm;
+              printf("REQUIRED_DECODER_REGISTRY %s\n", required ? "PASS" : "FAIL");
+              return required ? 0 : 1;
+          }
+          /* End AI-generated runtime codec ABI probe. */
+          PR23_CODEC_ABI
+          echo '76ae985cbf64d3598bcc6c728e37f9b3264c7f0aed72cdaef5a9985efc937dda  parity-tools/runtime-codec-probe.c' | sha256sum --check
+          cat > parity-tools/runtime-encoder-mode-probe.c <<'PR23_ENCODER_MODES'
+          /* AI-generated empty-input AAC encoder mode probe begins. */
+          #include <dlfcn.h>
+          #include <stdio.h>
+          #include <string.h>
+          
+          int main(int argc, char **argv) {
+              const char *path = "libfdk-aac.so.2";
+              int require_he = 1;
+              for (int i = 1; i < argc; ++i) {
+                  if (!strcmp(argv[i], "--require-he")) require_he = 1;
+                  else if (!strcmp(argv[i], "--report-only")) require_he = 0;
+                  else path = argv[i];
+              }
+              void *provider = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+              if (!provider) { fprintf(stderr, "FDK load failure: %s\n", dlerror()); return 1; }
+              int (*open_encoder)(void **, unsigned, unsigned) = dlsym(provider, "aacEncOpen");
+              int (*close_encoder)(void **) = dlsym(provider, "aacEncClose");
+              int (*set_parameter)(void *, int, unsigned) = dlsym(provider, "aacEncoder_SetParam");
+              int (*encode)(void *, void *, void *, void *, void *) = dlsym(provider, "aacEncEncode");
+              if (!open_encoder || !close_encoder || !set_parameter || !encode) return 1;
+              const char *modes[] = {"AAC-LC", "HE-AAC", "HE-AACv2"};
+              const unsigned aots[] = {2, 5, 29}, bitrates[] = {128000, 64000, 32000};
+              int passed[3] = {0};
+              for (int mode = 0; mode < 3; ++mode) {
+                  void *encoder = NULL;
+                  int opened = open_encoder(&encoder, 0, 2);
+                  int parameters_ok = opened == 0 && encoder != NULL;
+                  const int parameter_ids[] = {0x0100, 0x0103, 0x0106, 0x0107, 0x0101, 0x0300, 0x0200};
+                  const unsigned values[] = {aots[mode], 48000, 2, 1, bitrates[mode], 2, 1};
+                  printf("AAC_MODE_OPEN %s status=%d\n", modes[mode], opened);
+                  for (unsigned i = 0; i < sizeof(parameter_ids)/sizeof(parameter_ids[0]); ++i) {
+                      int status = encoder ? set_parameter(encoder, parameter_ids[i], values[i]) : -1;
+                      printf("AAC_MODE_PARAMETER %s id=%#x value=%u status=%d\n",
+                              modes[mode], parameter_ids[i], values[i], status);
+                      if (status) parameters_ok = 0;
+                  }
+                  /* NULL descriptors request configuration initialization, supplying no samples. */
+                  int initialized = encoder ? encode(encoder, NULL, NULL, NULL, NULL) : -1;
+                  int closed = encoder ? close_encoder(&encoder) : -1;
+                  passed[mode] = parameters_ok && initialized == 0 && closed == 0;
+                  printf("AAC_MODE_INITIALIZATION %s init_status=%d close_status=%d %s\n",
+                          modes[mode], initialized, closed, passed[mode] ? "PASS" : "UNSUPPORTED_OR_FAILED");
+              }
+              printf("FDK_HE_ENCODING_PARITY %s\n", passed[1] && passed[2] ? "PASS" : "GAP");
+              printf("PROBE_SCOPE empty-input initialization; no samples supplied or encoded; no Mixxx or device launch\n");
+              dlclose(provider);
+              if (!passed[0]) return 1;
+              return require_he && (!passed[1] || !passed[2]) ? 2 : 0;
+          }
+          /* End AI-generated empty-input AAC encoder mode probe. */
+          PR23_ENCODER_MODES
+          echo 'e3780ecced04039d3f93721b88a1118a1a98933937da279d45b0fc6720170cab  parity-tools/runtime-encoder-mode-probe.c' | sha256sum --check
+          cat > parity-tools/runtime-fdk-qlibrary-probe.cpp <<'PR23_QLIBRARY'
+          /* AI-generated provider lookup probe begins. */
+          #include <QLibrary>
+          #include <QString>
+          #include <QtGlobal>
+          #include <dlfcn.h>
+          #include <cstdio>
+          
+          int main(int argc, char **argv) {
+              QLibrary provider(QStringLiteral("fdk-aac"), 2);
+              if (!provider.load()) {
+                  std::fprintf(stderr, "QLIBRARY_FDK_LOAD FAIL %s\n", provider.errorString().toUtf8().constData());
+                  return 1;
+              }
+              const char *symbols[] = {"aacEncGetLibInfo", "aacEncOpen", "aacEncClose",
+                                      "aacEncEncode", "aacEncInfo", "aacEncoder_SetParam"};
+              for (const char *name : symbols) {
+                  if (!provider.resolve(name)) { std::fprintf(stderr, "QLIBRARY_FDK_SYMBOL MISSING %s\n", name); return 1; }
+              }
+              Dl_info location = {};
+              auto symbol = provider.resolve("aacEncGetLibInfo");
+              if (!dladdr(reinterpret_cast<void *>(symbol), &location) || !location.dli_fname) return 1;
+              const QString actual = QString::fromLocal8Bit(location.dli_fname);
+              std::printf("QLIBRARY_FDK_LOAD PASS Qt=%s provider=%s\n", qVersion(), actual.toUtf8().constData());
+              if (argc > 1 && !actual.startsWith(QString::fromLocal8Bit(argv[1]) + QLatin1Char('/'))) {
+                  std::fprintf(stderr, "QLIBRARY_EXTERNAL_PROVIDER_SELECTION FAIL\n");
+                  return 1;
+              }
+              std::printf("PROBE_SCOPE QLibrary lookup and ABI symbols only; no Mixxx, samples or devices\n");
+              return 0;
+          }
+          /* End AI-generated provider lookup probe. */
+          PR23_QLIBRARY
+          echo '80571cc1bb1e8760d219c09c6944e11d5ff650bed953cc3f26bc31daf93be073  parity-tools/runtime-fdk-qlibrary-probe.cpp' | sha256sum --check
+          cat > parity-tools/prototype-external-fdk-profile.sh <<'PR23_EXTERNAL_FDK'
+          #!/usr/bin/env bash
+          # AI-generated optional external-provider CI prototype begins.
+          # Integrator review is required before this prototype is included in a workflow.
+          set -euo pipefail
+          : "${FLATPAK_USER_DIR:?Require the existing task-scoped app installation}"
+          : "${XDG_DATA_HOME:?Require task-scoped XDG data}"
+          probe_dir=$(realpath "${1:?Directory containing SDK-compiled probe executables}")
+          receipt_dir=$(realpath "${2:?Existing evidence directory}")
+          external_root="$PWD/.pr23-external-fdk"
+          case "$FLATPAK_USER_DIR" in "$PWD"/.pr23-parity-data/flatpak) ;; *) echo 'Unexpected app installation scope' >&2; exit 1;; esac
+          test -x "$probe_dir/runtime-codec-probe"
+          test -x "$probe_dir/runtime-encoder-mode-probe"
+          test -x "$probe_dir/runtime-fdk-qlibrary-probe"
+          mkdir -p "$external_root"
+          python3 - "$external_root" "$receipt_dir" <<'PY_FDK'
+          import hashlib,io,json,pathlib,sys,tarfile,urllib.request
+          root=pathlib.Path(sys.argv[1]); evidence=pathlib.Path(sys.argv[2])
+          url='https://deb.debian.org/debian/pool/non-free/f/fdk-aac/libfdk-aac2t64_2.0.3-1_amd64.deb'
+          with urllib.request.urlopen(url,timeout=30) as response: package=response.read(655609)
+          assert len(package)==655608
+          assert hashlib.sha256(package).hexdigest()=='5daef9667f60c4693a1ac2a1bd60d50dbd904d6d9e24686682831f6d82e314ef'
+          assert package[:8]==b'!<arch>\n'
+          offset=8; payload=None
+          while offset<len(package):
+              header=package[offset:offset+60]; assert header[-2:]==b'`\n'
+              name=header[:16].decode().strip().rstrip('/'); size=int(header[48:58])
+              data=package[offset+60:offset+60+size]
+              if name.startswith('data.tar'): payload=data
+              offset+=60+size+(size%2)
+          assert payload is not None
+          wanted={'usr/lib/x86_64-linux-gnu/libfdk-aac.so.2.0.3':'lib/libfdk-aac.so.2.0.3',
+                  'usr/share/doc/libfdk-aac2t64/copyright':'copyright'}
+          files={}
+          with tarfile.open(fileobj=io.BytesIO(payload),mode='r:*') as archive:
+              for member in archive:
+                  name=member.name.removeprefix('./')
+                  if name not in wanted: continue
+                  assert member.isfile()
+                  content=archive.extractfile(member).read(); destination=root/wanted[name]
+                  destination.parent.mkdir(parents=True,exist_ok=True); destination.write_bytes(content)
+                  files[wanted[name]]={'sha256':hashlib.sha256(content).hexdigest(),'bytes':len(content)}
+          assert set(files)==set(wanted.values())
+          assert files['lib/libfdk-aac.so.2.0.3']['sha256']=='55442f713dddef67ee27c8e3c3f6f76f5e8fd34d6cb4c1c72770a4e41fb32458'
+          (root/'lib/libfdk-aac.so.2').symlink_to('libfdk-aac.so.2.0.3')
+          (evidence/'external-fdk-identity.json').write_text(json.dumps({'package_url':url,
+              'package_sha256':hashlib.sha256(package).hexdigest(),'files':files,
+              'profile':'explicit optional external full FDK; canonical app/manifest unchanged',
+              'global_or_user_installation':False},indent=2)+'\n')
+          PY_FDK
+          provider_dir=$(realpath "$external_root/lib")
+          flatpak --user info --show-commit org.mixxx.Mixxx > "$receipt_dir/external-profile-app-commit-before.txt"
+          default_ld=$(flatpak run --user --nofilesystem=home --nofilesystem=host --command=sh org.mixxx.Mixxx \
+            -c 'printf "%s" "${LD_LIBRARY_PATH-}"')
+          printf '%s\n' "$default_ld" > "$receipt_dir/default-runtime-ld-library-path.txt"
+          external_ld="$provider_dir${default_ld:+:$default_ld}"
+          printf '%s\n' "$external_ld" > "$receipt_dir/external-runtime-ld-library-path.txt"
+          runtime=(flatpak run --user --nofilesystem=home --nofilesystem=host \
+            --filesystem="$probe_dir:ro" --filesystem="$provider_dir:ro" \
+            --env="LD_LIBRARY_PATH=$external_ld")
+          "${runtime[@]}" --command=sh org.mixxx.Mixxx -c 'ldd "$1"' sh \
+            "$provider_dir/libfdk-aac.so.2" > "$receipt_dir/external-fdk-runtime-ldd.txt" 2>&1
+          if grep -q 'not found' "$receipt_dir/external-fdk-runtime-ldd.txt"; then exit 1; fi
+          "${runtime[@]}" --command="$probe_dir/runtime-fdk-qlibrary-probe" org.mixxx.Mixxx \
+            "$provider_dir" > "$receipt_dir/external-fdk-qlibrary-selection.txt" 2>&1
+          "${runtime[@]}" --command="$probe_dir/runtime-codec-probe" org.mixxx.Mixxx \
+            > "$receipt_dir/external-fdk-provider-abi.txt" 2>&1
+          "${runtime[@]}" --command="$probe_dir/runtime-encoder-mode-probe" org.mixxx.Mixxx \
+            > "$receipt_dir/external-fdk-encoding-modes.txt" 2>&1
+          flatpak --user info --show-commit org.mixxx.Mixxx > "$receipt_dir/external-profile-app-commit-after.txt"
+          cmp "$receipt_dir/external-profile-app-commit-before.txt" "$receipt_dir/external-profile-app-commit-after.txt"
+          printf '%s\n' 'External full-provider profile passed; canonical shipped-default profile results remain separate.' \
+            > "$receipt_dir/external-profile-scope.txt"
+          # End AI-generated optional external-provider CI prototype.
+          PR23_EXTERNAL_FDK
+          echo '4bdf4b7f30a8aa268df72a1b23261551af009274ca92add476f8d8914386d06e  parity-tools/prototype-external-fdk-profile.sh' | sha256sum --check
+          sha256sum parity-tools/* > parity-evidence/helper-source-sha256.txt
+
+      - name: "Compile only three small probes inside the KDE SDK"
+        shell: bash
+        run: |
+          set -euo pipefail
+          flatpak info --show-commit org.kde.Sdk/x86_64/6.10 > parity-evidence/compiler-sdk-commit.txt
+          flatpak info --show-metadata org.kde.Sdk/x86_64/6.10 > parity-evidence/compiler-sdk-metadata.txt
+          for probe in runtime-codec-probe runtime-encoder-mode-probe; do
+            flatpak run --command=cc \
+              --filesystem="$PWD/parity-tools:ro" --filesystem="$PWD/parity-evidence" \
+              org.kde.Sdk/x86_64/6.10 -std=c99 -Wall -Wextra \
+              "$PWD/parity-tools/$probe.c" -ldl -o "$PWD/parity-evidence/$probe" \
+              2>&1 | tee "parity-evidence/$probe-compile.txt"
+          done
+          flatpak run --command=sh \
+            --filesystem="$PWD/parity-tools:ro" --filesystem="$PWD/parity-evidence" \
+            org.kde.Sdk/x86_64/6.10 -c '
+              set -eu
+              c++ -std=c++17 -fPIC -Wall -Wextra "$1" $(pkg-config --cflags --libs Qt6Core) -ldl -o "$2"
+            ' sh "$PWD/parity-tools/runtime-fdk-qlibrary-probe.cpp" \
+            "$PWD/parity-evidence/runtime-fdk-qlibrary-probe" \
+            2>&1 | tee parity-evidence/runtime-fdk-qlibrary-probe-compile.txt
+          sha256sum parity-evidence/runtime-codec-probe parity-evidence/runtime-encoder-mode-probe \
+            parity-evidence/runtime-fdk-qlibrary-probe > parity-evidence/probe-binary-sha256.txt
+
+      - name: "Require installed shipped full-FDK modes and ALAC/STEM capability"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_DATA_HOME="$PWD/.pr23-parity-data"
+          export FLATPAK_USER_DIR="$PWD/.pr23-parity-data/flatpak"
+          probe_dir="$PWD/parity-evidence"
+          cache=$(find flatpak-evidence -type f -name '*CMakeCache.txt' -print -quit)
+          test -n "$cache"
+          for flag in BUNGEE SIGNALSMITH QML STEM FFMPEG KEYFINDER HID VINYLCONTROL; do
+            grep -Fx "$flag:BOOL=ON" "$cache"
+          done
+          runtime=(flatpak run --user --nofilesystem=home --nofilesystem=host --filesystem="$probe_dir:ro")
+          "${runtime[@]}" --command="$probe_dir/runtime-fdk-qlibrary-probe" org.mixxx.Mixxx | tee parity-evidence/installed-fdk-qlibrary.txt
+          grep -Eq '^QLIBRARY_FDK_LOAD PASS .*provider=/app/lib/libfdk-aac.so.2$' parity-evidence/installed-fdk-qlibrary.txt
+          "${runtime[@]}" --command="$probe_dir/runtime-codec-probe" org.mixxx.Mixxx | tee parity-evidence/installed-codec-abi.txt
+          avcodec_soname=$(sed -n 's/.*Shared library: \[\(libavcodec\.so\.[0-9]*\)\].*/\1/p' flatpak-evidence/staged-readelf.txt | sort -u)
+          [[ "$avcodec_soname" =~ ^libavcodec\.so\.([0-9]+)$ ]]
+          grep -Eq "^AVCODEC_VERSION ${BASH_REMATCH[1]}\." parity-evidence/installed-codec-abi.txt
+          grep -Fxq 'AVCODEC_DECODER alac PRESENT' parity-evidence/installed-codec-abi.txt
+          grep -Fxq 'FDK_SBR_ENCODER_MODULE PRESENT' parity-evidence/installed-codec-abi.txt
+          "${runtime[@]}" --command="$probe_dir/runtime-encoder-mode-probe" org.mixxx.Mixxx --require-he | tee parity-evidence/installed-all-three-aac-modes.txt
+          for mode in AAC-LC HE-AAC HE-AACv2; do
+            grep -Fxq "AAC_MODE_INITIALIZATION $mode init_status=0 close_status=0 PASS" parity-evidence/installed-all-three-aac-modes.txt
+          done
+          "${runtime[@]}" --command=sh org.mixxx.Mixxx -c 'set -eu; cd /app/share/licenses/org.mixxx.Mixxx/fdk-aac; sha256sum NOTICE fdk-aac-v2.0.3.tar.gz' | tee parity-evidence/installed-codec-license-source-hashes.txt
+          grep -Fxq '95ec80da40b4af12ad4c4f3158c9cfb80f2479f3246e4260cb600827cc8c7836  NOTICE' parity-evidence/installed-codec-license-source-hashes.txt
+          grep -Fxq 'e25671cd96b10bad896aa42ab91a695a9e573395262baed4e4a2ff178d6a3a78  fdk-aac-v2.0.3.tar.gz' parity-evidence/installed-codec-license-source-hashes.txt
+          printf '%s\n' 'Installed technical prototype shipped-provider LC/HE/HEv2 initialization and ALAC registry passed. No Mixxx/sample/device execution; no mixed binary publication or legal distribution clearance.' | tee parity-evidence/prototype-scope.txt
+          cp parity-evidence/*.txt flatpak-evidence/
+
+      - name: "Preserve configuration and staged evidence"
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: pr23-full-fdk-technical-prototype-evidence
+          path: flatpak-evidence/
+          if-no-files-found: error
+
+# End AI-generated dedicated PR23 Flatpak artifact workflow.
