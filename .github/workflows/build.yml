@@ -453,7 +453,7 @@ jobs:
       - name: "Configure"
         run: >-
           cmake ${{ matrix.cmake_args }} ${{ env.CMAKE_ARGS_EXTRA }}
-          ${{ inputs.headless_tests && '-DAU_EFFECTS=OFF' || '' }}
+          ${{ inputs.headless_tests && runner.os == 'macOS' && '-DAU_EFFECTS=OFF' || '' }}
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
           -DWARNINGS_FATAL=ON
