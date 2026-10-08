@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "control/controlindicatortimer.h"
+#include "control/controlobject.h"
 #include "control/controlpushbutton.h"
 #include "effects/effectsmanager.h"
 #include "engine/channelhandle.h"
@@ -57,6 +58,8 @@ class InterfaceQmlTest : public MixxxDbTest {
         m_testPlayerManager.reset();
         m_testLibrary.reset();
         m_testOverviewTypeControl.reset();
+        m_testOverviewStereoControl.reset();
+        m_testOverviewMinuteMarkersControl.reset();
         m_testRecordingManager.reset();
         m_testEngineMixer.reset();
         m_testEffectsManager.reset();
@@ -119,6 +122,18 @@ class InterfaceQmlTest : public MixxxDbTest {
         m_testOverviewTypeControl->forceSet(static_cast<double>(
                 config()->getValue<mixxx::OverviewType>(
                         overviewTypeKey, mixxx::OverviewType::RGB)));
+        const ConfigKey overviewStereoKey(QStringLiteral("[Waveform]"),
+                QStringLiteral("overview_stereo_mode"));
+        m_testOverviewStereoControl = std::make_unique<ControlObject>(overviewStereoKey);
+        m_testOverviewStereoControl->setReadOnly();
+        m_testOverviewStereoControl->forceSet(config()->getValue<bool>(overviewStereoKey, true));
+        const ConfigKey overviewMinuteMarkersKey(QStringLiteral("[Waveform]"),
+                QStringLiteral("draw_overview_minute_markers"));
+        m_testOverviewMinuteMarkersControl = std::make_unique<ControlObject>(
+                overviewMinuteMarkersKey);
+        m_testOverviewMinuteMarkersControl->setReadOnly();
+        m_testOverviewMinuteMarkersControl->forceSet(
+                config()->getValue<bool>(overviewMinuteMarkersKey, true));
         m_testLibrary = std::make_shared<Library>(nullptr,
                 config(),
                 dbConnectionPooler(),
@@ -227,6 +242,8 @@ Item {
     std::unique_ptr<TrackCollectionManager> m_testTrackCollectionManager;
     std::unique_ptr<RecordingManager> m_testRecordingManager;
     std::unique_ptr<ControlPushButton> m_testOverviewTypeControl;
+    std::unique_ptr<ControlObject> m_testOverviewStereoControl;
+    std::unique_ptr<ControlObject> m_testOverviewMinuteMarkersControl;
     std::shared_ptr<Library> m_testLibrary;
     std::unique_ptr<mixxx::ControlIndicatorTimer> m_testControlIndicatorTimer;
     std::shared_ptr<ChannelHandleFactory> m_testChannelHandleFactory;
