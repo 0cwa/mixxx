@@ -97,6 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p flatpak-evidence
+          trap 'rc=$?; echo "Collection command failed ($rc): $BASH_COMMAND" >&2; for receipt in flatpak-evidence/sdk-ldd.txt flatpak-evidence/staged-readelf.txt flatpak-evidence/cache-paths.txt; do if test -f "$receipt"; then echo "=== $receipt ===" >&2; cat "$receipt" >&2; fi; done; exit "$rc"' ERR
           flatpak list --columns=application,arch,branch \
             > flatpak-evidence/runtime-inventory.txt
           for runtime_ref in org.kde.Platform/x86_64/6.10 org.kde.Sdk/x86_64/6.10; do
@@ -106,13 +107,13 @@ jobs:
           done
           if test -d .flatpak-builder/build; then
             if command -v rg >/dev/null; then
-              rg --files --hidden --no-ignore .flatpak-builder/build \
+              rg --files --hidden --no-ignore --follow .flatpak-builder/build \
                 | sort > flatpak-evidence/build-file-paths.txt
             else
-              find .flatpak-builder/build -type f | sort \
+              find -L .flatpak-builder/build -type f | sort \
                 > flatpak-evidence/build-file-paths.txt
             fi
-            awk '/\/mixxx-[^/]+\/.*CMakeCache\.txt$/' \
+            awk '/\/(mixxx-[^/]+|build-mixxx)\/.*CMakeCache\.txt$/' \
               flatpak-evidence/build-file-paths.txt > flatpak-evidence/cache-paths.txt
             while IFS= read -r cache_path; do
               cache_parent="$(dirname "$cache_path")"
@@ -135,17 +136,35 @@ jobs:
             awk '/plugins|qml|lv2|mixxx.bin|fdk|keyfinder|hidapi|libusb/' \
               flatpak-evidence/staged-file-paths.txt \
               > flatpak-evidence/plugin-library-inventory.txt
-            flatpak-builder --run flatpak_app packaging/flatpak/org.mixxx.Mixxx.yaml \
-              sh -c 'ldd /app/bin/mixxx.bin' \
-              > flatpak-evidence/sdk-ldd.txt 2>&1
-            flatpak-builder --run flatpak_app packaging/flatpak/org.mixxx.Mixxx.yaml \
-              sh -c 'readelf -h -d /app/bin/mixxx.bin' \
-              > flatpak-evidence/staged-readelf.txt 2>&1
-            if grep -q 'not found' flatpak-evidence/sdk-ldd.txt; then
-              echo "Staged binary has unresolved dependencies" >&2
+            # SDK sandbox invocation is auxiliary evidence; the installed
+            # production Platform closure remains a mandatory later gate.
+            if flatpak-builder --run flatpak_app packaging/flatpak/org.mixxx.Mixxx.yaml \
+                sh -c 'ldd /app/bin/mixxx.bin' \
+                > flatpak-evidence/sdk-ldd.txt 2>&1; then
+              echo 'SDK loader invocation succeeded' > flatpak-evidence/sdk-loader-status.txt
+              if grep -q 'not found' flatpak-evidence/sdk-ldd.txt; then
+                echo "Staged binary has unresolved SDK dependencies" >&2
+                exit 1
+              fi
+            else
+              sdk_rc=$?
+              echo "SDK loader invocation unavailable (exit $sdk_rc); production runtime gate is still required" \
+                | tee flatpak-evidence/sdk-loader-status.txt
+              cat flatpak-evidence/sdk-ldd.txt
+            fi
+            if command -v readelf >/dev/null; then
+              readelf -h -d flatpak_app/files/bin/mixxx.bin \
+                > flatpak-evidence/staged-readelf.txt 2>&1
+            else
+              flatpak run --command=readelf --filesystem="$PWD/flatpak_app/files:ro" \
+                org.kde.Sdk/x86_64/6.10 -h -d "$PWD/flatpak_app/files/bin/mixxx.bin" \
+                > flatpak-evidence/staged-readelf.txt 2>&1
+            fi
+            if ! test -s flatpak-evidence/cache-paths.txt; then
+              echo 'No retained Mixxx CMakeCache found' >&2
+              cat flatpak-evidence/build-file-paths.txt >&2
               exit 1
             fi
-            test -s flatpak-evidence/cache-paths.txt
           fi
 
       - name: "Create Flatpak bundle"
@@ -177,6 +196,7 @@ jobs:
           receipt_dir=$2
           mkdir -p "$receipt_dir"
           receipt_dir=$(realpath "$receipt_dir")
+          trap 'rc=$?; echo "Runtime command failed ($rc): $BASH_COMMAND" >&2; for receipt in "$receipt_dir/runtime-install.txt" "$receipt_dir/platform-runtime-install.txt" "$receipt_dir/production-runtime-closure.txt"; do if test -f "$receipt"; then echo "=== $receipt ===" >&2; tail -n 120 "$receipt" >&2; fi; done; exit "$rc"' ERR
           # This installation is confined to the CI task workspace.
           export XDG_DATA_HOME="$PWD/.pr23-parity-data"
           export FLATPAK_USER_DIR="$PWD/.pr23-parity-data/flatpak"
@@ -236,6 +256,7 @@ jobs:
           receipt_dir=flatpak-evidence
           mkdir -p "$receipt_dir"
           receipt_dir=$(realpath "$receipt_dir")
+          trap 'rc=$?; echo "QML/Wayland command failed ($rc): $BASH_COMMAND" >&2; if test -f "$receipt_dir/qml-wayland-runtime-gate.txt"; then tail -n 160 "$receipt_dir/qml-wayland-runtime-gate.txt" >&2; fi; exit "$rc"' ERR
           # Run from the immutable source checkout. Only actual external Qt imports count.
           python3 - "$receipt_dir/required-qt-qml-modules.txt" <<'PY_MODULES'
           import pathlib,re,sys
