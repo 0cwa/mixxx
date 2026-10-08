@@ -40,7 +40,9 @@ class StubReader : public CachingReader {
         if (!m_readAvailable) {
             return CachingReader::ReadResult::UNAVAILABLE;
         }
-        SampleUtil::clear(buffer, numSamples);
+        for (SINT i = 0; i < numSamples; ++i) {
+            buffer[i] = static_cast<CSAMPLE>(startSample + i + 1);
+        }
         return CachingReader::ReadResult::AVAILABLE;
     }
 
@@ -69,7 +71,9 @@ class StubReader : public CachingReader {
         if (!m_readAvailable) {
             return {CachingReader::ReadResult::UNAVAILABLE, true};
         }
-        SampleUtil::clear(buffer, numSamples);
+        for (SINT i = 0; i < numSamples; ++i) {
+            buffer[i] = static_cast<CSAMPLE>(startSample + i + 1);
+        }
         return {CachingReader::ReadResult::AVAILABLE, false};
     }
 
