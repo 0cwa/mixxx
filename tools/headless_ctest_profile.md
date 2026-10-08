@@ -7,6 +7,12 @@ This local review branch enables source-classified headless validation in
 for the current Forest candidate, not a general change to upstream test policy.
 Publishing or dispatching this branch requires separate approval.
 
+On this isolated diagnostic branch, all eligible `develop.yml` events select
+this profile, including branch pushes and pull requests, not only manual
+dispatch. This configuration is not intended for release branches or adoption
+as the upstream develop workflow. The full existing build/check matrix remains;
+there is no Windows-only dispatch option.
+
 Manual dispatch requires `expected_head_sha`, the full reviewed commit SHA.
 Each test job rejects a different checkout and records its actual commit, tree,
 source tree, profile checksum, platform, and GitHub run identity.
@@ -47,9 +53,10 @@ results, duplicates, or failures fail validation. The workflow preserves logs,
 JUnit, per-case skip/failure output, and receipts even when testing fails.
 
 The AppImage product-startup smoke test is disabled for this profile. Flatpak's
-staged manifest and action both set `run-tests: false`; its builds are
-packaging-only and
-carry no Flatpak test/runtime coverage claim. Cross-compiled macOS ARM64 and
+staged manifest sets `run-tests: false`; the action's existing default input
+remains unchanged. Its builds are packaging-only and carry no Flatpak
+test/runtime coverage claim. Non-headless callers use the original manifest
+and the original action inputs. Cross-compiled macOS ARM64 and
 Android continue to skip tests, as before. Other callers retain the reusable
 workflows' default full test behavior; approval for this profile must identify
 `develop.yml` and the exact reviewed ref/commit.

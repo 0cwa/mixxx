@@ -922,9 +922,6 @@ jobs:
           arch: ${{ matrix.variant.arch }}
           build-bundle: false
           upload-artifact: false
-          # AI-generated scope guard begins: keep the action from re-enabling tests.
-          run-tests: false
-          # End AI-generated scope guard.
           # The Flatpak caches (~1.4 GB per arch) are only saved by branch pushes
           # (main and the release branches) to stay within the 10 GB quota.
           # Pull requests can still restore the cache of their base branch.
