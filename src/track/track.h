@@ -306,7 +306,7 @@ class Track : public QObject {
     void setMainCuePosition(mixxx::audio::FramePos position);
     /// Shift all cues by a constant offset
     void shiftCuePositionsMillis(mixxx::audio::FrameDiff_t milliseconds);
-    /// Set hoctues' indices sorted by their frame position.
+    /// Set hotcues' indices sorted by their frame position.
     /// If compress is true, indices are consecutive and start at 0.
     /// Set false to sort only, ie. keep empty hotcues before and in between.
     void setHotcueIndicesSortedByPosition(HotcueSortMode sortMode);
@@ -340,6 +340,7 @@ class Track : public QObject {
     CuePointer findHotcueByIndex(int idx) const;
     void removeCue(const CuePointer& pCue);
     void removeCuesOfType(mixxx::CueType);
+    void removeTempLoopCue();
     QList<CuePointer> getCuePoints() const {
         const QMutexLocker lock(&m_qMutex);
         // lock thread-unsafe copy constructors of QList

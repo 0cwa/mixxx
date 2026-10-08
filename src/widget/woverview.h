@@ -163,6 +163,7 @@ class WOverview : public WWidget, public TrackDropTarget {
 
     // Child of this widget, created only when the cue menu is first needed.
     parented_ptr<WCueMenuPopup> m_pCueMenuPopup;
+
     bool m_bShowCueTimes;
 
     int m_iPosSeconds;

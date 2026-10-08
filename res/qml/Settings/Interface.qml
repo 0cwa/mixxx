@@ -14,7 +14,6 @@ Category {
 
     function load() {
         loadInterface();
-        loadWaveform();
         loadDeck();
         errorMessage.text = "";
     }
@@ -76,23 +75,9 @@ Category {
         jumpPaletteInput.currentIndex = colorPane.jumpPaletteColorIndex;
         themeColorTab.dirty = false;
     }
-    function setWaveformMaxZoomOutInput(value) {
-        maxZoomOutInput.value = Qt.binding(function () {
-            return maxZoomOutInput.decimalToInt(maxZoomOutInput.realValue);
-        });
-        maxZoomOutInput.realValue = value;
-    }
-    function loadWaveform() {
-        setWaveformMaxZoomOutInput(Mixxx.Config.waveformMaxZoomOut);
-        waveformTab.dirty = false;
-    }
     function resetDeck() {
     }
     function resetInterface() {
-    }
-    function resetWaveform() {
-        setWaveformMaxZoomOutInput(10);
-        waveformTab.dirty = true;
     }
     function saveDeck() {
         Mixxx.Config.controlCueDefault = cueModeInput.currentIndex;
@@ -145,14 +130,10 @@ Category {
         // jumpPaletteInput.value =
         loadInterface();
     }
-    function saveWaveform() {
-        Mixxx.Config.waveformMaxZoomOut = maxZoomOutInput.realValue;
-        loadWaveform();
-    }
 
     label: "Interface"
     selectedIndex: 0
-    tabs: ["theme & color", "waveform", "decks"]
+    tabs: ["theme & color", "decks"]
 
     Component.onCompleted: {
         root.load();
@@ -889,79 +870,16 @@ Category {
             }
         }
         Mixxx.SettingGroup {
-            id: waveformTab
-
-            property bool dirty: false
-
-            anchors.fill: parent
-            label: "Waveform"
-            visible: root.selectedIndex == 1
-
-            onActivated: {
-                root.selectedIndex = 1;
-            }
-
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.topMargin: 20
-                spacing: 0
-
-                GridLayout {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 14
-                    Layout.rightMargin: 14
-                    columnSpacing: 20
-                    columns: 2
-                    rowSpacing: 15
-
-                    RowLayout {
-                        Layout.fillWidth: true
-
-                        Mixxx.SettingParameter {
-                            Layout.fillWidth: true
-                            label: "Maximum zoom-out level"
-
-                            Text {
-                                anchors.fill: parent
-                                color: Theme.white
-                                font.pixelSize: 14
-                                font.weight: Font.Medium
-                                horizontalAlignment: Text.AlignLeft
-                                text: parent.label
-                                verticalAlignment: Text.AlignVCenter
-                            }
-                        }
-                        SettingComponents.SpinBox {
-                            id: maxZoomOutInput
-
-                            Layout.preferredWidth: 140
-                            max: 100
-                            min: 10
-                            precision: 0
-                            realValue: 10
-                            suffix: "x"
-
-                            onValueChanged: waveformTab.dirty = true
-                        }
-                    }
-                }
-                Item {
-                    Layout.fillHeight: true
-                    Layout.fillWidth: true
-                }
-            }
-        }
-        Mixxx.SettingGroup {
             id: decksTab
 
             property bool dirty: false
 
             anchors.fill: parent
             label: "Decks"
-            visible: root.selectedIndex == 2
+            visible: root.selectedIndex == 1
 
             onActivated: {
-                root.selectedIndex = 2;
+                root.selectedIndex = 1;
             }
 
             ColumnLayout {
@@ -1624,9 +1542,6 @@ Category {
                     root.resetInterface();
                     break;
                 case 1:
-                    root.resetWaveform();
-                    break;
-                case 0:
                     root.resetDeck();
                     break;
                 }
@@ -1647,7 +1562,7 @@ Category {
             SettingComponents.FormButton {
                 activeColor: "#999999"
                 backgroundColor: "#3F3F3F"
-                enabled: root.selectedIndex == 0 && themeColorTab.dirty || root.selectedIndex == 1 && waveformTab.dirty || root.selectedIndex == 2 && decksTab.dirty
+                enabled: root.selectedIndex == 0 && themeColorTab.dirty || root.selectedIndex == 1 && decksTab.dirty
                 opacity: enabled ? 1.0 : 0.5
                 text: "Cancel"
 
@@ -1657,9 +1572,6 @@ Category {
                         root.loadInterface();
                         break;
                     case 1:
-                        root.loadWaveform();
-                        break;
-                    case 2:
                         root.loadDeck();
                         break;
                     }
@@ -1667,8 +1579,8 @@ Category {
             }
             SettingComponents.FormButton {
                 activeColor: "#999999"
-                backgroundColor: root.hasChanges ? "#3a60be" : "#3F3F3F"
-                enabled: root.selectedIndex == 0 && themeColorTab.dirty || root.selectedIndex == 1 && waveformTab.dirty || root.selectedIndex == 2 && decksTab.dirty
+                backgroundColor: (root.selectedIndex == 0 && themeColorTab.dirty || root.selectedIndex == 1 && decksTab.dirty) ? "#3a60be" : "#3F3F3F"
+                enabled: root.selectedIndex == 0 && themeColorTab.dirty || root.selectedIndex == 1 && decksTab.dirty
                 opacity: enabled ? 1.0 : 0.5
                 text: "Save"
 
@@ -1679,9 +1591,6 @@ Category {
                         root.saveInterface();
                         break;
                     case 1:
-                        root.saveWaveform();
-                        break;
-                    case 2:
                         root.saveDeck();
                         break;
                     }
