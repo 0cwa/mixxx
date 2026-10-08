@@ -97,8 +97,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p flatpak-evidence
-          flatpak list --columns=application,arch,branch,commit \
+          flatpak list --columns=application,arch,branch \
             > flatpak-evidence/runtime-inventory.txt
+          for runtime_ref in org.kde.Platform/x86_64/6.10 org.kde.Sdk/x86_64/6.10; do
+            printf '%s ' "$runtime_ref" >> flatpak-evidence/runtime-commits.txt
+            flatpak info --show-commit "$runtime_ref" \
+              >> flatpak-evidence/runtime-commits.txt
+          done
           if test -d .flatpak-builder/build; then
             if command -v rg >/dev/null; then
               rg --files --hidden --no-ignore .flatpak-builder/build \
