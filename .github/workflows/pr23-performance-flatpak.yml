@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_SOURCE_SHA: fa926dd3a67a1a0928992382aa88fb2cdd03f515
+  EXPECTED_SOURCE_SHA: 956710dc8df6ab2ed6ad49c9c9103236053666a1
 
 jobs:
   build-flatpak:
@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: fa926dd3a67a1a0928992382aa88fb2cdd03f515
+          ref: 956710dc8df6ab2ed6ad49c9c9103236053666a1
 
       - name: "Store Git version"
         run: |
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
-          test "$(git rev-parse HEAD:src)" = "0366e7352c33bf545723737978d35cd146f0080e"
+          test "$(git rev-parse HEAD:src)" = "154010e8f2e38d8b6290be0951119b71673d2271"
           mkdir -p flatpak-evidence
           {
             echo "expected_source_sha=$EXPECTED_SOURCE_SHA"
@@ -156,6 +156,11 @@ jobs:
             --arch=${{ matrix.variant.arch }} \
             --runtime Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.Debug.flatpak org.mixxx.Mixxx.Debug
 
+      - name: "Hash the application bundle"
+        shell: bash
+        run: |
+          sha256sum "Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.flatpak" > flatpak-evidence/application-bundle-sha256.txt
+
       - name: "Check shipped runtime dependency closure"
         shell: bash
         run: |
@@ -213,6 +218,85 @@ jobs:
             exit 1
           fi
           # End AI-generated production-runtime dependency capture.
+
+      - name: "Require source QML modules and Wayland integrations"
+        shell: bash
+        env:
+          XDG_DATA_HOME: ${{ github.workspace }}/.pr23-parity-data
+          FLATPAK_USER_DIR: ${{ github.workspace }}/.pr23-parity-data/flatpak
+        run: |
+          #!/usr/bin/env bash
+          # AI-generated source-derived QML and Wayland runtime gate begins.
+          set -euo pipefail
+          receipt_dir=flatpak-evidence
+          mkdir -p "$receipt_dir"
+          receipt_dir=$(realpath "$receipt_dir")
+          # Run from the immutable source checkout. Only actual external Qt imports count.
+          python3 - "$receipt_dir/required-qt-qml-modules.txt" <<'PY_MODULES'
+          import pathlib,re,sys
+          modules=set()
+          for root in [pathlib.Path("res/qml"),pathlib.Path("res/skins")]:
+              for path in root.rglob("*.qml"):
+                  for module in re.findall(r"^\s*import\s+(Qt[\w.]*)",path.read_text(),re.M):
+                      modules.add(module)
+          assert modules
+          pathlib.Path(sys.argv[1]).write_text("\n".join(sorted(modules))+"\n")
+          PY_MODULES
+          mapfile -t required < "$receipt_dir/required-qt-qml-modules.txt"
+          # No QML engine, Mixxx binary, display or audio device is launched.
+          runtime_script=$(cat <<'PR23_QML_RUNTIME'
+            set -eu
+            queue=$(mktemp -d)
+            trap 'rm -rf "$queue"' EXIT
+            printf "%s\n" "$@" > "$queue/pending"
+            touch "$queue/seen"
+            while IFS= read -r uri; do
+              if grep -Fxq "$uri" "$queue/seen"; then continue; fi
+              printf "%s\n" "$uri" >> "$queue/seen"
+              relative=$(printf "%s" "$uri" | tr . /)
+              descriptor=$(find /app/lib /usr/lib /app/share /usr/share -path "*/qml/$relative/qmldir" -print -quit)
+              test -n "$descriptor" || { echo "MISSING_QML_MODULE $uri"; exit 1; }
+              awk -v uri="$uri" '$1=="module" && $2==uri {found=1} END {exit !found}' "$descriptor"
+              echo "QML_MODULE $uri $descriptor"
+              awk '$1=="depends" || $1=="import" {print $2}' "$descriptor" >> "$queue/pending"
+              directory=${descriptor%/*}
+              for name in $(awk '$1=="plugin" {print $2} $1=="optional" && $2=="plugin" {print $3}' "$descriptor"); do
+                plugin=$(find "$directory" -name "lib$name.so" -print -quit)
+                test -n "$plugin" || { echo "MISSING_QML_PLUGIN $uri $name"; exit 1; }
+                echo "QML_PLUGIN $plugin"
+                closure=$(ldd "$plugin"); printf "%s\n" "$closure"
+                case "$closure" in *"not found"*) exit 1;; esac
+              done
+            done < "$queue/pending"
+            descriptor=$(find /app/share -path "*/qml/Mixxx/qmldir" -print -quit)
+            test -n "$descriptor"
+            awk '$1=="module" && $2=="Mixxx" {found=1} END {exit !found}' "$descriptor"
+            app_qml=${descriptor%/Mixxx/qmldir}
+            for resource in Mixxx/DurationFormatter.qml Mixxx/MathUtils.mjs Mixxx/Controls/WaveformDisplay.qml Mixxx/Controls/WaveformOverview.qml; do
+              test -f "$app_qml/$resource"
+              echo "APP_QML_FILE $app_qml/$resource"
+            done
+            echo "APP_QML_EMBEDDED_DECLARATIONS :/mixxx.org/imports/Mixxx/qmldir :/mixxx.org/imports/Mixxx/Controls/qmldir"
+            # Embedded registrations are canonical source provenance, not executed resource lookup.
+            wayland=$(find /app/lib /usr/lib -type f \( -path "*/platforms/libqwayland-generic.so" -o -path "*/platforms/libqwayland-egl.so" \) -print -quit)
+            test -n "$wayland" || { echo "MISSING_WAYLAND_PLATFORM_PLUGIN"; exit 1; }
+            echo "WAYLAND_PLATFORM_PLUGIN $wayland"
+            closure=$(ldd "$wayland"); printf "%s\n" "$closure"
+            case "$closure" in *"not found"*) exit 1;; esac
+            for integration in wayland-graphics-integration-client wayland-shell-integration; do
+              providers=$(find /app/lib /usr/lib -type f -path "*/$integration/*.so" -print)
+              test -n "$providers" || { echo "MISSING_WAYLAND_INTEGRATION $integration"; exit 1; }
+              printf "%s\n" "$providers" | while IFS= read -r provider; do
+                echo "WAYLAND_INTEGRATION $provider"
+                closure=$(ldd "$provider"); printf "%s\n" "$closure"
+                case "$closure" in *"not found"*) exit 1;; esac
+              done
+            done
+          PR23_QML_RUNTIME
+          )
+          flatpak run --user --nofilesystem=home --nofilesystem=host --command=sh org.mixxx.Mixxx \
+            -c "$runtime_script" sh "${required[@]}" > "$receipt_dir/qml-wayland-runtime-gate.txt" 2>&1
+          # End AI-generated source-derived QML and Wayland runtime gate.
 
       - name: "Upload Flatpak bundle"
         uses: actions/upload-artifact@v7.0.1
