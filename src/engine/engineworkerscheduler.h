@@ -1,8 +1,8 @@
 #pragma once
 
 #include <QMutex>
+#include <QSemaphore>
 #include <QThread>
-#include <QWaitCondition>
 #include <atomic>
 #include <vector>
 
@@ -28,7 +28,8 @@ class EngineWorkerScheduler : public QThread {
     // runWorkers was run. This should only be touched from the engine callback.
     std::atomic<bool> m_bWakeScheduler;
 
-    QWaitCondition m_waitCondition;
+    QSemaphore m_wakeSemaphore{1};
+    std::atomic<bool> m_wakePending{true};
 
     // mutex protects m_workers and m_bQuit
     QMutex m_mutex;
