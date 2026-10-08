@@ -2,19 +2,22 @@
 
 # Headless CI validation profile
 
-This local review branch enables source-classified headless validation in
-`develop.yml`, for both reusable build tests and coverage tests. It is intended
-for the current Forest candidate, not a general change to upstream test policy.
+This local review branch offers source-classified headless validation in
+`develop.yml`, for both reusable build tests and instrumented coverage tests.
+It is intended for the current Forest candidate, not a general change to
+upstream test policy.
 Publishing or dispatching this branch requires separate approval.
 
-On this isolated diagnostic branch, all eligible `develop.yml` events select
-this profile, including branch pushes and pull requests, not only manual
-dispatch. This configuration is not intended for release branches or adoption
-as the upstream develop workflow. The full existing build/check matrix remains;
-there is no Windows-only dispatch option.
+Only manual dispatch with `headless_tests: true` selects this diagnostic profile.
+The input defaults to false; ordinary push/PR events and manual dispatch without
+the opt-in retain full tests. This is not an upstream release/test-policy change.
+The full existing build/check matrix remains; there is no Windows-only option.
 
-Manual dispatch requires `expected_head_sha`, the full reviewed commit SHA.
-Each test job rejects a different checkout and records its actual commit, tree,
+Headless dispatch requires `expected_head_sha`, the full reviewed commit SHA.
+Each pre-commit/build/check job immediately rejects a missing, invalid, or
+different SHA after checkout, including cross-compiled builds, clazy, and
+clang-tidy. Diagnostic runs also disable the download-manifest publishing job.
+Each test job records its actual commit, tree,
 source tree, profile checksum, platform, and GitHub run identity.
 
 `headless_ctest_profile.json` classifies source definitions, including conditional
@@ -39,8 +42,15 @@ The Windows x64 and ARM64 configurations retain `MEDIAFOUNDATION=ON` and native
 test compilation. Windows testing stays serial, and the inherited ARM64 AutoDJ
 exclusion remains. All three Media Foundation regressions, both shutdown tests,
 the provider caching-reader regression, representative reader tests, and all
-15 public parser regressions must be discovered, selected, enabled, and pass
-without skips. Other available provider and caching-reader definitions remain
+15 public parser regressions must be discovered, selected, and enabled. The
+Linux parser cases must pass without skips. On Windows, only the unreadable-file
+permission fixture may have a qualified skip: Qt file permissions do not enforce
+an NTFS unreadable ACL. The recorded output must contain one of that fixture's
+two explicit permission limitations, and there must be no failure/error. Its
+receipt reports a qualified skip, never a pass. The other 14 parser cases, all
+three MF cases, both shutdown cases, and required provider/reader cases must pass
+without skips. A missing or disabled permission fixture still fails selection.
+Other available provider and caching-reader definitions remain
 selected. Conditional provider availability and skips are recorded per runner.
 
 The helper writes complete discovery, selected/excluded/unknown cases, source
@@ -48,7 +58,7 @@ coverage, disabled cases, and CTest's verified selection before execution. It
 uses a CTest index file, avoiding Windows command-line limits and supporting
 CMake 3.22. Fixture setup cannot automatically expand the selection. Empty or
 incomplete mandatory selections fail. Each process retains the 45-second CTest
-timeout. JUnit results must match the selected case set; required skips, missing
+timeout. JUnit results must match the selected case set; unqualified required skips, missing
 results, duplicates, or failures fail validation. The workflow preserves logs,
 JUnit, per-case skip/failure output, and receipts even when testing fails.
 
@@ -60,6 +70,10 @@ and the original action inputs. Cross-compiled macOS ARM64 and
 Android continue to skip tests, as before. Other callers retain the reusable
 workflows' default full test behavior; approval for this profile must identify
 `develop.yml` and the exact reviewed ref/commit.
+
+The coverage build remains instrumented, but the diagnostic profile does not
+generate or upload an LCOV/Coveralls report. Its selected test results do not
+replace the ordinary full-suite coverage baseline.
 
 Local selector checks and saved/synthetic discovery prove selection behavior;
 they are not Windows compilation, native discovery, or matrix pass receipts.

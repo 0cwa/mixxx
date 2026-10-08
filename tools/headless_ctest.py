@@ -109,6 +109,7 @@ def select_tests(discovery, profile, system, exclude_regex=""):
         "excluded": excluded,
         "unknown": unknown,
         "required": required,
+        "qualified_skips": profile.get("qualified_skips", {}).get(system, {}),
         "missing_required": missing,
         "coverage_by_source": coverage,
         "disabled_selected": sum(t["disabled"] for t in selected),
@@ -118,6 +119,20 @@ def select_tests(discovery, profile, system, exclude_regex=""):
     }
 
 
+def qualified_skip(case, policy):
+    return bool(
+        policy
+        and case.get("skipped")
+        and not case.get("failures")
+        and not case.get("errors")
+        and case.get("attributes", {}).get("status") == "notrun"
+        and any(
+            message in case.get("output", "")
+            for message in policy["allowed_output_messages"]
+        )
+    )
+
+
 def validate_results(results, plan):
     errors = []
     names = {r["name"] for r in results}
@@ -125,16 +140,20 @@ def validate_results(results, plan):
         plan["selected"]
     ):
         errors.append("JUnit case set differs from selection")
-    if any(r["failures"] for r in results):
+    if any(r["failures"] or r.get("errors") for r in results):
         errors.append("JUnit contains failed cases")
     by_name = {r["name"]: r for r in results}
     required_errors = []
     for item in plan["selected"]:
         if item["definition"] in plan["required"]:
             case = by_name.get(item["name"], {})
+            policy = plan.get("qualified_skips", {}).get(item["definition"])
+            if qualified_skip(case, policy):
+                continue
             if (
                 case.get("skipped")
                 or case.get("failures")
+                or case.get("errors")
                 or case.get("attributes", {}).get("status") != "run"
             ):
                 required_errors.append(item["name"])
@@ -299,10 +318,27 @@ def run_plan(args):
                     "attributes": case.attrib,
                     "skipped": [e.attrib for e in case.findall("skipped")],
                     "failures": [e.attrib for e in case.findall("failure")],
+                    "errors": [e.attrib for e in case.findall("error")],
                     "output": case.findtext("system-out", default=""),
                 }
             )
         write_json(output / "case-results.json", results)
+        receipt["qualified_skipped_cases"] = [
+            {
+                "name": item["name"],
+                "definition": item["definition"],
+                "reason": plan["qualified_skips"][item["definition"]][
+                    "reason"
+                ],
+                "status": "qualified skip; not a test pass",
+            }
+            for item in plan["selected"]
+            for case in results
+            if case["name"] == item["name"]
+            and qualified_skip(
+                case, plan["qualified_skips"].get(item["definition"])
+            )
+        ]
         receipt["junit"] = root.attrib
         receipt["statuses"] = dict(
             collections.Counter(r["attributes"].get("status") for r in results)

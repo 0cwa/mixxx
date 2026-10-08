@@ -14,9 +14,14 @@ on:
       - "![0-9].[0-9]"
   workflow_dispatch:
     inputs:
+      headless_tests:
+        description: "Opt in to the reviewed headless diagnostic profile"
+        required: false
+        type: boolean
+        default: false
       expected_head_sha:
-        description: "Exact reviewed commit SHA for this headless validation run"
-        required: true
+        description: "Full reviewed commit SHA; required when headless_tests is true"
+        required: false
         type: string
 
 permissions:
@@ -61,17 +66,21 @@ jobs:
     uses: ./.github/workflows/pre-commit.yml
     with:
       pull_request: ${{ github.event_name == 'pull_request' }}
+      # AI-generated identity propagation begins; defaults retain ordinary checks.
+      headless_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.headless_tests }}
+      expected_head_sha: ${{ inputs.expected_head_sha }}
+      # End AI-generated identity propagation.
 
   checks:
     if: needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/checks.yml
-    # AI-generated branch validation choice begins: GUI tests are excluded.
+    # AI-generated diagnostic opt-in begins; ordinary events retain full tests.
     with:
-      headless_tests: true
-      expected_head_sha: ${{ inputs.expected_head_sha || github.sha }}
-    # End AI-generated branch validation choice.
+      headless_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.headless_tests }}
+      expected_head_sha: ${{ inputs.expected_head_sha }}
+    # End AI-generated diagnostic opt-in.
 
   git:
     if: github.event_name == 'pull_request'
@@ -86,10 +95,10 @@ jobs:
       actions: write # to delete outdated caches
     uses: ./.github/workflows/build.yml
     with:
-      # AI-generated branch validation choice begins: GUI tests are excluded.
-      headless_tests: true
-      expected_head_sha: ${{ inputs.expected_head_sha || github.sha }}
-      # End AI-generated branch validation choice.
+      # AI-generated diagnostic opt-in begins; ordinary events retain full tests.
+      headless_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.headless_tests }}
+      expected_head_sha: ${{ inputs.expected_head_sha }}
+      # End AI-generated diagnostic opt-in.
       branch: ${{ github.head_ref || github.ref_name }}
       ref: ${{ github.ref }}
 

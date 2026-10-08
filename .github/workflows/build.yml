@@ -259,6 +259,17 @@ jobs:
           # This is necessary for making `git describe` work.
           fetch-depth: 0
 
+      # AI-generated identity guard begins; includes cross-compiled jobs.
+      - name: "Verify reviewed diagnostic checkout"
+        if: inputs.headless_tests
+        shell: bash
+        run: |
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      # End AI-generated identity guard.
+
       - name: "[Arch Linux] Workaround for the 'unsafe repository' issue caused by CVE-2022-24765"
         if: matrix.container != null
         # See https://github.com/actions/checkout/issues/760 for details
@@ -543,7 +554,7 @@ jobs:
         env:
           GTEST_COLOR: 1
           QT_QPA_PLATFORM: offscreen
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || github.sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           CTEST_PARALLEL_LEVEL: ${{ runner.os == 'Windows' && 1 || 3 }}
           CTEST_OUTPUT_ON_FAILURE: 1
 
@@ -890,6 +901,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # AI-generated identity guard begins; includes cross-compiled jobs.
+      - name: "Verify reviewed diagnostic checkout"
+        if: inputs.headless_tests
+        shell: bash
+        run: |
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      # End AI-generated identity guard.
+
       - name: "Store Git version"
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
@@ -903,7 +925,7 @@ jobs:
       - name: "Prepare packaging-only Flatpak validation"
         if: inputs.headless_tests
         run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           manifest=packaging/flatpak/org.mixxx.Mixxx.yaml
           staged=packaging/flatpak/org.mixxx.Mixxx.headless.yaml
           test "$(grep -c '^    run-tests: true$' "$manifest")" -eq 1
@@ -912,7 +934,7 @@ jobs:
             exit 1
           fi
         env:
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || github.sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       # End AI-generated scope guard.
 
       - name: "Build Flatpak"
@@ -960,12 +982,23 @@ jobs:
     # fail to allow partial updates of the manifest.
     # Don't run it on forks that do not have access to our external
     # infrastructure, though.
-    if: always() && github.repository == 'mixxxdj/mixxx'
+    if: always() && github.repository == 'mixxxdj/mixxx' && !inputs.headless_tests
     steps:
       - name: "Check out repository"
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # AI-generated identity guard begins; includes cross-compiled jobs.
+      - name: "Verify reviewed diagnostic checkout"
+        if: inputs.headless_tests
+        shell: bash
+        run: |
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      # End AI-generated identity guard.
 
       - name: "Ensure that all tags are fetched"
         # Works around an issue where not the latest tag is not fetched when the

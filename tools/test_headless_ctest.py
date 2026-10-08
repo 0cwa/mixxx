@@ -173,6 +173,93 @@ class ResultGuardTest(unittest.TestCase):
         self.assertTrue(errors)
         self.assertEqual([self.results[0]["name"]], required)
 
+    def permission_skip(self):
+        result = next(
+            r
+            for r in self.results
+            if r["name"]
+            == (
+                "RekordboxImportTest."
+                "ExistingUnreadableAnalyzeFilePreservesTrackState"
+            )
+        )
+        result["skipped"] = [{"message": "SKIP_RETURN_CODE"}]
+        result["attributes"]["status"] = "notrun"
+        result["output"] = (
+            "Filesystem or current user still permits reading the fixture"
+        )
+        return result
+
+    def test_windows_permission_skip_is_qualified_not_pass(self):
+        result = self.permission_skip()
+        policy = self.plan["qualified_skips"][result["name"]]
+        self.assertTrue(headless_ctest.qualified_skip(result, policy))
+        self.assertEqual("notrun", result["attributes"]["status"])
+        self.assertEqual(
+            ([], []), headless_ctest.validate_results(self.results, self.plan)
+        )
+
+    def test_linux_permission_skip_is_not_qualified(self):
+        result = self.permission_skip()
+        plan = headless_ctest.select_tests(
+            {"tests": required_tests()}, PROFILE, "Linux"
+        )
+        results = [r for r in self.results if r["name"] in plan["required"]]
+        errors, required = headless_ctest.validate_results(results, plan)
+        self.assertEqual([], errors)
+        self.assertEqual([result["name"]], required)
+
+    def test_windows_unrelated_skip_reason_is_not_qualified(self):
+        result = self.permission_skip()
+        result["output"] = "missing provider"
+        _, required = headless_ctest.validate_results(self.results, self.plan)
+        self.assertEqual([result["name"]], required)
+
+    def test_windows_other_parser_skip_is_not_qualified(self):
+        result = next(
+            r
+            for r in self.results
+            if r["name"] == "RekordboxImportTest.CreatesHotCueAtFirstIndex"
+        )
+        result["skipped"] = [{"message": "SKIP_RETURN_CODE"}]
+        result["attributes"]["status"] = "notrun"
+        result["output"] = (
+            "Filesystem or current user still permits reading the fixture"
+        )
+        _, required = headless_ctest.validate_results(self.results, self.plan)
+        self.assertEqual([result["name"]], required)
+
+    def test_windows_permission_skip_with_failure_is_not_qualified(self):
+        result = self.permission_skip()
+        result["failures"] = [{"message": "failure"}]
+        errors, required = headless_ctest.validate_results(
+            self.results, self.plan
+        )
+        self.assertTrue(errors)
+        self.assertEqual([result["name"]], required)
+
+    def test_windows_permission_case_still_required_and_enabled(self):
+        name = self.permission_skip()["name"]
+        tests = [t for t in required_tests("Windows") if t["name"] != name]
+        missing = headless_ctest.select_tests(
+            {"tests": tests}, PROFILE, "Windows"
+        )
+        self.assertEqual([name], missing["missing_required"])
+        tests.append(case(name, disabled=True))
+        disabled = headless_ctest.select_tests(
+            {"tests": tests}, PROFILE, "Windows"
+        )
+        self.assertEqual([name], disabled["missing_required"])
+
+    def test_junit_error_cannot_qualify_as_permission_skip(self):
+        result = self.permission_skip()
+        result["errors"] = [{"message": "error"}]
+        errors, required = headless_ctest.validate_results(
+            self.results, self.plan
+        )
+        self.assertTrue(errors)
+        self.assertEqual([result["name"]], required)
+
 
 if __name__ == "__main__":
     unittest.main()

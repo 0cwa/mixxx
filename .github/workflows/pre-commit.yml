@@ -5,6 +5,12 @@ name: pre-commit
 on:
   workflow_call:
     inputs:
+      expected_head_sha:
+        type: string
+        default: ""
+      headless_tests:
+        type: boolean
+        default: false
       pull_request:
         type: boolean
         default: false
@@ -25,6 +31,17 @@ jobs:
           # latest changelog modification date. Otherwise, `fetch-depth: 2` would
           # suffice.
           fetch-depth: 0
+
+      # AI-generated identity guard begins; rejects an unreviewed diagnostic ref.
+      - name: "Verify reviewed diagnostic checkout"
+        if: inputs.headless_tests
+        shell: bash
+        run: |
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      # End AI-generated identity guard.
 
       - name: "Add GitHub workspace as a safe directory"
         # Without this, git commands will fail due to mismatching permissions in

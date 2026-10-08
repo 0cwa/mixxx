@@ -5293,5 +5293,16 @@
     }
   },
   "end_notice": "End AI-generated source classification.",
-  "cmake_SHA256": "93da696a7be6e019d0b0c6ac2b447d70550e891b4eb3b9b61de750593c9b05da"
+  "cmake_SHA256": "93da696a7be6e019d0b0c6ac2b447d70550e891b4eb3b9b61de750593c9b05da",
+  "qualified_skips": {
+    "Windows": {
+      "RekordboxImportTest.ExistingUnreadableAnalyzeFilePreservesTrackState": {
+        "reason": "Qt QFile.setPermissions does not enforce a Windows NTFS unreadable ACL. The case must be present and enabled; only its explicit fixture-permission skip qualifies, without claiming a pass. No other Windows parser skip is permitted. Linux retains all 15 parser cases as mandatory without skips.",
+        "allowed_output_messages": [
+          "Local filesystem cannot remove fixture read permissions",
+          "Filesystem or current user still permits reading the fixture"
+        ]
+      }
+    }
+  }
 }

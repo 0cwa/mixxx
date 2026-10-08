@@ -32,6 +32,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      # AI-generated identity guard begins; covers clazy, tidy, and coverage.
+      - name: Verify reviewed diagnostic checkout
+        if: inputs.headless_tests
+        shell: bash
+        run: |
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      # End AI-generated identity guard.
       - name: Add clazy PPA
         if: matrix.name == 'clazy'
         # Ubuntu2404 comes with v1.11, which is too old for the Qt6.4 shipped with Ubuntu 24.04
@@ -164,7 +174,7 @@ jobs:
         env:
           GTEST_COLOR: 1
           QT_QPA_PLATFORM: offscreen
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || github.sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           CTEST_PARALLEL_LEVEL: 1
           CTEST_OUTPUT_ON_FAILURE: 1
 
@@ -178,7 +188,7 @@ jobs:
       # End AI-generated validation profile.
 
       - name: "Generate Coverage Report"
-        if: matrix.name == 'coverage'
+        if: matrix.name == 'coverage' && !inputs.headless_tests
         run: >-
           lcov
           --capture
@@ -191,7 +201,7 @@ jobs:
           --output-file lcov.info
         working-directory: build
       - name: "Upload Coverage Report to coveralls.io"
-        if: matrix.name == 'coverage'
+        if: matrix.name == 'coverage' && !inputs.headless_tests
         continue-on-error: true
         uses: coverallsapp/github-action@v2.3.8
         with:
