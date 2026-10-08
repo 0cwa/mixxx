@@ -19,6 +19,8 @@ env:
   EXPECTED_ARTIFACT_API_DIGEST: sha256:4022a1306830ca7563606aa0ccc308b511e39b6d5fb401e3727cd3cdc013dbbc
   EVIDENCE_ARTIFACT_ID: "11554996147"
   EXPECTED_EVIDENCE_ARTIFACT_API_DIGEST: sha256:7230a5a031c776243830c65110e9824218c5940dd16f193de2f1ab289628a2b8
+  EXPECTED_BUNDLE_SHA256: 4022a1306830ca7563606aa0ccc308b511e39b6d5fb401e3727cd3cdc013dbbc
+  EXPECTED_BUNDLE_BYTES: "21064896"
 
 jobs:
   runtime-parity:
@@ -100,13 +102,53 @@ jobs:
             fs.writeFileSync('parity-evidence/build-evidence-artifact.json', JSON.stringify(evidence, null, 2));
 
       - name: "Download exact application artifact"
-        uses: actions/download-artifact@v7
+        uses: actions/github-script@v9
+        env:
+          ARTIFACT_DOWNLOAD_TOKEN: ${{ github.token }}
         with:
-          artifact-ids: ${{ env.APP_ARTIFACT_ID }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ env.SOURCE_RUN_ID }}
-          path: application-artifact
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const artifact = JSON.parse(fs.readFileSync('parity-evidence/application-artifact.json'));
+            if (artifact.id !== Number(process.env.APP_ARTIFACT_ID) ||
+                artifact.workflow_run?.id !== Number(process.env.SOURCE_RUN_ID) ||
+                artifact.digest !== process.env.EXPECTED_ARTIFACT_API_DIGEST ||
+                !/^Mixxx-[0-9a-f]+-x86_64\.flatpak$/.test(artifact.name)) {
+              throw new Error('Unexpected raw application artifact basename');
+            }
+            const token = process.env.ARTIFACT_DOWNLOAD_TOKEN;
+            if (!token) throw new Error('Expected the task GitHub token');
+            const endpoint = `https://api.github.com/repos/${owner}/${repo}/actions/artifacts/${artifact.id}/zip`;
+            const response = await fetch(endpoint, {
+              headers: {authorization: `Bearer ${token}`,
+                accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'},
+              redirect: 'manual'
+            });
+            const redirect = response.headers.get('location');
+            if (response.status !== 302 || !redirect) {
+              throw new Error('Expected the documented artifact download redirect');
+            }
+            const location = new URL(redirect);
+            if (location.protocol !== 'https:' || location.username || location.password ||
+                !location.hostname.endsWith('.blob.core.windows.net')) {
+              throw new Error('Unexpected artifact storage destination');
+            }
+            // The signed storage request receives no GitHub token or other credentials.
+            const download = await fetch(location, {redirect: 'error'});
+            if (!download.ok) throw new Error('Raw artifact storage request failed');
+            const bytes = Buffer.from(await download.arrayBuffer());
+            const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+            if (bytes.length !== Number(process.env.EXPECTED_BUNDLE_BYTES) ||
+                digest !== process.env.EXPECTED_BUNDLE_SHA256) {
+              throw new Error('Raw bundle identity differs from its producing-job receipt');
+            }
+            fs.mkdirSync('application-artifact', {recursive: true});
+            fs.writeFileSync(`application-artifact/${artifact.name}`, bytes);
+            fs.writeFileSync('parity-evidence/raw-artifact-download-identity.txt',
+              `bytes=${bytes.length}\nsha256=${digest}\nformat=raw archive:false artifact\n`);
+            core.info(`Verified raw application bundle: ${bytes.length} bytes; SHA256 ${digest}`);
 
       - name: "Record downloaded application bundle hash separately"
         shell: bash
@@ -138,6 +180,8 @@ jobs:
           {
             for cache in "${caches[@]}"; do
               echo "ACTUAL_SOURCE_CMAKE_CACHE $cache"
+              grep -Fxq 'STEM:BOOL=ON' "$cache"
+              grep -Fxq 'FFMPEG:BOOL=ON' "$cache"
               awk -F: 'tolower($1) ~ /qml|qt6|stem|pipewire|portaudio|ffmpeg|fdk|hid|libusb|keyfinder|vinyl|lv2|lilv|bungee|signalsmith|rubberband|soundtouch|opus|flac|mp3|aac|cmake_build_type|build_testing|qt6core_version/ && $0 !~ /^\/\//' "$cache"
             done
           } | tee parity-evidence/selected-source-cmake-features.txt
@@ -164,6 +208,12 @@ jobs:
           [[ "$expected_bundle_sha" =~ ^[0-9a-f]{64}$ ]]
           actual_bundle_sha=$(sha256sum "$APPLICATION_BUNDLE" | cut -d ' ' -f 1)
           test "$actual_bundle_sha" = "$expected_bundle_sha"
+          test "$actual_bundle_sha" = "$EXPECTED_BUNDLE_SHA256"
+          avcodec_soname=$(sed -n 's/.*Shared library: \[\(libavcodec\.so\.[0-9]*\)\].*/\1/p' \
+            parity-evidence/source-staged-readelf.txt | sort -u)
+          [[ "$avcodec_soname" =~ ^libavcodec\.so\.([0-9]+)$ ]]
+          echo "SOURCE_AVCODEC_MAJOR=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+          printf '%s\n' "$avcodec_soname" > parity-evidence/source-avcodec-soname.txt
           echo 'Downloaded raw bundle SHA256 matches the producing job file hash receipt; both are distinct from service digests.' \
             | tee parity-evidence/source-bundle-hash-verification.txt
 
@@ -220,12 +270,13 @@ jobs:
               if (!avVersion || !findDecoder) return 1;
               unsigned version = avVersion();
               printf("AVCODEC_VERSION %u.%u.%u\n", version >> 16, (version >> 8) & 255, version & 255);
-              const char *decoders[] = {"aac", "mp3", "mp3float", "flac", "opus", "pcm_s16le"};
-              int aac = 0, mp3 = 0, flac = 0, opus = 0, pcm = 0;
+              const char *decoders[] = {"aac", "alac", "mp3", "mp3float", "flac", "opus", "pcm_s16le"};
+              int aac = 0, alac = 0, mp3 = 0, flac = 0, opus = 0, pcm = 0;
               for (unsigned i = 0; i < sizeof(decoders)/sizeof(decoders[0]); i++) {
                   int present = findDecoder(decoders[i]) != NULL;
                   printf("AVCODEC_DECODER %s %s\n", decoders[i], present ? "PRESENT" : "ABSENT");
                   if (!strcmp(decoders[i], "aac")) aac = present;
+                  if (!strcmp(decoders[i], "alac")) alac = present;
                   if (!strcmp(decoders[i], "mp3") || !strcmp(decoders[i], "mp3float")) mp3 |= present;
                   if (!strcmp(decoders[i], "flac")) flac = present;
                   if (!strcmp(decoders[i], "opus")) opus = present;
@@ -233,13 +284,13 @@ jobs:
               }
               dlclose(av);
               dlclose(fdk);
-              int required = aac && mp3 && flac && opus && pcm;
+              int required = aac && alac && mp3 && flac && opus && pcm;
               printf("REQUIRED_DECODER_REGISTRY %s\n", required ? "PASS" : "FAIL");
               return required ? 0 : 1;
           }
           /* End AI-generated runtime codec ABI probe. */
           PR23_CODEC_ABI
-          echo '050df123ba09a58ebf8a86570cb6b304253af38f19056ec842e324b38084f486  parity-tools/runtime-codec-probe.c' | sha256sum --check
+          echo '76ae985cbf64d3598bcc6c728e37f9b3264c7f0aed72cdaef5a9985efc937dda  parity-tools/runtime-codec-probe.c' | sha256sum --check
           cat > parity-tools/runtime-encoder-mode-probe.c <<'PR23_ENCODER_MODES'
           /* AI-generated empty-input AAC encoder mode probe begins. */
           #include <dlfcn.h>
@@ -465,6 +516,8 @@ jobs:
             2>&1 | tee parity-evidence/default-fdk-qlibrary-selection.txt
           "${runtime[@]}" --command="$probe_dir/runtime-codec-probe" org.mixxx.Mixxx \
             2>&1 | tee parity-evidence/default-codec-provider-abi.txt
+          grep -Eq "^AVCODEC_VERSION ${SOURCE_AVCODEC_MAJOR}\." \
+            parity-evidence/default-codec-provider-abi.txt
           if "${runtime[@]}" --command="$probe_dir/runtime-encoder-mode-probe" org.mixxx.Mixxx --require-he \
             2>&1 | tee parity-evidence/default-encoding-modes.txt; then
             mode_rc=0
@@ -506,6 +559,10 @@ jobs:
               echo '::endgroup::'
             fi
           done
+          if test "$external_rc" = 0; then
+            grep -Eq "^AVCODEC_VERSION ${SOURCE_AVCODEC_MAJOR}\." \
+              parity-evidence/external-fdk-provider-abi.txt
+          fi
           exit "$external_rc"
 
       - name: "Preserve runtime parity evidence"
