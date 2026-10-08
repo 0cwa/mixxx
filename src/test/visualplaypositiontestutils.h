@@ -5,6 +5,14 @@
 
 namespace mixxx::test {
 
+inline bool hasPlayPositionAtNextVSync(
+        VisualPlayPosition& position, VSyncTimeProvider* pVSyncTimeProvider) {
+    double playPosition = 0.0;
+    double slipPosition = 0.0;
+    return position.getPlaySlipAtNextVSync(
+            pVSyncTimeProvider, &playPosition, &slipPosition);
+}
+
 inline double playPositionAtNextVSync(
         VisualPlayPosition& position, VSyncTimeProvider* pVSyncTimeProvider) {
     double playPosition = 0.0;

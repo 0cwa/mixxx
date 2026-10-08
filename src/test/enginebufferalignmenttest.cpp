@@ -720,7 +720,7 @@ MarkerPlayheadPixelResult replayMarkerAtSyntheticVSync(
     std::array<CSAMPLE, kBufferSamples> output{};
     for (int callback = 0; callback <= callbackIndex; ++callback) {
         if (callback == callbackIndex && result.rendererInitialized &&
-                visualPlayPosition->isValid()) {
+                mixxx::test::hasPlayPositionAtNextVSync(*visualPlayPosition, &vsync)) {
             renderer.onPreRender(&vsync);
             result.playheadSample = renderer.getTruePosSample();
             result.playheadPixel = renderer.transformSamplePositionInRendererWorld(
@@ -1799,7 +1799,8 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
                 mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
-        if (rendererInitialized && visualPlayPosition->isValid()) {
+        if (rendererInitialized &&
+                mixxx::test::hasPlayPositionAtNextVSync(*visualPlayPosition, &vsync)) {
             renderer.onPreRender(&vsync);
             rendererPositionsBefore[callback] = renderer.getTruePosSample();
         }
@@ -2162,7 +2163,8 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
                 mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
-        if (rendererInitialized && visualPlayPosition->isValid()) {
+        if (rendererInitialized &&
+                mixxx::test::hasPlayPositionAtNextVSync(*visualPlayPosition, &vsync)) {
             renderer.onPreRender(&vsync);
             rendererPositionsBefore[callback] = renderer.getTruePosSample();
         }
