@@ -6,37 +6,42 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 get_filename_component(
-    default_mixxx_source_root "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE
+  default_mixxx_source_root
+  "${CMAKE_CURRENT_LIST_DIR}/../../.."
+  ABSOLUTE
 )
 set(
-    MIXXX_SOURCE_ROOT
-    "${default_mixxx_source_root}"
-    CACHE PATH "Mixxx checkout containing the actual scheduler sources"
+  MIXXX_SOURCE_ROOT
+  "${default_mixxx_source_root}"
+  CACHE PATH
+  "Mixxx checkout containing the actual scheduler sources"
 )
 find_package(Qt6 REQUIRED COMPONENTS Core)
 find_package(GTest REQUIRED)
 add_executable(
-    engineworkerscheduler-regression
-    engineworkerscheduler_regression.cpp
-    "${MIXXX_SOURCE_ROOT}/src/engine/engineworker.cpp"
-    "${MIXXX_SOURCE_ROOT}/src/engine/engineworker.h"
-    "${MIXXX_SOURCE_ROOT}/src/engine/engineworkerscheduler.cpp"
-    "${MIXXX_SOURCE_ROOT}/src/engine/engineworkerscheduler.h"
+  engineworkerscheduler-regression
+  engineworkerscheduler_regression.cpp
+  "${MIXXX_SOURCE_ROOT}/src/engine/engineworker.cpp"
+  "${MIXXX_SOURCE_ROOT}/src/engine/engineworker.h"
+  "${MIXXX_SOURCE_ROOT}/src/engine/engineworkerscheduler.cpp"
+  "${MIXXX_SOURCE_ROOT}/src/engine/engineworkerscheduler.h"
 )
 # Only this target shadows Event tracing and assertion support. QtCore
 # synchronization, EngineWorker and EngineWorkerScheduler use the real sources.
 target_include_directories(
-    engineworkerscheduler-regression
-    PRIVATE test_stubs "${MIXXX_SOURCE_ROOT}/src"
+  engineworkerscheduler-regression
+  PRIVATE test_stubs "${MIXXX_SOURCE_ROOT}/src"
 )
 target_link_libraries(
-    engineworkerscheduler-regression PRIVATE Qt6::Core GTest::gtest_main
+  engineworkerscheduler-regression
+  PRIVATE Qt6::Core GTest::gtest_main
 )
 enable_testing()
 add_test(
-    NAME engineworkerscheduler-retained-notification
-    COMMAND engineworkerscheduler-regression
+  NAME engineworkerscheduler-retained-notification
+  COMMAND engineworkerscheduler-regression
 )
 set_tests_properties(
-    engineworkerscheduler-retained-notification PROPERTIES TIMEOUT 20
+  engineworkerscheduler-retained-notification
+  PROPERTIES TIMEOUT 20
 )
