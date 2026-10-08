@@ -10,6 +10,7 @@
 #include "util/logger.h"
 #include "waveform/waveform.h"
 #include "waveform/waveformfactory.h"
+#include "waveform/waveformscale.h"
 
 namespace {
 
@@ -59,7 +60,7 @@ bool AnalyzerWaveform::initialize(const AnalyzerTrack& track,
     createFilters(sampleRate);
 
     //TODO (vrince) Do we want to expose this as settings or whatever ?
-    constexpr int mainWaveformSampleRate = 441;
+    constexpr int mainWaveformSampleRate = mixxx::waveform::kDefaultVisualSampleRate;
     // two visual sample per pixel in full width overview in full hd
     constexpr int summaryWaveformSamples = 2 * 1920;
 

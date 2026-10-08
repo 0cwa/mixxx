@@ -13,6 +13,7 @@
 #include "waveform/visualplayposition.h"
 #include "waveform/vsyncthread.h"
 #include "waveform/waveform.h"
+#include "waveform/waveformscale.h"
 
 namespace {
 constexpr int kDefaultDimBrightThreshold = 127;
@@ -177,6 +178,17 @@ void WaveformWidgetRenderer::onPreRender(VSyncTimeProvider* vsyncThread) {
         ConstWaveformPointer pWaveform = pTrack->getWaveform();
         if (pWaveform) {
             m_audioSamplePerPixel = m_visualSamplePerPixel * pWaveform->getAudioVisualRatio();
+        } else {
+            // Use the same default ratio as a newly analyzed waveform so a cold frame
+            // has the correct scale if the waveform is installed before preprocessing.
+            const double coldAudioSamplePerPixel =
+                    mixxx::waveform::getAudioSamplePerPixel(
+                            m_visualSamplePerPixel,
+                            mixxx::waveform::getDefaultAudioVisualRatio(
+                                    pTrack->getSampleRate()));
+            if (coldAudioSamplePerPixel > 0.0) {
+                m_audioSamplePerPixel = coldAudioSamplePerPixel;
+            }
         }
     }
 
