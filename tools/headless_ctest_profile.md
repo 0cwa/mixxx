@@ -17,13 +17,18 @@ marker taxonomy/control-order tests and numeric VisualPlayPosition oracles remai
 The shared test QApplication infrastructure remains. This is a source/fixture
 classification audit, not independent human certification or GUI acceptance.
 
+TrackExporter has an active plain testing::Test fixture, a present header,
+temporary directories and QObject signal/slot overwrite and cancel answers.
+Its seven cases remain an explicit file-export integration scope exclusion;
+their exclusion does not assert missing source, inactivity or GUI behavior.
+
 The public Forest `interfaceqml_test.cpp` blob is absent from this candidate.
 Its two public cases would be rejected as unknown if discovered. Any change to
 the pinned src tree, CMake bytes, file hashes, definitions or discovered commands
 requires a new classification review. Conditional/platform absent cases are
 recorded; a Linux discovery list is never treated as Windows discovery.
 
-Headless builds pass `AU_EFFECTS=OFF`. Actual macOS execution also checks its
+macOS headless builds pass `AU_EFFECTS=OFF`. Actual macOS execution also checks its
 CMake cache and refuses missing/ON AudioUnit configuration: EffectsManager and
 EffectsBackendManager fixtures can reach installed AudioUnits. This diagnostic
 has no AudioUnit integration coverage. Ordinary configuration keeps its existing
@@ -35,6 +40,11 @@ cases comprise three original MF stream-status regressions, three explicit
 provider diagnostics, the public-read late-post-seek tick diagnostic, and five
 source/proxy open/seek/read definitions. Both shutdown tests, provider chunk-jump,
 five representative reader cases and all 15 public parser cases remain mandatory.
+The seven HID report-descriptor data cases are also mandatory on every native
+diagnostic platform. The common hosted Configure step already passes HID=ON;
+an absent or disabled HID data case now blocks the diagnostic rather than
+silently reducing coverage. Cross-compiled and packaging-only lanes retain
+their explicit no-test scope.
 A provider loop that continues on unsupported input is insufficient evidence.
 The new direct MF source, forced registered MF proxy, and forced proxy-to-cache
 chunk tests require the local WAV to open and reject provider fallback. They

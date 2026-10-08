@@ -130,6 +130,40 @@ class WorkingSourceGuardTest(unittest.TestCase):
 
 
 class HeadlessSelectionTest(unittest.TestCase):
+    def test_active_track_exporter_remains_explicitly_excluded(self):
+        path = "src/test/trackexport_test.cpp"
+        self.assertTrue((ROOT / "src/test/trackexport_test.h").is_file())
+        policies = PROFILE["sources"][path]["cases"]
+        self.assertEqual(7, len(policies))
+        plan = self.select([case(name) for name in policies])
+        self.assertEqual(7, len(plan["excluded"]))
+        for policy in policies.values():
+            self.assertIn("Source and fixture header are present", policy["reason"])
+            self.assertEqual("excluded", policy["classification"])
+
+    def test_all_native_platforms_require_hid_data_cases(self):
+        names = PROFILE["sources"][
+            "src/test/controller_hid_reportdescriptor_test.cpp"
+        ]["cases"]
+        self.assertEqual(7, len(names))
+        self.assertTrue(set(names).issubset(PROFILE["mandatory_common"]))
+        for system in ("Linux", "Darwin", "Windows"):
+            with self.subTest(system=system):
+                tests = [t for t in required_tests(system) if t["name"] not in names]
+                plan = headless_ctest.select_tests(
+                    {"tests": tests}, PROFILE, system
+                )
+                self.assertEqual(sorted(names), plan["missing_required"])
+
+    def test_disabled_hid_data_case_is_not_coverage(self):
+        name = next(iter(PROFILE["sources"][
+            "src/test/controller_hid_reportdescriptor_test.cpp"
+        ]["cases"]))
+        tests = required_tests()
+        next(t for t in tests if t["name"] == name)["properties"][0]["value"] = True
+        plan = headless_ctest.select_tests({"tests": tests}, PROFILE, "Linux")
+        self.assertEqual([name], plan["missing_required"])
+
     def test_macos_rejects_enabled_or_unproven_audio_units(self):
         for cache in ("", "AU_EFFECTS:BOOL=ON\n"):
             with self.assertRaises(ValueError):

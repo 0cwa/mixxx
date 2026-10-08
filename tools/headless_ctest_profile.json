@@ -27,7 +27,14 @@
     "RekordboxImportTest.SkipsTruncatedSyntheticBeatGrid",
     "RekordboxImportTest.UpdatesFirstMatchingHotCueWithoutReordering",
     "RekordboxPdbImportTest.PersistsNormalizedKeyId",
-    "RekordboxPdbImportTest.PropagatesMalformedParserExceptionFromWorker"
+    "RekordboxPdbImportTest.PropagatesMalformedParserExceptionFromWorker",
+    "HidReportDescriptorParserTest.ParseReportDescriptor",
+    "HidReportDescriptorTest.ControlValue_1Bit",
+    "HidReportDescriptorTest.ControlValue_signed11Bits",
+    "HidReportDescriptorTest.ControlValue_signed32Bits",
+    "HidReportDescriptorTest.ControlValue_unsigned11Bits",
+    "HidReportDescriptorTest.ControlValue_unsigned32Bits",
+    "HidReportDescriptorTest.SetControlValue_OutOfRange"
   ],
   "mandatory_windows": [
     "SoundSourceMediaFoundationTest.StreamTickNullThenSamplePreservesShortGap",
@@ -5051,31 +5058,31 @@
       "cases": {
         "TrackExporterTest.Cancel": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         },
         "TrackExporterTest.DedupeList": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         },
         "TrackExporterTest.MungeFilename": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         },
         "TrackExporterTest.OverwriteAll": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         },
         "TrackExporterTest.OverwriteSkip": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         },
         "TrackExporterTest.SimpleListExport": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         },
         "TrackExporterTest.SkipAll": {
           "classification": "excluded",
-          "reason": "src/test/trackexport_test.cpp: Referenced legacy test fixture header is absent at pinned source; source-only inactive family is not independently certified."
+          "reason": "src/test/trackexport_test.cpp: Active temporary-directory file-export tests use a plain testing::Test fixture and QObject signal/slot overwrite and cancel answers. Source and fixture header are present and all seven cases are registered. Retained as an explicit file-export integration scope exclusion; no missing-source, inactive-family or GUI-behavior claim."
         }
       }
     },
