@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include "control/controlobject.h"
+#include "control/controlpushbutton.h"
 #include "test/mixxxtest.h"
 #include "waveform/waveformwidgetfactory.h"
 
