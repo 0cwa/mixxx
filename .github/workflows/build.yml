@@ -5,6 +5,12 @@ name: Build
 on:
   workflow_call:
     inputs:
+      expected_head_sha:
+        type: string
+        default: ""
+      headless_tests:
+        type: boolean
+        default: false
       publish:
         type: boolean
         default: false
@@ -66,7 +72,7 @@ jobs:
               -DMODPLUG=ON
               -DWAVPACK=ON
               -DINSTALL_USER_UDEV_RULES=OFF
-            ctest_args: []
+            ctest_args: ""
             compiler_cache: ccache
             compiler_cache_path: /home/runner/.cache/ccache
             compiler_cache_id: qt6
@@ -89,7 +95,7 @@ jobs:
               -DWAVPACK=ON
               -DVCPKG_TARGET_TRIPLET=x64-osx-min1100-release
             # TODO: Fix this broken test on macOS
-            ctest_args: []
+            ctest_args: ""
             cpack_generator: DragNDrop
             compiler_cache: ccache
             compiler_cache_path: /Users/runner/Library/Caches/ccache
@@ -141,7 +147,7 @@ jobs:
             cc: cl
             cxx: cl
             # TODO: Fix these broken tests on Windows
-            ctest_args: []
+            ctest_args: ""
             cpack_generator: WIX
             buildenv_basepath: C:\buildenv
             buildenv_script: tools/windows_buildenv.bat
@@ -214,7 +220,7 @@ jobs:
               -DCMAKE_INSTALL_PREFIX=/usr
               -DCMAKE_INSTALL_LIBDIR=lib
               -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined"
-            ctest_args: []
+            ctest_args: ""
             cpack_generator: AppImage
             # Not a cross-compile: this is a native x86_64 build, so the
             # shared Test step must run.  The PPA steps are excluded for the
@@ -510,7 +516,7 @@ jobs:
           KEY_PREFIX: ${{ matrix.os }}-${{ matrix.compiler_cache_id }}-${{ inputs.branch }}-
 
       - name: "Test"
-        if: matrix.crosscompile != true
+        if: matrix.crosscompile != true && !inputs.headless_tests
         run: ctest --timeout 45 ${{ matrix.ctest_args }}
         working-directory: build
         env:
@@ -518,6 +524,37 @@ jobs:
           # Windows tests fail randomly if run in parallel
           CTEST_PARALLEL_LEVEL: ${{ runner.os == 'Windows' && 1 || 3 }}
           CTEST_OUTPUT_ON_FAILURE: 1
+
+      # AI-generated validation profile begins; review before hosted execution.
+      - name: "Set up Python for headless selection"
+        if: matrix.crosscompile != true && inputs.headless_tests
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: "Discover and run source-classified headless tests"
+        if: matrix.crosscompile != true && inputs.headless_tests
+        shell: bash
+        run: >-
+          python tools/headless_ctest.py
+          --build build --output build/headless-evidence --timeout 45
+          --expected-head "$EXPECTED_HEAD_SHA"
+          ${{ matrix.ctest_args }}
+        env:
+          GTEST_COLOR: 1
+          QT_QPA_PLATFORM: offscreen
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || github.sha }}
+          CTEST_PARALLEL_LEVEL: ${{ runner.os == 'Windows' && 1 || 3 }}
+          CTEST_OUTPUT_ON_FAILURE: 1
+
+      - name: "Preserve headless discovery, selection, and results"
+        if: always() && matrix.crosscompile != true && inputs.headless_tests
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: headless-${{ matrix.os }}-${{ matrix.artifacts_slug }}-${{ matrix.arch || 'native' }}
+          path: build/headless-evidence/
+          if-no-files-found: error
+      # End AI-generated validation profile.
 
       - name: "[Windows] Sign executables"
         env:
@@ -603,7 +640,9 @@ jobs:
         # bundled libraries) that a build-only pipeline cannot see.  The
         # runner has no display, so --version may exit non-zero after
         # initializing Qt — reaching Mixxx startup is what matters.
-        if: matrix.cpack_generator == 'AppImage'
+        # AI-generated scope guard begins: this profile excludes product startup.
+        if: matrix.cpack_generator == 'AppImage' && !inputs.headless_tests
+        # End AI-generated scope guard.
         run: |
           # The AppImage does not bundle libpipewire (it is excluded), so the
           # host must provide it; the bare runner image lacks it.
@@ -860,13 +899,32 @@ jobs:
           fi
           echo "GIT_DESC=$GIT_DESC" >> $GITHUB_ENV
 
+      # AI-generated scope guard begins: stage a manifest without test execution.
+      - name: "Prepare packaging-only Flatpak validation"
+        if: inputs.headless_tests
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          manifest=packaging/flatpak/org.mixxx.Mixxx.yaml
+          staged=packaging/flatpak/org.mixxx.Mixxx.headless.yaml
+          test "$(grep -c '^    run-tests: true$' "$manifest")" -eq 1
+          sed 's/^    run-tests: true$/    run-tests: false/' "$manifest" > "$staged"
+          if grep -qE '^[[:space:]]*run-tests:[[:space:]]*(true|yes)' "$staged"; then
+            exit 1
+          fi
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || github.sha }}
+      # End AI-generated scope guard.
+
       - name: "Build Flatpak"
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          manifest-path: packaging/flatpak/org.mixxx.Mixxx.yaml
+          manifest-path: ${{ inputs.headless_tests && 'packaging/flatpak/org.mixxx.Mixxx.headless.yaml' || 'packaging/flatpak/org.mixxx.Mixxx.yaml' }}
           arch: ${{ matrix.variant.arch }}
           build-bundle: false
           upload-artifact: false
+          # AI-generated scope guard begins: keep the action from re-enabling tests.
+          run-tests: false
+          # End AI-generated scope guard.
           # The Flatpak caches (~1.4 GB per arch) are only saved by branch pushes
           # (main and the release branches) to stay within the 10 GB quota.
           # Pull requests can still restore the cache of their base branch.

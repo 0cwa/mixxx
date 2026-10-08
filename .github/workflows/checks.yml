@@ -4,6 +4,13 @@ name: build-checks
 
 on:
   workflow_call:
+    inputs:
+      expected_head_sha:
+        type: string
+        default: ""
+      headless_tests:
+        type: boolean
+        default: false
 
 permissions:
   contents: read #  to fetch code (actions/checkout)
@@ -133,7 +140,7 @@ jobs:
           CLAZY_CHECKS: level2,container-inside-loop,heap-allocated-small-trivial-type,isempty-vs-count,qhash-with-char-pointer-key,qproperty-type-mismatch,tr-non-literal,no-rule-of-two-soft,no-non-pod-global-static,no-qproperty-without-notify,no-qstring-allocations,no-function-args-by-value,no-copyable-polymorphic,no-ctor-missing-parent-argument,no-missing-qobject-macro,no-rule-of-three,no-returning-void-expression
           CLAZY_IGNORE_DIRS: lib/.*
       - name: "Test"
-        if: matrix.name == 'coverage'
+        if: matrix.name == 'coverage' && !inputs.headless_tests
         run: ctest --timeout 45
         working-directory: build
         env:
@@ -141,6 +148,35 @@ jobs:
           # Only use single thread to prevent *.gcna files from overwriting each other
           CTEST_PARALLEL_LEVEL: 1
           CTEST_OUTPUT_ON_FAILURE: 1
+      # AI-generated validation profile begins; coverage uses the same selector.
+      - name: "Set up Python for headless coverage selection"
+        if: matrix.name == 'coverage' && inputs.headless_tests
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: "Discover and run source-classified headless coverage tests"
+        if: matrix.name == 'coverage' && inputs.headless_tests
+        run: >-
+          python tools/headless_ctest.py
+          --build build --output build/headless-evidence --timeout 45
+          --expected-head "$EXPECTED_HEAD_SHA"
+        env:
+          GTEST_COLOR: 1
+          QT_QPA_PLATFORM: offscreen
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || github.sha }}
+          CTEST_PARALLEL_LEVEL: 1
+          CTEST_OUTPUT_ON_FAILURE: 1
+
+      - name: "Preserve headless coverage discovery, selection, and results"
+        if: always() && matrix.name == 'coverage' && inputs.headless_tests
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: headless-coverage-ubuntu-24.04
+          path: build/headless-evidence/
+          if-no-files-found: error
+      # End AI-generated validation profile.
+
       - name: "Generate Coverage Report"
         if: matrix.name == 'coverage'
         run: >-
