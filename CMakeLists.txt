@@ -3060,7 +3060,6 @@ if(BUILD_TESTING)
       src/test/nativeeffects_test.cpp
       src/test/ringdelaybuffer_test.cpp
       src/test/sampleutiltest.cpp
-      src/test/waveformmarkset_test.cpp
       src/test/waveform_upgrade_test.cpp
     )
   endif()
@@ -3070,6 +3069,8 @@ if(BUILD_TESTING)
   else()
     add_executable(mixxx-test ${src-mixxx-test})
   endif()
+
+  target_sources(mixxx-test PRIVATE src/test/waveformmarkset_test.cpp)
 
   target_sources(mixxx-test PRIVATE src/test/dlgprefwaveform_test.cpp)
   target_compile_definitions(
