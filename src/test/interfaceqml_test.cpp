@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QMetaEnum>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QUrl>
@@ -9,6 +10,7 @@
 #include <memory>
 
 #include "control/controlindicatortimer.h"
+#include "control/controlpushbutton.h"
 #include "effects/effectsmanager.h"
 #include "engine/channelhandle.h"
 #include "engine/enginemixer.h"
@@ -25,6 +27,7 @@
 #include "soundio/soundmanager.h"
 #include "test/mixxxdbtest.h"
 #include "track/track.h"
+#include "waveform/overviewtype.h"
 
 namespace {
 const ConfigKey kMaxZoomOutKey(QStringLiteral("[Waveform]"),
@@ -53,6 +56,7 @@ class InterfaceQmlTest : public MixxxDbTest {
         m_testSoundManager.reset();
         m_testPlayerManager.reset();
         m_testLibrary.reset();
+        m_testOverviewTypeControl.reset();
         m_testRecordingManager.reset();
         m_testEngineMixer.reset();
         m_testEffectsManager.reset();
@@ -106,6 +110,15 @@ class InterfaceQmlTest : public MixxxDbTest {
                 [](Track* pTrack) { delete pTrack; });
         m_testRecordingManager = std::make_unique<RecordingManager>(
                 config(), m_testEngineMixer.get());
+        const ConfigKey overviewTypeKey(QStringLiteral("[Waveform]"),
+                QStringLiteral("WaveformOverviewType"));
+        m_testOverviewTypeControl = std::make_unique<ControlPushButton>(overviewTypeKey);
+        m_testOverviewTypeControl->setStates(
+                QMetaEnum::fromType<mixxx::OverviewType>().keyCount());
+        m_testOverviewTypeControl->setReadOnly();
+        m_testOverviewTypeControl->forceSet(static_cast<double>(
+                config()->getValue<mixxx::OverviewType>(
+                        overviewTypeKey, mixxx::OverviewType::RGB)));
         m_testLibrary = std::make_shared<Library>(nullptr,
                 config(),
                 dbConnectionPooler(),
@@ -213,6 +226,7 @@ Item {
     bool m_libraryCachesCreated = false;
     std::unique_ptr<TrackCollectionManager> m_testTrackCollectionManager;
     std::unique_ptr<RecordingManager> m_testRecordingManager;
+    std::unique_ptr<ControlPushButton> m_testOverviewTypeControl;
     std::shared_ptr<Library> m_testLibrary;
     std::unique_ptr<mixxx::ControlIndicatorTimer> m_testControlIndicatorTimer;
     std::shared_ptr<ChannelHandleFactory> m_testChannelHandleFactory;
