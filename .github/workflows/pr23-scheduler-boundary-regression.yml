@@ -1,0 +1,110 @@
+# AI-generated independent scheduler regression workflow begins.
+name: PR23 scheduler boundary regression
+
+on:
+  push:
+    branches:
+      - audit/pr23-scheduler-boundary-regression-20261008
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retained-notification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the reviewed standalone target
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install only QtCore and test build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build qt6-base-dev libgtest-dev
+
+      - name: Build the unchanged-source regression target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scheduler-evidence
+          test "$(git rev-parse HEAD:src)" = 1de8e2c8b22617d7723ccd97745cd87fb73a44c7
+          git rev-parse HEAD HEAD:src > scheduler-evidence/source-provenance.txt
+          cmake -S tools/tests/engineworkerscheduler -B scheduler-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build scheduler-build --parallel 3
+          sha256sum scheduler-build/engineworkerscheduler-regression \
+            > scheduler-evidence/normal-binary-sha256.txt
+
+      - name: Require 100 retained-notification passes
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GTEST_REPEAT=100
+          export GTEST_OUTPUT="xml:$PWD/scheduler-evidence/normal-final-iteration.xml"
+          ctest --test-dir scheduler-build --verbose --output-on-failure \
+            | tee scheduler-evidence/normal-repeat100.log
+          test "$(grep -Fc '[       OK ] EngineWorkerSchedulerTest.RetainsNotificationAfterWorkerScan' scheduler-evidence/normal-repeat100.log)" -eq 100
+
+      - name: Require the same boundary test to reject the historical scheduler
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/older-scheduler-control" \
+            550d2f90f01f4f5a5858eecac40ec914c116394a
+          cmake -S tools/tests/engineworkerscheduler -B scheduler-old-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMIXXX_SOURCE_ROOT="$RUNNER_TEMP/older-scheduler-control"
+          cmake --build scheduler-old-build --parallel 3
+          export GTEST_REPEAT=1
+          export GTEST_OUTPUT="xml:$PWD/scheduler-evidence/old-control.xml"
+          set +e
+          ctest --test-dir scheduler-old-build --verbose --output-on-failure \
+            > scheduler-evidence/old-control.log 2>&1
+          result=$?
+          set -e
+          cat scheduler-evidence/old-control.log
+          test "$result" -eq 8
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('scheduler-evidence/old-control.xml').getroot()
+          cases = root.findall('.//testcase')
+          assert len(cases) == 1
+          assert cases[0].get('name') == 'RetainsNotificationAfterWorkerScan'
+          failures = cases[0].findall('failure')
+          assert len(failures) == 2
+          text = '\n'.join(f.get('message', '') + (f.text or '') for f in failures)
+          assert 'firstWorker.waitForWake()' in text
+          assert 'secondWorker.waitForWake()' in text
+          print('Historical scheduler rejected both forced-window wake assertions; expected negative control passed.')
+          PY
+
+      - name: Require 100 AddressSanitizer and UndefinedBehaviorSanitizer passes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/tests/engineworkerscheduler -B scheduler-asan-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build scheduler-asan-build --parallel 3
+          export GTEST_REPEAT=100
+          export GTEST_OUTPUT="xml:$PWD/scheduler-evidence/asan-final-iteration.xml"
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
+          export UBSAN_OPTIONS=halt_on_error=1
+          ctest --test-dir scheduler-asan-build --verbose --output-on-failure \
+            | tee scheduler-evidence/asan-repeat100.log
+          test "$(grep -Fc '[       OK ] EngineWorkerSchedulerTest.RetainsNotificationAfterWorkerScan' scheduler-evidence/asan-repeat100.log)" -eq 100
+          sha256sum scheduler-asan-build/engineworkerscheduler-regression \
+            > scheduler-evidence/asan-binary-sha256.txt
+
+      - name: Preserve source-bound regression evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr23-scheduler-boundary-regression-evidence
+          path: scheduler-evidence/
+# AI-generated independent scheduler regression workflow ends.
