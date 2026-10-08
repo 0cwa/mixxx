@@ -14,6 +14,8 @@ class EngineWorkerScheduler : public QThread {
     EngineWorkerScheduler(QObject* pParent = nullptr);
     ~EngineWorkerScheduler() override;
 
+    void stopAndWait();
+
     void addWorker(EngineWorker* pWorker);
     void runWorkers();
     void workerReady();

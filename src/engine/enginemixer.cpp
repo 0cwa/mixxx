@@ -259,7 +259,9 @@ EngineMixer::EngineMixer(UserSettingsPointer pConfig,
     // Note: the EQ Rack is set in EffectsManager::setupDefaults();
 }
 
-EngineMixer::~EngineMixer() = default;
+EngineMixer::~EngineMixer() {
+    m_pWorkerScheduler->stopAndWait();
+}
 
 std::span<const CSAMPLE> EngineMixer::getMainBuffer() const {
     return m_main.span();
