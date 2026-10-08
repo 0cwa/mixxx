@@ -30,15 +30,72 @@ def required_tests(system="Linux"):
 
 
 class HeadlessSelectionTest(unittest.TestCase):
+    def test_macos_rejects_enabled_or_unproven_audio_units(self):
+        for cache in ("", "AU_EFFECTS:BOOL=ON\n"):
+            with self.assertRaises(ValueError):
+                headless_ctest.validate_diagnostic_config("Darwin", cache)
+        headless_ctest.validate_diagnostic_config(
+            "Darwin", "AU_EFFECTS:BOOL=OFF\n"
+        )
+
+    def test_public_interface_qml_omission_fails_closed(self):
+        extras = [
+            case(
+                "InterfaceQmlTest."
+                "EditResetCancelAndSaveKeepMaxZoomOutSynchronized"
+            ),
+            case(
+                "InterfaceQmlTest."
+                "LoweringMaxZoomOutReclampsExistingWaveformDisplay"
+            ),
+        ]
+        plan = self.select(extras)
+        self.assertEqual(2, len(plan["unknown"]))
+        self.assertTrue(
+            all("InterfaceQmlTest" not in t["name"] for t in plan["selected"])
+        )
+
+    def test_transitive_visual_fixtures_and_renderer_are_excluded(self):
+        paths = (
+            "src/test/controllerscriptenginelegacy_test.cpp",
+            "src/test/playermanagertest.cpp",
+            "src/test/enginebufferalignmenttest.cpp",
+            "src/test/trackupdate_test.cpp",
+        )
+        for path in paths:
+            policies = PROFILE["sources"][path]["cases"]
+            plan = self.select([case(name) for name in policies])
+            self.assertEqual(len(policies), len(plan["excluded"]))
+
+    def test_factory_fixture_excluded_marker_data_retained(self):
+        plan = self.select(
+            [
+                case(
+                    "WaveformCueCountdownConfigTest."
+                    "DefaultsAreMigratedToWaveformConfig"
+                ),
+                case(
+                    "WaveformMarkSetTest."
+                    "CountdownSelectionHonorsIndependentCategories"
+                ),
+            ]
+        )
+        self.assertEqual(1, len(plan["excluded"]))
+        self.assertIn(
+            "WaveformMarkSetTest."
+            "CountdownSelectionHonorsIndependentCategories",
+            [t["name"] for t in plan["selected"]],
+        )
+
     def select(self, extra=(), system="Linux", exclude=""):
         discovery = {"tests": required_tests(system) + list(extra)}
         return headless_ctest.select_tests(discovery, PROFILE, system, exclude)
 
-    def test_windows_requires_three_mf_cases(self):
+    def test_windows_requires_status_and_provider_diagnostics(self):
         plan = self.select(system="Windows")
         self.assertEqual([], plan["missing_required"])
         self.assertEqual(
-            3,
+            4,
             sum(
                 t["definition"].startswith("SoundSourceMediaFoundationTest.")
                 for t in plan["selected"]
@@ -50,7 +107,7 @@ class HeadlessSelectionTest(unittest.TestCase):
             {"tests": required_tests()}, PROFILE, "Windows"
         )
         self.assertEqual(
-            PROFILE["mandatory_windows"], plan["missing_required"]
+            sorted(PROFILE["mandatory_windows"]), plan["missing_required"]
         )
 
     def test_source_defined_provider_cases_remain(self):

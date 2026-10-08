@@ -3,12 +3,16 @@
 #include <gtest/gtest.h>
 #include <mfapi.h>
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <iomanip>
 #include <utility>
 
+#include "engine/cachingreader/cachingreaderchunk.h"
+#include "sources/soundsourceproxy.h"
 #include "test/mixxxtest.h"
+#include "track/track.h"
 #include "util/sample.h"
 
 namespace mixxx {
@@ -191,6 +195,128 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
     }
 };
 
+// AI-generated Windows diagnostic test support begins.
+class MediaFoundationProviderDiagnosticTest : public ::MixxxTest {
+  protected:
+    void SetUp() override {
+        if (qEnvironmentVariableIntValue("MIXXX_HEADLESS_MF_DIAGNOSTICS") != 1) {
+            GTEST_SKIP() << "Explicit headless Media Foundation diagnostic opt-in required";
+        }
+    }
+    QUrl testUrl() const {
+        return QUrl::fromLocalFile(getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    }
+
+    SoundSourceProviderPointer registeredProvider() {
+        if (!SoundSourceProxy::isFileSuffixSupported(QStringLiteral("wav"))) {
+            if (!SoundSourceProxy::registerProviders()) {
+                return {};
+            }
+        }
+        for (const auto& registration :
+                SoundSourceProxy::allProviderRegistrationsForUrl(testUrl())) {
+            auto provider = registration.getProvider();
+            if (std::dynamic_pointer_cast<SoundSourceProviderMediaFoundation>(provider)) {
+                return provider;
+            }
+        }
+        return {};
+    }
+
+    void checkSeekReads(const AudioSourcePointer& source) {
+        constexpr SINT kFrames = 64;
+        const auto channels = source->getSignalInfo().getChannelCount();
+        ASSERT_GT(channels.value(), 0);
+        ASSERT_GT(source->frameIndexRange().length(), 5 * CachingReaderChunk::kFrames);
+        SampleBuffer reference(source->getSignalInfo().frames2samples(kFrames));
+        SampleBuffer actual(source->getSignalInfo().frames2samples(kFrames));
+        const SINT first = source->frameIndexMin();
+        const auto firstRange = IndexRange::forward(first, kFrames);
+        ASSERT_EQ(firstRange,
+                source->readSampleFrames(
+                              WritableSampleFrames(firstRange,
+                                      SampleBuffer::WritableSlice(reference)))
+                        .frameIndexRange());
+        const auto forwardRange = IndexRange::forward(
+                first + 4 * CachingReaderChunk::kFrames, kFrames);
+        ASSERT_EQ(forwardRange,
+                source->readSampleFrames(
+                              WritableSampleFrames(forwardRange,
+                                      SampleBuffer::WritableSlice(actual)))
+                        .frameIndexRange());
+        ASSERT_EQ(firstRange,
+                source->readSampleFrames(
+                              WritableSampleFrames(firstRange,
+                                      SampleBuffer::WritableSlice(actual)))
+                        .frameIndexRange());
+        for (SINT sample = 0; sample < reference.size(); ++sample) {
+            ASSERT_NEAR(reference[sample], actual[sample], 0.0001f) << sample;
+        }
+        RecordProperty("provider", "Microsoft Media Foundation");
+        RecordProperty("completed_seek_reads", "initial,forward,backward");
+    }
+};
+
+TEST_F(MediaFoundationProviderDiagnosticTest, DirectSourceForwardBackwardReads) {
+    auto source = std::make_shared<SoundSourceMediaFoundation>(testUrl());
+    ASSERT_EQ(AudioSource::OpenResult::Succeeded,
+            source->open(AudioSource::OpenMode::Strict));
+    checkSeekReads(source);
+}
+
+TEST_F(MediaFoundationProviderDiagnosticTest, ForcedProxyForwardBackwardReads) {
+    const auto provider = registeredProvider();
+    ASSERT_TRUE(provider) << "Registered Media Foundation WAV provider is required";
+    auto track = Track::newTemporary(testUrl().toLocalFile());
+    SoundSourceProxy proxy(track, provider);
+    const auto source = proxy.openAudioSource(AudioSource::OpenParams());
+    ASSERT_TRUE(source) << "Media Foundation must open the local WAV fixture";
+    ASSERT_EQ(provider, proxy.getProvider()) << "Provider fallback is forbidden";
+    checkSeekReads(source);
+}
+
+TEST_F(MediaFoundationProviderDiagnosticTest, ForcedProxyCachingReaderChunkSeeks) {
+    const auto provider = registeredProvider();
+    ASSERT_TRUE(provider) << "Registered Media Foundation WAV provider is required";
+    auto track = Track::newTemporary(testUrl().toLocalFile());
+    SoundSourceProxy proxy(track, provider);
+    const auto source = proxy.openAudioSource(AudioSource::OpenParams());
+    ASSERT_TRUE(source) << "Media Foundation must open the local WAV fixture";
+    ASSERT_EQ(provider, proxy.getProvider()) << "Provider fallback is forbidden";
+    constexpr auto channels = audio::ChannelCount::stereo();
+    const SINT sampleCount = CachingReaderChunk::frames2samples(
+            CachingReaderChunk::kFrames, channels);
+    SampleBuffer chunkSamples(sampleCount);
+    SampleBuffer temporarySamples(sampleCount);
+    SampleBuffer reference(sampleCount);
+    SampleBuffer actual(sampleCount);
+    CachingReaderChunkForOwner chunk{SampleBuffer::WritableSlice(chunkSamples)};
+    ASSERT_GT(source->frameIndexRange().length(), 5 * CachingReaderChunk::kFrames);
+    bool haveReference = false;
+    for (SINT index : {0, 4, 0}) {
+        chunk.init(index);
+        const auto requested = chunk.frameIndexRange(source);
+        ASSERT_EQ(requested,
+                chunk.bufferSampleFrames(source, SampleBuffer::WritableSlice(temporarySamples)));
+        ASSERT_EQ(requested, chunk.readBufferedSampleFrames(actual.data(), channels, requested));
+        if (index == 0) {
+            if (!haveReference) {
+                std::copy(actual.data(), actual.data() + sampleCount, reference.data());
+                haveReference = true;
+            } else {
+                for (SINT sample = 0; sample < sampleCount; ++sample) {
+                    ASSERT_NEAR(reference[sample], actual[sample], 0.0001f) << sample;
+                }
+            }
+        }
+        chunk.free();
+    }
+    ASSERT_TRUE(haveReference);
+    RecordProperty("provider", "Microsoft Media Foundation");
+    RecordProperty("completed_chunk_indices", "0,4,0");
+}
+// End AI-generated Windows diagnostic test support.
+
 TEST_F(SoundSourceMediaFoundationTest, StreamTickNullThenSamplePreservesShortGap) {
     TestSoundSourceMediaFoundation source(testUrl());
     ASSERT_EQ(
@@ -364,5 +490,55 @@ TEST_F(SoundSourceMediaFoundationTest, TerminalNullStatusesPreserveKnownPosition
     EXPECT_EQ(kUnknownFrameIndex, state.streamGapEndFrameIndex);
     EXPECT_EQ(2, readSamples.callCount());
 }
+
+// AI-generated public-caller late-tick diagnostic begins.
+TEST_F(SoundSourceMediaFoundationTest,
+        HeadlessLatePostSeekTickMustReachRequestedFrame) {
+    if (qEnvironmentVariableIntValue("MIXXX_HEADLESS_MF_DIAGNOSTICS") != 1) {
+        GTEST_SKIP() << "Explicit headless Media Foundation diagnostic opt-in required";
+    }
+    TestSoundSourceMediaFoundation source(testUrl());
+    ASSERT_EQ(AudioSource::OpenResult::Succeeded,
+            source.open(AudioSource::OpenMode::Strict));
+    ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
+
+    const SINT firstFrameIndex = source.frameIndexMin();
+    const SINT targetFrameIndex = firstFrameIndex + 4;
+    ASSERT_LT(targetFrameIndex + 32, source.frameIndexMax());
+    setReadState(source,
+            targetFrameIndex + 1,
+            kUnknownFrameIndex,
+            kUnknownFrameIndex);
+
+    ReadSampleQueue readSamples(source.getSignalInfo(), firstFrameIndex);
+    readSamples.push({S_OK, MF_SOURCE_READERF_STREAMTICK, firstFrameIndex + 2, 0});
+    readSamples.push({S_OK, 0, firstFrameIndex + 3, 32});
+    setReadSampleProvider(source,
+            [&readSamples](DWORD streamIndex,
+                    DWORD controlFlags,
+                    DWORD* pFlags,
+                    LONGLONG* pTimestamp,
+                    IMFSample** ppSample) {
+                return readSamples(streamIndex,
+                        controlFlags,
+                        pFlags,
+                        pTimestamp,
+                        ppSample);
+            });
+
+    SampleBuffer output(source.getSignalInfo().frames2samples(1));
+    output[0] = -999;
+    const auto requestedRange = IndexRange::forward(targetFrameIndex, 1);
+    const auto result = source.readSampleFrames(
+            WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
+    const auto state = readState(source);
+    EXPECT_EQ(2, readSamples.callCount());
+    EXPECT_EQ(requestedRange, result.frameIndexRange());
+    EXPECT_EQ(targetFrameIndex + 1, state.currentFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, state.streamTickFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, state.streamGapEndFrameIndex);
+    EXPECT_EQ(2, output[0]);
+}
+// End AI-generated public-caller late-tick diagnostic.
 
 } // namespace mixxx

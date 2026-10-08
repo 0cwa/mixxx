@@ -133,6 +133,16 @@ def qualified_skip(case, policy):
     )
 
 
+def validate_diagnostic_config(system, cache_text):
+    if system == "Darwin" and not re.search(
+        r"^AU_EFFECTS:BOOL=OFF$", cache_text, re.MULTILINE
+    ):
+        raise ValueError(
+            "Headless macOS diagnostics require AU_EFFECTS=OFF; "
+            "effects fixtures can instantiate installed AudioUnits"
+        )
+
+
 def validate_results(results, plan):
     errors = []
     names = {r["name"] for r in results}
@@ -228,6 +238,17 @@ def run_plan(args):
             "saved discovery; no platform execution claim"
         )
     else:
+        cache = pathlib.Path(args.build).resolve() / "CMakeCache.txt"
+        cache_text = cache.read_text(encoding="utf-8")
+        validate_diagnostic_config(platform.system(), cache_text)
+        receipt["CMakeCache_SHA256"] = hashlib.sha256(
+            cache.read_bytes()
+        ).hexdigest()
+        receipt["AU_effects_coverage"] = (
+            "disabled for macOS diagnostic; no AU integration coverage"
+            if platform.system() == "Darwin"
+            else "not a macOS runner"
+        )
         discovery = json.loads(
             subprocess.check_output(ctest + ["--show-only=json-v1"], text=True)
         )
@@ -294,6 +315,11 @@ def run_plan(args):
     (output / "results.xml").unlink(missing_ok=True)
     write_json(output / "receipt.json", receipt)
     with (output / "ctest.log").open("w", encoding="utf-8") as log:
+        execution_env = os.environ.copy()
+        if plan["system"] == "Windows":
+            execution_env["MIXXX_HEADLESS_MF_DIAGNOSTICS"] = "1"
+            receipt["MF_diagnostic_opt_in"] = True
+            write_json(output / "receipt.json", receipt)
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -301,6 +327,7 @@ def run_plan(args):
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=execution_env,
         )
         for line in process.stdout:
             print(line, end="", flush=True)

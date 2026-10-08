@@ -1,84 +1,74 @@
-<!-- AI-generated validation profile documentation begins. -->
+<!-- AI-generated source/fixture diagnostic review begins. -->
 
-# Headless CI validation profile
+# Source-classified headless diagnostic profile
 
-This local review branch offers source-classified headless validation in
-`develop.yml`, for both reusable build tests and instrumented coverage tests.
-It is intended for the current Forest candidate, not a general change to
-upstream test policy.
-Publishing or dispatching this branch requires separate approval.
+Manual `develop.yml` dispatch with `headless_tests: true` and the exact reviewed
+`expected_head_sha` is the only hosted opt-in. It defaults to false; ordinary
+push/PR and manual full-suite behavior retain their existing configuration.
+Publishing and hosted execution remain subject to separate human approval.
 
-Only manual dispatch with `headless_tests: true` selects this diagnostic profile.
-The input defaults to false; ordinary push/PR events and manual dispatch without
-the opt-in retain full tests. This is not an upstream release/test-policy change.
-The full existing build/check matrix remains; there is no Windows-only option.
+The fixed profile assigns explicit policy to all 144 test-source files and 1,138
+source definitions at its pinned source tree. There is no permissive default.
+Per-source fixture and call-site review conservatively excludes visual/QML,
+widget, rendering, image, inherited library/cover-art/controller integration,
+unknown legacy fixture, hardware/mapping validation and network families. The
+alignment renderer family and waveform-factory config fixture are excluded;
+marker taxonomy/control-order tests and numeric VisualPlayPosition oracles remain.
+The shared test QApplication infrastructure remains. This is a source/fixture
+classification audit, not independent human certification or GUI acceptance.
 
-Headless dispatch requires `expected_head_sha`, the full reviewed commit SHA.
-Each pre-commit/build/check job immediately rejects a missing, invalid, or
-different SHA after checkout, including cross-compiled builds, clazy, and
-clang-tidy. Diagnostic runs also disable the download-manifest publishing job.
-Each test job records its actual commit, tree,
-source tree, profile checksum, platform, and GitHub run identity.
+The public Forest `interfaceqml_test.cpp` blob is absent from this candidate.
+Its two public cases would be rejected as unknown if discovered. Any change to
+the pinned src tree, CMake bytes, file hashes, definitions or discovered commands
+requires a new classification review. Conditional/platform absent cases are
+recorded; a Linux discovery list is never treated as Windows discovery.
 
-`headless_ctest_profile.json` classifies source definitions, including conditional
-Windows Media Foundation and macOS definitions. The helper discovers the actual
-CTest cases on each runner and resolves parameterized cases through their exact
-GTest filters. It does not reuse a Linux count or fixed Linux list. Unknown
-definitions, wildcard commands, unexpected executables, changed source bytes,
-and a changed source tree or CMake test definitions block execution.
+Headless builds pass `AU_EFFECTS=OFF`. Actual macOS execution also checks its
+CMake cache and refuses missing/ON AudioUnit configuration: EffectsManager and
+EffectsBackendManager fixtures can reach installed AudioUnits. This diagnostic
+has no AudioUnit integration coverage. Ordinary configuration keeps its existing
+default. LV2 enumeration remains enabled; this does not claim physical/device or
+external plug-in runtime acceptance.
 
-The profile retains the broad Linux headless baseline. Its additional exclusion
-is the inherited, source-disabled CoreServices initialization case. Visual QML,
-window, screenshot, widget, skin, image, controller-screen, mapping/hardware, and
-network-dependent families remain excluded. Core application initialization and
-external AudioUnit plug-in instantiation are also excluded. The macOS dispatch
-group regression remains selected without instantiating a plug-in.
+Windows retains MEDIAFOUNDATION=ON for x64 and ARM64. Its 12 additional mandatory
+cases comprise three original MF stream-status regressions, three explicit
+provider diagnostics, the public-read late-post-seek tick diagnostic, and five
+source/proxy open/seek/read definitions. Both shutdown tests, provider chunk-jump,
+five representative reader cases and all 15 public parser cases remain mandatory.
+A provider loop that continues on unsupported input is insufficient evidence.
+The new direct MF source, forced registered MF proxy, and forced proxy-to-cache
+chunk tests require the local WAV to open and reject provider fallback. They
+assert forward/backward ranges and sample equivalence and record provider/read
+properties. The chunk test exercises CachingReaderChunk buffering; it does not
+prove the asynchronous CachingReaderWorker/ReadAheadManager chain.
 
-The test harness still creates its shared QApplication infrastructure. Selecting
-the offscreen platform is supplementary; source classification excludes GUI
-test bodies. This profile does not claim real GUI or audio/device acceptance.
+Windows diagnostic execution sets `MIXXX_HEADLESS_MF_DIAGNOSTICS=1`. The new cases
+otherwise skip as explicit diagnostics; in this profile every mandatory case
+must run without skips. The late-post-seek tick test uses the public read entry,
+with a real MF source-reader seek and injected F<T<S<D events. It requires
+successful target-frame/sample recovery. This is an unresolved native runtime
+success requirement and may expose the existing conservative overshoot failure;
+no production repair or native pass is claimed. The original three status tests
+alone do not close this real-caller success contract.
 
-The Windows x64 and ARM64 configurations retain `MEDIAFOUNDATION=ON` and native
-test compilation. Windows testing stays serial, and the inherited ARM64 AutoDJ
-exclusion remains. All three Media Foundation regressions, both shutdown tests,
-the provider caching-reader regression, representative reader tests, and all
-15 public parser regressions must be discovered, selected, and enabled. The
-Linux parser cases must pass without skips. On Windows, only the unreadable-file
-permission fixture may have a qualified skip: Qt file permissions do not enforce
-an NTFS unreadable ACL. The recorded output must contain one of that fixture's
-two explicit permission limitations, and there must be no failure/error. Its
-receipt reports a qualified skip, never a pass. The other 14 parser cases, all
-three MF cases, both shutdown cases, and required provider/reader cases must pass
-without skips. A missing or disabled permission fixture still fails selection.
-Other available provider and caching-reader definitions remain
-selected. Conditional provider availability and skips are recorded per runner.
+On Windows only ExistingUnreadableAnalyzeFilePreservesTrackState may have its
+existing qualified permission-fixture skip: it must be present/enabled, carry one
+of the two exact filesystem permission limitations, and contain no failure/error.
+Its receipt records a qualified skip rather than a pass. The other 14 parser
+cases and all other mandatory cases require passes without skips. Linux requires
+all 15 parser cases without skips. Windows stays serial and preserves the ARM64
+AutoDJ exclusion (the conservative source policy also excludes its library fixture).
 
-The helper writes complete discovery, selected/excluded/unknown cases, source
-coverage, disabled cases, and CTest's verified selection before execution. It
-uses a CTest index file, avoiding Windows command-line limits and supporting
-CMake 3.22. Fixture setup cannot automatically expand the selection. Empty or
-incomplete mandatory selections fail. Each process retains the 45-second CTest
-timeout. JUnit results must match the selected case set; unqualified required skips, missing
-results, duplicates, or failures fail validation. The workflow preserves logs,
-JUnit, per-case skip/failure output, and receipts even when testing fails.
+Selection uses actual runner CTest discovery, exact GTest definitions, finite
+45-second process timeouts and fixture-expansion suppression. JUnit must match
+the selected case set; missing, duplicate, failed or unqualified mandatory skips
+fail. SHA/tree/profile/config/discovery/selection/results and logs are retained.
 
-The AppImage product-startup smoke test is disabled for this profile. Flatpak's
-staged manifest sets `run-tests: false`; the action's existing default input
-remains unchanged. Its builds are packaging-only and carry no Flatpak
-test/runtime coverage claim. Non-headless callers use the original manifest
-and the original action inputs. Cross-compiled macOS ARM64 and
-Android continue to skip tests, as before. Other callers retain the reusable
-workflows' default full test behavior; approval for this profile must identify
-`develop.yml` and the exact reviewed ref/commit.
+AppImage product-startup smoke remains disabled. Flatpak diagnostic staging
+sets run-tests:false and preserves ordinary inputs; its diagnostic coverage is
+packaging only. Instrumented diagnostics produce no LCOV/Coveralls baseline.
+Cross-compiled Android/macOS ARM64 keep their existing no-test behavior. The
+full existing matrix remains. No real DJ/audio acceptance or crash-causality
+claim is made, and no prior cross-SHA binary receipt is substituted here.
 
-The coverage build remains instrumented, but the diagnostic profile does not
-generate or upload an LCOV/Coveralls report. Its selected test results do not
-replace the ordinary full-suite coverage baseline.
-
-Local selector checks and saved/synthetic discovery prove selection behavior;
-they are not Windows compilation, native discovery, or matrix pass receipts.
-The earlier normal build/unit receipts remain bound to production/test source
-at `1c0b415cead1b26e37a37b196e82a8c6ab30fb0b`. This CI-only branch leaves those
-source bytes unchanged. No additional crash-causality claim is made.
-
-<!-- End AI-generated validation profile documentation. -->
+<!-- End AI-generated source/fixture diagnostic review. -->
