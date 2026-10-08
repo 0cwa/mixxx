@@ -117,7 +117,7 @@ jobs:
               flatpak-evidence/build-file-paths.txt > flatpak-evidence/cache-paths.txt
             while IFS= read -r cache_path; do
               cache_parent="$(dirname "$cache_path")"
-              evidence_id="$(echo "$cache_path" | tr / _)"
+              evidence_id="cache_$(echo "$cache_path" | tr / _)"
               cp "$cache_path" "flatpak-evidence/$evidence_id"
               if test -f "$cache_parent/compile_commands.json"; then
                 cp "$cache_parent/compile_commands.json" \
