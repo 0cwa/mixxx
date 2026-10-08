@@ -52,7 +52,7 @@ modules:
   - modules/soundtouch.yaml
   - modules/libid3tag.yaml
   - modules/upower.yaml
-  - modules/fdk-aac-free.yaml
+  - modules/fdk-aac.yaml
   - modules/libmodplug.yaml
   - modules/qtkeychain.yaml
   - modules/libebur128.yaml

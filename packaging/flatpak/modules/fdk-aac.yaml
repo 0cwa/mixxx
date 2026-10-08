@@ -1,0 +1,26 @@
+# AI-generated proposal begins; requires human licensing and runtime review.
+name: fdk-aac
+buildsystem: cmake-ninja
+config-opts:
+  - -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  - -DCMAKE_INSTALL_LIBDIR=lib
+  - -DBUILD_SHARED_LIBS=ON
+  - -DBUILD_PROGRAMS=OFF
+  - -DFDK_AAC_INSTALL_CMAKE_CONFIG_MODULE=ON
+  - -DFDK_AAC_INSTALL_PKGCONFIG_MODULE=ON
+sources:
+  - type: archive
+    url: https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v2.0.3.tar.gz
+    sha256: e25671cd96b10bad896aa42ab91a695a9e573395262baed4e4a2ff178d6a3a78
+  - type: file
+    url: https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v2.0.3.tar.gz
+    sha256: e25671cd96b10bad896aa42ab91a695a9e573395262baed4e4a2ff178d6a3a78
+    dest-filename: fdk-aac-v2.0.3.tar.gz
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+post-install:
+  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/fdk-aac NOTICE
+  - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/fdk-aac fdk-aac-v2.0.3.tar.gz
+# AI-generated proposal ends; no license acceptance or runtime qualification.
