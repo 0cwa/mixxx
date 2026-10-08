@@ -2,7 +2,7 @@
   "notice": "AI-generated source classification for local CI review begins. This profile requires human review before hosted execution.",
   "schema": 1,
   "source_baseline": "1c0b415cead1b26e37a37b196e82a8c6ab30fb0b",
-  "src_tree": "b0db4422100076bdd62a8bdb5b6649d0d097c602",
+  "src_tree": "4e7d04bce8283a61382c7f168d8f601d4ff16947",
   "scope": "Explicit per-source/fixture policies; no permissive default. Conservative visual/transitive/uncertain exclusions. Shared QApplication infrastructure remains. Human independent certification and native runtime gates remain pending.",
   "mandatory_common": [
     "EngineMixerShutdownTest.StopsSchedulerBeforeDestroyingChannelWorkers",
@@ -1456,7 +1456,7 @@
       }
     },
     "src/test/dlgprefwaveform_test.cpp": {
-      "sha256": "60b5331396017af00a0573cf0716afaf7f4dc13a21a2d94b76f5a08d702e992a",
+      "sha256": "8e7fabb0f66a0725cce0462673ad5078c9be2d0e967cd188c4c13f652e1d17de",
       "cases": {
         "DlgPrefWaveformTest.CueCategoriesDoNotDependOnDisplayFormatSelection": {
           "classification": "excluded",
@@ -5330,5 +5330,5 @@
       }
     }
   },
-  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics and classification review. No native pass claimed."
+  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed."
 }
