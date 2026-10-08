@@ -3060,6 +3060,7 @@ if(BUILD_TESTING)
       src/test/nativeeffects_test.cpp
       src/test/ringdelaybuffer_test.cpp
       src/test/sampleutiltest.cpp
+    src/test/rekordboxfeature_test.cpp
       src/test/waveform_upgrade_test.cpp
     )
   endif()
