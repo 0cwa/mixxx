@@ -1,0 +1,237 @@
+# AI-generated dedicated PR23 Flatpak artifact workflow begins.
+name: PR23 performance Flatpak
+
+on:
+  push:
+    branches:
+      - audit/pr23-performance-flatpak-20261008
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SOURCE_SHA: fa926dd3a67a1a0928992382aa88fb2cdd03f515
+
+jobs:
+  build-flatpak:
+    name: "Flatpak"
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions@sha256:6b90b58b2f100fc12c10a24da62c5a47163e1f9013bd200df0ca60fe3cc7255a
+      options: --privileged
+      volumes:
+        - /usr:/host/usr
+        - /opt:/host/opt
+    strategy:
+      matrix:
+        variant:
+          - arch: x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.variant.runner }}
+    steps:
+      - name: "Recover host disk space"
+        run: |
+          rm -rf /host/opt/hostedtoolcache/CodeQL
+          rm -rf /host/opt/hostedtoolcache/go
+          rm -rf /host/usr/local/lib/android
+          rm -rf /host/usr/local/.ghcup
+          rm -rf /host/usr/local/share/powershell
+          rm -rf /host/usr/share/swift
+          rm -rf /host/usr/share/dotnet
+
+      - name: "Check out repository"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: fa926dd3a67a1a0928992382aa88fb2cdd03f515
+
+      - name: "Store Git version"
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          GIT_DESC=$(git describe --always --first-parent --dirty=-modified)
+          if [ -z "$GIT_DESC" ]; then
+            GIT_DESC="unknown"
+          fi
+          echo "GIT_DESC=$GIT_DESC" >> $GITHUB_ENV
+
+      - name: "Record immutable source and manifest"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse HEAD:src)" = "0366e7352c33bf545723737978d35cd146f0080e"
+          mkdir -p flatpak-evidence
+          {
+            echo "expected_source_sha=$EXPECTED_SOURCE_SHA"
+            echo "source_sha=$(git rev-parse HEAD)"
+            echo "source_tree=$(git rev-parse HEAD^{tree})"
+            echo "src_tree=$(git rev-parse HEAD:src)"
+            echo "workflow_commit=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_url=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            git status --porcelain
+          } > flatpak-evidence/source-provenance.txt
+          cp packaging/flatpak/org.mixxx.Mixxx.yaml flatpak-evidence/manifest.yaml
+          sha256sum packaging/flatpak/org.mixxx.Mixxx.yaml CMakeLists.txt \
+            > flatpak-evidence/source-config-sha256.txt
+          flatpak --version > flatpak-evidence/flatpak-version.txt
+          flatpak-builder --version > flatpak-evidence/flatpak-builder-version.txt
+
+      - name: "Build Flatpak"
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/org.mixxx.Mixxx.yaml
+          arch: ${{ matrix.variant.arch }}
+          build-bundle: false
+          upload-artifact: false
+          keep-build-dirs: true
+          build-dir: flatpak_app
+          # The Flatpak caches (~1.4 GB per arch) are only saved by branch pushes
+          # (main and the release branches) to stay within the 10 GB quota.
+          # Pull requests can still restore the cache of their base branch.
+          save-cache: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+
+      - name: "Collect staged feature and loader evidence"
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p flatpak-evidence
+          flatpak list --columns=application,arch,branch,commit \
+            > flatpak-evidence/runtime-inventory.txt
+          if test -d .flatpak-builder/build; then
+            if command -v rg >/dev/null; then
+              rg --files --hidden --no-ignore .flatpak-builder/build \
+                | sort > flatpak-evidence/build-file-paths.txt
+            else
+              find .flatpak-builder/build -type f | sort \
+                > flatpak-evidence/build-file-paths.txt
+            fi
+            awk '/\/mixxx-[^/]+\/.*CMakeCache\.txt$/' \
+              flatpak-evidence/build-file-paths.txt > flatpak-evidence/cache-paths.txt
+            while IFS= read -r cache_path; do
+              cache_parent="$(dirname "$cache_path")"
+              evidence_id="$(echo "$cache_path" | tr / _)"
+              cp "$cache_path" "flatpak-evidence/$evidence_id"
+              if test -f "$cache_parent/compile_commands.json"; then
+                cp "$cache_parent/compile_commands.json" \
+                  "flatpak-evidence/${evidence_id%.txt}-compile_commands.json"
+              fi
+            done < flatpak-evidence/cache-paths.txt
+            awk 'tolower($0) ~ /bungee|signalsmith|rubberband|soundtouch|fdk|keyfinder|hidapi|libusb|lv2|lilv|vinyl/' \
+              flatpak-evidence/build-file-paths.txt \
+              > flatpak-evidence/feature-build-paths.txt
+          fi
+          if test -f flatpak_app/files/bin/mixxx.bin; then
+            sha256sum flatpak_app/files/bin/mixxx.bin \
+              > flatpak-evidence/staged-binary-sha256.txt
+            find flatpak_app/files -type f | sort \
+              > flatpak-evidence/staged-file-paths.txt
+            awk '/plugins|qml|lv2|mixxx.bin|fdk|keyfinder|hidapi|libusb/' \
+              flatpak-evidence/staged-file-paths.txt \
+              > flatpak-evidence/plugin-library-inventory.txt
+            flatpak-builder --run flatpak_app packaging/flatpak/org.mixxx.Mixxx.yaml \
+              sh -c 'ldd /app/bin/mixxx.bin' \
+              > flatpak-evidence/sdk-ldd.txt 2>&1
+            flatpak-builder --run flatpak_app packaging/flatpak/org.mixxx.Mixxx.yaml \
+              sh -c 'readelf -h -d /app/bin/mixxx.bin' \
+              > flatpak-evidence/staged-readelf.txt 2>&1
+            if grep -q 'not found' flatpak-evidence/sdk-ldd.txt; then
+              echo "Staged binary has unresolved dependencies" >&2
+              exit 1
+            fi
+            test -s flatpak-evidence/cache-paths.txt
+          fi
+
+      - name: "Create Flatpak bundle"
+        run: |
+          flatpak build-bundle repo \
+            --arch=${{ matrix.variant.arch }} \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.flatpak org.mixxx.Mixxx
+
+      - name: "Create Debug extension"
+        run: |
+          flatpak build-bundle repo \
+            --arch=${{ matrix.variant.arch }} \
+            --runtime Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.Debug.flatpak org.mixxx.Mixxx.Debug
+
+      - name: "Check shipped runtime dependency closure"
+        shell: bash
+        run: |
+          bundle="Mixxx-${GIT_DESC}-${{ matrix.variant.arch }}.flatpak"
+          set -- "$bundle" flatpak-evidence
+          # AI-generated production-runtime dependency capture begins.
+          set -euo pipefail
+          bundle=$1
+          receipt_dir=$2
+          mkdir -p "$receipt_dir"
+          receipt_dir=$(realpath "$receipt_dir")
+          # This installation is confined to the CI task workspace.
+          export XDG_DATA_HOME="$PWD/.pr23-parity-data"
+          export FLATPAK_USER_DIR="$PWD/.pr23-parity-data/flatpak"
+          mkdir -p "$FLATPAK_USER_DIR"
+          flatpak --user install -y --no-deps --no-related "$bundle" > "$receipt_dir/runtime-install.txt" 2>&1
+          flatpak --user info --show-metadata org.mixxx.Mixxx > "$receipt_dir/installed-app-metadata.txt"
+          flatpak --user info --show-runtime org.mixxx.Mixxx > "$receipt_dir/installed-runtime-ref.txt"
+          runtime_ref="$(cat "$receipt_dir/installed-runtime-ref.txt")"
+          test "$runtime_ref" = "org.kde.Platform/x86_64/6.10"
+          flatpak --user remote-add --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y flathub "$runtime_ref" \
+            > "$receipt_dir/platform-runtime-install.txt" 2>&1
+          flatpak --user info --show-commit "$runtime_ref" \
+            > "$receipt_dir/installed-platform-commit.txt"
+          flatpak --user info --show-metadata "$runtime_ref" \
+            > "$receipt_dir/installed-platform-metadata.txt"
+          # Only the runtime shell and loader are invoked; Mixxx is never launched.
+          flatpak run --user --nofilesystem=home --nofilesystem=host --command=sh org.mixxx.Mixxx -c '
+            set -eu
+            echo "PRODUCTION RUNTIME: $(cat /.flatpak-info)"
+            echo "=== app executable loader closure ==="
+            ldd /app/bin/mixxx.bin
+            echo "=== required dynamic FDK encoder provider ==="
+            provider=$(find /app/lib /usr/lib -name "libfdk-aac.so.2" -print -quit)
+            test -n "$provider"
+            ls -l "$provider"
+            ldd "$provider"
+            echo "=== Qt SQL, SVG, platform and QML plugin inventory ==="
+            find /app/lib /usr/lib -type f \( -name "libqsqlite.so" -o -name "libqsvg.so" -o -name "libqxcb.so" -o -name "libqwayland*.so" -o -name "qmldir" \) -print
+            for kind in libqsqlite.so libqsvg.so libqxcb.so; do
+              plugin=$(find /app/lib /usr/lib -type f -name "$kind" -print -quit)
+              test -n "$plugin"
+              echo "=== $plugin ==="
+              ldd "$plugin"
+            done
+            echo "=== QML shared module loader closure ==="
+            find /app/lib /usr/lib -path "*/qml/*" -type f -name "*.so" -exec sh -c '\''for p do echo "=== $p ==="; ldd "$p"; done'\'' sh {} +
+            echo "=== app shipped library inventory ==="
+            find /app/lib -type f -name "*.so*" -print
+          ' > "$receipt_dir/production-runtime-closure.txt" 2>&1
+          if grep -q 'not found' "$receipt_dir/production-runtime-closure.txt"; then
+            echo 'Production runtime closure contains a missing library.' >&2
+            exit 1
+          fi
+          # End AI-generated production-runtime dependency capture.
+
+      - name: "Upload Flatpak bundle"
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          archive: "false"
+          path: Mixxx-${{ env.GIT_DESC }}-${{ matrix.variant.arch }}.flatpak
+
+      - name: "Upload Debug extension"
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          archive: "false"
+          path: Mixxx-${{ env.GIT_DESC }}-${{ matrix.variant.arch }}.Debug.flatpak
+
+      - name: "Preserve configuration and staged evidence"
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: pr23-performance-flatpak-x86_64-evidence
+          path: flatpak-evidence/
+          if-no-files-found: error
+
+# End AI-generated dedicated PR23 Flatpak artifact workflow.
