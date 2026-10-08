@@ -1,9 +1,9 @@
-#include "control/controlobject.h"
-#include "control/controlpushbutton.h"
 #include "preferences/dialog/dlgprefwaveform.h"
 
 #include <gtest/gtest.h>
 
+#include "control/controlobject.h"
+#include "control/controlpushbutton.h"
 #include "test/mixxxtest.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/waveformwidgetfactory.h"

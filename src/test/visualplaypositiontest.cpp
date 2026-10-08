@@ -2,8 +2,8 @@
 
 #include <chrono>
 
-#include "util/performancetimer.h"
 #include "test/visualplaypositiontestutils.h"
+#include "util/performancetimer.h"
 #include "waveform/isynctimeprovider.h"
 #include "waveform/visualplayposition.h"
 

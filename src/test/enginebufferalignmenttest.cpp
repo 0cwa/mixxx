@@ -936,7 +936,9 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
         visualPlayPositionsBefore[callback] =
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
-                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
+                mixxx::test::playPositionAtNextVSync(
+                        *visualPlayPosition, &vsync) *
+                engineTrackFrames;
         pEngineBuffer->process(output.data(), kBufferSamples);
         pEngineBuffer->postProcess(kBufferSamples);
         playPositionsAfter[callback] = pEngineBuffer->getPlayPos().value();
@@ -1798,7 +1800,9 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
         visualPlayPositionsBefore[callback] =
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
-                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
+                mixxx::test::playPositionAtNextVSync(
+                        *visualPlayPosition, &vsync) *
+                engineTrackFrames;
         if (rendererInitialized &&
                 mixxx::test::hasPlayPositionAtNextVSync(*visualPlayPosition, &vsync)) {
             renderer.onPreRender(&vsync);
@@ -2162,7 +2166,9 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
         visualPlayPositionsBefore[callback] =
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
-                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
+                mixxx::test::playPositionAtNextVSync(
+                        *visualPlayPosition, &vsync) *
+                engineTrackFrames;
         if (rendererInitialized &&
                 mixxx::test::hasPlayPositionAtNextVSync(*visualPlayPosition, &vsync)) {
             renderer.onPreRender(&vsync);
