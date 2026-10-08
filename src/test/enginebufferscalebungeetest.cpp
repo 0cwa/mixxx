@@ -16,6 +16,7 @@
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #include "engine/readaheadmanager.h"
 #include "test/mixxxtest.h"
+#include "test/visualplaypositiontestutils.h"
 #include "util/fpclassify.h"
 #include "util/math.h"
 #include "util/sample.h"
@@ -1843,7 +1844,8 @@ TEST_F(EngineBufferScaleBungeeBufferWindowTest,
     trace.back().normalizedSourcePosition = newGrainSourcePosition;
     trace.back().visualPositionStep = newGrainPositionStep;
     trace.back().visualPlayRate = newGrainPlayRate;
-    trace.back().predictedDisplayPosition = visualPosition.getAtNextVSync(&vsync);
+    trace.back().predictedDisplayPosition =
+            mixxx::test::playPositionAtNextVSync(visualPosition, &vsync);
     const double displayedSamplePosition = trace.back().predictedDisplayPosition *
             static_cast<double>(kOracleFeedFrames * kChannelCount);
     trace.back().markerPixel = oracleRendererPixel(

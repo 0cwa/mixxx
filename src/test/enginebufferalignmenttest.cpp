@@ -40,6 +40,7 @@
 #include "engine/enginebuffer.h"
 #include "engine/readaheadmanager.h"
 #include "test/signalpathtest.h"
+#include "test/visualplaypositiontestutils.h"
 #include "track/track.h"
 #include "util/performancetimer.h"
 #include "util/sample.h"
@@ -935,7 +936,7 @@ StretchedMarkerProbeResult runStretchedMarkerProbe(
         visualPlayPositionsBefore[callback] =
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
-                visualPlayPosition->getAtNextVSync(&vsync) * engineTrackFrames;
+                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
         pEngineBuffer->process(output.data(), kBufferSamples);
         pEngineBuffer->postProcess(kBufferSamples);
         playPositionsAfter[callback] = pEngineBuffer->getPlayPos().value();
@@ -1231,7 +1232,7 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
                         visualPlayPosition->getEnginePlayPos() *
                         engineTrackFrames;
                 record.visualVSyncBeforeFrames =
-                        visualPlayPosition->getAtNextVSync(&vsync) *
+                        mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) *
                         engineTrackFrames;
                 const std::size_t firstObservation =
                         g_source.readObservationCount;
@@ -1370,7 +1371,7 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
         observation.visualEnginePlayPosBefore =
                 visualPlayPosition->getEnginePlayPos();
         observation.visualAtNextVSyncBefore =
-                visualPlayPosition->getAtNextVSync(&vsync);
+                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync);
         observation.expectedVisualAtNextVSync =
                 (observation.playPosBeforeFrames + kVSyncOffsetFrames) /
                 engineTrackFrames;
@@ -1797,7 +1798,7 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithEngineMarkerTracksEnginePosition) {
         visualPlayPositionsBefore[callback] =
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
-                visualPlayPosition->getAtNextVSync(&vsync) * engineTrackFrames;
+                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
         if (rendererInitialized && visualPlayPosition->isValid()) {
             renderer.onPreRender(&vsync);
             rendererPositionsBefore[callback] = renderer.getTruePosSample();
@@ -2160,7 +2161,7 @@ TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
         visualPlayPositionsBefore[callback] =
                 visualPlayPosition->getEnginePlayPos() * engineTrackFrames;
         visualVSyncPositionsBefore[callback] =
-                visualPlayPosition->getAtNextVSync(&vsync) * engineTrackFrames;
+                mixxx::test::playPositionAtNextVSync(*visualPlayPosition, &vsync) * engineTrackFrames;
         if (rendererInitialized && visualPlayPosition->isValid()) {
             renderer.onPreRender(&vsync);
             rendererPositionsBefore[callback] = renderer.getTruePosSample();

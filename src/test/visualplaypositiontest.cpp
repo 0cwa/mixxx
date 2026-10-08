@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "util/performancetimer.h"
+#include "test/visualplaypositiontestutils.h"
 #include "waveform/isynctimeprovider.h"
 #include "waveform/visualplayposition.h"
 
@@ -59,7 +60,7 @@ TEST(VisualPlayPositionTest, ForwardInterpolationUsesPositionStep) {
     setPosition(&position, 0.4, 1.2, 0.01);
 
     // 5 ms is one half of the declared 10 ms audio buffer.
-    EXPECT_NEAR(0.406, position.getAtNextVSync(&vsync), 1e-12);
+    EXPECT_NEAR(0.406, mixxx::test::playPositionAtNextVSync(position, &vsync), 1e-12);
 }
 
 TEST(VisualPlayPositionTest, ReverseInterpolationUsesSignedPlayRate) {
@@ -67,7 +68,7 @@ TEST(VisualPlayPositionTest, ReverseInterpolationUsesSignedPlayRate) {
     FixedVSyncProvider vsync;
     setPosition(&position, 0.4, -0.6, 0.01);
 
-    EXPECT_NEAR(0.397, position.getAtNextVSync(&vsync), 1e-12);
+    EXPECT_NEAR(0.397, mixxx::test::playPositionAtNextVSync(position, &vsync), 1e-12);
 }
 
 TEST(VisualPlayPositionTest, LoopInterpolationWrapsForwardAndReverse) {
@@ -100,8 +101,8 @@ TEST(VisualPlayPositionTest, LoopInterpolationWrapsForwardAndReverse) {
             0.2,
             0.6);
 
-    EXPECT_NEAR(0.21, forward.getAtNextVSync(&vsync), 1e-12);
-    EXPECT_NEAR(0.59, reverse.getAtNextVSync(&vsync), 1e-12);
+    EXPECT_NEAR(0.21, mixxx::test::playPositionAtNextVSync(forward, &vsync), 1e-12);
+    EXPECT_NEAR(0.59, mixxx::test::playPositionAtNextVSync(reverse, &vsync), 1e-12);
 }
 
 TEST(VisualPlayPositionTest, SlipRunningUsesIndependentSlipClock) {
@@ -140,5 +141,5 @@ TEST(VisualPlayPositionTest, NoAudioBufferDoesNotInventTransportOffset) {
             120.0,
             0.0);
 
-    EXPECT_DOUBLE_EQ(0.37, position.getAtNextVSync(&vsync));
+    EXPECT_DOUBLE_EQ(0.37, mixxx::test::playPositionAtNextVSync(position, &vsync));
 }
