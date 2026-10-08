@@ -413,7 +413,7 @@ void allshader::WaveformRenderMark::update() {
     updateMarkImages();
 
     const double playPosition = m_waveformRenderer->getTruePosSample(positionType);
-    const double nextMarkPosition = m_marks.findNextCountdownMarkPosition(
+    double nextMarkPosition = m_marks.findNextCountdownMarkPosition(
             playPosition,
             m_defaultNextMarkPosition,
             m_untilMarkShowHotCues,
