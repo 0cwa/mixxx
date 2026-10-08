@@ -6,7 +6,11 @@ End AI-generated description.
 import copy
 import json
 import pathlib
+import subprocess
+import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import headless_ctest
 
@@ -27,6 +31,102 @@ def required_tests(system="Linux"):
         PROFILE["mandatory_windows"] if system == "Windows" else []
     )
     return [case(name) for name in names]
+
+
+class WorkingSourceGuardTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = pathlib.Path(self.directory.name)
+        self.git("init", "-q")
+        for path in (
+            "src/engine/example.cpp", "src/test/signalpathtest.h",
+            "cmake/example.cmake", "CMakeLists.txt",
+            "tools/headless_ctest.py", "tools/headless_ctest_profile.json",
+            ".github/workflows/build.yml", ".gitignore",
+        ):
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("original\n")
+        (self.root / "tools/headless_ctest_profile.json").write_text(
+            json.dumps(PROFILE)
+        )
+        self.git("add", ".")
+        self.git(
+            "-c", "user.name=Guard Test", "-c", "user.email=guard@example.invalid",
+            "commit", "-qm", "Fixture baseline",
+        )
+
+    def git(self, *args):
+        return subprocess.check_output(
+            ["git", "-C", str(self.root), *args], text=True
+        )
+
+    def test_clean_source_is_accepted(self):
+        result = headless_ctest.validate_source_checkout(self.root)
+        self.assertEqual("clean", result["status"])
+
+    def test_dirty_production_and_fixture_headers_are_rejected(self):
+        for path in ("src/engine/example.cpp", "src/test/signalpathtest.h"):
+            with self.subTest(path=path):
+                (self.root / path).write_text("changed\n")
+                with self.assertRaisesRegex(
+                    ValueError, "classification requires review"
+                ):
+                    headless_ctest.validate_source_checkout(self.root)
+                self.git("restore", path)
+
+    def test_staged_source_is_rejected(self):
+        (self.root / "src/engine/example.cpp").write_text("changed\n")
+        self.git("add", "src/engine/example.cpp")
+        with self.assertRaises(ValueError):
+            headless_ctest.validate_source_checkout(self.root)
+
+    def test_untracked_source_is_rejected(self):
+        (self.root / "src/test/interfaceqml_test.cpp").write_text("new\n")
+        with self.assertRaises(ValueError):
+            headless_ctest.validate_source_checkout(self.root)
+
+    def test_ignored_source_is_rejected(self):
+        (self.root / ".gitignore").write_text("src/test/ignored.h\n")
+        self.git("add", ".gitignore")
+        self.git(
+            "-c", "user.name=Guard Test", "-c", "user.email=guard@example.invalid",
+            "commit", "-qm", "Ignore fixture",
+        )
+        (self.root / "src/test/ignored.h").write_text("new\n")
+        with self.assertRaises(ValueError):
+            headless_ctest.validate_source_checkout(self.root)
+
+    def test_changed_build_policy_helper_and_workflow_are_rejected(self):
+        for path in (
+            "cmake/example.cmake", "CMakeLists.txt",
+            "tools/headless_ctest.py", "tools/headless_ctest_profile.json",
+            ".github/workflows/build.yml",
+        ):
+            with self.subTest(path=path):
+                (self.root / path).write_text("changed\n")
+                with self.assertRaises(ValueError):
+                    headless_ctest.validate_source_checkout(self.root)
+                self.git("restore", path)
+
+    def test_untracked_receipts_outside_source_are_allowed(self):
+        (self.root / "receipt.json").write_text("{}\n")
+        self.assertEqual(
+            "clean", headless_ctest.validate_source_checkout(self.root)["status"]
+        )
+
+    def test_run_plan_rejects_dirty_header_before_discovery(self):
+        (self.root / "src/test/signalpathtest.h").write_text("changed\n")
+        args = SimpleNamespace(
+            output=self.root / "receipts",
+            expected_head=self.git("rev-parse", "HEAD").strip(),
+        )
+        with mock.patch.object(
+            headless_ctest, "__file__", str(self.root / "tools/headless_ctest.py")
+        ):
+            with self.assertRaisesRegex(ValueError, "uncommitted or ignored changes"):
+                headless_ctest.run_plan(args)
 
 
 class HeadlessSelectionTest(unittest.TestCase):

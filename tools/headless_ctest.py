@@ -24,6 +24,39 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def validate_source_checkout(source):
+    paths = [
+        "src",
+        "CMakeLists.txt",
+        "cmake",
+        "tools/headless_ctest.py",
+        "tools/headless_ctest_profile.json",
+        ".github/workflows",
+    ]
+    status = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(source),
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--ignore-submodules=none",
+            "--",
+            *paths,
+        ],
+        text=True,
+    )
+    if status:
+        raise ValueError(
+            "Source checkout has uncommitted or ignored changes: "
+            "classification requires review"
+        )
+    return {"status": "clean", "paths": paths, "includes_ignored": True}
+
+
 def case_definition(test, definitions):
     command = test.get("command", [])
     if not command or pathlib.PurePath(
@@ -203,6 +236,7 @@ def run_plan(args):
     ):
         raise ValueError("Checkout does not match the exact reviewed commit")
     receipt["expected_head"] = args.expected_head or None
+    receipt["working_source_checkout"] = validate_source_checkout(source)
     if receipt["src_tree"] != profile["src_tree"]:
         raise ValueError("Source tree changed: classification requires review")
     if (
