@@ -47,6 +47,8 @@
 #include "waveform/isynctimeprovider.h"
 #include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/visualplayposition.h"
+#include "waveform/waveform.h"
+#include "waveform/waveformscale.h"
 
 namespace {
 
@@ -1124,6 +1126,121 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
         EngineBuffer::setTestReaderFactory(nullptr);
     }
 };
+
+TEST_F(EngineBufferAlignmentTest, ColdWaveformRendererScaleUsesProductionRatio) {
+    constexpr int kColdAudioSampleRate = 44100;
+    constexpr int kWarmAudioSampleRate = 48000;
+    constexpr int kTrackDurationSeconds = 10;
+    constexpr int kStereoChannelCount = 2;
+
+    TrackPointer track = Track::newTemporary();
+    auto setTrackAudioSampleRate = [&](int sampleRate) {
+        track->setAudioProperties(
+                mixxx::kEngineChannelOutputCount,
+                mixxx::audio::SampleRate(sampleRate),
+                mixxx::audio::Bitrate(),
+                mixxx::Duration::fromSeconds(kTrackDurationSeconds));
+        ControlObject::set(
+                ConfigKey(m_sGroup1, QStringLiteral("track_samples")),
+                static_cast<double>(sampleRate) * kTrackDurationSeconds *
+                        kStereoChannelCount);
+    };
+
+    setTrackAudioSampleRate(kColdAudioSampleRate);
+    ControlObject::set(
+            ConfigKey(m_sGroup1, QStringLiteral("rate_ratio")), 1.0);
+    ASSERT_FALSE(track->getWaveform());
+
+    WaveformWidgetRenderer renderer(m_sGroup1);
+    ASSERT_TRUE(renderer.init());
+    renderer.setTrack(track);
+    renderer.resizeRenderer(kRendererWidth, 100, 1.0f);
+    FixedVSyncProvider vsync;
+
+    auto renderAudioSamplePerPixel = [&]() {
+        renderer.onPreRender(&vsync);
+        return renderer.getAudioSamplePerPixel();
+    };
+    auto defaultAudioSamplePerPixel = [&]() {
+        return mixxx::waveform::getAudioSamplePerPixel(
+                renderer.getVisualSamplePerPixel(),
+                mixxx::waveform::getDefaultAudioVisualRatio(
+                        static_cast<double>(track->getSampleRate())));
+    };
+
+    // A fresh renderer has no cached waveform scale: its first cold frame must
+    // use the same production ratio as an analyzer-created waveform.
+    const double firstColdScale = renderAudioSamplePerPixel();
+    EXPECT_DOUBLE_EQ(defaultAudioSamplePerPixel(), firstColdScale);
+    EXPECT_NEAR(100.0, firstColdScale, 1e-12);
+
+    WaveformPointer waveform(new Waveform(
+            kColdAudioSampleRate,
+            kColdAudioSampleRate * kTrackDurationSeconds,
+            mixxx::waveform::kDefaultVisualSampleRate,
+            -1,
+            0));
+    ASSERT_GT(waveform->getDataSize(), 1);
+    const double coldAudioVisualRatio =
+            mixxx::waveform::getDefaultAudioVisualRatio(kColdAudioSampleRate);
+    EXPECT_DOUBLE_EQ(coldAudioVisualRatio, waveform->getAudioVisualRatio());
+
+    waveform->setCompletion(waveform->getDataSize() / 2);
+    ASSERT_GT(waveform->getCompletion(), 0);
+    ASSERT_LT(waveform->getCompletion(), waveform->getDataSize());
+    track->setWaveform(waveform);
+    const double inProgressScale = renderAudioSamplePerPixel();
+    EXPECT_DOUBLE_EQ(firstColdScale, inProgressScale);
+
+    waveform->setCompletion(waveform->getDataSize());
+    ASSERT_EQ(waveform->getCompletion(), waveform->getDataSize());
+    const double completeScale = renderAudioSamplePerPixel();
+    EXPECT_DOUBLE_EQ(firstColdScale, completeScale);
+
+    // Warm a different real waveform ratio, then ensure its value cannot leak
+    // into a new cold track at the original sample rate.
+    setTrackAudioSampleRate(kWarmAudioSampleRate);
+    WaveformPointer warmWaveform(new Waveform(
+            kWarmAudioSampleRate,
+            kWarmAudioSampleRate * kTrackDurationSeconds,
+            mixxx::waveform::kDefaultVisualSampleRate,
+            -1,
+            0));
+    warmWaveform->setCompletion(warmWaveform->getDataSize());
+    track->setWaveform(warmWaveform);
+    const double warmScale = renderAudioSamplePerPixel();
+    EXPECT_DOUBLE_EQ(
+            renderer.getVisualSamplePerPixel() * warmWaveform->getAudioVisualRatio(),
+            warmScale);
+    EXPECT_GT(warmScale, firstColdScale);
+
+    setTrackAudioSampleRate(kColdAudioSampleRate);
+    track->setWaveform(ConstWaveformPointer());
+    const double coldScaleAfterWarm = renderAudioSamplePerPixel();
+    EXPECT_DOUBLE_EQ(defaultAudioSamplePerPixel(), coldScaleAfterWarm);
+    EXPECT_DOUBLE_EQ(firstColdScale, coldScaleAfterWarm);
+
+    // The production coordinate transform receives interleaved stereo sample
+    // positions and divides the sample delta by two before mapping pixels.
+    EXPECT_DOUBLE_EQ(
+            static_cast<double>(kColdAudioSampleRate) *
+                    kTrackDurationSeconds * kStereoChannelCount,
+            renderer.getTrackSamples());
+    const double firstSample = renderer.getTruePosSample() + 10.0;
+    const double secondSample = firstSample + 2000.0;
+    const double firstPixel =
+            renderer.transformSamplePositionInRendererWorld(firstSample);
+    const double secondPixel =
+            renderer.transformSamplePositionInRendererWorld(secondSample);
+    EXPECT_NEAR(1000.0 / coldScaleAfterWarm, secondPixel - firstPixel, 1e-9);
+
+    // Zero-valued helper inputs fail closed without changing the cold path.
+    EXPECT_DOUBLE_EQ(0.0, mixxx::waveform::getDefaultAudioVisualRatio(0.0));
+    EXPECT_DOUBLE_EQ(
+            0.0, mixxx::waveform::getAudioSamplePerPixel(0.0, 1.0));
+    EXPECT_DOUBLE_EQ(
+            0.0, mixxx::waveform::getAudioSamplePerPixel(1.0, 0.0));
+}
 
 TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
     const QString traceDirectory = qEnvironmentVariable(
