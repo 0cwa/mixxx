@@ -1299,6 +1299,13 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
 
 TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
     constexpr double kExpectedMarkerPixel = kRendererWidth * 0.5;
+    // Independent oracle for a cold 48 kHz track at the renderer's 1x zoom.
+    // Keep this explicit so the production fallback cannot validate itself.
+    constexpr double kExpectedAudioSamplePerPixel = kSampleRate / 441.0;
+    const double expectedNeighbourPixel = kExpectedMarkerPixel +
+            (kMarkerSourceFrame + kMarkerNeighbourFrames) /
+                    kExpectedAudioSamplePerPixel -
+            std::round(kMarkerSourceFrame / kExpectedAudioSamplePerPixel);
 
     TrackPointer track = Track::newTemporary();
     track->setAudioProperties(
@@ -1306,6 +1313,7 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
             mixxx::audio::SampleRate(kSampleRate),
             mixxx::audio::Bitrate(),
             mixxx::Duration::fromSeconds(kTrackSeconds));
+    ASSERT_FALSE(track->getWaveform());
 
     // Establish every transport input used by RateControl and EngineBuffer.
     ControlObject::set(ConfigKey(QStringLiteral("[App]"), QStringLiteral("samplerate")),
@@ -1381,6 +1389,10 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
         if (rendererInitialized) {
             renderer.onPreRender(&vsync);
             observation.rendererTruePosSample = renderer.getTruePosSample();
+            check(std::abs(renderer.getAudioSamplePerPixel() -
+                          kExpectedAudioSamplePerPixel) < 1e-9,
+                    4,
+                    &observation);
         }
 
         pEngineBuffer->process(output.data(), kBufferSamples);
@@ -1451,9 +1463,11 @@ TEST_F(EngineBufferAlignmentTest, RealProcessReadAheadVisualMarkerChain) {
                           kExpectedMarkerPixel) < 1e-9,
                     4,
                     &observation);
+            // The playhead is snapped to the exact marker pixel by the
+            // transform's special case; neighbouring samples use the rounded
+            // display origin and the cold waveform's frames-per-pixel scale.
             check(std::abs(observation.rendererNeighbourPixel -
-                          (kExpectedMarkerPixel +
-                                  kMarkerNeighbourFrames)) < 1e-9,
+                          expectedNeighbourPixel) < 1e-9,
                     4,
                     &observation);
         }
