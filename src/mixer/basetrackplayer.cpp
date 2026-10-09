@@ -75,6 +75,11 @@ BaseTrackPlayerImpl::BaseTrackPlayerImpl(
     // let us request that the reader load a track.
     connect(pEngineBuffer, &EngineBuffer::trackLoaded, this, &BaseTrackPlayerImpl::slotTrackLoaded);
     connect(pEngineBuffer,
+            &EngineBuffer::trackLoadedFromReader,
+            this,
+            &BaseTrackPlayerImpl::slotTrackLoadedFromReader,
+            Qt::QueuedConnection);
+    connect(pEngineBuffer,
             &EngineBuffer::trackLoadFailed,
             this,
             &BaseTrackPlayerImpl::slotLoadFailed);
@@ -390,7 +395,7 @@ TrackPointer BaseTrackPlayerImpl::loadFakeTrack(bool bPlay, double filebpm) {
     return pTrack;
 }
 
-void BaseTrackPlayerImpl::loadTrack(TrackPointer pTrack) {
+void BaseTrackPlayerImpl::loadTrack(TrackPointer pTrack, quint64 generation) {
     DEBUG_ASSERT(!m_pLoadedTrack);
 
     m_pLoadedTrack = std::move(pTrack);
@@ -408,9 +413,13 @@ void BaseTrackPlayerImpl::loadTrack(TrackPointer pTrack) {
 #ifdef __STEM__
         auto* pDeckToClone = qobject_cast<EngineDeck*>(m_pChannelToCloneFrom);
         if (pDeckToClone && m_pLoadedTrack && m_pLoadedTrack->hasStem() && m_pChannel) {
-            m_pChannel->cloneStemState(pDeckToClone);
+            m_pChannel->cloneStemState(pDeckToClone, generation);
         }
 #endif
+    }
+
+    if (!m_pChannel->getEngineBuffer()->isCurrentTrackLoadGeneration(generation)) {
+        return;
     }
 
     connectLoadedTrack();
@@ -458,15 +467,31 @@ void BaseTrackPlayerImpl::slotEjectTrack(double v) {
         }
     }
 
-    m_pChannel->getEngineBuffer()->ejectTrack();
+    EngineBuffer* pEngineBuffer = m_pChannel->getEngineBuffer();
+    pEngineBuffer->ejectTrack();
 }
 
-TrackPointer BaseTrackPlayerImpl::unloadTrack() {
+TrackPointer BaseTrackPlayerImpl::unloadTrack(quint64 generation) {
     if (!m_pLoadedTrack) {
         // nothing to do
         return TrackPointer();
     }
+
+    // generation is zero for legacy callers that do not belong to a reader
+    // request. Load replacement requests stop after synchronous callbacks
+    // start a newer load, so stale teardown cannot mutate its track state.
+    const auto isCurrentLoad = [this, generation] {
+        return generation == 0 ||
+                m_pChannel->getEngineBuffer()->isCurrentTrackLoadGeneration(generation);
+    };
+    if (!isCurrentLoad()) {
+        return TrackPointer();
+    }
+
     PlayerInfo::instance().setTrackInfo(getGroup(), TrackPointer());
+    if (!isCurrentLoad()) {
+        return TrackPointer();
+    }
 
     disconnectLoadedTrack();
 
@@ -475,16 +500,25 @@ TrackPointer BaseTrackPlayerImpl::unloadTrack() {
 
     if (m_pPlay->toBool()) {
         m_pPlay->set(0.0);
+        if (!isCurrentLoad()) {
+            return TrackPointer();
+        }
     }
 
 #ifdef __STEM__
     if (m_pStemColors.size()) {
         for (const auto& stemColorCo : m_pStemColors) {
             stemColorCo->forceSet(kNoTrackColor);
+            if (!isCurrentLoad()) {
+                return TrackPointer();
+            }
         }
     }
 #endif
 
+    if (!isCurrentLoad()) {
+        return TrackPointer();
+    }
     TrackPointer pUnloadedTrack(std::move(m_pLoadedTrack));
     DEBUG_ASSERT(!m_pLoadedTrack);
     emit trackUnloaded(pUnloadedTrack);
@@ -565,27 +599,47 @@ void BaseTrackPlayerImpl::slotLoadTrack(TrackPointer pNewTrack,
         }
     }
 
-    auto pOldTrack = unloadTrack();
+    EngineBuffer* pEngineBuffer = m_pChannel->getEngineBuffer();
+    const quint64 generation = pEngineBuffer->beginTrackLoad();
+#ifdef __STEM__
+    if (pNewTrack) {
+        m_pChannel->beginStemTrackLoad(generation);
+    }
+#endif
 
-    loadTrack(pNewTrack);
+    auto pOldTrack = unloadTrack(generation);
+    if (!pEngineBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+
+    loadTrack(pNewTrack, generation);
+    if (!pEngineBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
 
     // await slotTrackLoaded()/slotLoadFailed()
     // emit this before pEngineBuffer->loadTrack() to avoid receiving
     // unexpected slotTrackLoaded() before, in case the track is still cached #10504.
     emit loadingTrack(pNewTrack, pOldTrack);
+    if (!pEngineBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
 
     // Request a new track from EngineBuffer
-    EngineBuffer* pEngineBuffer = m_pChannel->getEngineBuffer();
 #ifdef __STEM__
     pEngineBuffer->loadTrack(pNewTrack,
             stemMask,
             bPlay,
-            m_pChannelToCloneFrom);
+            m_pChannelToCloneFrom,
+            generation);
 
     // Select a specific stem if requested
-    emit selectedStems(stemMask);
+    if (pEngineBuffer->isCurrentTrackLoadGeneration(generation)) {
+        emit selectedStems(stemMask);
+    }
 #else
-    pEngineBuffer->loadTrack(pNewTrack, bPlay, m_pChannelToCloneFrom);
+    pEngineBuffer->loadTrack(
+            pNewTrack, bPlay, m_pChannelToCloneFrom, generation);
 #endif
 }
 
@@ -759,6 +813,16 @@ void BaseTrackPlayerImpl::slotTrackLoaded(TrackPointer pNewTrack,
     // Update the PlayerInfo class that is used in EngineBroadcast to replace
     // the metadata of a stream
     PlayerInfo::instance().setTrackInfo(getGroup(), m_pLoadedTrack);
+}
+
+void BaseTrackPlayerImpl::slotTrackLoadedFromReader(
+        TrackPointer pNewTrack,
+        TrackPointer pOldTrack,
+        quint64 generation) {
+    if (!m_pChannel->getEngineBuffer()->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    slotTrackLoaded(pNewTrack, pOldTrack);
 }
 
 TrackPointer BaseTrackPlayerImpl::getLoadedTrack() const {

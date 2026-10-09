@@ -105,6 +105,27 @@ class CachingReaderWorker : public EngineWorker {
     Q_OBJECT
 
   public:
+#ifdef BUILD_TESTING
+    enum class TestTrackLifecycleEvent {
+        RequestDequeued,
+        TrackLoadingAccepted,
+        NullTrackUnloaded,
+    };
+    using TestTrackLifecycleHook = void (*)(
+            const QString& group,
+            TestTrackLifecycleEvent event,
+            quint64 generation,
+            void* context);
+
+    // One headless test may observe a named reader worker's scheduling
+    // boundaries. clearTestTrackLifecycleHook() waits for callbacks to leave.
+    static void setTestTrackLifecycleHook(
+            const QString& group,
+            TestTrackLifecycleHook hook,
+            void* context);
+    static void clearTestTrackLifecycleHook(void* context);
+#endif
+
     // Construct a CachingReader with the given group.
     CachingReaderWorker(const QString& group,
             FIFO<CachingReaderChunkReadRequest>* pChunkReadRequestFIFO,
@@ -114,9 +135,12 @@ class CachingReaderWorker : public EngineWorker {
 
     // Request to load a new track. wake() must be called afterwards.
 #ifdef __STEM__
-    void newTrack(TrackPointer pTrack, mixxx::StemChannelSelection stemMask);
+    void newTrack(
+            TrackPointer pTrack,
+            mixxx::StemChannelSelection stemMask,
+            quint64 generation);
 #else
-    void newTrack(TrackPointer pTrack);
+    void newTrack(TrackPointer pTrack, quint64 generation);
 #endif
 
     // Run upkeep operations like loading tracks and reading from file. Run by a
@@ -170,11 +194,12 @@ class CachingReaderWorker : public EngineWorker {
 
   signals:
     // Emitted once a new track is loaded and ready to be read from.
-    void trackLoading();
+    void trackLoading(quint64 generation);
     void trackLoaded(TrackPointer pTrack,
             mixxx::audio::SampleRate sampleRate,
             mixxx::audio::ChannelCount channelCount,
-            mixxx::audio::FramePos numFrame);
+            mixxx::audio::FramePos numFrame,
+            quint64 generation);
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:
@@ -184,12 +209,13 @@ class CachingReaderWorker : public EngineWorker {
             ShutdownPublicationFailureSuppressesLoadFailureSignal);
 #endif
 
-#ifdef __STEM__
     struct NewTrackRequest {
         TrackPointer track;
+        quint64 generation;
+#ifdef __STEM__
         mixxx::StemChannelSelection stemMask;
-    };
 #endif
+    };
     const QString m_group;
     QString m_tag;
 
@@ -202,11 +228,7 @@ class CachingReaderWorker : public EngineWorker {
     // lock to touch.
     QMutex m_newTrackMutex;
     QAtomicInt m_newTrackAvailable;
-#ifdef __STEM__
     NewTrackRequest m_pNewTrack;
-#else
-    TrackPointer m_pNewTrack;
-#endif
 
     bool discardAllPendingRequests();
     // Publish without spinning when the callback-side FIFO is full. Returns
@@ -224,9 +246,12 @@ class CachingReaderWorker : public EngineWorker {
 
     /// Internal method to load a track. Emits trackLoaded when finished.
 #ifdef __STEM__
-    bool loadTrack(const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask);
+    bool loadTrack(
+            const TrackPointer& pTrack,
+            mixxx::StemChannelSelection stemMask,
+            quint64 generation = 0);
 #else
-    bool loadTrack(const TrackPointer& pTrack);
+    bool loadTrack(const TrackPointer& pTrack, quint64 generation = 0);
 #endif
 
     ReaderStatusUpdate processReadRequest(

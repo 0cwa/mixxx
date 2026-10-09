@@ -136,9 +136,12 @@ class CachingReader : public QObject {
     // processed in the work thread, so the reader must be woken up via wake()
     // for this to take effect.
 #ifdef __STEM__
-    void newTrack(TrackPointer pTrack, mixxx::StemChannelSelection stemMask = {});
+    void newTrack(
+            TrackPointer pTrack,
+            quint64 generation,
+            mixxx::StemChannelSelection stemMask = {});
 #else
-    void newTrack(TrackPointer pTrack);
+    void newTrack(TrackPointer pTrack, quint64 generation);
 #endif
 
     void setScheduler(EngineWorkerScheduler* pScheduler) {
@@ -166,11 +169,12 @@ class CachingReader : public QObject {
 
   signals:
     // Emitted once a new track is loaded and ready to be read from.
-    void trackLoading();
+    void trackLoading(quint64 generation);
     void trackLoaded(TrackPointer pTrack,
             mixxx::audio::SampleRate trackSampleRate,
             mixxx::audio::ChannelCount trackChannelCount,
-            mixxx::audio::FramePos trackNumFrame);
+            mixxx::audio::FramePos trackNumFrame,
+            quint64 generation);
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
 
   private:

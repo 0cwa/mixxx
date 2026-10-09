@@ -66,6 +66,16 @@ EngineDeck::EngineDeck(
     }
 
     connect(m_pBuffer, &EngineBuffer::trackLoaded, this, &EngineDeck::slotTrackLoaded);
+    connect(m_pBuffer,
+            &EngineBuffer::prepareStemStateForTrackReady,
+            this,
+            &EngineDeck::slotPrepareStemStateForTrackReady,
+            Qt::DirectConnection);
+    connect(m_pBuffer,
+            &EngineBuffer::trackLoadedFromReader,
+            this,
+            &EngineDeck::slotTrackLoadedFromReader,
+            Qt::QueuedConnection);
 
     m_pStemCount = std::make_unique<ControlObject>(ConfigKey(getGroup(), "stem_count"));
     m_pStemCount->setReadOnly();
@@ -107,9 +117,68 @@ void EngineDeck::slotTrackLoaded(TrackPointer pNewTrack,
         }
     }
     m_stemClonedState = false;
+    m_stemClonedStateGeneration = 0;
     if (pNewTrack) {
         int stemCount = pNewTrack->getStemInfo().size();
         m_pStemCount->forceSet(stemCount);
+    } else {
+        m_pStemCount->forceSet(0);
+    }
+}
+
+void EngineDeck::slotPrepareStemStateForTrackReady(
+        TrackPointer,
+        quint64 generation) {
+    VERIFY_OR_DEBUG_ASSERT(m_pStemCount) {
+        return;
+    }
+    if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+
+    const bool clonedForThisLoad =
+            m_stemClonedState && m_stemClonedStateGeneration == generation;
+    if (m_pConfig->getValue(
+                ConfigKey("[Mixer Profile]", "stem_auto_reset"), true) &&
+            !clonedForThisLoad) {
+        for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; stemIdx++) {
+            if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+                return;
+            }
+            m_stemGain[stemIdx]->set(1.0);
+            // Control setters may call direct observers. Stop before the next
+            // write if one of them superseded this request or ejected the deck.
+            if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+                return;
+            }
+            m_stemMute[stemIdx]->set(0.0);
+            if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+                return;
+            }
+        }
+    }
+
+    // Only clear the marker owned by this request. A stale callback cannot
+    // erase the clone state copied for a newer generation.
+    if (m_pBuffer->isCurrentTrackLoadGeneration(generation) &&
+            m_stemClonedStateGeneration == generation) {
+        m_stemClonedState = false;
+        m_stemClonedStateGeneration = 0;
+    }
+}
+
+void EngineDeck::slotTrackLoadedFromReader(
+        TrackPointer pNewTrack,
+        TrackPointer,
+        quint64 generation) {
+    VERIFY_OR_DEBUG_ASSERT(m_pStemCount) {
+        return;
+    }
+    if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    if (pNewTrack) {
+        m_pStemCount->forceSet(pNewTrack->getStemInfo().size());
     } else {
         m_pStemCount->forceSet(0);
     }
@@ -251,7 +320,14 @@ void EngineDeck::processStem(
     SampleUtil::mixMultichannelToStereo(pOut, pIn, numFrames, chCount);
 }
 
-void EngineDeck::cloneStemState(const EngineDeck* deckToClone) {
+void EngineDeck::beginStemTrackLoad(quint64 generation) {
+    m_stemClonedState = false;
+    m_stemClonedStateGeneration = generation;
+}
+
+void EngineDeck::cloneStemState(
+        const EngineDeck* deckToClone,
+        quint64 generation) {
     VERIFY_OR_DEBUG_ASSERT(deckToClone) {
         return;
     }
@@ -266,10 +342,25 @@ void EngineDeck::cloneStemState(const EngineDeck* deckToClone) {
         return;
     }
     for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; stemIdx++) {
+        if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
         m_stemGain[stemIdx]->set(deckToClone->m_stemGain[stemIdx]->get());
+        // Control setters can synchronously notify direct observers. A nested
+        // load must stop this request before it writes another cloned control.
+        if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
         m_stemMute[stemIdx]->set(deckToClone->m_stemMute[stemIdx]->get());
+        if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
+    }
+    if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
     }
     m_stemClonedState = true;
+    m_stemClonedStateGeneration = generation;
 }
 #endif
 

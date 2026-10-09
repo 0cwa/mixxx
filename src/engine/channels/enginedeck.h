@@ -73,7 +73,8 @@ class EngineDeck : public EngineChannel, public AudioDestination {
     // Clone the stem state (gain and volume) from deckToClone to this. Doesn't
     // check if the loaded track is a stem so this should only be used in case
     // of stem track
-    void cloneStemState(const EngineDeck* deckToClone);
+    void beginStemTrackLoad(quint64 generation);
+    void cloneStemState(const EngineDeck* deckToClone, quint64 generation);
     void addStemHandle(const ChannelHandleAndGroup& stemHandleGroup);
     static QString getGroupForStem(QStringView deckGroup, int stemIdx);
 #endif
@@ -86,6 +87,13 @@ class EngineDeck : public EngineChannel, public AudioDestination {
     void slotPassthroughChangeRequest(double v);
 #ifdef __STEM__
     void slotTrackLoaded(TrackPointer pNewTrack, TrackPointer);
+    void slotPrepareStemStateForTrackReady(
+            TrackPointer pNewTrack,
+            quint64 generation);
+    void slotTrackLoadedFromReader(
+            TrackPointer pNewTrack,
+            TrackPointer pOldTrack,
+            quint64 generation);
 #endif
 
   private:
@@ -121,6 +129,7 @@ class EngineDeck : public EngineChannel, public AudioDestination {
     std::vector<std::unique_ptr<ControlPushButton>> m_stemMute;
     std::vector<std::unique_ptr<EngineVuMeter>> m_stemVuMeter;
     bool m_stemClonedState;
+    quint64 m_stemClonedStateGeneration{0};
 #endif
 
     // Begin vinyl passthrough fields

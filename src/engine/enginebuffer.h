@@ -195,6 +195,20 @@ class EngineBuffer : public EngineObject {
     TrackPointer getLoadedTrack() const;
     void ejectTrack();
 
+    // The GUI allocates each token and carries it unchanged through
+    // CachingReader. The current-token query is safe from the worker thread.
+    quint64 beginTrackLoad();
+    void invalidatePendingTrackLoads();
+    bool isCurrentTrackLoadGeneration(quint64 generation) const;
+#ifdef BUILD_TESTING
+    bool isTrackLoadingForTest() const {
+        return m_iTrackLoading.loadAcquire() != 0;
+    }
+    quint64 currentTrackLoadGenerationForTest() const {
+        return m_currentTrackLoadGeneration.load(std::memory_order_acquire);
+    }
+#endif
+
     mixxx::audio::FramePos getExactPlayPos() const;
     mixxx::audio::FramePos getTrackEndPosition() const;
     void setTrackEndPosition(mixxx::audio::FramePos position);
@@ -298,13 +312,14 @@ class EngineBuffer : public EngineObject {
     }
 
     // Request that the EngineBuffer load a track. Since the process is
-    // asynchronous, EngineBuffer will emit a trackLoaded signal when the load
-    // has completed.
+    // asynchronous, EngineBuffer will emit a reader completion signal when
+    // the load has completed.
 #ifdef __STEM__
     void loadTrack(TrackPointer pTrack,
             mixxx::StemChannelSelection stemMask,
             bool play,
-            EngineChannel* pChannelToCloneFrom);
+            EngineChannel* pChannelToCloneFrom,
+            quint64 generation);
 
     mixxx::StemChannelSelection getStemMask() const {
         return m_stemMask;
@@ -312,7 +327,8 @@ class EngineBuffer : public EngineObject {
 #else
     void loadTrack(TrackPointer pTrack,
             bool play,
-            EngineChannel* pChannelToCloneFrom);
+            EngineChannel* pChannelToCloneFrom,
+            quint64 generation);
 #endif
 
     void setChannelIndex(int channelIndex) {
@@ -338,16 +354,39 @@ class EngineBuffer : public EngineObject {
 
   signals:
     void trackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
+    // Successful reader loads publish stem reset before ready, then post this
+    // completion with an explicit queued connection to GUI-side consumers.
+    void trackLoadedFromReader(
+            TrackPointer pNewTrack,
+            TrackPointer pOldTrack,
+            quint64 generation);
+    void trackReadyForPublication(
+            TrackPointer pNewTrack,
+            TrackPointer pOldTrack,
+            quint64 generation);
+#ifdef __STEM__
+    void prepareStemStateForTrackReady(TrackPointer pNewTrack, quint64 generation);
+#endif
     void trackLoadFailed(TrackPointer pTrack, const QString& reason);
     void noVinylControlInputConfigured();
 
   private slots:
-    void slotTrackLoading();
+    void slotTrackLoading(quint64 generation);
     void slotTrackLoaded(
             TrackPointer pTrack,
             mixxx::audio::SampleRate trackSampleRate,
             mixxx::audio::ChannelCount trackChannelCount,
             mixxx::audio::FramePos trackNumFrame);
+    void slotReaderTrackLoaded(
+            TrackPointer pTrack,
+            mixxx::audio::SampleRate trackSampleRate,
+            mixxx::audio::ChannelCount trackChannelCount,
+            mixxx::audio::FramePos trackNumFrame,
+            quint64 generation);
+    void slotPublishTrackLoaded(
+            TrackPointer pNewTrack,
+            TrackPointer pOldTrack,
+            quint64 generation);
     void slotTrackLoadFailed(TrackPointer pTrack,
             const QString& reason);
 #ifdef __BUNGEE__
@@ -366,6 +405,10 @@ class EngineBuffer : public EngineObject {
     // Add an engine control to the EngineBuffer
     // must not be called outside the Constructor
     void addControl(EngineControl* pControl);
+
+    // A null request already has a current generation; explicit ejects use
+    // generation zero and invalidate pending reader publications here.
+    void ejectTrackImpl(quint64 generation);
 
     void enableIndependentPitchTempoScaling(bool bEnable,
             const std::size_t bufferSize,
@@ -402,7 +445,17 @@ class EngineBuffer : public EngineObject {
         return m_previousBufferSeek;
     }
     bool updateIndicatorsAndModifyPlay(bool newPlay, bool oldPlay);
-    void notifyTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
+    void handleTrackLoaded(
+            TrackPointer pTrack,
+            mixxx::audio::SampleRate trackSampleRate,
+            mixxx::audio::ChannelCount trackChannelCount,
+            mixxx::audio::FramePos trackNumFrame,
+            quint64 generation,
+            bool readerLoad);
+    void notifyTrackLoaded(
+            TrackPointer pNewTrack,
+            TrackPointer pOldTrack,
+            bool emitCompletionSignal = true);
 #ifdef __BUNGEE__
     // Publishes a Bungee configuration request. Preparation and replacement
     // happen in EngineBufferBungeeWorker, never in the audio callback.
@@ -638,6 +691,9 @@ class EngineBuffer : public EngineObject {
 
     // Is true if the previous buffer was silent due to pausing
     QAtomicInt m_iTrackLoading;
+    // The GUI advances this token under m_pause. Reader completion checks its
+    // captured token under the same lock before replacing the current track.
+    std::atomic<quint64> m_currentTrackLoadGeneration{0};
     bool m_bPlayAfterLoading;
     // Records the sample rate so we can detect when it changes. Initialized to
     // 0 to guarantee we see a change on the first callback.

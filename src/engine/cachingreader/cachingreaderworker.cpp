@@ -2,6 +2,10 @@
 
 #include <QAtomicInt>
 #include <QtDebug>
+#ifdef BUILD_TESTING
+#include <condition_variable>
+#include <mutex>
+#endif
 #include <limits>
 #include <utility>
 
@@ -23,6 +27,51 @@ mixxx::Logger kLogger("CachingReaderWorker");
 // we need the last silence frame and the first sound frame
 constexpr SINT kNumSoundFrameToVerify = 2;
 
+#ifdef BUILD_TESTING
+struct TestTrackLifecycleRegistration {
+    std::mutex mutex;
+    std::condition_variable callbacksFinished;
+    QString group;
+    CachingReaderWorker::TestTrackLifecycleHook hook{nullptr};
+    void* context{nullptr};
+    int callbacksInFlight{0};
+};
+
+TestTrackLifecycleRegistration s_testTrackLifecycleRegistration;
+
+void notifyTestTrackLifecycle(
+        const QString& group,
+        CachingReaderWorker::TestTrackLifecycleEvent event,
+        quint64 generation) {
+    CachingReaderWorker::TestTrackLifecycleHook hook = nullptr;
+    void* context = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(
+                s_testTrackLifecycleRegistration.mutex);
+        if (s_testTrackLifecycleRegistration.group.isEmpty() ||
+                s_testTrackLifecycleRegistration.group == group) {
+            hook = s_testTrackLifecycleRegistration.hook;
+            context = s_testTrackLifecycleRegistration.context;
+            if (hook) {
+                ++s_testTrackLifecycleRegistration.callbacksInFlight;
+            }
+        }
+    }
+    if (!hook) {
+        return;
+    }
+
+    hook(group, event, generation, context);
+
+    {
+        const std::lock_guard<std::mutex> lock(
+                s_testTrackLifecycleRegistration.mutex);
+        --s_testTrackLifecycleRegistration.callbacksInFlight;
+    }
+    s_testTrackLifecycleRegistration.callbacksFinished.notify_all();
+}
+#endif
+
 } // anonymous namespace
 
 CachingReaderWorker::CachingReaderWorker(
@@ -42,6 +91,40 @@ CachingReaderWorker::CachingReaderWorker(
           m_diagnosticDequeuedRequests(0),
           m_diagnosticPublishedStatuses(0) {
 }
+
+#ifdef BUILD_TESTING
+void CachingReaderWorker::setTestTrackLifecycleHook(
+        const QString& group,
+        TestTrackLifecycleHook hook,
+        void* context) {
+    VERIFY_OR_DEBUG_ASSERT(hook && context) {
+        return;
+    }
+    const std::lock_guard<std::mutex> lock(
+            s_testTrackLifecycleRegistration.mutex);
+    VERIFY_OR_DEBUG_ASSERT(!s_testTrackLifecycleRegistration.hook) {
+        return;
+    }
+    s_testTrackLifecycleRegistration.group = group;
+    s_testTrackLifecycleRegistration.hook = hook;
+    s_testTrackLifecycleRegistration.context = context;
+}
+
+void CachingReaderWorker::clearTestTrackLifecycleHook(void* context) {
+    std::unique_lock<std::mutex> lock(
+            s_testTrackLifecycleRegistration.mutex);
+    VERIFY_OR_DEBUG_ASSERT(
+            s_testTrackLifecycleRegistration.context == context) {
+        return;
+    }
+    s_testTrackLifecycleRegistration.hook = nullptr;
+    s_testTrackLifecycleRegistration.context = nullptr;
+    s_testTrackLifecycleRegistration.group.clear();
+    s_testTrackLifecycleRegistration.callbacksFinished.wait(
+            lock,
+            [] { return s_testTrackLifecycleRegistration.callbacksInFlight == 0; });
+}
+#endif
 
 int CachingReaderWorker::diagnosticStatusCapacity() const {
     return m_pReaderStatusFIFO->capacity();
@@ -131,18 +214,19 @@ ReaderStatusUpdate CachingReaderWorker::processReadRequest(
 
 // WARNING: Always called from a different thread (GUI)
 #ifdef __STEM__
-void CachingReaderWorker::newTrack(TrackPointer pTrack, mixxx::StemChannelSelection stemMask) {
+void CachingReaderWorker::newTrack(
+        TrackPointer pTrack,
+        mixxx::StemChannelSelection stemMask,
+        quint64 generation) {
 #else
-void CachingReaderWorker::newTrack(TrackPointer pTrack) {
+void CachingReaderWorker::newTrack(TrackPointer pTrack, quint64 generation) {
 #endif
     {
         const auto locker = lockMutex(&m_newTrackMutex);
 #ifdef __STEM__
-        m_pNewTrack = NewTrackRequest{
-                pTrack,
-                stemMask};
+        m_pNewTrack = NewTrackRequest{pTrack, generation, stemMask};
 #else
-        m_pNewTrack = pTrack;
+        m_pNewTrack = NewTrackRequest{pTrack, generation};
 #endif
         m_newTrackAvailable.storeRelease(1);
     }
@@ -225,34 +309,41 @@ void CachingReaderWorker::run() {
             m_diagnosticState.storeRelease(
                     static_cast<int>(DiagnosticState::LoadingTrack));
             m_diagnosticActiveChunk.storeRelease(-1);
-#ifdef __STEM__
             NewTrackRequest pLoadTrack;
-#else
-            TrackPointer pLoadTrack;
-#endif
             { // locking scope
                 const auto locker = lockMutex(&m_newTrackMutex);
                 pLoadTrack = m_pNewTrack;
                 m_newTrackAvailable.storeRelease(0);
             } // implicitly unlocks the mutex
-#ifdef __STEM__
+#ifdef BUILD_TESTING
+            notifyTestTrackLifecycle(
+                    m_group,
+                    TestTrackLifecycleEvent::RequestDequeued,
+                    pLoadTrack.generation);
+#endif
             if (pLoadTrack.track) {
                 // in this case the engine is still running with the old track
-                if (!loadTrack(pLoadTrack.track, pLoadTrack.stemMask)) {
-                    break;
-                }
+#ifdef __STEM__
+                if (!loadTrack(
+                            pLoadTrack.track,
+                            pLoadTrack.stemMask,
+                            pLoadTrack.generation)) {
 #else
-            if (pLoadTrack) {
-                // in this case the engine is still running with the old track
-                if (!loadTrack(pLoadTrack)) {
+                if (!loadTrack(pLoadTrack.track, pLoadTrack.generation)) {
+#endif
                     break;
                 }
-#endif
             } else {
                 // here, the engine is already stopped
                 if (!unloadTrack()) {
                     break;
                 }
+#ifdef BUILD_TESTING
+                notifyTestTrackLifecycle(
+                        m_group,
+                        TestTrackLifecycleEvent::NullTrackUnloaded,
+                        pLoadTrack.generation);
+#endif
             }
             processSeek30Commands();
         } else {
@@ -322,16 +413,24 @@ bool CachingReaderWorker::unloadTrack() {
 
 #ifdef __STEM__
 bool CachingReaderWorker::loadTrack(
-        const TrackPointer& pTrack, mixxx::StemChannelSelection stemMask) {
+        const TrackPointer& pTrack,
+        mixxx::StemChannelSelection stemMask,
+        quint64 generation) {
 #else
-bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
+bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack, quint64 generation) {
 #endif
     if (m_stop.loadAcquire()) {
         return false;
     }
     // This emit is directly connected and returns synchronized
     // after the engine has been stopped.
-    emit trackLoading();
+    emit trackLoading(generation);
+#ifdef BUILD_TESTING
+    notifyTestTrackLifecycle(
+            m_group,
+            TestTrackLifecycleEvent::TrackLoadingAccepted,
+            generation);
+#endif
     if (m_stop.loadAcquire()) {
         return false;
     }
@@ -456,7 +555,8 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
             pTrack,
             m_pAudioSource->getSignalInfo().getSampleRate(),
             m_pAudioSource->getSignalInfo().getChannelCount(),
-            mixxx::audio::FramePos(m_pAudioSource->frameLength()));
+            mixxx::audio::FramePos(m_pAudioSource->frameLength()),
+            generation);
     return true;
 }
 
