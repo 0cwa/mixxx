@@ -10,6 +10,7 @@
 #include <array>
 
 #include "control/controlobject.h"
+#include "control/controlproxy.h"
 #include "engine/controls/ratecontrol.h"
 #include "engine/defs_keylock.h"
 #include "mixer/basetrackplayer.h"
@@ -49,6 +50,55 @@ class EngineBufferTest : public MockedEngineBackendTest {
 };
 
 class EngineBufferE2ETest : public SignalPathTest {};
+
+// AI-generated regression begins. The process runner applies a hard timeout
+// because the historical candidate blocks before the eject call returns.
+TEST_F(EngineBufferTest, ZeroReadinessObserverCanLoadReplacementDuringEject) {
+    EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+    ControlProxy trackLoaded(m_sGroup1, "track_loaded");
+    ASSERT_TRUE(pBuffer->isTrackLoaded());
+    ASSERT_EQ(trackLoaded.get(), 1.0);
+
+    TrackPointer pReplacement = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    bool observerEntered = false;
+    bool requestReturned = false;
+    QObject observer;
+    ASSERT_TRUE(trackLoaded.connectValueChanged(
+            &observer,
+            [this, &observerEntered, &requestReturned, pReplacement](double value) {
+                if (value != 0.0 || observerEntered) {
+                    return;
+                }
+                observerEntered = true;
+                qInfo() << "zero-readiness observer entered replacement load";
+                m_pMixerDeck1->slotLoadTrack(pReplacement,
+#ifdef __STEM__
+                        mixxx::StemChannelSelection(),
+#endif
+                        false);
+                requestReturned = true;
+                qInfo() << "zero-readiness replacement request returned";
+            },
+            Qt::DirectConnection));
+
+    pBuffer->ejectTrack();
+    ASSERT_TRUE(observerEntered);
+    ASSERT_TRUE(requestReturned);
+
+    for (int i = 0; i < 10000; ++i) {
+        ProcessBuffer();
+        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+        if (pBuffer->isTrackLoaded() && pBuffer->getLoadedTrack() == pReplacement) {
+            break;
+        }
+    }
+    EXPECT_TRUE(pBuffer->isTrackLoaded());
+    EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+    EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
+    EXPECT_EQ(trackLoaded.get(), 1.0);
+}
+// End AI-generated regression.
 
 #ifdef __STEM__
 namespace {
