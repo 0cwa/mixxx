@@ -36,14 +36,22 @@ on:
       - "src/engine/enginebuffer.*"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
+      - "src/engine/bufferscalers/enginebufferscale.h"
+      - "src/engine/readaheadmanager.cpp"
+      - "src/engine/readaheadmanager.h"
+      - "src/engine/cachingreader/cachingreader.cpp"
+      - "src/engine/cachingreader/cachingreader.h"
       - "src/preferences/settingsmanager.cpp"
+      - "src/preferences/settingsmanager.h"
       - "src/test/enginebufferscalebungee*"
       - "src/test/enginebufferbungee*"
       - "src/test/enginebufferalignmenttest.cpp"
       - "src/test/readaheadmanager_test.cpp"
       - "src/test/settingsmanager_test.cpp"
+      - "src/test/main.cpp"
       - "lib/bungee/**"
       - "CMakeLists.txt"
+      - "tools/debian_buildenv.sh"
       - ".github/workflows/bungee-asan.yml"
   pull_request:
     paths:
@@ -51,14 +59,22 @@ on:
       - "src/engine/enginebuffer.*"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
+      - "src/engine/bufferscalers/enginebufferscale.h"
+      - "src/engine/readaheadmanager.cpp"
+      - "src/engine/readaheadmanager.h"
+      - "src/engine/cachingreader/cachingreader.cpp"
+      - "src/engine/cachingreader/cachingreader.h"
       - "src/preferences/settingsmanager.cpp"
+      - "src/preferences/settingsmanager.h"
       - "src/test/enginebufferscalebungee*"
       - "src/test/enginebufferbungee*"
       - "src/test/enginebufferalignmenttest.cpp"
       - "src/test/readaheadmanager_test.cpp"
       - "src/test/settingsmanager_test.cpp"
+      - "src/test/main.cpp"
       - "lib/bungee/**"
       - "CMakeLists.txt"
+      - "tools/debian_buildenv.sh"
       - ".github/workflows/bungee-asan.yml"
   workflow_dispatch:
 
@@ -187,10 +203,24 @@ jobs:
         run: |
           test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
           listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
-          test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
+          # AI-generated enabled-test guard begins.
+          test_count="$(printf '%s\n' "$listed_tests" | awk '
+            /^[^[:space:]]/ {
+              suite = ($1 ~ /\.$/) ? $1 : ""
+              next
+            }
+            /^[[:space:]]+[^[:space:]#]/ {
+              if (suite != "" && suite !~ /(^|\/)DISABLED_/ &&
+                  $1 !~ /(^|\/)DISABLED_/) {
+                count++
+              }
+            }
+            END { print count + 0 }
+          ')"
           if [ "$test_count" -eq 0 ]; then
-            echo "No tests matched GTest filter: $test_filter" >&2
+            echo "No enabled tests matched GTest filter: $test_filter" >&2
             exit 1
           fi
-          echo "Running $test_count tests matching GTest filter: $test_filter"
+          echo "Running $test_count enabled tests matching GTest filter: $test_filter"
+          # End AI-generated enabled-test guard.
           ./mixxx-test --gtest_filter="$test_filter"
