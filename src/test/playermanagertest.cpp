@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QTest>
 #include <gsl/pointers>
 
@@ -38,9 +39,14 @@ void deleteTrack(Track* pTrack) {
 };
 
 void waitForTrackToBeLoaded(Deck* pDeck) {
-    while (!pDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded()) {
-        QTest::qSleep(100); // millis
+    QElapsedTimer loadDeadline;
+    loadDeadline.start();
+    while (!pDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded() &&
+            loadDeadline.elapsed() < 10000) {
+        // Reader readiness is published on the GUI thread.
+        QTest::qWait(1);
     }
+    ASSERT_TRUE(pDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
 }
 
 } // namespace

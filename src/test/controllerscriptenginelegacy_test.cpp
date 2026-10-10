@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <QByteArrayView>
+#include <QElapsedTimer>
 #include <QMetaEnum>
 #include <QScopedPointer>
 #include <QTemporaryFile>
@@ -141,9 +142,14 @@ class ControllerScriptEngineLegacyTest : public ControllerScriptEngineLegacy,
 #endif
                 false);
         m_pEngine->process(1024);
-        while (!deck->getEngineDeck()->getEngineBuffer()->isTrackLoaded()) {
-            QTest::qSleep(100);
+        QElapsedTimer loadDeadline;
+        loadDeadline.start();
+        while (!deck->getEngineDeck()->getEngineBuffer()->isTrackLoaded() &&
+                loadDeadline.elapsed() < 10000) {
+            // Reader readiness is published on the GUI thread.
+            QTest::qWait(1);
         }
+        ASSERT_TRUE(deck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
         processEvents();
     }
 
