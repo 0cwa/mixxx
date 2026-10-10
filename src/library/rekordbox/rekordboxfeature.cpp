@@ -308,6 +308,9 @@ QString fromUtf16BeString(const std::string& toConvert) {
 
 QString getText(rekordbox_pdb_t::device_sql_string_t* deviceString) {
     QString text;
+    if (!deviceString || !deviceString->body()) {
+        return text;
+    }
 
     if (instanceof <rekordbox_pdb_t::device_sql_short_ascii_t>(deviceString->body())) {
         rekordbox_pdb_t::device_sql_short_ascii_t* shortAsciiString =
