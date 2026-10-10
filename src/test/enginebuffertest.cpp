@@ -3,16 +3,23 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QString>
+#include <QTemporaryFile>
 #include <QTest>
 #include <QThread>
 #include <QtDebug>
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
+#include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/ratecontrol.h"
 #include "engine/defs_keylock.h"
 #include "mixer/basetrackplayer.h"
@@ -33,10 +40,303 @@
 
 namespace {
 const QString kAppGroup = QStringLiteral("[App]");
+
+// Hold the real missing-file failure, then the very next dequeued request.
+// Inspecting that request before its loading notification prevents a newer
+// start from hiding an older failure's premature loading-gate reset.
+class ScopedFailureLifecycleBarrier {
+  public:
+    explicit ScopedFailureLifecycleBarrier(const QString& group) {
+        CachingReaderWorker::setTestTrackLifecycleHook(group, &notify, this);
+    }
+
+    ~ScopedFailureLifecycleBarrier() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_releaseFailure = true;
+            m_releaseNext = true;
+        }
+        m_changed.notify_all();
+        CachingReaderWorker::clearTestTrackLifecycleHook(this);
+    }
+
+    bool waitForFailureStart() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_changed.wait_for(lock, std::chrono::seconds(5), [this] {
+            return m_failureStarted;
+        });
+    }
+
+    bool waitForNextRequest() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_changed.wait_for(lock, std::chrono::seconds(5), [this] {
+            return m_nextDequeued;
+        });
+    }
+
+    quint64 failureGeneration() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_failureGeneration;
+    }
+
+    quint64 nextGeneration() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_nextGeneration;
+    }
+
+    void releaseFailure() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_releaseFailure = true;
+        }
+        m_changed.notify_all();
+    }
+
+    void releaseNext() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_releaseNext = true;
+        }
+        m_changed.notify_all();
+    }
+
+  private:
+    static void notify(const QString&,
+            CachingReaderWorker::TestTrackLifecycleEvent event,
+            quint64 generation,
+            void* context) {
+        auto* self = static_cast<ScopedFailureLifecycleBarrier*>(context);
+        std::unique_lock<std::mutex> lock(self->m_mutex);
+        if (!self->m_failureStarted &&
+                event == CachingReaderWorker::TestTrackLifecycleEvent::TrackLoadingAccepted) {
+            self->m_failureStarted = true;
+            self->m_failureGeneration = generation;
+            self->m_changed.notify_all();
+            self->m_changed.wait(lock, [self] { return self->m_releaseFailure; });
+        } else if (self->m_failureStarted && !self->m_nextDequeued &&
+                event == CachingReaderWorker::TestTrackLifecycleEvent::RequestDequeued) {
+            self->m_nextDequeued = true;
+            self->m_nextGeneration = generation;
+            self->m_changed.notify_all();
+            self->m_changed.wait(lock, [self] { return self->m_releaseNext; });
+        }
+    }
+
+    mutable std::mutex m_mutex;
+    std::condition_variable m_changed;
+    bool m_failureStarted{false};
+    bool m_nextDequeued{false};
+    bool m_releaseFailure{false};
+    bool m_releaseNext{false};
+    quint64 m_failureGeneration{0};
+    quint64 m_nextGeneration{0};
+};
 }
 
 class EngineBufferTest : public MockedEngineBackendTest {
   protected:
+    void submitTrack(TrackPointer pTrack) {
+        m_pMixerDeck1->slotLoadTrack(pTrack,
+#ifdef __STEM__
+                mixxx::StemChannelSelection(),
+#endif
+                false);
+    }
+
+    void expectCurrentWorkerFailure(bool withOldTrack, bool replaceDuringCleanup = false) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        if (!withOldTrack) {
+            pBuffer->ejectTrack();
+            QCoreApplication::processEvents();
+        }
+        ASSERT_EQ(static_cast<bool>(pBuffer->getLoadedTrack()), withOldTrack);
+        QObject::disconnect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                m_pMixerDeck1.get(),
+                &BaseTrackPlayerImpl::slotLoadFailed);
+        QTemporaryFile missingFile(QDir::tempPath() +
+                QStringLiteral("/mixxx-current-worker-failure-XXXXXX.wav"));
+        ASSERT_TRUE(missingFile.open());
+        const QString missingPath = missingFile.fileName();
+        missingFile.close();
+        TrackPointer pMissing = Track::newTemporary(missingPath);
+        TrackPointer pReplacement = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        int failureReports = 0;
+        int nullCompletions = 0;
+        bool observerEntered = false;
+        quint64 replacementGeneration = 0;
+        QObject observer;
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                &observer,
+                [&](TrackPointer pTrack, const QString& reason) {
+                    ++failureReports;
+                    EXPECT_EQ(pTrack, pMissing);
+                    EXPECT_TRUE(reason.contains(missingPath));
+                    EXPECT_EQ(QThread::currentThread(), pBuffer->thread());
+                });
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoaded,
+                &observer,
+                [&nullCompletions](TrackPointer pNewTrack, TrackPointer) {
+                    if (!pNewTrack) {
+                        ++nullCompletions;
+                    }
+                });
+        ControlProxy trackLoaded(m_sGroup1, "track_loaded");
+        if (replaceDuringCleanup) {
+            ASSERT_TRUE(withOldTrack);
+            ASSERT_TRUE(trackLoaded.connectValueChanged(
+                    &observer,
+                    [&](double value) {
+                        if (value != 0.0 || observerEntered) {
+                            return;
+                        }
+                        observerEntered = true;
+                        EXPECT_EQ(QThread::currentThread(), pBuffer->thread());
+                        submitTrack(pReplacement);
+                        replacementGeneration = pBuffer->currentTrackLoadGenerationForTest();
+                        // A direct observer may synchronously await readiness.
+                        // The failure handler must hold no engine/request lock.
+                        QElapsedTimer deadline;
+                        deadline.start();
+                        while (deadline.elapsed() < 10000) {
+                            ProcessBuffer();
+                            QTest::qWait(1);
+                            if (pBuffer->isTrackLoaded() &&
+                                    pBuffer->getLoadedTrack() == pReplacement &&
+                                    m_pMixerDeck1->getLoadedTrack() == pReplacement) {
+                                break;
+                            }
+                        }
+                        EXPECT_TRUE(pBuffer->isTrackLoaded());
+                        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+                        EXPECT_EQ(
+                                m_pMixerDeck1->getLoadedTrack(), pReplacement);
+                    },
+                    Qt::DirectConnection));
+        }
+        ScopedFailureLifecycleBarrier barrier(m_sGroup1);
+        submitTrack(pMissing);
+        ASSERT_TRUE(barrier.waitForFailureStart());
+        const quint64 failedGeneration = pBuffer->currentTrackLoadGenerationForTest();
+        ASSERT_TRUE(missingFile.remove());
+        ASSERT_FALSE(QFileInfo::exists(missingPath));
+        barrier.releaseNext();
+        barrier.releaseFailure();
+        QElapsedTimer deadline;
+        deadline.start();
+        while (deadline.elapsed() < 10000) {
+            ProcessBuffer();
+            QTest::qWait(1);
+            if (replaceDuringCleanup ? observerEntered && pBuffer->isTrackLoaded()
+                                     : failureReports == 1 && !pBuffer->isTrackLoadingForTest()) {
+                break;
+            }
+        }
+        if (replaceDuringCleanup) {
+            ASSERT_TRUE(observerEntered);
+            EXPECT_NE(replacementGeneration, failedGeneration);
+            EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), replacementGeneration);
+            EXPECT_TRUE(pBuffer->isTrackLoaded());
+            EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+            EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
+            EXPECT_EQ(trackLoaded.get(), 1.0);
+            EXPECT_EQ(failureReports, 0);
+            EXPECT_EQ(nullCompletions, 0);
+        } else {
+            EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), failedGeneration);
+            EXPECT_FALSE(pBuffer->isTrackLoaded());
+            EXPECT_FALSE(pBuffer->isTrackLoadingForTest());
+            EXPECT_FALSE(pBuffer->getLoadedTrack());
+            EXPECT_EQ(trackLoaded.get(), 0.0);
+            EXPECT_EQ(failureReports, 1);
+            EXPECT_EQ(nullCompletions, withOldTrack ? 1 : 0);
+            QTest::qWait(10);
+            EXPECT_EQ(failureReports, 1);
+        }
+    }
+
+    void expectSupersededWorkerFailure(bool withOldTrack) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        if (!withOldTrack) {
+            pBuffer->ejectTrack();
+            QCoreApplication::processEvents();
+        }
+        const TrackPointer pOldTrack = pBuffer->getLoadedTrack();
+        ASSERT_EQ(static_cast<bool>(pOldTrack), withOldTrack);
+        // Retain public failure reporting, but suppress the user-facing dialog.
+        QObject::disconnect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                m_pMixerDeck1.get(),
+                &BaseTrackPlayerImpl::slotLoadFailed);
+        int failureReports = 0;
+        int nullCompletions = 0;
+        QObject observer;
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                &observer,
+                [&failureReports](
+                        TrackPointer, const QString&) { ++failureReports; });
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoaded,
+                &observer,
+                [&nullCompletions](TrackPointer pNewTrack, TrackPointer) {
+                    if (!pNewTrack) {
+                        ++nullCompletions;
+                    }
+                });
+        QTemporaryFile missingFile(QDir::tempPath() +
+                QStringLiteral("/mixxx-superseded-worker-failure-XXXXXX.wav"));
+        ASSERT_TRUE(missingFile.open());
+        const QString missingPath = missingFile.fileName();
+        missingFile.close();
+        TrackPointer pMissing = Track::newTemporary(missingPath);
+        TrackPointer pReplacement = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        ScopedFailureLifecycleBarrier barrier(m_sGroup1);
+        submitTrack(pMissing);
+        ASSERT_TRUE(barrier.waitForFailureStart());
+        const quint64 failedGeneration = barrier.failureGeneration();
+        ASSERT_NE(failedGeneration, 0);
+        ASSERT_EQ(pBuffer->currentTrackLoadGenerationForTest(), failedGeneration);
+        ASSERT_TRUE(pBuffer->isTrackLoadingForTest());
+        ASSERT_TRUE(missingFile.remove());
+        ASSERT_FALSE(QFileInfo::exists(missingPath));
+        submitTrack(pReplacement);
+        const quint64 replacementGeneration = pBuffer->currentTrackLoadGenerationForTest();
+        ASSERT_NE(replacementGeneration, failedGeneration);
+        barrier.releaseFailure();
+        ASSERT_TRUE(barrier.waitForNextRequest());
+        // Deliver queued failure/completion notifications while the next
+        // worker request is held before any loading notification.
+        QTest::qWait(10);
+        EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), replacementGeneration);
+        EXPECT_TRUE(pBuffer->isTrackLoadingForTest());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pOldTrack);
+        EXPECT_EQ(failureReports, 0);
+        EXPECT_EQ(nullCompletions, 0);
+        ASSERT_EQ(barrier.nextGeneration(), replacementGeneration);
+        barrier.releaseNext();
+        QElapsedTimer deadline;
+        deadline.start();
+        while (deadline.elapsed() < 10000) {
+            ProcessBuffer();
+            QTest::qWait(1);
+            if (pBuffer->isTrackLoaded() && pBuffer->getLoadedTrack() == pReplacement &&
+                    m_pMixerDeck1->getLoadedTrack() == pReplacement) {
+                break;
+            }
+        }
+        EXPECT_TRUE(pBuffer->isTrackLoaded());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+        EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
+        EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), replacementGeneration);
+        EXPECT_EQ(failureReports, 0);
+        EXPECT_EQ(nullCompletions, 0);
+    }
+
     bool hasTrackBeatConnection(TrackPointer pTrack, EngineBuffer* pBuffer) {
         // A unique connection fails if the real connection already exists.
         // Remove a successful probe so inspection leaves connections unchanged.
@@ -199,6 +499,26 @@ class EngineBufferTest : public MockedEngineBackendTest {
 class EngineBufferE2ETest : public SignalPathTest {};
 
 // AI-generated reentrancy regressions begin.
+TEST_F(EngineBufferTest, SupersededWorkerFailurePreservesReplacementWithOldTrack) {
+    expectSupersededWorkerFailure(true);
+}
+
+TEST_F(EngineBufferTest, SupersededWorkerFailurePreservesReplacementWithoutOldTrack) {
+    expectSupersededWorkerFailure(false);
+}
+
+TEST_F(EngineBufferTest, CurrentWorkerFailureRetainsOldTrackCleanupAndReportsOnce) {
+    expectCurrentWorkerFailure(true);
+}
+
+TEST_F(EngineBufferTest, CurrentWorkerFailureWithoutOldTrackReportsOnceWithoutNullCompletion) {
+    expectCurrentWorkerFailure(false);
+}
+
+TEST_F(EngineBufferTest, WorkerFailureCleanupObserverCanAwaitReplacement) {
+    expectCurrentWorkerFailure(true, true);
+}
+
 TEST_F(EngineBufferTest, ZeroReadinessObserverCanLoadReplacementDuringEject) {
     expectReplacementFromEjectControl("track_loaded");
 }
