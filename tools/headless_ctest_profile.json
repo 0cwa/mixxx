@@ -2,7 +2,7 @@
   "notice": "AI-generated source classification for local CI review begins. This profile requires human review before hosted execution.",
   "schema": 1,
   "source_baseline": "1c0b415cead1b26e37a37b196e82a8c6ab30fb0b",
-  "src_tree": "4e7d04bce8283a61382c7f168d8f601d4ff16947",
+  "src_tree": "39e0b97db313e2f206134d73d92a676fc7b78e3b",
   "scope": "Explicit per-source/fixture policies; no permissive default. Conservative visual/transitive/uncertain exclusions. Shared QApplication infrastructure remains. Human independent certification and native runtime gates remain pending.",
   "mandatory_common": [
     "EngineMixerShutdownTest.StopsSchedulerBeforeDestroyingChannelWorkers",
@@ -5337,5 +5337,5 @@
       }
     }
   },
-  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed."
+  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed. AI-generated bounded review notice begins. Bounded retained-wake adaptation from public 655929d0f25838b73d2d32c8d74b6b8d7b13d26a on Forest 06a324bd8239f97d9c9a5360a3d81607c73b3194 plus canonical b02e84aa4cbae2569b5bb850f2b12bd81062c791. Only the scheduler implementation/header changed in src; all test source hashes, definitions, classifications, platform gates and qualified Windows skip rules remain unchanged. Standalone QtCore regressions do not certify full Mixxx runtime gates. End AI-generated bounded review notice."
 }
