@@ -1006,6 +1006,14 @@ void EngineBuffer::handleTrackLoaded(
     m_slipModeState = SlipModeState::Disabled;
     m_queuedSeek.setValue(kNoQueuedSeek);
     m_pause.unlock();
+    // Retire the old connection before a direct observer can supersede this
+    // load and bypass the remaining completion notifications.
+    if (pOldTrack) {
+        disconnect(pOldTrack.get(),
+                &Track::beatsUpdated,
+                this,
+                &EngineBuffer::slotUpdatedTrackBeats);
+    }
     if (!readerLoad) {
         // GUI observers may wait for a replacement worker to accept its load.
         // Do not hold request serialization across their synchronous signals.
@@ -1185,6 +1193,14 @@ void EngineBuffer::ejectTrackImpl(quint64 generation) {
     m_queuedSeek.setValue(kNoQueuedSeek);
     m_iTrackLoading = 1;
     m_pause.unlock();
+    // A replacement request will see no old track after this eject. Clean up
+    // its beat connection before any notification can start that request.
+    if (pOldTrack) {
+        disconnect(pOldTrack.get(),
+                &Track::beatsUpdated,
+                this,
+                &EngineBuffer::slotUpdatedTrackBeats);
+    }
     if (generation != 0) {
         // Explicit GUI ejects may synchronously request and await a new load.
         requestLock.unlock();
@@ -1261,14 +1277,6 @@ void EngineBuffer::notifyTrackLoaded(
     m_pRateControl->resetPositionScratchController();
     if (!stillCurrent()) {
         return;
-    }
-
-    if (pOldTrack) {
-        disconnect(
-                pOldTrack.get(),
-                &Track::beatsUpdated,
-                this,
-                &EngineBuffer::slotUpdatedTrackBeats);
     }
 
     // First inform engineControls directly
