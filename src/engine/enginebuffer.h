@@ -455,7 +455,8 @@ class EngineBuffer : public EngineObject {
     void notifyTrackLoaded(
             TrackPointer pNewTrack,
             TrackPointer pOldTrack,
-            bool emitCompletionSignal = true);
+            bool emitCompletionSignal,
+            quint64 generation);
 #ifdef __BUNGEE__
     // Publishes a Bungee configuration request. Preparation and replacement
     // happen in EngineBufferBungeeWorker, never in the audio callback.
@@ -561,6 +562,9 @@ class EngineBuffer : public EngineObject {
     // Mutex controlling whether the process function is in pause mode. This happens
     // during seek and loading of a new track
     QMutex m_pause;
+    // Request-state writers may reenter through synchronous control observers.
+    // Audio callbacks never acquire this mutex.
+    QRecursiveMutex m_trackLoadMutex;
     // Used in update of playpos slider
     std::size_t m_samplesSinceLastIndicatorUpdate;
 
@@ -691,8 +695,8 @@ class EngineBuffer : public EngineObject {
 
     // Is true if the previous buffer was silent due to pausing
     QAtomicInt m_iTrackLoading;
-    // The GUI advances this token under m_pause. Reader completion checks its
-    // captured token under the same lock before replacing the current track.
+    // Request acceptance and completion hold m_trackLoadMutex. m_pause protects
+    // engine state only and is released before synchronous notifications.
     std::atomic<quint64> m_currentTrackLoadGeneration{0};
     bool m_bPlayAfterLoading;
     // Records the sample rate so we can detect when it changes. Initialized to

@@ -4,6 +4,7 @@
 #include <mutex>
 #endif
 
+#include <QMutexLocker>
 #include <QThread>
 
 #include "control/controllinpotmeter.h"
@@ -864,23 +865,20 @@ bool EngineBuffer::isReverse() const {
 
 // WARNING: Always called from the EngineWorker thread pool
 void EngineBuffer::slotTrackLoading(quint64 generation) {
-    // Serialize acceptance and its start-state writes with generation changes
-    // and eject. If this request is already stale, it must not reopen the
-    // loading gate or overwrite the controls cleared by a newer request.
-    m_pause.lock();
+    QMutexLocker requestLock(&m_trackLoadMutex);
     if (!isCurrentTrackLoadGeneration(generation)) {
-        m_pause.unlock();
         return;
     }
-
-    // Setting the loading flag while paused ensures that track frames are not
-    // processed between acceptance and the first subsequent audio callback.
-    m_iTrackLoading = 1;
-    // Keep these existing side effects inside the same acceptance boundary so
-    // an eject cannot be followed by stale play/end-position writes.
+    {
+        QMutexLocker pauseLock(&m_pause);
+        m_iTrackLoading = 1;
+    }
+    // Setters emit synchronous signals. Never invoke them under m_pause.
     m_playButton->set((double)m_bPlayAfterLoading);
-    setTrackEndPosition(mixxx::audio::kInvalidFramePos); // Stop renderer
-    m_pause.unlock();
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    setTrackEndPosition(mixxx::audio::kInvalidFramePos);
 }
 
 #ifdef __BUNGEE__
@@ -901,15 +899,20 @@ void EngineBuffer::slotSampleRateChanged(double sampleRate) {
 void EngineBuffer::loadFakeTrack(TrackPointer pTrack, bool bPlay) {
     // Fake tracks use the legacy synchronous completion route. Invalidate any
     // queued reader success before applying that completion.
-    invalidatePendingTrackLoads();
+    const quint64 generation = beginTrackLoad();
     if (bPlay) {
         m_playButton->set((double)bPlay);
+        if (!isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
     }
-    slotTrackLoaded(pTrack,
+    handleTrackLoaded(pTrack,
             pTrack->getSampleRate(),
             pTrack->getChannels(),
             mixxx::audio::FramePos::fromEngineSamplePos(
-                    pTrack->getSampleRate() * pTrack->getDuration()));
+                    pTrack->getSampleRate() * pTrack->getDuration()),
+            generation,
+            false);
 }
 
 // Legacy completion path for fake tracks. Reader completions use the
@@ -923,7 +926,7 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
             trackSampleRate,
             trackChannelCount,
             trackNumFrame,
-            0,
+            beginTrackLoad(),
             false);
 }
 
@@ -956,12 +959,11 @@ void EngineBuffer::handleTrackLoaded(
     if (kLogger.traceEnabled()) {
         kLogger.trace() << "slotTrackLoaded" << getGroup();
     }
+    QMutexLocker requestLock(&m_trackLoadMutex);
     m_pause.lock();
 
-    if (readerLoad && !isCurrentTrackLoadGeneration(generation)) {
-        // Explicit eject and newer GUI requests advance the generation while
-        // holding m_pause, so a stale reader result cannot replace the track
-        // state protected by this lock.
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        // Request acceptance is serialized separately from engine state.
         m_pause.unlock();
         return;
     }
@@ -996,27 +998,46 @@ void EngineBuffer::handleTrackLoaded(
             m_channelCount);
 #endif
 
-    m_pTrackSamples->set(trackNumFrame.toEngineSamplePos());
-    m_pTrackSampleRate->set(trackSampleRate.toDouble());
-    if (!readerLoad) {
-        m_pTrackLoaded->forceSet(1);
-    }
-
-    // Reset slip mode
-    m_pSlipButton->set(0);
+    // Complete engine-only writes before invoking any direct observers.
+    m_iTrackLoading = 1;
     m_bSlipEnabledProcessing = false;
     m_slipPos = mixxx::audio::kStartFramePos;
     m_dSlipRate = 0;
     m_slipModeState = SlipModeState::Disabled;
-
-    m_pReplayGain->set(pTrack->getReplayGain().getRatio());
-
     m_queuedSeek.setValue(kNoQueuedSeek);
-
-    // Reset the pitch value for the new track.
     m_pause.unlock();
+    if (!readerLoad) {
+        // GUI observers may wait for a replacement worker to accept its load.
+        // Do not hold request serialization across their synchronous signals.
+        requestLock.unlock();
+    }
 
-    notifyTrackLoaded(pTrack, pOldTrack, !readerLoad);
+    m_pTrackSamples->set(trackNumFrame.toEngineSamplePos());
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    m_pTrackSampleRate->set(trackSampleRate.toDouble());
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    if (!readerLoad) {
+        m_pTrackLoaded->forceSet(1);
+        if (!isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
+    }
+    m_pSlipButton->set(0);
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    m_pReplayGain->set(pTrack->getReplayGain().getRatio());
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    notifyTrackLoaded(pTrack, pOldTrack, !readerLoad, generation);
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
 
     // Check if we are cloning another channel before doing any seeking.
     // This replaces m_queuedSeek populated form CueControl
@@ -1033,9 +1054,13 @@ void EngineBuffer::handleTrackLoaded(
         return;
     }
 
-    // Start buffer processing after all EngineContols are up to date
-    // with the current track e.g track is seeked to Cue
-    m_iTrackLoading = 0;
+    // Fake completion runs on the GUI thread. Reacquire request serialization
+    // before releasing the loading gate after its synchronous notifications.
+    requestLock.relock();
+    QMutexLocker pauseLock(&m_pause);
+    if (isCurrentTrackLoadGeneration(generation)) {
+        m_iTrackLoading = 0;
+    }
 }
 
 void EngineBuffer::slotPublishTrackLoaded(
@@ -1062,9 +1087,10 @@ void EngineBuffer::slotPublishTrackLoaded(
     // allow EngineBuffer::process() to run against the new track.
     m_pTrackLoaded->forceSet(1);
 
-    // track_loaded may synchronously invoke observers that start another
-    // request. Recheck under the same lock used by request-start acceptance so
-    // this completion cannot release a newer request's loading gate.
+    // A direct observer may have advanced the token. Request serialization is
+    // deliberately acquired after notification so its replacement worker can
+    // make progress even when the observer waits for acceptance synchronously.
+    QMutexLocker requestLock(&m_trackLoadMutex);
     m_pause.lock();
     const bool isStillCurrent = isCurrentTrackLoadGeneration(generation);
     if (isStillCurrent) {
@@ -1074,22 +1100,20 @@ void EngineBuffer::slotPublishTrackLoaded(
     if (!isStillCurrent) {
         return;
     }
+    requestLock.unlock();
     emit trackLoadedFromReader(pNewTrack, pOldTrack, generation);
 }
 
 quint64 EngineBuffer::beginTrackLoad() {
-    // Serialize token changes with reader completion's m_pause-protected
-    // acceptance check. This gives explicit eject a clear order: either a
-    // completion commits first and eject clears it, or it observes the new
-    // generation and is discarded.
-    m_pause.lock();
+    // Serialize acceptance with worker completion. Direct observers may start
+    // a newer request; callers recheck the token after every notification.
+    QMutexLocker requestLock(&m_trackLoadMutex);
     quint64 generation =
             m_currentTrackLoadGeneration.load(std::memory_order_relaxed) + 1;
     if (generation == 0) {
         generation = 1;
     }
     m_currentTrackLoadGeneration.store(generation, std::memory_order_release);
-    m_pause.unlock();
     return generation;
 }
 
@@ -1123,6 +1147,10 @@ void EngineBuffer::ejectTrack() {
 }
 
 void EngineBuffer::ejectTrackImpl(quint64 generation) {
+    QMutexLocker requestLock(&m_trackLoadMutex);
+    const auto stillCurrent = [this, generation] {
+        return generation == 0 || isCurrentTrackLoadGeneration(generation);
+    };
     // Generation zero is the legacy worker-side failure route. Explicit GUI
     // ejects allocate their own token, while null load requests already carry
     // the token allocated by BaseTrackPlayer.
@@ -1133,8 +1161,8 @@ void EngineBuffer::ejectTrackImpl(quint64 generation) {
     if (kLogger.traceEnabled()) {
         kLogger.trace() << "ejectTrack()";
     }
-    TrackPointer pOldTrack = m_pCurrentTrack;
     m_pause.lock();
+    TrackPointer pOldTrack = m_pCurrentTrack;
     if (generation != 0 && !isCurrentTrackLoadGeneration(generation)) {
         m_pause.unlock();
         return;
@@ -1153,38 +1181,67 @@ void EngineBuffer::ejectTrackImpl(quint64 generation) {
             0.0,
             0.0,
             0.0);
-    doSeekPlayPos(mixxx::audio::kStartFramePos, SEEK_EXACT);
-
     m_pCurrentTrack.reset();
-    setTrackEndPosition(mixxx::audio::kInvalidFramePos);
-    m_pTrackSampleRate->set(0);
-    m_pTrackLoaded->forceSet(0);
-
-    m_playButton->set(0.0);
-    m_playposSlider->set(0);
-    m_pCueControl->resetIndicators();
-
-    m_pReplayGain->set(0.0);
-
     m_queuedSeek.setValue(kNoQueuedSeek);
-
+    m_iTrackLoading = 1;
     m_pause.unlock();
+    if (generation != 0) {
+        // Explicit GUI ejects may synchronously request and await a new load.
+        requestLock.unlock();
+    }
 
-    // Close open file handles by unloading the current track. Unload requests
-    // never publish reader success, so the reader request itself carries no
-    // generation. GUI callers already advanced or supplied the generation;
-    // worker-side failures do not mutate the GUI-owned generation.
+    // Submit the unload before publishing controls: a zero-readiness observer
+    // may submit a replacement, which this eject must never overwrite.
     m_pReader->newTrack(TrackPointer(), 0);
-
+#ifdef __VINYLCONTROL__
+    if (m_pVinylControlControl) {
+        m_pVinylControlControl->notifySeekQueued();
+        if (!stillCurrent()) {
+            return;
+        }
+    }
+#endif
+    // Eject cancels seeks; the old seek-to-zero was discarded before unlock.
+    m_queuedSeek.setValue(kNoQueuedSeek);
+    setTrackEndPosition(mixxx::audio::kInvalidFramePos);
+    if (!stillCurrent()) {
+        return;
+    }
+    m_pTrackSampleRate->set(0);
+    if (!stillCurrent()) {
+        return;
+    }
+    m_pTrackLoaded->forceSet(0);
+    if (!stillCurrent()) {
+        return;
+    }
+    m_playButton->set(0.0);
+    if (!stillCurrent()) {
+        return;
+    }
+    m_playposSlider->set(0);
+    if (!stillCurrent()) {
+        return;
+    }
+    m_pCueControl->resetIndicators();
+    if (!stillCurrent()) {
+        return;
+    }
+    m_pReplayGain->set(0.0);
+    if (!stillCurrent()) {
+        return;
+    }
     if (pOldTrack) {
-        notifyTrackLoaded(TrackPointer(), pOldTrack);
+        notifyTrackLoaded(TrackPointer(), pOldTrack, true, generation);
     } else {
-        // When not invoking notifyTrackLoaded() call this separately
         m_pRateControl->resetPositionScratchController();
     }
 
     // A track-loaded observer can synchronously start another request. Release
     // this eject's loading state only if its generation is still current.
+    if (generation != 0) {
+        requestLock.relock();
+    }
     m_pause.lock();
     if (generation == 0 || isCurrentTrackLoadGeneration(generation)) {
         m_iTrackLoading = 0;
@@ -1196,8 +1253,15 @@ void EngineBuffer::ejectTrackImpl(quint64 generation) {
 void EngineBuffer::notifyTrackLoaded(
         TrackPointer pNewTrack,
         TrackPointer pOldTrack,
-        bool emitCompletionSignal) {
+        bool emitCompletionSignal,
+        quint64 generation) {
+    const auto stillCurrent = [this, generation] {
+        return generation == 0 || isCurrentTrackLoadGeneration(generation);
+    };
     m_pRateControl->resetPositionScratchController();
+    if (!stillCurrent()) {
+        return;
+    }
 
     if (pOldTrack) {
         disconnect(
@@ -1213,7 +1277,13 @@ void EngineBuffer::notifyTrackLoaded(
     const auto sampleRate = mixxx::audio::SampleRate::fromDouble(m_pTrackSampleRate->get());
     for (const auto& pControl : std::as_const(m_engineControls)) {
         pControl->setFrameInfo(m_playPos, trackEndPosition, sampleRate);
+        if (!stillCurrent()) {
+            return;
+        }
         pControl->trackLoaded(pNewTrack);
+        if (!stillCurrent()) {
+            return;
+        }
     }
 
     if (pNewTrack) {
@@ -1231,7 +1301,7 @@ void EngineBuffer::notifyTrackLoaded(
         m_pBpmControl->trackBpmLockChanged(bpmLocked);
     }
 
-    if (emitCompletionSignal) {
+    if (emitCompletionSignal && stillCurrent()) {
         // Inform BaseTrackPlayer via a queued connection.
         emit trackLoaded(pNewTrack, pOldTrack);
     }
