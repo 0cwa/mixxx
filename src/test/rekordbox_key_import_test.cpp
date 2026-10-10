@@ -17,6 +17,7 @@
 #include "library/rekordbox/rekordboxparser_test.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
+#include "mixer/playerinfo.h"
 #include "rekordbox_pdb_test_fixtures.h"
 #include "test/mixxxdbtest.h"
 #include "track/track.h"
@@ -88,6 +89,10 @@ TEST_F(RekordboxKeyImportTest, ProductionSchemaAndImportNormalizeForeignKeyId) {
 }
 
 TEST_F(RekordboxKeyImportTest, ImportedKeysSortInBothDirectionsThroughRealPlaylistModel) {
+    PlayerInfo::create();
+    const auto destroyPlayerInfo = qScopeGuard([] {
+        PlayerInfo::destroy();
+    });
     DateFormatChangedBroadcaster::createInstance();
     const auto destroyDateFormatBroadcaster = qScopeGuard([] {
         DateFormatChangedBroadcaster::destroy();
