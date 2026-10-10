@@ -89,6 +89,11 @@ TEST_F(RekordboxKeyImportTest, ProductionSchemaAndImportNormalizeForeignKeyId) {
 }
 
 TEST_F(RekordboxKeyImportTest, ImportedKeysSortInBothDirectionsThroughRealPlaylistModel) {
+    ControlObject crossfader(ConfigKey(QStringLiteral("[Master]"), QStringLiteral("crossfader")));
+    ControlObject numDecks(ConfigKey(QStringLiteral("[App]"), QStringLiteral("num_decks")));
+    ControlObject numSamplers(ConfigKey(QStringLiteral("[App]"), QStringLiteral("num_samplers")));
+    ControlObject numPreviewDecks(ConfigKey(
+            QStringLiteral("[App]"), QStringLiteral("num_preview_decks")));
     PlayerInfo::create();
     const auto destroyPlayerInfo = qScopeGuard([] {
         PlayerInfo::destroy();
