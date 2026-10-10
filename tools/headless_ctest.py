@@ -82,7 +82,9 @@ def case_definition(test, definitions):
     return matches[0]
 
 
-def select_tests(discovery, profile, system, exclude_regex=""):
+def select_tests(
+    discovery, profile, system, exclude_regex="", cache_text=None
+):
     definitions = {}
     for source, entry in profile["sources"].items():
         for name, policy in entry["cases"].items():
@@ -118,6 +120,23 @@ def select_tests(discovery, profile, system, exclude_regex=""):
     required = profile["mandatory_common"] + (
         profile["mandatory_windows"] if system == "Windows" else []
     )
+    # AI-generated optional-feature guard begins.
+    # Actual execution supplies its CMake cache.
+    # Saved discovery remains a plan.
+    if cache_text is not None:
+        for feature, cases in profile.get("mandatory_features", {}).items():
+            match = re.search(
+                rf"^{re.escape(feature)}:BOOL=(ON|OFF)$",
+                cache_text,
+                re.MULTILINE,
+            )
+            if not match:
+                raise ValueError(
+                    f"Missing explicit feature configuration: {feature}"
+                )
+            if match.group(1) == "ON":
+                required += cases
+    # End AI-generated optional-feature guard.
     available = {t["definition"] for t in selected if not t["disabled"]}
     missing = sorted(set(required) - available)
     coverage = {}
@@ -262,6 +281,7 @@ def run_plan(args):
     ctest = [args.ctest, "--test-dir", str(pathlib.Path(args.build).resolve())]
     if args.config:
         ctest += ["-C", args.config]
+    cache_text = None
     if args.discovery_json:
         if not args.plan_only:
             raise ValueError(
@@ -289,7 +309,7 @@ def run_plan(args):
         receipt["discovery_mode"] = "actual platform CTest discovery"
     write_json(output / "discovered.json", discovery)
     plan = select_tests(
-        discovery, profile, platform.system(), args.exclude_regex
+        discovery, profile, platform.system(), args.exclude_regex, cache_text
     )
     write_json(output / "selection.json", plan)
     receipt["counts"] = {

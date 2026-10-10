@@ -3017,6 +3017,8 @@ if(BUILD_TESTING)
     src/test/itunesxmlimportertest.cpp
     src/test/keyfactorytest.cpp
     src/test/keyutilstest.cpp
+    src/test/rekordbox_key_import_test.cpp
+    src/test/rekordbox_parser_guard_test.cpp
     src/test/lcstest.cpp
     src/test/learningutilstest.cpp
     src/test/libraryscannertest.cpp
@@ -3132,6 +3134,7 @@ if(BUILD_TESTING)
         src/test/qmleffectsproxytest.cpp
         src/test/qmlkeyutilstest.cpp
         src/test/qmllibraryproxytest.cpp
+        src/test/qmllibrarytracklistmodel_test.cpp
         src/test/qmlspinnypositiontest.cpp
         src/test/qmlskincontrolcreatortest.cpp
         src/test/qmlwaveformoverviewtest.cpp

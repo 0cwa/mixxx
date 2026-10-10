@@ -1,5 +1,9 @@
 #include "library/rekordbox/rekordboxfeature.h"
 
+#if defined(BUILD_TESTING)
+#include "library/rekordbox/rekordboxparser_test.h"
+#endif
+
 #include <mp3guessenc.h>
 #include <rekordbox_anlz.h>
 #include <rekordbox_pdb.h>
@@ -1200,6 +1204,8 @@ void readAnalyze(TrackPointer track,
 
 namespace mixxx::rekordbox::test {
 
+#if defined(BUILD_TESTING)
+
 void readAnalyzeForTest(
         TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
@@ -1214,6 +1220,29 @@ QString parseDeviceDBForTest(
         TreeItem* deviceItem) {
     return parseDeviceDB(dbConnectionPool, deviceItem);
 }
+
+// AI-generated combined test accessors begin; parser method bodies retained.
+bool createDeviceTablesForTest(QSqlDatabase& database) {
+    return createLibraryTable(database, kRekordboxLibraryTable) &&
+            createPlaylistsTable(database, kRekordboxPlaylistsTable) &&
+            createPlaylistTracksTable(database, kRekordboxPlaylistTracksTable);
+}
+
+QString nullPdbStringForTest() {
+    return getText(nullptr);
+}
+
+QString textFromPdbStringForTest(const std::string& bytes) {
+    kaitai::kstream stream(bytes);
+    rekordbox_pdb_t::device_sql_string_t parsed(&stream);
+    return getText(&parsed);
+}
+
+QString utf16BeTextForTest(const std::string& bytes) {
+    return fromUtf16BeString(bytes);
+}
+// End AI-generated combined test accessors.
+#endif
 
 } // namespace mixxx::rekordbox::test
 

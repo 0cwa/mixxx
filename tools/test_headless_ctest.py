@@ -40,10 +40,14 @@ class WorkingSourceGuardTest(unittest.TestCase):
         self.root = pathlib.Path(self.directory.name)
         self.git("init", "-q")
         for path in (
-            "src/engine/example.cpp", "src/test/signalpathtest.h",
-            "cmake/example.cmake", "CMakeLists.txt",
-            "tools/headless_ctest.py", "tools/headless_ctest_profile.json",
-            ".github/workflows/build.yml", ".gitignore",
+            "src/engine/example.cpp",
+            "src/test/signalpathtest.h",
+            "cmake/example.cmake",
+            "CMakeLists.txt",
+            "tools/headless_ctest.py",
+            "tools/headless_ctest_profile.json",
+            ".github/workflows/build.yml",
+            ".gitignore",
         ):
             target = self.root / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -53,8 +57,13 @@ class WorkingSourceGuardTest(unittest.TestCase):
         )
         self.git("add", ".")
         self.git(
-            "-c", "user.name=Guard Test", "-c", "user.email=guard@example.invalid",
-            "commit", "-qm", "Fixture baseline",
+            "-c",
+            "user.name=Guard Test",
+            "-c",
+            "user.email=guard@example.invalid",
+            "commit",
+            "-qm",
+            "Fixture baseline",
         )
 
     def git(self, *args):
@@ -91,8 +100,13 @@ class WorkingSourceGuardTest(unittest.TestCase):
         (self.root / ".gitignore").write_text("src/test/ignored.h\n")
         self.git("add", ".gitignore")
         self.git(
-            "-c", "user.name=Guard Test", "-c", "user.email=guard@example.invalid",
-            "commit", "-qm", "Ignore fixture",
+            "-c",
+            "user.name=Guard Test",
+            "-c",
+            "user.email=guard@example.invalid",
+            "commit",
+            "-qm",
+            "Ignore fixture",
         )
         (self.root / "src/test/ignored.h").write_text("new\n")
         with self.assertRaises(ValueError):
@@ -100,8 +114,10 @@ class WorkingSourceGuardTest(unittest.TestCase):
 
     def test_changed_build_policy_helper_and_workflow_are_rejected(self):
         for path in (
-            "cmake/example.cmake", "CMakeLists.txt",
-            "tools/headless_ctest.py", "tools/headless_ctest_profile.json",
+            "cmake/example.cmake",
+            "CMakeLists.txt",
+            "tools/headless_ctest.py",
+            "tools/headless_ctest_profile.json",
             ".github/workflows/build.yml",
         ):
             with self.subTest(path=path):
@@ -113,7 +129,8 @@ class WorkingSourceGuardTest(unittest.TestCase):
     def test_untracked_receipts_outside_source_are_allowed(self):
         (self.root / "receipt.json").write_text("{}\n")
         self.assertEqual(
-            "clean", headless_ctest.validate_source_checkout(self.root)["status"]
+            "clean",
+            headless_ctest.validate_source_checkout(self.root)["status"],
         )
 
     def test_run_plan_rejects_dirty_header_before_discovery(self):
@@ -123,9 +140,13 @@ class WorkingSourceGuardTest(unittest.TestCase):
             expected_head=self.git("rev-parse", "HEAD").strip(),
         )
         with mock.patch.object(
-            headless_ctest, "__file__", str(self.root / "tools/headless_ctest.py")
+            headless_ctest,
+            "__file__",
+            str(self.root / "tools/headless_ctest.py"),
         ):
-            with self.assertRaisesRegex(ValueError, "uncommitted or ignored changes"):
+            with self.assertRaisesRegex(
+                ValueError, "uncommitted or ignored changes"
+            ):
                 headless_ctest.run_plan(args)
 
 
@@ -138,7 +159,9 @@ class HeadlessSelectionTest(unittest.TestCase):
         plan = self.select([case(name) for name in policies])
         self.assertEqual(7, len(plan["excluded"]))
         for policy in policies.values():
-            self.assertIn("Source and fixture header are present", policy["reason"])
+            self.assertIn(
+                "Source and fixture header are present", policy["reason"]
+            )
             self.assertEqual("excluded", policy["classification"])
 
     def test_all_native_platforms_require_hid_data_cases(self):
@@ -149,18 +172,26 @@ class HeadlessSelectionTest(unittest.TestCase):
         self.assertTrue(set(names).issubset(PROFILE["mandatory_common"]))
         for system in ("Linux", "Darwin", "Windows"):
             with self.subTest(system=system):
-                tests = [t for t in required_tests(system) if t["name"] not in names]
+                tests = [
+                    t for t in required_tests(system) if t["name"] not in names
+                ]
                 plan = headless_ctest.select_tests(
                     {"tests": tests}, PROFILE, system
                 )
                 self.assertEqual(sorted(names), plan["missing_required"])
 
     def test_disabled_hid_data_case_is_not_coverage(self):
-        name = next(iter(PROFILE["sources"][
-            "src/test/controller_hid_reportdescriptor_test.cpp"
-        ]["cases"]))
+        name = next(
+            iter(
+                PROFILE["sources"][
+                    "src/test/controller_hid_reportdescriptor_test.cpp"
+                ]["cases"]
+            )
+        )
         tests = required_tests()
-        next(t for t in tests if t["name"] == name)["properties"][0]["value"] = True
+        next(t for t in tests if t["name"] == name)["properties"][0][
+            "value"
+        ] = True
         plan = headless_ctest.select_tests({"tests": tests}, PROFILE, "Linux")
         self.assertEqual([name], plan["missing_required"])
 
@@ -450,6 +481,54 @@ class ResultGuardTest(unittest.TestCase):
         )
         self.assertTrue(errors)
         self.assertEqual([result["name"]], required)
+
+
+class OptionalFeatureRequiredTest(unittest.TestCase):
+    # AI-generated QML configuration regressions begin.
+    def selection(self, extra, cache):
+        return headless_ctest.select_tests(
+            {"tests": required_tests() + extra},
+            PROFILE,
+            "Linux",
+            cache_text=cache,
+        )
+
+    def test_qml_off_retains_all_common_requirements(self):
+        self.assertEqual(
+            [], self.selection([], "QML:BOOL=OFF\n")["missing_required"]
+        )
+
+    def test_qml_on_requires_every_enabled_model_case(self):
+        names = PROFILE["mandatory_features"]["QML"]
+        self.assertEqual(
+            [],
+            self.selection([case(n) for n in names], "QML:BOOL=ON\n")[
+                "missing_required"
+            ],
+        )
+
+    def test_qml_on_rejects_missing_model_group(self):
+        names = PROFILE["mandatory_features"]["QML"]
+        self.assertEqual(
+            sorted(names),
+            self.selection([], "QML:BOOL=ON\n")["missing_required"],
+        )
+
+    def test_qml_on_rejects_disabled_model_case(self):
+        names = PROFILE["mandatory_features"]["QML"]
+        entries = [case(n, disabled=(i == 0)) for i, n in enumerate(names)]
+        self.assertEqual(
+            [names[0]],
+            self.selection(entries, "QML:BOOL=ON\n")["missing_required"],
+        )
+
+    def test_actual_cache_must_name_feature(self):
+        with self.assertRaisesRegex(
+            ValueError, "Missing explicit feature configuration"
+        ):
+            self.selection([], "QT6:BOOL=ON\n")
+
+    # End AI-generated QML configuration regressions.
 
 
 if __name__ == "__main__":
