@@ -407,8 +407,8 @@ class EngineBuffer : public EngineObject {
     // must not be called outside the Constructor
     void addControl(EngineControl* pControl);
 
-    // A null request already has a current generation; explicit ejects use
-    // generation zero and invalidate pending reader publications here.
+    // Failed and null load requests retain their generation. Explicit GUI
+    // ejects allocate one; zero remains for legacy callers outside the GUI.
     void ejectTrackImpl(quint64 generation);
 
     void enableIndependentPitchTempoScaling(bool bEnable,
