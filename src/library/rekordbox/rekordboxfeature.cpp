@@ -1,5 +1,9 @@
 #include "library/rekordbox/rekordboxfeature.h"
 
+#if defined(BUILD_TESTING)
+#include "library/rekordbox/rekordboxparser_test.h"
+#endif
+
 #include <mp3guessenc.h>
 #include <rekordbox_anlz.h>
 #include <rekordbox_pdb.h>
@@ -1108,6 +1112,25 @@ void readAnalyze(TrackPointer track,
 }
 
 } // anonymous namespace
+
+#if defined(BUILD_TESTING)
+namespace mixxx::rekordbox::test {
+
+// AI-generated test accessors begin. Production parser bodies are unchanged.
+bool createDeviceTablesForTest(QSqlDatabase& database) {
+    return createLibraryTable(database, kRekordboxLibraryTable) &&
+            createPlaylistsTable(database, kRekordboxPlaylistsTable) &&
+            createPlaylistTracksTable(database, kRekordboxPlaylistTracksTable);
+}
+
+QString parseDeviceDBForTest(mixxx::DbConnectionPoolPtr pool, TreeItem* item) {
+    return parseDeviceDB(std::move(pool), item);
+}
+
+// End AI-generated test accessors.
+
+} // namespace mixxx::rekordbox::test
+#endif
 
 RekordboxPlaylistModel::RekordboxPlaylistModel(QObject* parent,
         TrackCollectionManager* trackCollectionManager,
