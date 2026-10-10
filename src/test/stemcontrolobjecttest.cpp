@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QScopedPointer>
 #include <QStringList>
+#include <QTest>
 #include <QTimer>
 #include <QtDebug>
 #include <chrono>
@@ -440,12 +442,16 @@ class StemFirstLoadControlFixture : public BaseSignalPathTest,
             BaseSignalPathTest::loadTrack(pDeck, pTrack);
         }
 
-        for (int i = 0; i < 10000; ++i) {
+        // Event-poll counts are not elapsed-time bounds: processEvents may
+        // return immediately when idle. Give the reader a real deadline.
+        QElapsedTimer loadDeadline;
+        loadDeadline.start();
+        while (loadDeadline.elapsed() < 10000) {
             if (pLoadedTrack == pTrack && pBuffer->isTrackLoaded() &&
                     stemCount.get() == pTrack->getStemInfo().size()) {
                 break;
             }
-            QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+            QTest::qWait(1);
         }
         QObject::disconnect(connection);
         const bool loadedSignalMatches = pLoadedTrack == pTrack;
