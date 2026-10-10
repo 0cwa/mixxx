@@ -480,6 +480,7 @@ class EngineBuffer : public EngineObject {
     UserSettingsPointer m_pConfig;
 
     friend class CueControlTest;
+    friend class EngineBufferTest;
     friend class HotcueControlTest;
     friend class LoopingControlTest;
 

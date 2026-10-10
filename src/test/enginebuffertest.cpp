@@ -37,10 +37,31 @@ const QString kAppGroup = QStringLiteral("[App]");
 
 class EngineBufferTest : public MockedEngineBackendTest {
   protected:
+    bool hasTrackBeatConnection(TrackPointer pTrack, EngineBuffer* pBuffer) {
+        // A unique connection fails if the real connection already exists.
+        // Remove a successful probe so inspection leaves connections unchanged.
+        const auto probe = QObject::connect(pTrack.get(),
+                &Track::beatsUpdated,
+                pBuffer,
+                &EngineBuffer::slotUpdatedTrackBeats,
+                Qt::ConnectionType(Qt::DirectConnection | Qt::UniqueConnection));
+        if (probe) {
+            QObject::disconnect(probe);
+            return false;
+        }
+        return true;
+    }
+
     // The external process runner bounds a regression that may deadlock.
     void expectReplacementFromEjectControl(
-            const char* controlName, bool waitDuringNotification = false) {
+            const char* controlName,
+            bool waitDuringNotification = false,
+            bool checkRetiredBeatConnection = false) {
         EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        TrackPointer pRetiredTrack = pBuffer->getLoadedTrack();
+        if (checkRetiredBeatConnection) {
+            ASSERT_TRUE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+        }
         ControlProxy trackLoaded(m_sGroup1, "track_loaded");
         ControlProxy observedControl(m_sGroup1, controlName);
         ASSERT_NE(observedControl.get(), 0.0);
@@ -57,6 +78,8 @@ class EngineBufferTest : public MockedEngineBackendTest {
                 [this,
                         pBuffer,
                         waitDuringNotification,
+                        checkRetiredBeatConnection,
+                        pRetiredTrack,
                         &observerEntered,
                         &requestReturned,
                         pReplacement](double value) {
@@ -65,6 +88,9 @@ class EngineBufferTest : public MockedEngineBackendTest {
                     }
                     EXPECT_EQ(QThread::currentThread(), pBuffer->thread());
                     observerEntered = true;
+                    if (checkRetiredBeatConnection) {
+                        EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+                    }
                     qInfo() << "zero-readiness observer entered replacement load";
                     m_pMixerDeck1->slotLoadTrack(pReplacement,
 #ifdef __STEM__
@@ -107,6 +133,53 @@ class EngineBufferTest : public MockedEngineBackendTest {
         EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
         EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
         EXPECT_EQ(trackLoaded.get(), 1.0);
+        if (checkRetiredBeatConnection) {
+            EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+            EXPECT_TRUE(hasTrackBeatConnection(pReplacement, pBuffer));
+        }
+    }
+
+    void expectReplacementFromLoadControl(const char* controlName) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        TrackPointer pRetiredTrack = pBuffer->getLoadedTrack();
+        ASSERT_TRUE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+        const auto makeTrack = [](int sampleRate) {
+            auto pTrack = Track::newTemporary();
+            pTrack->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+                    mixxx::audio::SampleRate(sampleRate),
+                    mixxx::audio::Bitrate(),
+                    mixxx::Duration::fromSeconds(1));
+            return pTrack;
+        };
+        TrackPointer pIntermediate = makeTrack(48000);
+        TrackPointer pReplacement = makeTrack(96000);
+        ControlProxy observedControl(m_sGroup1, controlName);
+        bool observerEntered = false;
+        QObject observer;
+        ASSERT_TRUE(observedControl.connectValueChanged(
+                &observer,
+                [this,
+                        pBuffer,
+                        pRetiredTrack,
+                        pIntermediate,
+                        pReplacement,
+                        &observerEntered](double) {
+                    if (observerEntered || pBuffer->getLoadedTrack() != pIntermediate) {
+                        return;
+                    }
+                    observerEntered = true;
+                    EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+                    pBuffer->loadFakeTrack(pReplacement, false);
+                },
+                Qt::DirectConnection));
+
+        pBuffer->loadFakeTrack(pIntermediate, false);
+        ASSERT_TRUE(observerEntered);
+        EXPECT_TRUE(pBuffer->isTrackLoaded());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+        EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+        EXPECT_FALSE(hasTrackBeatConnection(pIntermediate, pBuffer));
+        EXPECT_TRUE(hasTrackBeatConnection(pReplacement, pBuffer));
     }
 #ifdef __STEM__
   protected:
@@ -136,6 +209,22 @@ TEST_F(EngineBufferTest, ZeroReadinessObserverCanAwaitReplacementDuringEject) {
 
 TEST_F(EngineBufferTest, SampleRateObserverCanAwaitReplacementDuringEject) {
     expectReplacementFromEjectControl("track_samplerate", true);
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeReadinessReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_loaded", true, true);
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeSampleRateReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_samplerate", true, true);
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeSampleCountReplacementDuringLoad) {
+    expectReplacementFromLoadControl("track_samples");
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeSampleRateReplacementDuringLoad) {
+    expectReplacementFromLoadControl("track_samplerate");
 }
 // End AI-generated reentrancy regressions.
 
