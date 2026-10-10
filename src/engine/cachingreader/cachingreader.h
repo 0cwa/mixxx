@@ -175,7 +175,7 @@ class CachingReader : public QObject {
             mixxx::audio::ChannelCount trackChannelCount,
             mixxx::audio::FramePos trackNumFrame,
             quint64 generation);
-    void trackLoadFailed(TrackPointer pTrack, const QString& reason);
+    void trackLoadFailed(TrackPointer pTrack, const QString& reason, quint64 generation);
 
   private:
     friend class CachingReaderStatusQueueTest;

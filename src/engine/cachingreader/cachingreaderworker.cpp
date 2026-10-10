@@ -454,7 +454,8 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack, quint64 generati
         }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be found.")
-                        .arg(QDir::toNativeSeparators(pTrack->getLocation())));
+                        .arg(QDir::toNativeSeparators(pTrack->getLocation())),
+                generation);
         return true;
     }
 
@@ -475,7 +476,8 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack, quint64 generati
         }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' could not be loaded.")
-                        .arg(QDir::toNativeSeparators(pTrack->getLocation())));
+                        .arg(QDir::toNativeSeparators(pTrack->getLocation())),
+                generation);
         return true;
     }
 
@@ -497,7 +499,8 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack, quint64 generati
                    "channels, and only 1 to %3 are supported.")
                         .arg(QDir::toNativeSeparators(pTrack->getLocation()),
                                 QString::number(chCount),
-                                QString::number(m_maxSupportedChannel)));
+                                QString::number(m_maxSupportedChannel)),
+                generation);
         return true;
     }
 
@@ -516,7 +519,8 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack, quint64 generati
         }
         emit trackLoadFailed(pTrack,
                 tr("The file '%1' is empty and could not be loaded.")
-                        .arg(QDir::toNativeSeparators(pTrack->getLocation())));
+                        .arg(QDir::toNativeSeparators(pTrack->getLocation())),
+                generation);
         return true;
     }
 

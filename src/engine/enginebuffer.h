@@ -388,7 +388,8 @@ class EngineBuffer : public EngineObject {
             TrackPointer pOldTrack,
             quint64 generation);
     void slotTrackLoadFailed(TrackPointer pTrack,
-            const QString& reason);
+            const QString& reason,
+            quint64 generation);
 #ifdef __BUNGEE__
     void slotSampleRateChanged(double sampleRate);
 #endif

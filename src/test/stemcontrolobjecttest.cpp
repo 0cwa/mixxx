@@ -1425,14 +1425,16 @@ TEST_P(StemFirstLoadSchedulingFixture, CurrentFailureKeepsOldAndNoOldCleanupBeha
             m_pMixerDeck2.get(),
             &BaseTrackPlayerImpl::slotLoadFailed);
     auto failFromWorker = [](EngineBuffer* pTargetBuffer, TrackPointer pFailedTrack) {
+        const quint64 generation = pTargetBuffer->beginTrackLoad();
         bool invoked = false;
         std::thread worker([&] {
             invoked = QMetaObject::invokeMethod(
                     pTargetBuffer,
                     "slotTrackLoadFailed",
-                    Qt::DirectConnection,
+                    Qt::QueuedConnection,
                     Q_ARG(TrackPointer, pFailedTrack),
-                    Q_ARG(QString, QStringLiteral("test failure")));
+                    Q_ARG(QString, QStringLiteral("test failure")),
+                    Q_ARG(quint64, generation));
         });
         worker.join();
         return invoked;

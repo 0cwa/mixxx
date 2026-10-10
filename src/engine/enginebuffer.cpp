@@ -310,9 +310,11 @@ EngineBuffer::EngineBuffer(const QString& group,
             this,
             &EngineBuffer::slotReaderTrackLoaded,
             Qt::DirectConnection);
-    connect(m_pReader, &CachingReader::trackLoadFailed,
-            this, &EngineBuffer::slotTrackLoadFailed,
-            Qt::DirectConnection);
+    connect(m_pReader,
+            &CachingReader::trackLoadFailed,
+            this,
+            &EngineBuffer::slotTrackLoadFailed,
+            Qt::QueuedConnection);
     connect(this,
             &EngineBuffer::trackReadyForPublication,
             this,
@@ -1134,15 +1136,22 @@ bool EngineBuffer::isCurrentTrackLoadGeneration(quint64 generation) const {
             generation == m_currentTrackLoadGeneration.load(std::memory_order_acquire);
 }
 
-// WARNING: Always called from the EngineWorker thread pool
+// Failure cleanup publishes controls and may invoke replacement-load observers.
+// Handle it on the GUI thread, carrying the original worker request's token.
 void EngineBuffer::slotTrackLoadFailed(TrackPointer pTrack,
-        const QString& reason) {
-    m_iTrackLoading = 0;
-    m_pChannelToCloneFrom = nullptr;
+        const QString& reason,
+        quint64 generation) {
+    DEBUG_ASSERT(QThread::currentThread() == thread());
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
 
     // Loading of a new track failed.
     // eject the currently loaded track (the old Track) as well
-    ejectTrack();
+    ejectTrackImpl(generation);
+    if (!isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
     emit trackLoadFailed(pTrack, reason);
 }
 
@@ -1159,9 +1168,9 @@ void EngineBuffer::ejectTrackImpl(quint64 generation) {
     const auto stillCurrent = [this, generation] {
         return generation == 0 || isCurrentTrackLoadGeneration(generation);
     };
-    // Generation zero is the legacy worker-side failure route. Explicit GUI
-    // ejects allocate their own token, while null load requests already carry
-    // the token allocated by BaseTrackPlayer.
+    // Explicit GUI ejects allocate their own token. Failed reader loads and
+    // null load requests preserve the original request token. Generation zero
+    // remains reserved for legacy callers outside the GUI thread.
     if (generation != 0 && !isCurrentTrackLoadGeneration(generation)) {
         return;
     }

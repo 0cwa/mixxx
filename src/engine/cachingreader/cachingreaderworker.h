@@ -200,7 +200,7 @@ class CachingReaderWorker : public EngineWorker {
             mixxx::audio::ChannelCount channelCount,
             mixxx::audio::FramePos numFrame,
             quint64 generation);
-    void trackLoadFailed(TrackPointer pTrack, const QString& reason);
+    void trackLoadFailed(TrackPointer pTrack, const QString& reason, quint64 generation);
 
   private:
     friend class CachingReaderWorkerTest;
