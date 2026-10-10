@@ -219,6 +219,7 @@ class EngineBufferTest : public MockedEngineBackendTest {
         }
         ScopedFailureLifecycleBarrier barrier(m_sGroup1);
         submitTrack(pMissing);
+        ProcessBuffer();
         ASSERT_TRUE(barrier.waitForFailureStart());
         const quint64 failedGeneration = pBuffer->currentTrackLoadGenerationForTest();
         ASSERT_TRUE(missingFile.remove());
@@ -297,6 +298,7 @@ class EngineBufferTest : public MockedEngineBackendTest {
                 getTestDir().filePath(QStringLiteral("sine-30.wav")));
         ScopedFailureLifecycleBarrier barrier(m_sGroup1);
         submitTrack(pMissing);
+        ProcessBuffer();
         ASSERT_TRUE(barrier.waitForFailureStart());
         const quint64 failedGeneration = barrier.failureGeneration();
         ASSERT_NE(failedGeneration, 0);
@@ -305,6 +307,7 @@ class EngineBufferTest : public MockedEngineBackendTest {
         ASSERT_TRUE(missingFile.remove());
         ASSERT_FALSE(QFileInfo::exists(missingPath));
         submitTrack(pReplacement);
+        ProcessBuffer();
         const quint64 replacementGeneration = pBuffer->currentTrackLoadGenerationForTest();
         ASSERT_NE(replacementGeneration, failedGeneration);
         barrier.releaseFailure();
