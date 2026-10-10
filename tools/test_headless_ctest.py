@@ -229,8 +229,30 @@ class HeadlessSelectionTest(unittest.TestCase):
         )
         for path in paths:
             policies = PROFILE["sources"][path]["cases"]
-            plan = self.select([case(name) for name in policies])
-            self.assertEqual(len(policies), len(plan["excluded"]))
+            # AI-generated upstream regression exception begins.
+            # The new metadata-only case does not invoke cover image helpers.
+            visual_cases = [
+                name
+                for name in policies
+                if name != "TrackUpdateTest.importBpmWithoutValidSampleRate"
+            ]
+            plan = self.select([case(name) for name in visual_cases])
+            self.assertEqual(len(visual_cases), len(plan["excluded"]))
+            # End AI-generated upstream regression exception.
+
+    # AI-generated mandatory upstream regression guard begins.
+    def test_bpm_import_regression_is_selected_and_required(self):
+        name = "TrackUpdateTest.importBpmWithoutValidSampleRate"
+        plan = self.select([])
+        self.assertIn(name, {test["name"] for test in plan["selected"]})
+        self.assertIn(name, plan["required"])
+        tests = [test for test in required_tests() if test["name"] != name]
+        missing = headless_ctest.select_tests(
+            {"tests": tests}, PROFILE, "Linux"
+        )
+        self.assertEqual([name], missing["missing_required"])
+
+    # End AI-generated mandatory upstream regression guard.
 
     def test_factory_fixture_excluded_marker_data_retained(self):
         plan = self.select(

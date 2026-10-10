@@ -2,7 +2,7 @@
   "notice": "AI-generated source classification for local CI review begins. This profile requires human review before hosted execution.",
   "schema": 1,
   "source_baseline": "3922a4395ac35b591da6eea8e2d86ad0cfbd82e5",
-  "src_tree": "bd300dd7b6c63674a28c8737b7618f6e44c0599e",
+  "src_tree": "fbc9514c2d760c4a0b7cd1a60cbb7f94a0852ce9",
   "scope": "Explicit per-source/fixture policies; no permissive default. Conservative visual/transitive/uncertain exclusions. Shared QApplication infrastructure remains. Human independent certification and native runtime gates remain pending.",
   "mandatory_common": [
     "EngineMixerShutdownTest.StopsSchedulerBeforeDestroyingChannelWorkers",
@@ -45,7 +45,8 @@
     "RekordboxAnalyzeGuardTest.CuePassDoesNotImportBeatGrid",
     "RekordboxAnalyzeGuardTest.InvalidTrackAndSampleRateReturnBeforeParsing",
     "RekordboxAnalyzeGuardTest.MissingFilePreservesState",
-    "RekordboxMalformedAnalyzeTest.PreservesSeededAndFreshTrackStateInBothPasses"
+    "RekordboxMalformedAnalyzeTest.PreservesSeededAndFreshTrackStateInBothPasses",
+    "TrackUpdateTest.importBpmWithoutValidSampleRate"
   ],
   "mandatory_windows": [
     "SoundSourceMediaFoundationTest.StreamTickNullThenSamplePreservesShortGap",
@@ -5170,7 +5171,7 @@
       }
     },
     "src/test/trackupdate_test.cpp": {
-      "sha256": "4eb47b0e1fa27b972854f6ed0e0be9e836d4455bcbb759ab443d8a49697ddf63",
+      "sha256": "d92e9663621930633e31d874212bfdbe70893d98c1487ec8f87cd81ca17cdb8e",
       "cases": {
         "TrackUpdateTest.parseModifiedCleanAgainSkipCover": {
           "classification": "excluded",
@@ -5187,6 +5188,10 @@
         "TrackUpdateTest.parseModifiedDirtyAgain": {
           "classification": "excluded",
           "reason": "src/test/trackupdate_test.cpp: Cover image or metadata/cover import paths; track-update fixture explicitly creates QImage."
+        },
+        "TrackUpdateTest.importBpmWithoutValidSampleRate": {
+          "classification": "headless",
+          "reason": "src/test/trackupdate_test.cpp: This case creates a temporary in-memory track and imports BPM metadata only. It does not invoke the cover image helpers, parse an audio file, construct a widget or open a device. Shared application and provider registration follow the existing test infrastructure."
         }
       }
     },
@@ -5423,7 +5428,7 @@
       }
     }
   },
-  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed. AI-generated bounded review notice begins. Bounded retained-wake adaptation from public 655929d0f25838b73d2d32c8d74b6b8d7b13d26a on Forest 06a324bd8239f97d9c9a5360a3d81607c73b3194 plus canonical b02e84aa4cbae2569b5bb850f2b12bd81062c791. Only the scheduler implementation/header changed in src; all test source hashes, definitions, classifications, platform gates and qualified Windows skip rules remain unchanged. Standalone QtCore regressions do not certify full Mixxx runtime gates. End AI-generated bounded review notice. AI-generated test-only revision begins. Correct STEM oracle uses independently decoded same-file streams1-4, exact finite equality for both codecs, matching initial read history, exact read ranges/counts and distinct sentinels. Original premaster/WAV comparisons retained only as failed diagnostics, not production faults. Production source unchanged from e4a5159. End AI-generated test-only revision. AI-generated composition proposal begins. Test-only PR33/35/46 successor fixtures, four BUILD_TESTING accessors and approved isolated PR73/74 workflow/document repairs on qualified3922. All existing test source hashes/assertions and platform/skip policies retained. No combined binary build or execution claimed. End AI-generated composition proposal.",
+  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed. AI-generated bounded review notice begins. Bounded retained-wake adaptation from public 655929d0f25838b73d2d32c8d74b6b8d7b13d26a on Forest 06a324bd8239f97d9c9a5360a3d81607c73b3194 plus canonical b02e84aa4cbae2569b5bb850f2b12bd81062c791. Only the scheduler implementation/header changed in src; all test source hashes, definitions, classifications, platform gates and qualified Windows skip rules remain unchanged. Standalone QtCore regressions do not certify full Mixxx runtime gates. End AI-generated bounded review notice. AI-generated test-only revision begins. Correct STEM oracle uses independently decoded same-file streams1-4, exact finite equality for both codecs, matching initial read history, exact read ranges/counts and distinct sentinels. Original premaster/WAV comparisons retained only as failed diagnostics, not production faults. Production source unchanged from e4a5159. End AI-generated test-only revision. AI-generated composition proposal begins. Test-only PR33/35/46 successor fixtures, four BUILD_TESTING accessors and approved isolated PR73/74 workflow/document repairs on qualified3922. All existing test source hashes/assertions and platform/skip policies retained. No combined binary build or execution claimed. End AI-generated composition proposal. AI-generated upstream revision notice begins. Merge canonical f83c636a87a970e2387402d75b72d374f253a0b8 onto qualified c1a2346. Update the whole-source fingerprint and TrackUpdate test source digest; classify and require only the added BPM import regression. All existing classifications, exclusions, feature requirements and skip rules remain unchanged. End AI-generated upstream revision notice.",
   "mandatory_features": {
     "QML": [
       "QmlLibraryTrackListModelCoverTest.UnresolvedTrackReturnsInvalidVariant",
