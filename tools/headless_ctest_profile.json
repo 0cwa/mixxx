@@ -2,7 +2,7 @@
   "notice": "AI-generated source classification for local CI review begins. This profile requires human review before hosted execution.",
   "schema": 1,
   "source_baseline": "3922a4395ac35b591da6eea8e2d86ad0cfbd82e5",
-  "src_tree": "53c528f7f9c5e35b0c9d9190e80e89acb2c45b01",
+  "src_tree": "bd300dd7b6c63674a28c8737b7618f6e44c0599e",
   "scope": "Explicit per-source/fixture policies; no permissive default. Conservative visual/transitive/uncertain exclusions. Shared QApplication infrastructure remains. Human independent certification and native runtime gates remain pending.",
   "mandatory_common": [
     "EngineMixerShutdownTest.StopsSchedulerBeforeDestroyingChannelWorkers",
