@@ -784,6 +784,8 @@ const char* keylockEngineTraceName(EngineBuffer::KeylockEngine engine) {
         return "RubberBandFaster";
     case EngineBuffer::KeylockEngine::RubberBandFiner:
         return "RubberBandR3";
+    case EngineBuffer::KeylockEngine::RubberBandR3ShortWindow:
+        return "RubberBandR3ShortWindow";
 #endif
 #ifdef __BUNGEE__
     case EngineBuffer::KeylockEngine::Bungee:
@@ -1301,6 +1303,7 @@ TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
 #ifdef __RUBBERBAND__
             case EngineBuffer::KeylockEngine::RubberBandFaster:
             case EngineBuffer::KeylockEngine::RubberBandFiner:
+            case EngineBuffer::KeylockEngine::RubberBandR3ShortWindow:
                 expectedKeylockScaler = pEngineBuffer->m_pScaleRB;
                 break;
 #endif
