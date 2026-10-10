@@ -1042,7 +1042,11 @@ if(MSVC)
   else()
     message(STATUS "Could NOT find sccache (missing executable)")
   endif()
-  default_option(SCCACHE_SUPPORT "Enable sccache support" "SCCACHE_EXECUTABLE;CMAKE_DISABLE_PRECOMPILE_HEADERS")
+  default_option(
+    SCCACHE_SUPPORT
+    "Enable sccache support"
+    "SCCACHE_EXECUTABLE;CMAKE_DISABLE_PRECOMPILE_HEADERS"
+  )
   message(STATUS "Support for sccache: ${SCCACHE_SUPPORT}")
   if(SCCACHE_SUPPORT)
     if(NOT CMAKE_DISABLE_PRECOMPILE_HEADERS)
@@ -1062,7 +1066,11 @@ else()
   else()
     message(STATUS "Could NOT find ccache (missing executable)")
   endif()
-  default_option(CCACHE_SUPPORT "Enable ccache support" "CCACHE_EXECUTABLE;NOT ANDROID")
+  default_option(
+    CCACHE_SUPPORT
+    "Enable ccache support"
+    "CCACHE_EXECUTABLE;NOT ANDROID"
+  )
 
   if(NOT DEFINED CMAKE_DISABLE_PRECOMPILE_HEADERS)
     set(CMAKE_DISABLE_PRECOMPILE_HEADERS ${CCACHE_SUPPORT})
@@ -1128,7 +1136,11 @@ if(NOT MSVC)
   if(MOLD_SYMLINK)
     set(MOLD_SYMLINK_FOUND TRUE)
   endif()
-  default_option(MOLD_SUPPORT "Use 'mold' for linking" "MOLD_FUSE_FOUND OR MOLD_SYMLINK_FOUND")
+  default_option(
+    MOLD_SUPPORT
+    "Use 'mold' for linking"
+    "MOLD_FUSE_FOUND OR MOLD_SYMLINK_FOUND"
+  )
   if(MOLD_SUPPORT AND NOT ANDROID)
     if(MOLD_FUSE_FOUND)
       message(STATUS "Selecting mold as linker")
@@ -1168,7 +1180,11 @@ if(NOT MSVC)
       endif()
     endif()
     # LLD 10.0.0 does not work because of https://bugs.llvm.org/show_bug.cgi?id=45769
-    default_option(LLD_SUPPORT "Use 'ld.lld' for linking" "LLD_VERSION VERSION_GREATER 10.0.0")
+    default_option(
+      LLD_SUPPORT
+      "Use 'ld.lld' for linking"
+      "LLD_VERSION VERSION_GREATER 10.0.0"
+    )
     if(LLD_SUPPORT)
       if(LLD_VERSION_STRING)
         if(LLD_VERSION VERSION_GREATER 10.0.0)
@@ -3836,7 +3852,11 @@ if(PIPEWIRE)
 endif()
 
 # PortMidi
-default_option(PORTMIDI "Enable the PortMidi backend for MIDI controllers" "NOT ANDROID")
+default_option(
+  PORTMIDI
+  "Enable the PortMidi backend for MIDI controllers"
+  "NOT ANDROID"
+)
 if(PORTMIDI)
   target_compile_definitions(mixxx-lib PUBLIC __PORTMIDI__)
   find_package(PortMidi REQUIRED)
@@ -5038,7 +5058,11 @@ find_package(MP4)
 find_package(MP4v2)
 # It is enabled by default on Linux only, because other targets have other
 # solutions. It requires MP4 or MP4v2.
-default_option(FAAD "FAAD AAC audio file decoder support" "UNIX;NOT APPLE;MP4_FOUND OR MP4v2_FOUND")
+default_option(
+  FAAD
+  "FAAD AAC audio file decoder support"
+  "UNIX;NOT APPLE;MP4_FOUND OR MP4v2_FOUND"
+)
 if(FAAD)
   if(NOT MP4_FOUND AND NOT MP4v2_FOUND)
     message(
