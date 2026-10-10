@@ -968,8 +968,10 @@ TEST_P(StemFirstLoadSchedulingFixture, ResetObserverSupersedesWithClonedRequest)
     m_pMixerDeck2->slotLoadTrack(
             pFirstTrack, mixxx::StemChannelSelection(), false);
     ProcessBuffer();
-    for (int i = 0; i < 10000 && !secondStartAccepted; ++i) {
-        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+    QElapsedTimer cloneDeadline;
+    cloneDeadline.start();
+    while (!secondStartAccepted && cloneDeadline.elapsed() < 10000) {
+        QTest::qWait(1);
     }
 
     ASSERT_TRUE(cloneRequested)
@@ -1302,8 +1304,10 @@ TEST_P(StemFirstLoadSchedulingFixture, ReadinessObserverCannotReleaseNewerLoadin
     m_pMixerDeck2->slotLoadTrack(
             pFirstTrack, mixxx::StemChannelSelection(), false);
     ProcessBuffer();
-    for (int i = 0; i < 10000 && !publisherReturned; ++i) {
-        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+    QElapsedTimer publicationDeadline;
+    publicationDeadline.start();
+    while (!publisherReturned && publicationDeadline.elapsed() < 10000) {
+        QTest::qWait(1);
     }
 
     ASSERT_TRUE(readinessObserverRan)
@@ -1437,8 +1441,10 @@ TEST_P(StemFirstLoadSchedulingFixture, CurrentFailureKeepsOldAndNoOldCleanupBeha
     TrackPointer pFailedTrack(Track::newTemporary(
             getTestDir().filePath(QStringLiteral("missing-stem-track.mp4"))));
     ASSERT_TRUE(failFromWorker(pBuffer, pFailedTrack));
-    for (int i = 0; i < 10000 && stemMute.get() != 0.0; ++i) {
-        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+    QElapsedTimer failureDeadline;
+    failureDeadline.start();
+    while (stemMute.get() != 0.0 && failureDeadline.elapsed() < 10000) {
+        QTest::qWait(1);
     }
     EXPECT_FALSE(pBuffer->isTrackLoaded());
     EXPECT_FALSE(pBuffer->isTrackLoadingForTest());

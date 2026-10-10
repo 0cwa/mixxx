@@ -3,6 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QString>
 #include <QTest>
 #include <QThread>
@@ -71,10 +72,11 @@ class EngineBufferTest : public MockedEngineBackendTest {
 #endif
                             false);
                     if (waitDuringNotification) {
-                        for (int i = 0; i < 10000; ++i) {
+                        QElapsedTimer replacementDeadline;
+                        replacementDeadline.start();
+                        while (replacementDeadline.elapsed() < 10000) {
                             ProcessBuffer();
-                            QCoreApplication::processEvents(
-                                    QEventLoop::WaitForMoreEvents, 1);
+                            QTest::qWait(1);
                             if (pBuffer->isTrackLoaded() &&
                                     pBuffer->getLoadedTrack() == pReplacement) {
                                 break;
@@ -92,9 +94,11 @@ class EngineBufferTest : public MockedEngineBackendTest {
         ASSERT_TRUE(observerEntered);
         ASSERT_TRUE(requestReturned);
 
-        for (int i = 0; i < 10000; ++i) {
+        QElapsedTimer replacementDeadline;
+        replacementDeadline.start();
+        while (replacementDeadline.elapsed() < 10000) {
             ProcessBuffer();
-            QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 1);
+            QTest::qWait(1);
             if (pBuffer->isTrackLoaded() && pBuffer->getLoadedTrack() == pReplacement) {
                 break;
             }
