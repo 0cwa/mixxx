@@ -334,6 +334,9 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
 
     const SINT numberOfFramesTotal = writableSampleFrames.frameLength();
 
+    const bool discardAfterSeek = m_currentFrameIndex == kUnknownFrameIndex &&
+            writableSampleFrames.writableData() == nullptr;
+
     CSAMPLE* pSampleBuffer = writableSampleFrames.writableData();
     SINT numberOfFramesRemaining = numberOfFramesTotal;
     const auto writeSilence = [&](SINT numberOfFrames) {
@@ -515,6 +518,17 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             //                 << "actual =" << readerFrameIndex;
             //     }
         }
+        // AI-generated seek-bound correction begins.
+        // The first timestamp can be later than the nominal seek position.
+        // Bound the initial discard by its absolute target before consuming
+        // either the pending gap or the decoded samples.
+        if (discardAfterSeek) {
+            numberOfFramesRemaining = std::min(numberOfFramesRemaining,
+                    std::max<SINT>(0,
+                            writableSampleFrames.frameIndexRange().end() -
+                                    m_currentFrameIndex));
+        }
+        // End AI-generated seek-bound correction.
         writePendingGap();
 
         DWORD dwSampleBufferCount = 0;

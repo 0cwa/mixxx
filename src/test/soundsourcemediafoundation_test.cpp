@@ -497,47 +497,104 @@ TEST_F(SoundSourceMediaFoundationTest,
     if (qEnvironmentVariableIntValue("MIXXX_HEADLESS_MF_DIAGNOSTICS") != 1) {
         GTEST_SKIP() << "Explicit headless Media Foundation diagnostic opt-in required";
     }
-    TestSoundSourceMediaFoundation source(testUrl());
-    ASSERT_EQ(AudioSource::OpenResult::Succeeded,
-            source.open(AudioSource::OpenMode::Strict));
-    ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
+    struct SeekCase {
+        const char* name;
+        SINT tickOffset;
+        SINT sampleOffset;
+        SINT targetOffset;
+        SINT sampleCount;
+        bool succeeds;
+    };
+    const SeekCase cases[] = {
+            {"late tick counterexample", 2, 3, 4, 32, true},
+            {"late sample without tick", kUnknownFrameIndex, 3, 4, 32, true},
+            {"gap before target", 0, 3, 4, 32, true},
+            {"sample at target", 2, 4, 4, 32, true},
+            {"tick at target", 4, 5, 4, 32, true},
+            {"gap spans target", 2, 6, 4, 32, true},
+            {"early landing before nominal seek", 800, 803, 3000, 5000, true},
+            {"true timestamp overshoot", 5, 6, 4, 32, false},
+    };
+    for (const auto& seekCase : cases) {
+        SCOPED_TRACE(seekCase.name);
+        TestSoundSourceMediaFoundation source(testUrl());
+        ASSERT_EQ(AudioSource::OpenResult::Succeeded,
+                source.open(AudioSource::OpenMode::Strict));
+        ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
 
-    const SINT firstFrameIndex = source.frameIndexMin();
-    const SINT targetFrameIndex = firstFrameIndex + 4;
-    ASSERT_LT(targetFrameIndex + 32, source.frameIndexMax());
-    setReadState(source,
-            targetFrameIndex + 1,
-            kUnknownFrameIndex,
-            kUnknownFrameIndex);
+        const auto originalRange = source.frameIndexRange();
+        const SINT firstFrameIndex = source.frameIndexMin();
+        const SINT targetFrameIndex = firstFrameIndex + seekCase.targetOffset;
+        const SINT sampleFrameIndex = firstFrameIndex + seekCase.sampleOffset;
+        ASSERT_LT(sampleFrameIndex + seekCase.sampleCount, source.frameIndexMax());
+        setReadState(source,
+                targetFrameIndex + 1,
+                kUnknownFrameIndex,
+                kUnknownFrameIndex);
 
-    ReadSampleQueue readSamples(source.getSignalInfo(), firstFrameIndex);
-    readSamples.push({S_OK, MF_SOURCE_READERF_STREAMTICK, firstFrameIndex + 2, 0});
-    readSamples.push({S_OK, 0, firstFrameIndex + 3, 32});
-    setReadSampleProvider(source,
-            [&readSamples](DWORD streamIndex,
-                    DWORD controlFlags,
-                    DWORD* pFlags,
-                    LONGLONG* pTimestamp,
-                    IMFSample** ppSample) {
-                return readSamples(streamIndex,
-                        controlFlags,
-                        pFlags,
-                        pTimestamp,
-                        ppSample);
-            });
+        ReadSampleQueue readSamples(source.getSignalInfo(), firstFrameIndex);
+        if (seekCase.tickOffset != kUnknownFrameIndex) {
+            readSamples.push({S_OK,
+                    MF_SOURCE_READERF_STREAMTICK,
+                    firstFrameIndex + seekCase.tickOffset,
+                    0});
+        }
+        readSamples.push({S_OK, 0, sampleFrameIndex, seekCase.sampleCount});
+        setReadSampleProvider(source,
+                [&readSamples](DWORD streamIndex,
+                        DWORD controlFlags,
+                        DWORD* pFlags,
+                        LONGLONG* pTimestamp,
+                        IMFSample** ppSample) {
+                    return readSamples(streamIndex,
+                            controlFlags,
+                            pFlags,
+                            pTimestamp,
+                            ppSample);
+                });
 
-    SampleBuffer output(source.getSignalInfo().frames2samples(1));
-    output[0] = -999;
-    const auto requestedRange = IndexRange::forward(targetFrameIndex, 1);
-    const auto result = source.readSampleFrames(
-            WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
-    const auto state = readState(source);
-    EXPECT_EQ(2, readSamples.callCount());
-    EXPECT_EQ(requestedRange, result.frameIndexRange());
-    EXPECT_EQ(targetFrameIndex + 1, state.currentFrameIndex);
-    EXPECT_EQ(kUnknownFrameIndex, state.streamTickFrameIndex);
-    EXPECT_EQ(kUnknownFrameIndex, state.streamGapEndFrameIndex);
-    EXPECT_EQ(2, output[0]);
+        SampleBuffer output(source.getSignalInfo().frames2samples(1));
+        output[0] = -999;
+        const auto requestedRange = IndexRange::forward(targetFrameIndex, 1);
+        const auto result = source.readSampleFrames(
+                WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
+        const auto state = readState(source);
+        EXPECT_EQ(seekCase.tickOffset == kUnknownFrameIndex ? 1 : 2,
+                readSamples.callCount());
+        EXPECT_EQ(kUnknownFrameIndex, state.streamTickFrameIndex);
+        if (!seekCase.succeeds) {
+            EXPECT_TRUE(result.frameIndexRange().empty());
+            EXPECT_EQ(originalRange.end(), state.currentFrameIndex);
+            EXPECT_EQ(-999, output[0]);
+            continue;
+        }
+        ASSERT_EQ(requestedRange, result.frameIndexRange());
+        EXPECT_EQ(originalRange, source.frameIndexRange());
+        EXPECT_EQ(targetFrameIndex + 1, state.currentFrameIndex);
+        EXPECT_EQ(sampleFrameIndex > targetFrameIndex + 1 ? sampleFrameIndex
+                                                          : kUnknownFrameIndex,
+                state.streamGapEndFrameIndex);
+        EXPECT_EQ(targetFrameIndex < sampleFrameIndex ? 0
+                                                      : targetFrameIndex - sampleFrameIndex + 1,
+                output[0]);
+
+        SampleBuffer remainder(source.getSignalInfo().frames2samples(3));
+        const auto remainderRange = IndexRange::forward(targetFrameIndex + 1, 3);
+        ASSERT_EQ(remainderRange,
+                source.readSampleFrames(WritableSampleFrames(
+                                                remainderRange,
+                                                SampleBuffer::WritableSlice(remainder)))
+                        .frameIndexRange());
+        for (SINT offset = 0; offset < 3; ++offset) {
+            const SINT frameIndex = remainderRange.start() + offset;
+            EXPECT_EQ(frameIndex < sampleFrameIndex ? 0
+                                                    : frameIndex - sampleFrameIndex + 1,
+                    remainder[offset]);
+        }
+        EXPECT_EQ(remainderRange.end(), readState(source).currentFrameIndex);
+        EXPECT_EQ(seekCase.tickOffset == kUnknownFrameIndex ? 1 : 2,
+                readSamples.callCount());
+    }
 }
 // End AI-generated public-caller late-tick diagnostic.
 
