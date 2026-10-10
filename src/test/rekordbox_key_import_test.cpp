@@ -11,6 +11,7 @@
 
 #include "control/controlobject.h"
 #include "library/basetrackcache.h"
+#include "library/coverartcache.h"
 #include "library/dateformatbroadcaster.h"
 #include "library/library_prefs.h"
 #include "library/rekordbox/rekordboxfeature.h"
@@ -97,6 +98,10 @@ TEST_F(RekordboxKeyImportTest, ImportedKeysSortInBothDirectionsThroughRealPlayli
     PlayerInfo::create();
     const auto destroyPlayerInfo = qScopeGuard([] {
         PlayerInfo::destroy();
+    });
+    CoverArtCache::createInstance();
+    const auto destroyCoverArtCache = qScopeGuard([] {
+        CoverArtCache::destroy();
     });
     DateFormatChangedBroadcaster::createInstance();
     const auto destroyDateFormatBroadcaster = qScopeGuard([] {
