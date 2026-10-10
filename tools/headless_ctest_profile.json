@@ -2,7 +2,7 @@
   "notice": "AI-generated source classification for local CI review begins. This profile requires human review before hosted execution.",
   "schema": 1,
   "source_baseline": "1c0b415cead1b26e37a37b196e82a8c6ab30fb0b",
-  "src_tree": "39e0b97db313e2f206134d73d92a676fc7b78e3b",
+  "src_tree": "d65d07ea6515e240dba12dbf3e7e4c7e310d9fee",
   "scope": "Explicit per-source/fixture policies; no permissive default. Conservative visual/transitive/uncertain exclusions. Shared QApplication infrastructure remains. Human independent certification and native runtime gates remain pending.",
   "mandatory_common": [
     "EngineMixerShutdownTest.StopsSchedulerBeforeDestroyingChannelWorkers",
@@ -34,7 +34,8 @@
     "HidReportDescriptorTest.ControlValue_signed32Bits",
     "HidReportDescriptorTest.ControlValue_unsigned11Bits",
     "HidReportDescriptorTest.ControlValue_unsigned32Bits",
-    "HidReportDescriptorTest.SetControlValue_OutOfRange"
+    "HidReportDescriptorTest.SetControlValue_OutOfRange",
+    "StemSampleComparisonTest.RejectsLastSampleMismatch"
   ],
   "mandatory_windows": [
     "SoundSourceMediaFoundationTest.StreamTickNullThenSamplePreservesShortGap",
@@ -4843,7 +4844,7 @@
       }
     },
     "src/test/stemtest.cpp": {
-      "sha256": "2e55f5d4c8861a3d7d3b0bf1da8a844331e800aa45bc115c8bb93106dd929593",
+      "sha256": "179b437271fd06bca82a03cbf92d81d70323c1a96ddd95aac11c3996d81417bb",
       "cases": {
         "StemFixture.FetchStemEmptyInfo": {
           "classification": "headless",
@@ -4864,6 +4865,10 @@
         "StemFixture.ReadMainMix": {
           "classification": "headless",
           "reason": "src/test/stemtest.cpp: Engine/control/DSP state and sample-buffer assertions with mocked/deterministic sources or local audio fixtures; no waveform renderer or window construction. oracleRendererPixel and renderAndAccount are numeric/sample helpers."
+        },
+        "StemSampleComparisonTest.RejectsLastSampleMismatch": {
+          "classification": "headless",
+          "reason": "AI-generated policy begins. Pure numerical sample-array negative control; no application fixture, GUI, device or media import. Detects a differing final sample beyond the old object-size comparison range. End AI-generated policy."
         }
       }
     },
@@ -5337,5 +5342,5 @@
       }
     }
   },
-  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed. AI-generated bounded review notice begins. Bounded retained-wake adaptation from public 655929d0f25838b73d2d32c8d74b6b8d7b13d26a on Forest 06a324bd8239f97d9c9a5360a3d81607c73b3194 plus canonical b02e84aa4cbae2569b5bb850f2b12bd81062c791. Only the scheduler implementation/header changed in src; all test source hashes, definitions, classifications, platform gates and qualified Windows skip rules remain unchanged. Standalone QtCore regressions do not certify full Mixxx runtime gates. End AI-generated bounded review notice."
+  "source_revision_notice": "Based on scheduler repair 1c0b; subsequent local test-only MF diagnostics, explicit waveform fixture control includes for no-PCH builds, and classification review. No native pass claimed. AI-generated bounded review notice begins. Bounded retained-wake adaptation from public 655929d0f25838b73d2d32c8d74b6b8d7b13d26a on Forest 06a324bd8239f97d9c9a5360a3d81607c73b3194 plus canonical b02e84aa4cbae2569b5bb850f2b12bd81062c791. Only the scheduler implementation/header changed in src; all test source hashes, definitions, classifications, platform gates and qualified Windows skip rules remain unchanged. Standalone QtCore regressions do not certify full Mixxx runtime gates. End AI-generated bounded review notice. AI-generated test-only revision begins. Correct STEM oracle uses independently decoded same-file streams1-4, exact finite equality for both codecs, matching initial read history, exact read ranges/counts and distinct sentinels. Original premaster/WAV comparisons retained only as failed diagnostics, not production faults. Production source unchanged from e4a5159. End AI-generated test-only revision."
 }

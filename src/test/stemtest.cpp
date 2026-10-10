@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <QtDebug>
+#include <algorithm>
+#include <cmath>
+#include <memory>
 #include <tuple>
 
 #include "sources/soundsourceffmpeg.h"
@@ -36,6 +39,70 @@ static const std::array<StemFileInfo, 2> kStemFileInfos = {
         StemFileInfo{QStringLiteral("stem01"), QStringLiteral("sin")},
         StemFileInfo{QStringLiteral("stem02"), QStringLiteral("trance")}};
 
+// AI-generated sample-oracle correction begins.
+// Every finite sample is compared. References below account for codec loss
+// through their source, rather than widening an observed error tolerance.
+
+constexpr CSAMPLE kReferenceUnreadSentinel = -12345.5f;
+constexpr CSAMPLE kActualUnreadSentinel = 23456.75f;
+
+testing::AssertionResult samplesWereWritten(
+        const SampleBuffer& samples, CSAMPLE sentinel) {
+    for (SINT sample = 0; sample < samples.size(); ++sample) {
+        if (!std::isfinite(samples.data()[sample]) || samples.data()[sample] == sentinel) {
+            return testing::AssertionFailure() << "Unwritten or non-finite sample at " << sample;
+        }
+    }
+    return testing::AssertionSuccess();
+}
+
+testing::AssertionResult compareStemSamples(
+        const SampleBuffer& expected,
+        const SampleBuffer& actual) {
+    if (expected.size() != actual.size() || expected.size() == 0) {
+        return testing::AssertionFailure() << "Invalid sample counts: "
+                                           << expected.size() << " / " << actual.size();
+    }
+    double maximumDifference = 0.0;
+    double squaredDifferences = 0.0;
+    SINT largestDifferenceIndex = 0;
+    for (SINT sample = 0; sample < expected.size(); ++sample) {
+        if (!std::isfinite(expected.data()[sample]) ||
+                !std::isfinite(actual.data()[sample])) {
+            return testing::AssertionFailure() << "Non-finite sample at " << sample;
+        }
+        const double difference = std::abs(
+                double(expected.data()[sample]) - double(actual.data()[sample]));
+        squaredDifferences += difference * difference;
+        if (difference > maximumDifference) {
+            maximumDifference = difference;
+            largestDifferenceIndex = sample;
+        }
+    }
+    const double rmsDifference = std::sqrt(squaredDifferences / expected.size());
+    qInfo() << "STEM sample comparison" << "samples" << expected.size()
+            << "maximumDifference" << maximumDifference
+            << "rmsDifference" << rmsDifference;
+    if (maximumDifference != 0.0) {
+        return testing::AssertionFailure()
+                << "Sample " << largestDifferenceIndex << ": expected "
+                << expected.data()[largestDifferenceIndex] << ", actual "
+                << actual.data()[largestDifferenceIndex]
+                << ", maximum difference " << maximumDifference
+                << ", RMS difference " << rmsDifference;
+    }
+    return testing::AssertionSuccess();
+}
+
+TEST(StemSampleComparisonTest, RejectsLastSampleMismatch) {
+    SampleBuffer expected(1024), actual(1024);
+    std::fill_n(expected.data(), expected.size(), 0.0f);
+    std::fill_n(actual.data(), actual.size(), 0.0f);
+    actual.data()[actual.size() - 1] = 0.125f;
+    EXPECT_FALSE(compareStemSamples(expected, actual));
+}
+// End AI-generated sample-oracle correction.
+
 // must be a std::tuple for std::combine in INSTANTIATE_TEST_SUITE_P
 using StemParam = std::tuple<std::string, StemFileInfo>;
 
@@ -45,6 +112,16 @@ class StemFixture : public MixxxTest, public ::testing::WithParamInterface<StemP
         ASSERT_TRUE(SoundSourceProxy::isFileTypeSupported("stem.mp4") ||
                 SoundSourceProxy::registerProviders());
     }
+
+    // AI-generated encoded reference selection begins.
+    // Independently decode the same encoded payload with matching configuration
+    // and read history. This gives an exact numerical reference even for AAC;
+    // it does not claim equality with a WAV before lossy encoding/mastering.
+    std::unique_ptr<SoundSourceFFmpeg> CreateReferenceStem(int stemIndex) {
+        return std::make_unique<SoundSourceFFmpeg>(
+                QUrl::fromLocalFile(GetStemFilePath()), stemIndex + 1);
+    }
+    // End AI-generated encoded reference selection.
 
     QString GetStemFilePath() {
         const auto& [codec, info] = GetParam();
@@ -90,88 +167,91 @@ TEST_P(StemFixture, FetchStemEmptyInfo) {
     ASSERT_EQ(stemInfo.at(3), StemInfo("Stem #4", QColor(0x56, 0xB4, 0xE9)));
 }
 
+// AI-generated decoded-stem sample coverage begins.
 TEST_P(StemFixture, ReadMainMix) {
     const auto& [codec, info] = GetParam();
-    SoundSourceFFmpeg sourceMainMix(QUrl::fromLocalFile(getTestDir()
-                    .filePath("stems/%1/%2_mainmix.wav")
-                    .arg(info.dir, info.title)));
-    auto sourceStemPath = GetStemFilePath();
-    SoundSourceSTEM sourceStem(QUrl::fromLocalFile(sourceStemPath));
-
-    mixxx::AudioSource::OpenParams config;
-    config.setChannelCount(mixxx::audio::ChannelCount(2));
-
-    ASSERT_EQ(sourceMainMix.open(AudioSource::OpenMode::Strict, config),
-            AudioSource::OpenResult::Succeeded);
+    ASSERT_TRUE(codec == "ALAC_24bit" || codec == "AAC_256kbps_VBR");
+    SCOPED_TRACE(codec + " / " + info.dir.toStdString());
+    SoundSourceSTEM sourceStem(QUrl::fromLocalFile(GetStemFilePath()));
+    AudioSource::OpenParams config;
+    config.setChannelCount(audio::ChannelCount::stereo());
     ASSERT_EQ(sourceStem.open(AudioSource::OpenMode::Strict, config),
             AudioSource::OpenResult::Succeeded);
 
-    ASSERT_EQ(sourceMainMix.getSignalInfo(), sourceStem.getSignalInfo());
-
-    SampleBuffer buffer1(1024), buffer2(1024);
-    ASSERT_EQ(sourceMainMix.readSampleFrames(WritableSampleFrames(
-                                                     IndexRange::between(
-                                                             0,
-                                                             512),
-                                                     SampleBuffer::WritableSlice(
-                                                             buffer1.data(),
-                                                             buffer1.size())))
-                      .readableLength(),
-            buffer1.size());
-    ASSERT_EQ(sourceStem.readSampleFrames(WritableSampleFrames(
-                                                  IndexRange::between(
-                                                          0,
-                                                          512),
-                                                  SampleBuffer::WritableSlice(
-                                                          buffer2.data(),
-                                                          buffer2.size())))
-                      .readableLength(),
-            buffer2.size());
-    EXPECT_TRUE(0 == std::memcmp(buffer1.data(), buffer1.data(), sizeof(buffer1)));
+    // The provider deliberately skips the premastered stream. Its stereo
+    // output is the unclipped sum of the four independently decoded stems.
+    const auto requestedRange = IndexRange::between(0, 512);
+    SampleBuffer reference(1024), actual(1024);
+    std::fill_n(reference.data(), reference.size(), 0.0f);
+    std::fill_n(actual.data(), actual.size(), kActualUnreadSentinel);
+    for (int stemIndex = 0; stemIndex < kStemFiles.size(); ++stemIndex) {
+        SCOPED_TRACE(stemIndex);
+        auto sourceReference = CreateReferenceStem(stemIndex);
+        ASSERT_EQ(sourceReference->open(AudioSource::OpenMode::Strict, config),
+                AudioSource::OpenResult::Succeeded);
+        ASSERT_EQ(sourceReference->getSignalInfo(), sourceStem.getSignalInfo());
+        SampleBuffer decodedStem(reference.size());
+        std::fill_n(decodedStem.data(), decodedStem.size(), kReferenceUnreadSentinel);
+        const auto decoded = sourceReference->readSampleFrames(
+                WritableSampleFrames(requestedRange,
+                        SampleBuffer::WritableSlice(
+                                decodedStem.data(), decodedStem.size())));
+        ASSERT_EQ(decoded.frameIndexRange(), requestedRange);
+        ASSERT_EQ(decoded.readableLength(), decodedStem.size());
+        ASSERT_TRUE(samplesWereWritten(decodedStem, kReferenceUnreadSentinel));
+        for (SINT sample = 0; sample < reference.size(); ++sample) {
+            reference.data()[sample] += decodedStem.data()[sample];
+        }
+        qInfo() << "STEM reference decoded" << QString::fromStdString(codec)
+                << info.dir << "stream" << stemIndex + 1 << "samples" << decodedStem.size();
+    }
+    const auto mixed = sourceStem.readSampleFrames(WritableSampleFrames(
+            requestedRange, SampleBuffer::WritableSlice(actual.data(), actual.size())));
+    ASSERT_EQ(mixed.frameIndexRange(), requestedRange);
+    ASSERT_EQ(mixed.readableLength(), actual.size());
+    ASSERT_TRUE(samplesWereWritten(actual, kActualUnreadSentinel));
+    qInfo() << "STEM main mix read" << QString::fromStdString(codec)
+            << info.dir << "samples" << actual.size();
+    EXPECT_TRUE(compareStemSamples(reference, actual));
 }
 
 TEST_P(StemFixture, ReadEachStem) {
-    int stemIdx = 0;
     const auto& [codec, info] = GetParam();
-    for (auto& stem : kStemFiles) {
-        SoundSourceFFmpeg sourceStandaloneStem(
-                QUrl::fromLocalFile(getTestDir().filePath("stems/%1/" + stem).arg(info.dir)));
-
-        auto sourceStemPath = GetStemFilePath();
-        SoundSourceFFmpeg sourceStem(QUrl::fromLocalFile(sourceStemPath), stemIdx++);
-
-        mixxx::AudioSource::OpenParams config;
-        config.setChannelCount(mixxx::audio::ChannelCount(2));
-
-        ASSERT_EQ(sourceStandaloneStem.open(AudioSource::OpenMode::Strict, config),
+    ASSERT_TRUE(codec == "ALAC_24bit" || codec == "AAC_256kbps_VBR");
+    SCOPED_TRACE(codec + " / " + info.dir.toStdString());
+    const auto requestedRange = IndexRange::between(0, 512);
+    for (int stemIndex = 0; stemIndex < kStemFiles.size(); ++stemIndex) {
+        SCOPED_TRACE(stemIndex);
+        auto sourceReference = CreateReferenceStem(stemIndex);
+        SoundSourceSTEM sourceStem(QUrl::fromLocalFile(GetStemFilePath()));
+        AudioSource::OpenParams referenceConfig;
+        referenceConfig.setChannelCount(audio::ChannelCount::stereo());
+        ASSERT_EQ(sourceReference->open(AudioSource::OpenMode::Strict, referenceConfig),
                 AudioSource::OpenResult::Succeeded);
-        ASSERT_EQ(sourceStem.open(AudioSource::OpenMode::Strict, config),
+        auto selectedStemConfig = referenceConfig;
+        selectedStemConfig.setStemMask(StemChannelSelection::fromInt(1U << stemIndex));
+        ASSERT_EQ(sourceStem.open(AudioSource::OpenMode::Strict, selectedStemConfig),
                 AudioSource::OpenResult::Succeeded);
-
-        ASSERT_EQ(sourceStandaloneStem.getSignalInfo(), sourceStem.getSignalInfo());
-
-        SampleBuffer buffer1(1024), buffer2(1024);
-        ASSERT_EQ(sourceStandaloneStem.readSampleFrames(WritableSampleFrames(
-                                                                IndexRange::between(
-                                                                        0,
-                                                                        512),
-                                                                SampleBuffer::WritableSlice(
-                                                                        buffer1.data(),
-                                                                        buffer1.size())))
-                          .readableLength(),
-                buffer1.size());
-        ASSERT_EQ(sourceStem.readSampleFrames(WritableSampleFrames(
-                                                      IndexRange::between(
-                                                              0,
-                                                              512),
-                                                      SampleBuffer::WritableSlice(
-                                                              buffer2.data(),
-                                                              buffer2.size())))
-                          .readableLength(),
-                buffer2.size());
-        EXPECT_TRUE(0 == std::memcmp(buffer1.data(), buffer1.data(), sizeof(buffer1)));
+        ASSERT_EQ(sourceReference->getSignalInfo(), sourceStem.getSignalInfo());
+        SampleBuffer reference(1024), actual(1024);
+        std::fill_n(reference.data(), reference.size(), kReferenceUnreadSentinel);
+        std::fill_n(actual.data(), actual.size(), kActualUnreadSentinel);
+        const auto decodedReference = sourceReference->readSampleFrames(WritableSampleFrames(
+                requestedRange, SampleBuffer::WritableSlice(reference.data(), reference.size())));
+        ASSERT_EQ(decodedReference.frameIndexRange(), requestedRange);
+        ASSERT_EQ(decodedReference.readableLength(), reference.size());
+        ASSERT_TRUE(samplesWereWritten(reference, kReferenceUnreadSentinel));
+        const auto decodedActual = sourceStem.readSampleFrames(WritableSampleFrames(
+                requestedRange, SampleBuffer::WritableSlice(actual.data(), actual.size())));
+        ASSERT_EQ(decodedActual.frameIndexRange(), requestedRange);
+        ASSERT_EQ(decodedActual.readableLength(), actual.size());
+        ASSERT_TRUE(samplesWereWritten(actual, kActualUnreadSentinel));
+        qInfo() << "STEM selected stem read" << QString::fromStdString(codec)
+                << info.dir << "stream" << stemIndex + 1 << "samples" << actual.size();
+        EXPECT_TRUE(compareStemSamples(reference, actual));
     }
 }
+// End AI-generated decoded-stem sample coverage.
 
 TEST_P(StemFixture, OpenStem) {
     auto sourceStemPath = GetStemFilePath();
