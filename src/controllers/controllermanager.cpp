@@ -2,6 +2,8 @@
 
 #include <QSet>
 #include <QThread>
+#include <QtGlobal>
+#include <atomic>
 
 #include "controllers/controller.h"
 #include "controllers/controllerlearningeventfilter.h"
@@ -45,6 +47,34 @@ const mixxx::Duration ControllerManager::kPollInterval = mixxx::Duration::fromMi
 #endif
 
 namespace {
+// Temporary opt-in. When absent, the poll path keeps its existing timing work.
+constexpr char kPollTimingDiagnosticsEnvVar[] = "MIXXX_TEMP_CONTROLLER_POLL_TIMING";
+
+bool isPollTimingDiagnosticsEnabled() {
+    if (!qEnvironmentVariableIsSet(kPollTimingDiagnosticsEnvVar)) {
+        return false;
+    }
+    const std::atomic<std::uint64_t> unsignedCounter{0};
+    const std::atomic<std::int64_t> signedCounter{0};
+    if (!unsignedCounter.is_lock_free() || !signedCounter.is_lock_free()) {
+        qWarning() << "Controller poll timing diagnostics require lock-free 64-bit atomics";
+        return false;
+    }
+    return true;
+}
+
+template<typename T>
+void updateAtomicMaximum(std::atomic<T>* pMaximum, T candidate) {
+    T maximum = pMaximum->load(std::memory_order_relaxed);
+    while (maximum < candidate &&
+            !pMaximum->compare_exchange_weak(
+                    maximum,
+                    candidate,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+    }
+}
+
 /// Strip slashes and spaces from device name, so that it can be used as config
 /// key or a filename.
 QString sanitizeDeviceName(QString name) {
@@ -100,7 +130,8 @@ ControllerManager::ControllerManager(UserSettingsPointer pConfig)
                   std::make_unique<ControllerLearningEventFilter>()),
           m_pollTimer(this),
           m_pThread(std::make_unique<QThread>()),
-          m_skipPoll(false) {
+          m_skipPoll(false),
+          m_pollTimingDiagnosticsEnabled(isPollTimingDiagnosticsEnabled()) {
     qRegisterMetaType<std::shared_ptr<LegacyControllerMapping>>(
             "std::shared_ptr<LegacyControllerMapping>");
 
@@ -151,6 +182,22 @@ ControllerManager::~ControllerManager() {
 
 ControllerLearningEventFilter* ControllerManager::getControllerLearningEventFilter() const {
     return m_pControllerLearningEventFilter.get();
+}
+
+ControllerManager::PollTimingStatistics ControllerManager::getPollTimingStatistics() const {
+    PollTimingStatistics statistics;
+    statistics.enabled = m_pollTimingDiagnosticsEnabled;
+    if (!statistics.enabled) {
+        return statistics;
+    }
+    statistics.pollSweepCount = m_pollSweepCount.load(std::memory_order_relaxed);
+    statistics.overrunCount = m_overrunCount.load(std::memory_order_relaxed);
+    statistics.skippedPollCount = m_skippedPollCount.load(std::memory_order_relaxed);
+    statistics.maxPollDurationNanos = m_maxPollDurationNanos.load(std::memory_order_relaxed);
+    statistics.overNominalEntryIntervalCount =
+            m_overNominalEntryIntervalCount.load(std::memory_order_relaxed);
+    statistics.maxEntryIntervalNanos = m_maxEntryIntervalNanos.load(std::memory_order_relaxed);
+    return statistics;
 }
 
 void ControllerManager::slotInitialize() {
@@ -395,8 +442,30 @@ void ControllerManager::slotPollDevices() {
     // * Idle poll: ~5 µs.
     // * 5 messages burst (full midi bandwidth): ~872 µs.
 
+    if (m_pollTimingDiagnosticsEnabled) {
+        const mixxx::Duration pollEntryTime = mixxx::Time::elapsed();
+        if (m_hasLastPollEntryTime) {
+            const mixxx::Duration entryInterval = pollEntryTime - m_lastPollEntryTime;
+            // Time::elapsed() uses steady_clock in normal runs. Ignore a
+            // negative interval defensively; test mode can replace that clock.
+            if (entryInterval >= mixxx::Duration::empty()) {
+                updateAtomicMaximum(
+                        &m_maxEntryIntervalNanos,
+                        static_cast<std::int64_t>(entryInterval.toIntegerNanos()));
+                if (entryInterval > kPollInterval) {
+                    m_overNominalEntryIntervalCount.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
+        m_lastPollEntryTime = pollEntryTime;
+        m_hasLastPollEntryTime = true;
+    }
+
     if (m_skipPoll) {
         // skip poll in overload situation
+        if (m_pollTimingDiagnosticsEnabled) {
+            m_skippedPollCount.fetch_add(1, std::memory_order_relaxed);
+        }
         m_skipPoll = false;
         //qDebug() << "ControllerManager::pollDevices() skip";
         return;
@@ -410,7 +479,16 @@ void ControllerManager::slotPollDevices() {
     }
 
     mixxx::Duration duration = mixxx::Time::elapsed() - start;
+    if (m_pollTimingDiagnosticsEnabled) {
+        m_pollSweepCount.fetch_add(1, std::memory_order_relaxed);
+        updateAtomicMaximum(
+                &m_maxPollDurationNanos,
+                static_cast<std::int64_t>(duration.toIntegerNanos()));
+    }
     if (duration > kPollInterval) {
+        if (m_pollTimingDiagnosticsEnabled) {
+            m_overrunCount.fetch_add(1, std::memory_order_relaxed);
+        }
         m_skipPoll = true;
     }
     //qDebug() << "ControllerManager::pollDevices()" << duration << start;

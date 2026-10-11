@@ -3,6 +3,8 @@
 #include <QMutex>
 #include <QSharedPointer>
 #include <QTimer>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -24,6 +26,19 @@ bool controllerCompare(Controller *a, Controller *b);
 class ControllerManager : public QObject {
     Q_OBJECT
   public:
+    /// Cumulative, best-effort timing counters for the controller poll loop.
+    /// Values are sampled independently and are not a transactionally
+    /// consistent snapshot.
+    struct PollTimingStatistics {
+        bool enabled{false};
+        std::uint64_t pollSweepCount{0};
+        std::uint64_t overrunCount{0};
+        std::uint64_t skippedPollCount{0};
+        std::int64_t maxPollDurationNanos{0};
+        std::uint64_t overNominalEntryIntervalCount{0};
+        std::int64_t maxEntryIntervalNanos{0};
+    };
+
     explicit ControllerManager(UserSettingsPointer pConfig);
     ~ControllerManager() override;
 
@@ -39,6 +54,11 @@ class ControllerManager : public QObject {
         return m_pMainThreadSystemMappingEnumerator;
     }
     QString getConfiguredMappingFileForDevice(const QString& name) const;
+
+    /// Read cumulative poll timing counters from a low-rate, non-controller
+    /// thread. Recording is enabled only by the temporary opt-in environment
+    /// variable documented in controllermanager.cpp.
+    PollTimingStatistics getPollTimingStatistics() const;
 
     /// Prevent other parts of Mixxx from having to manually connect to our slots
     void setUpDevices() { emit requestSetUpDevices(); };
@@ -100,4 +120,16 @@ class ControllerManager : public QObject {
     QSharedPointer<MappingInfoEnumerator> m_pMainThreadSystemMappingEnumerator;
     /// Accessed only from the ControllerManager thread via slotPollDevices().
     bool m_skipPoll;
+    /// Set before the ControllerManager thread starts, then read-only.
+    const bool m_pollTimingDiagnosticsEnabled;
+    /// Last timer callback entry, accessed only on the ControllerManager thread.
+    mixxx::Duration m_lastPollEntryTime;
+    bool m_hasLastPollEntryTime{false};
+    /// Independently sampled by getPollTimingStatistics(); no poll-path locks.
+    std::atomic<std::uint64_t> m_pollSweepCount{0};
+    std::atomic<std::uint64_t> m_overrunCount{0};
+    std::atomic<std::uint64_t> m_skippedPollCount{0};
+    std::atomic<std::int64_t> m_maxPollDurationNanos{0};
+    std::atomic<std::uint64_t> m_overNominalEntryIntervalCount{0};
+    std::atomic<std::int64_t> m_maxEntryIntervalNanos{0};
 };

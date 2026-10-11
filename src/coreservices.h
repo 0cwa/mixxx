@@ -17,6 +17,7 @@ class RecordingManager;
 class BroadcastManager;
 #endif
 class ControllerManager;
+class QTimer;
 class VinylControlManager;
 class TrackCollectionManager;
 class Library;
@@ -134,6 +135,8 @@ class CoreServices : public QObject {
     std::shared_ptr<BroadcastManager> m_pBroadcastManager;
 #endif
     std::shared_ptr<ControllerManager> m_pControllerManager;
+    /// Main-thread, opt-in reporter for ControllerManager's cumulative poll counters.
+    std::unique_ptr<QTimer> m_pControllerPollTimingDiagnosticsTimer;
 
     std::shared_ptr<VinylControlManager> m_pVCManager;
 

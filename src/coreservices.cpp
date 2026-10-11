@@ -5,6 +5,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QtGlobal>
 #include <gsl/pointers>
 
@@ -793,6 +794,37 @@ void CoreServices::initialize(QApplication* pApp) {
 
     m_isInitialized = true;
 
+    if (m_pControllerManager &&
+            m_pControllerManager->getPollTimingStatistics().enabled) {
+        m_pControllerPollTimingDiagnosticsTimer = std::make_unique<QTimer>();
+        m_pControllerPollTimingDiagnosticsTimer->setInterval(5000);
+        connect(m_pControllerPollTimingDiagnosticsTimer.get(),
+                &QTimer::timeout,
+                this,
+                [this]() {
+                    const std::shared_ptr<ControllerManager> pControllerManager =
+                            m_pControllerManager;
+                    if (!pControllerManager) {
+                        return;
+                    }
+                    const auto statistics = pControllerManager->getPollTimingStatistics();
+                    if (!statistics.enabled) {
+                        return;
+                    }
+                    kLogger.info()
+                            << "Controller poll timing (cumulative since manager start):"
+                            << "sweeps=" << statistics.pollSweepCount
+                            << "overruns=" << statistics.overrunCount
+                            << "intentional_skips=" << statistics.skippedPollCount
+                            << "max_poll_ns=" << statistics.maxPollDurationNanos
+                            << "over_nominal_entry_intervals="
+                            << statistics.overNominalEntryIntervalCount
+                            << "max_entry_interval_ns="
+                            << statistics.maxEntryIntervalNanos;
+                });
+        m_pControllerPollTimingDiagnosticsTimer->start();
+    }
+
     ControllerScriptEngineBase::registerPlayerManager(getPlayerManager());
 
 #ifdef MIXXX_USE_QML
@@ -908,6 +940,11 @@ void CoreServices::finalize() {
     VERIFY_OR_DEBUG_ASSERT(m_isInitialized) {
         qDebug() << "Skipping CoreServices finalization because it was never initialized.";
         return;
+    }
+
+    // Stop Main-thread reporting before ControllerManager is reset below.
+    if (m_pControllerPollTimingDiagnosticsTimer) {
+        m_pControllerPollTimingDiagnosticsTimer->stop();
     }
 
     Timer t("CoreServices::~CoreServices");
