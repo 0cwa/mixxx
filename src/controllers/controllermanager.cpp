@@ -407,6 +407,7 @@ void ControllerManager::startPolling() {
     DEBUG_ASSERT_THIS_QOBJECT_THREAD_AFFINITY();
     // Start the polling timer.
     if (!m_pollTimer.isActive()) {
+        m_hasLastPollEntryTime = false;
         m_pollTimer.start();
         qDebug() << "Controller polling started.";
     }
