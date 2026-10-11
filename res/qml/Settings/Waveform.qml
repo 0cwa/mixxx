@@ -48,6 +48,7 @@ Category {
         var options = Mixxx.Config.waveformOptions;
         splitStereoSignalInput.selected = (options & Mixxx.WaveformDisplay.Option.SplitStereoSignal) ? "on" : "off";
         highDetailInput.selected = (options & Mixxx.WaveformDisplay.Option.HighDetail) ? "on" : "off";
+        maxZoomOutInput.value = Mixxx.Config.waveformMaxZoomOut;
         defaultZoomInput.value = Mixxx.Config.waveformDefaultZoom;
         endOfTrackWarningInput.value = Mixxx.Config.waveformEndOfTrackWarningTime;
         beatGridAlphaInput.value = Mixxx.Config.waveformBeatGridAlpha;
@@ -83,6 +84,7 @@ Category {
         frameRateInput.value = 60;
         splitStereoSignalInput.selected = "off";
         highDetailInput.selected = "off";
+        maxZoomOutInput.value = 10;
         defaultZoomInput.value = 3;
         endOfTrackWarningInput.value = 30;
         beatGridAlphaInput.value = 90;
@@ -118,6 +120,7 @@ Category {
         if (highDetailInput.selected === "on")
             options |= Mixxx.WaveformDisplay.Option.HighDetail;
         Mixxx.Config.waveformOptions = options;
+        Mixxx.Config.waveformMaxZoomOut = maxZoomOutInput.value;
         Mixxx.Config.waveformDefaultZoom = defaultZoomInput.value;
         Mixxx.Config.waveformEndOfTrackWarningTime = endOfTrackWarningInput.value;
         Mixxx.Config.waveformBeatGridAlpha = beatGridAlphaInput.value;
@@ -299,11 +302,22 @@ Category {
                 }
             }
             WaveformSliderRow {
+                id: maxZoomOutInput
+
+                decimals: 0
+                label: "Maximum zoom-out level"
+                max: 100
+                min: 10
+                suffix: "x"
+
+                onValueChanged: root.markDirty()
+            }
+            WaveformSliderRow {
                 id: defaultZoomInput
 
                 decimals: 0
                 label: "Default zoom"
-                max: 10
+                max: maxZoomOutInput.value
                 min: 1
                 suffix: "x"
 

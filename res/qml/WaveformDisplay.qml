@@ -21,6 +21,7 @@ Item {
     // the legacy preferences dialog can recreate that stack explicitly.
     property int renderedWaveformType: -1
     readonly property string zoomGroup: Mixxx.Config.waveformZoomSynchronization ? "[Channel1]" : group
+    readonly property QtObject zoomControlProxy: zoomControl
 
     Connections {
         target: Mixxx.Config
@@ -260,7 +261,20 @@ Item {
             if (group == root.group) {
                 value = Mixxx.Config.waveformDefaultZoom
             }
+            root.clampZoomToMax();
         }
+    }
+    function clampZoomToMax() {
+        if (zoomControl.value > Mixxx.Config.waveformMaxZoomOut) {
+            zoomControl.value = Mixxx.Config.waveformMaxZoomOut;
+        }
+    }
+    Connections {
+        function onWaveformMaxZoomOutChanged() {
+            root.clampZoomToMax();
+        }
+
+        target: Mixxx.Config
     }
     MouseArea {
         property point mouseAnchor: Qt.point(0, 0)
@@ -325,7 +339,8 @@ Item {
         onWheel: mouse => {
             if (mouse.angleDelta.y < 0 && zoomControl.value > 1) {
                 zoomControl.value -= 1;
-            } else if (mouse.angleDelta.y > 0 && zoomControl.value < 10.0) {
+            } else if (mouse.angleDelta.y > 0 &&
+                    zoomControl.value < Mixxx.Config.waveformMaxZoomOut) {
                 zoomControl.value += 1;
             }
         }

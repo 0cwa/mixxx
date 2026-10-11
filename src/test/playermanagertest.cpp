@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QTest>
 #include <gsl/pointers>
 
 #include "control/controlindicatortimer.h"
+#include "control/controlobject.h"
 #include "database/mixxxdb.h"
 #include "effects/effectsmanager.h"
 #include "engine/channels/enginedeck.h"
@@ -37,9 +39,14 @@ void deleteTrack(Track* pTrack) {
 };
 
 void waitForTrackToBeLoaded(Deck* pDeck) {
-    while (!pDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded()) {
-        QTest::qSleep(100); // millis
+    QElapsedTimer loadDeadline;
+    loadDeadline.start();
+    while (!pDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded() &&
+            loadDeadline.elapsed() < 10000) {
+        // Reader readiness is published on the GUI thread.
+        QTest::qWait(1);
     }
+    ASSERT_TRUE(pDeck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
 }
 
 } // namespace
@@ -182,6 +189,23 @@ TEST_F(PlayerManagerTest, UnEjectTest) {
     deck2->slotEjectTrack(2.0);
     ASSERT_NE(nullptr, deck2->getLoadedTrack());
     ASSERT_EQ(testId1, deck2->getLoadedTrack()->getId());
+}
+
+TEST_F(PlayerManagerTest, WaveformZoomUsesThreadSafeMaxZoomOutControl) {
+    const auto* deck = m_pPlayerManager->getDeck(0);
+    ASSERT_NE(nullptr, deck);
+
+    const ConfigKey maxZoomOutKey(QStringLiteral("[Waveform]"),
+            QStringLiteral("MaxZoomOut"));
+    const ConfigKey waveformZoomKey(deck->getGroup(), QStringLiteral("waveform_zoom"));
+
+    ControlObject::set(maxZoomOutKey, 20.0);
+    ControlObject::set(waveformZoomKey, 20.0);
+    EXPECT_DOUBLE_EQ(20.0, ControlObject::get(waveformZoomKey));
+
+    ControlObject::set(maxZoomOutKey, 10.0);
+    ControlObject::set(waveformZoomKey, 11.0);
+    EXPECT_DOUBLE_EQ(20.0, ControlObject::get(waveformZoomKey));
 }
 
 // Loading a new track in a deck causes the old one to be ejected.

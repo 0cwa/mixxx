@@ -3,11 +3,23 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFileInfo>
 #include <QString>
+#include <QTemporaryFile>
 #include <QTest>
+#include <QThread>
 #include <QtDebug>
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 #include "control/controlobject.h"
+#include "control/controlproxy.h"
+#include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/ratecontrol.h"
 #include "engine/defs_keylock.h"
 #include "mixer/basetrackplayer.h"
@@ -15,6 +27,12 @@
 #include "test/mixxxtest.h"
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
+#include "util/defs.h"
+
+#ifndef GTEST_FLAG_SET
+// Available in GoogleTest v1.12.0.
+#define GTEST_FLAG_SET(name, value) (void)(::testing::GTEST_FLAG(name) = value)
+#endif
 
 // In case any of the test in this file fail. You can use the audioplot.py tool
 // in the tools folder to visually compare the results of the enginebuffer
@@ -22,11 +40,835 @@
 
 namespace {
 const QString kAppGroup = QStringLiteral("[App]");
+
+// Hold the real missing-file failure, then the very next dequeued request.
+// Inspecting that request before its loading notification prevents a newer
+// start from hiding an older failure's premature loading-gate reset.
+class ScopedFailureLifecycleBarrier {
+  public:
+    explicit ScopedFailureLifecycleBarrier(const QString& group) {
+        CachingReaderWorker::setTestTrackLifecycleHook(group, &notify, this);
+    }
+
+    ~ScopedFailureLifecycleBarrier() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_releaseFailure = true;
+            m_releaseNext = true;
+        }
+        m_changed.notify_all();
+        CachingReaderWorker::clearTestTrackLifecycleHook(this);
+    }
+
+    bool waitForFailureStart() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_changed.wait_for(lock, std::chrono::seconds(5), [this] {
+            return m_failureStarted;
+        });
+    }
+
+    bool waitForNextRequest() {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_changed.wait_for(lock, std::chrono::seconds(5), [this] {
+            return m_nextDequeued;
+        });
+    }
+
+    quint64 failureGeneration() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_failureGeneration;
+    }
+
+    quint64 nextGeneration() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_nextGeneration;
+    }
+
+    void releaseFailure() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_releaseFailure = true;
+        }
+        m_changed.notify_all();
+    }
+
+    void releaseNext() {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_releaseNext = true;
+        }
+        m_changed.notify_all();
+    }
+
+  private:
+    static void notify(const QString&,
+            CachingReaderWorker::TestTrackLifecycleEvent event,
+            quint64 generation,
+            void* context) {
+        auto* self = static_cast<ScopedFailureLifecycleBarrier*>(context);
+        std::unique_lock<std::mutex> lock(self->m_mutex);
+        if (!self->m_failureStarted &&
+                event == CachingReaderWorker::TestTrackLifecycleEvent::TrackLoadingAccepted) {
+            self->m_failureStarted = true;
+            self->m_failureGeneration = generation;
+            self->m_changed.notify_all();
+            self->m_changed.wait(lock, [self] { return self->m_releaseFailure; });
+        } else if (self->m_failureStarted && !self->m_nextDequeued &&
+                event == CachingReaderWorker::TestTrackLifecycleEvent::RequestDequeued) {
+            self->m_nextDequeued = true;
+            self->m_nextGeneration = generation;
+            self->m_changed.notify_all();
+            self->m_changed.wait(lock, [self] { return self->m_releaseNext; });
+        }
+    }
+
+    mutable std::mutex m_mutex;
+    std::condition_variable m_changed;
+    bool m_failureStarted{false};
+    bool m_nextDequeued{false};
+    bool m_releaseFailure{false};
+    bool m_releaseNext{false};
+    quint64 m_failureGeneration{0};
+    quint64 m_nextGeneration{0};
+};
 }
 
-class EngineBufferTest : public MockedEngineBackendTest {};
+class EngineBufferTest : public MockedEngineBackendTest {
+  protected:
+    void submitTrack(TrackPointer pTrack) {
+        m_pMixerDeck1->slotLoadTrack(pTrack,
+#ifdef __STEM__
+                mixxx::StemChannelSelection(),
+#endif
+                false);
+    }
+
+    void expectCurrentWorkerFailure(bool withOldTrack, bool replaceDuringCleanup = false) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        if (!withOldTrack) {
+            pBuffer->ejectTrack();
+            QCoreApplication::processEvents();
+        }
+        ASSERT_EQ(static_cast<bool>(pBuffer->getLoadedTrack()), withOldTrack);
+        QObject::disconnect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                m_pMixerDeck1.get(),
+                &BaseTrackPlayerImpl::slotLoadFailed);
+        QTemporaryFile missingFile(QDir::tempPath() +
+                QStringLiteral("/mixxx-current-worker-failure-XXXXXX.wav"));
+        ASSERT_TRUE(missingFile.open());
+        const QString missingPath = missingFile.fileName();
+        missingFile.close();
+        TrackPointer pMissing = Track::newTemporary(missingPath);
+        TrackPointer pReplacement = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        int failureReports = 0;
+        int nullCompletions = 0;
+        bool observerEntered = false;
+        quint64 replacementGeneration = 0;
+        QObject observer;
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                &observer,
+                [&](TrackPointer pTrack, const QString& reason) {
+                    ++failureReports;
+                    EXPECT_EQ(pTrack, pMissing);
+                    EXPECT_TRUE(reason.contains(missingPath));
+                    EXPECT_EQ(QThread::currentThread(), pBuffer->thread());
+                });
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoaded,
+                &observer,
+                [&nullCompletions](TrackPointer pNewTrack, TrackPointer) {
+                    if (!pNewTrack) {
+                        ++nullCompletions;
+                    }
+                });
+        ControlProxy trackLoaded(m_sGroup1, "track_loaded");
+        if (replaceDuringCleanup) {
+            ASSERT_TRUE(withOldTrack);
+            ASSERT_TRUE(trackLoaded.connectValueChanged(
+                    &observer,
+                    [&](double value) {
+                        if (value != 0.0 || observerEntered) {
+                            return;
+                        }
+                        observerEntered = true;
+                        EXPECT_EQ(QThread::currentThread(), pBuffer->thread());
+                        submitTrack(pReplacement);
+                        replacementGeneration = pBuffer->currentTrackLoadGenerationForTest();
+                        // A direct observer may synchronously await readiness.
+                        // The failure handler must hold no engine/request lock.
+                        QElapsedTimer deadline;
+                        deadline.start();
+                        while (deadline.elapsed() < 10000) {
+                            ProcessBuffer();
+                            QTest::qWait(1);
+                            if (pBuffer->isTrackLoaded() &&
+                                    pBuffer->getLoadedTrack() == pReplacement &&
+                                    m_pMixerDeck1->getLoadedTrack() == pReplacement) {
+                                break;
+                            }
+                        }
+                        EXPECT_TRUE(pBuffer->isTrackLoaded());
+                        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+                        EXPECT_EQ(
+                                m_pMixerDeck1->getLoadedTrack(), pReplacement);
+                    },
+                    Qt::DirectConnection));
+        }
+        ScopedFailureLifecycleBarrier barrier(m_sGroup1);
+        submitTrack(pMissing);
+        ProcessBuffer();
+        ASSERT_TRUE(barrier.waitForFailureStart());
+        const quint64 failedGeneration = pBuffer->currentTrackLoadGenerationForTest();
+        ASSERT_TRUE(missingFile.remove());
+        ASSERT_FALSE(QFileInfo::exists(missingPath));
+        barrier.releaseNext();
+        barrier.releaseFailure();
+        QElapsedTimer deadline;
+        deadline.start();
+        while (deadline.elapsed() < 10000) {
+            ProcessBuffer();
+            QTest::qWait(1);
+            if (replaceDuringCleanup ? observerEntered && pBuffer->isTrackLoaded()
+                                     : failureReports == 1 && !pBuffer->isTrackLoadingForTest()) {
+                break;
+            }
+        }
+        if (replaceDuringCleanup) {
+            ASSERT_TRUE(observerEntered);
+            EXPECT_NE(replacementGeneration, failedGeneration);
+            EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), replacementGeneration);
+            EXPECT_TRUE(pBuffer->isTrackLoaded());
+            EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+            EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
+            EXPECT_EQ(trackLoaded.get(), 1.0);
+            EXPECT_EQ(failureReports, 0);
+            EXPECT_EQ(nullCompletions, 0);
+        } else {
+            EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), failedGeneration);
+            EXPECT_FALSE(pBuffer->isTrackLoaded());
+            EXPECT_FALSE(pBuffer->isTrackLoadingForTest());
+            EXPECT_FALSE(pBuffer->getLoadedTrack());
+            EXPECT_EQ(trackLoaded.get(), 0.0);
+            EXPECT_EQ(failureReports, 1);
+            EXPECT_EQ(nullCompletions, withOldTrack ? 1 : 0);
+            QTest::qWait(10);
+            EXPECT_EQ(failureReports, 1);
+        }
+    }
+
+    void expectSupersededWorkerFailure(bool withOldTrack) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        if (!withOldTrack) {
+            pBuffer->ejectTrack();
+            QCoreApplication::processEvents();
+        }
+        const TrackPointer pOldTrack = pBuffer->getLoadedTrack();
+        ASSERT_EQ(static_cast<bool>(pOldTrack), withOldTrack);
+        // Retain public failure reporting, but suppress the user-facing dialog.
+        QObject::disconnect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                m_pMixerDeck1.get(),
+                &BaseTrackPlayerImpl::slotLoadFailed);
+        int failureReports = 0;
+        int nullCompletions = 0;
+        QObject observer;
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoadFailed,
+                &observer,
+                [&failureReports](
+                        TrackPointer, const QString&) { ++failureReports; });
+        QObject::connect(pBuffer,
+                &EngineBuffer::trackLoaded,
+                &observer,
+                [&nullCompletions](TrackPointer pNewTrack, TrackPointer) {
+                    if (!pNewTrack) {
+                        ++nullCompletions;
+                    }
+                });
+        QTemporaryFile missingFile(QDir::tempPath() +
+                QStringLiteral("/mixxx-superseded-worker-failure-XXXXXX.wav"));
+        ASSERT_TRUE(missingFile.open());
+        const QString missingPath = missingFile.fileName();
+        missingFile.close();
+        TrackPointer pMissing = Track::newTemporary(missingPath);
+        TrackPointer pReplacement = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        ScopedFailureLifecycleBarrier barrier(m_sGroup1);
+        submitTrack(pMissing);
+        ProcessBuffer();
+        ASSERT_TRUE(barrier.waitForFailureStart());
+        const quint64 failedGeneration = barrier.failureGeneration();
+        ASSERT_NE(failedGeneration, 0);
+        ASSERT_EQ(pBuffer->currentTrackLoadGenerationForTest(), failedGeneration);
+        ASSERT_TRUE(pBuffer->isTrackLoadingForTest());
+        ASSERT_TRUE(missingFile.remove());
+        ASSERT_FALSE(QFileInfo::exists(missingPath));
+        submitTrack(pReplacement);
+        ProcessBuffer();
+        const quint64 replacementGeneration = pBuffer->currentTrackLoadGenerationForTest();
+        ASSERT_NE(replacementGeneration, failedGeneration);
+        barrier.releaseFailure();
+        ASSERT_TRUE(barrier.waitForNextRequest());
+        // Deliver queued failure/completion notifications while the next
+        // worker request is held before any loading notification.
+        QTest::qWait(10);
+        EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), replacementGeneration);
+        EXPECT_TRUE(pBuffer->isTrackLoadingForTest());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pOldTrack);
+        EXPECT_EQ(failureReports, 0);
+        EXPECT_EQ(nullCompletions, 0);
+        ASSERT_EQ(barrier.nextGeneration(), replacementGeneration);
+        barrier.releaseNext();
+        QElapsedTimer deadline;
+        deadline.start();
+        while (deadline.elapsed() < 10000) {
+            ProcessBuffer();
+            QTest::qWait(1);
+            if (pBuffer->isTrackLoaded() && pBuffer->getLoadedTrack() == pReplacement &&
+                    m_pMixerDeck1->getLoadedTrack() == pReplacement) {
+                break;
+            }
+        }
+        EXPECT_TRUE(pBuffer->isTrackLoaded());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+        EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
+        EXPECT_EQ(pBuffer->currentTrackLoadGenerationForTest(), replacementGeneration);
+        EXPECT_EQ(failureReports, 0);
+        EXPECT_EQ(nullCompletions, 0);
+    }
+
+    bool hasTrackBeatConnection(TrackPointer pTrack, EngineBuffer* pBuffer) {
+        // A unique connection fails if the real connection already exists.
+        // Remove a successful probe so inspection leaves connections unchanged.
+        const auto probe = QObject::connect(pTrack.get(),
+                &Track::beatsUpdated,
+                pBuffer,
+                &EngineBuffer::slotUpdatedTrackBeats,
+                Qt::ConnectionType(Qt::DirectConnection | Qt::UniqueConnection));
+        if (probe) {
+            QObject::disconnect(probe);
+            return false;
+        }
+        return true;
+    }
+
+    // The external process runner bounds a regression that may deadlock.
+    void expectReplacementFromEjectControl(
+            const char* controlName,
+            bool waitDuringNotification = false,
+            bool checkRetiredBeatConnection = false) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        TrackPointer pRetiredTrack = pBuffer->getLoadedTrack();
+        if (checkRetiredBeatConnection) {
+            ASSERT_TRUE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+        }
+        ControlProxy trackLoaded(m_sGroup1, "track_loaded");
+        ControlProxy observedControl(m_sGroup1, controlName);
+        ASSERT_NE(observedControl.get(), 0.0);
+        ASSERT_TRUE(pBuffer->isTrackLoaded());
+        ASSERT_EQ(trackLoaded.get(), 1.0);
+
+        TrackPointer pReplacement = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        bool observerEntered = false;
+        bool requestReturned = false;
+        QObject observer;
+        ASSERT_TRUE(observedControl.connectValueChanged(
+                &observer,
+                [this,
+                        pBuffer,
+                        waitDuringNotification,
+                        checkRetiredBeatConnection,
+                        pRetiredTrack,
+                        &observerEntered,
+                        &requestReturned,
+                        pReplacement](double value) {
+                    if (value != 0.0 || observerEntered) {
+                        return;
+                    }
+                    EXPECT_EQ(QThread::currentThread(), pBuffer->thread());
+                    observerEntered = true;
+                    if (checkRetiredBeatConnection) {
+                        EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+                    }
+                    qInfo() << "zero-readiness observer entered replacement load";
+                    m_pMixerDeck1->slotLoadTrack(pReplacement,
+#ifdef __STEM__
+                            mixxx::StemChannelSelection(),
+#endif
+                            false);
+                    if (waitDuringNotification) {
+                        QElapsedTimer replacementDeadline;
+                        replacementDeadline.start();
+                        while (replacementDeadline.elapsed() < 10000) {
+                            ProcessBuffer();
+                            QTest::qWait(1);
+                            if (pBuffer->isTrackLoaded() &&
+                                    pBuffer->getLoadedTrack() == pReplacement) {
+                                break;
+                            }
+                        }
+                        EXPECT_TRUE(pBuffer->isTrackLoaded());
+                        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+                    }
+                    requestReturned = true;
+                    qInfo() << "zero-readiness replacement request returned";
+                },
+                Qt::DirectConnection));
+
+        pBuffer->ejectTrack();
+        ASSERT_TRUE(observerEntered);
+        ASSERT_TRUE(requestReturned);
+
+        QElapsedTimer replacementDeadline;
+        replacementDeadline.start();
+        while (replacementDeadline.elapsed() < 10000) {
+            ProcessBuffer();
+            QTest::qWait(1);
+            if (pBuffer->isTrackLoaded() && pBuffer->getLoadedTrack() == pReplacement) {
+                break;
+            }
+        }
+        EXPECT_TRUE(pBuffer->isTrackLoaded());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+        EXPECT_EQ(m_pMixerDeck1->getLoadedTrack(), pReplacement);
+        EXPECT_EQ(trackLoaded.get(), 1.0);
+        if (checkRetiredBeatConnection) {
+            EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+            EXPECT_TRUE(hasTrackBeatConnection(pReplacement, pBuffer));
+        }
+    }
+
+    void expectReplacementFromLoadControl(const char* controlName) {
+        EngineBuffer* pBuffer = m_pChannel1->getEngineBuffer();
+        TrackPointer pRetiredTrack = pBuffer->getLoadedTrack();
+        ASSERT_TRUE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+        const auto makeTrack = [](int sampleRate) {
+            auto pTrack = Track::newTemporary();
+            pTrack->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+                    mixxx::audio::SampleRate(sampleRate),
+                    mixxx::audio::Bitrate(),
+                    mixxx::Duration::fromSeconds(1));
+            return pTrack;
+        };
+        TrackPointer pIntermediate = makeTrack(48000);
+        TrackPointer pReplacement = makeTrack(96000);
+        ControlProxy observedControl(m_sGroup1, controlName);
+        bool observerEntered = false;
+        QObject observer;
+        ASSERT_TRUE(observedControl.connectValueChanged(
+                &observer,
+                [this,
+                        pBuffer,
+                        pRetiredTrack,
+                        pIntermediate,
+                        pReplacement,
+                        &observerEntered](double) {
+                    if (observerEntered || pBuffer->getLoadedTrack() != pIntermediate) {
+                        return;
+                    }
+                    observerEntered = true;
+                    EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+                    pBuffer->loadFakeTrack(pReplacement, false);
+                },
+                Qt::DirectConnection));
+
+        pBuffer->loadFakeTrack(pIntermediate, false);
+        ASSERT_TRUE(observerEntered);
+        EXPECT_TRUE(pBuffer->isTrackLoaded());
+        EXPECT_EQ(pBuffer->getLoadedTrack(), pReplacement);
+        EXPECT_FALSE(hasTrackBeatConnection(pRetiredTrack, pBuffer));
+        EXPECT_FALSE(hasTrackBeatConnection(pIntermediate, pBuffer));
+        EXPECT_TRUE(hasTrackBeatConnection(pReplacement, pBuffer));
+    }
+#ifdef __STEM__
+  protected:
+    void addStemHandles(EngineDeck* pDeck = nullptr) {
+        if (!pDeck) {
+            pDeck = m_pChannel1;
+        }
+        for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; ++stemIdx) {
+            const auto stemHandleGroup = m_pEngineMixer->registerChannelGroup(
+                    EngineDeck::getGroupForStem(pDeck->getGroup(), stemIdx));
+            pDeck->addStemHandle(stemHandleGroup);
+        }
+    }
+#endif
+};
 
 class EngineBufferE2ETest : public SignalPathTest {};
+
+// AI-generated reentrancy regressions begin.
+TEST_F(EngineBufferTest, SupersededWorkerFailurePreservesReplacementWithOldTrack) {
+    expectSupersededWorkerFailure(true);
+}
+
+TEST_F(EngineBufferTest, SupersededWorkerFailurePreservesReplacementWithoutOldTrack) {
+    expectSupersededWorkerFailure(false);
+}
+
+TEST_F(EngineBufferTest, CurrentWorkerFailureRetainsOldTrackCleanupAndReportsOnce) {
+    expectCurrentWorkerFailure(true);
+}
+
+TEST_F(EngineBufferTest, CurrentWorkerFailureWithoutOldTrackReportsOnceWithoutNullCompletion) {
+    expectCurrentWorkerFailure(false);
+}
+
+TEST_F(EngineBufferTest, WorkerFailureCleanupObserverCanAwaitReplacement) {
+    expectCurrentWorkerFailure(true, true);
+}
+
+TEST_F(EngineBufferTest, ZeroReadinessObserverCanLoadReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_loaded");
+}
+
+TEST_F(EngineBufferTest, ZeroReadinessObserverCanAwaitReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_loaded", true);
+}
+
+TEST_F(EngineBufferTest, SampleRateObserverCanAwaitReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_samplerate", true);
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeReadinessReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_loaded", true, true);
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeSampleRateReplacementDuringEject) {
+    expectReplacementFromEjectControl("track_samplerate", true, true);
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeSampleCountReplacementDuringLoad) {
+    expectReplacementFromLoadControl("track_samples");
+}
+
+TEST_F(EngineBufferTest, RetiredTrackBeatsAreDisconnectedBeforeSampleRateReplacementDuringLoad) {
+    expectReplacementFromLoadControl("track_samplerate");
+}
+// End AI-generated reentrancy regressions.
+
+#ifdef __STEM__
+namespace {
+TrackPointer createStemTrack(int channelCount) {
+    TrackPointer pTrack = Track::newTemporary();
+    pTrack->setAudioProperties(
+            mixxx::audio::ChannelCount(channelCount),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(1));
+    return pTrack;
+}
+
+void fillStemBuffer(CSAMPLE* pBuffer, int channelCount, std::size_t sampleCount) {
+    const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+    const std::size_t numFrames = sampleCount / channelCount;
+    for (std::size_t frame = 0; frame < numFrames; ++frame) {
+        for (int stemIdx = 0; stemIdx < stemCount; ++stemIdx) {
+            const auto sample = static_cast<CSAMPLE>(stemIdx + 1);
+            const std::size_t offset =
+                    frame * channelCount + stemIdx * mixxx::kEngineChannelOutputCount;
+            pBuffer[offset] = sample;
+            pBuffer[offset + 1] = sample;
+        }
+    }
+}
+
+void fillStemBuffer(
+        mixxx::SampleBuffer* pBuffer,
+        int channelCount,
+        std::size_t outputBufferSize) {
+    const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+    fillStemBuffer(
+            pBuffer->data(), channelCount, outputBufferSize * stemCount);
+}
+
+class StemTestScaler final : public MockScaler {
+  public:
+    void clear() override {
+        m_scaleBufferCalls = 0;
+    }
+
+    void setChannelCount(int channelCount) {
+        m_channelCount = channelCount;
+    }
+
+    double scaleBuffer(CSAMPLE* pOutput, SINT bufferSize) override {
+        ++m_scaleBufferCalls;
+        fillStemBuffer(
+                pOutput, m_channelCount, static_cast<std::size_t>(bufferSize));
+        const int frameCount = bufferSize / m_channelCount;
+        return frameCount;
+    }
+
+    int getScaleBufferCalls() const {
+        return m_scaleBufferCalls;
+    }
+
+  private:
+    int m_channelCount = mixxx::kEngineChannelOutputCount;
+    int m_scaleBufferCalls = 0;
+};
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+class ScopedDebugAssertBreakDisabler final {
+  public:
+    ScopedDebugAssertBreakDisabler()
+            : m_previousMessageHandler(qInstallMessageHandler(nullptr)) {
+    }
+
+    ~ScopedDebugAssertBreakDisabler() {
+        qInstallMessageHandler(m_previousMessageHandler);
+    }
+
+  private:
+    QtMessageHandler m_previousMessageHandler;
+};
+#endif
+} // namespace
+
+TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
+    EXPECT_EQ(m_pChannel1->m_stemBuffer.size(),
+            static_cast<SINT>(kMaxEngineFrames *
+                    mixxx::kMaxEngineChannelInputCount));
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsOddChannelLayout) {
+    TrackPointer pTrack = createStemTrack(3);
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    // Odd multichannel layouts are rejected while loading. processStem() is
+    // only called after this boundary and therefore cannot receive one in a
+    // valid engine callback.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false),
+            "m_channelCount % mixxx::audio::ChannelCount::stereo\\(\\) == 0");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsStemVectorMismatch) {
+    TrackPointer pTrack = createStemTrack(4);
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    // A stem track requires the corresponding stem handles and controls to be
+    // registered before processStem() is called. This fixture intentionally
+    // omits them to verify the invalid-input boundary.
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->processStem(output.data(), output.size()),
+            "stemCount <= m_stems\\.size\\(\\)");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsStemGainCacheMismatch) {
+    addStemHandles();
+    ASSERT_EQ(m_pChannel1->m_stemsGainCache.size(), mixxx::kMaxSupportedStems);
+    m_pChannel1->m_stemsGainCache.pop_back();
+
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    // The gain cache is maintained alongside the stem handles. This deliberate
+    // truncation verifies that processStem() rejects an inconsistent cache.
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->processStem(output.data(), output.size()),
+            "stemCount <= m_stemsGainCache\\.size\\(\\)");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    m_pChannel1->m_stemBuffer.fill(1.0f);
+
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
+}
+
+TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
+    constexpr std::size_t kBufferSize = 16;
+    const std::array<EngineDeck*, 3> decks = {
+            m_pChannel1,
+            m_pChannel2,
+            m_pChannel3,
+    };
+    std::array<StemTestScaler, 3> scalers;
+    for (EngineDeck* pDeck : decks) {
+        addStemHandles(pDeck);
+        for (auto& pGain : pDeck->m_stemGain) {
+            pGain->set(1.0);
+        }
+        for (auto& pMute : pDeck->m_stemMute) {
+            pMute->set(0.0);
+        }
+    }
+
+    std::array<CSAMPLE, kBufferSize> output;
+    const std::array<int, 3> channelCounts = {4, 6, 8};
+    for (std::size_t i = 0; i < channelCounts.size(); ++i) {
+        EngineDeck* pDeck = decks[i];
+        StemTestScaler& scaler = scalers[i];
+        const int channelCount = channelCounts[i];
+        const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+        pDeck->getEngineBuffer()->setScalerForTest(&scaler, &scaler);
+        pDeck->getEngineBuffer()->loadFakeTrack(
+                createStemTrack(channelCount), true);
+        scaler.setChannelCount(channelCount);
+        scaler.setSignal(mixxx::audio::SampleRate(44100),
+                mixxx::audio::ChannelCount(channelCount));
+        scaler.clear();
+        std::fill(output.begin(), output.end(), 1.0f);
+        pDeck->processStem(output.data(), output.size());
+
+        const auto expectedSample = static_cast<CSAMPLE>(stemCount * (stemCount + 1) / 2);
+        EXPECT_EQ(scaler.getScaleBufferCalls(), 1) << channelCount;
+        EXPECT_THAT(output, ::testing::Each(expectedSample)) << channelCount;
+    }
+    m_pChannel1->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl1, m_pMockScaleKeylock1);
+    m_pChannel2->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl2, m_pMockScaleKeylock2);
+    m_pChannel3->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl3, m_pMockScaleKeylock3);
+}
+
+TEST_F(EngineBufferTest, StemProcessClearsOddOutputSentinel) {
+    addStemHandles();
+
+    constexpr int kChannelCount = 4;
+    constexpr std::size_t kBufferSize = 17;
+    constexpr std::size_t kAlignedBufferSize = kBufferSize - 1;
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(
+            createStemTrack(kChannelCount), true);
+    m_pMockScaleVinyl1->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount(kChannelCount));
+    fillStemBuffer(
+            &m_pChannel1->m_stemBuffer, kChannelCount, kAlignedBufferSize);
+
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    for (std::size_t i = 0; i < kAlignedBufferSize; ++i) {
+        EXPECT_EQ(output[i], 3.0f);
+    }
+    EXPECT_EQ(output.back(), CSAMPLE_ZERO);
+}
+
+TEST_F(EngineBufferTest, StemProcessAcceptsMaximumBufferSize) {
+    addStemHandles();
+    for (auto& pGain : m_pChannel1->m_stemGain) {
+        pGain->set(1.0);
+    }
+    for (auto& pMute : m_pChannel1->m_stemMute) {
+        pMute->set(0.0);
+    }
+
+    constexpr std::size_t kBufferSize = kMaxEngineSamples;
+    constexpr CSAMPLE kSentinel = -7.0f;
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+    m_pMockScaleVinyl1->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount(8));
+    fillStemBuffer(&m_pChannel1->m_stemBuffer, 8, kBufferSize);
+
+    std::array<CSAMPLE, kBufferSize + 1> output;
+    std::fill(output.begin(), output.end(), kSentinel);
+    m_pChannel1->processStem(output.data(), kBufferSize);
+
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kBufferSize,
+            [](const CSAMPLE sample) { return sample == 10.0f; }));
+    EXPECT_EQ(output.back(), kSentinel);
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsOversizedBufferAndClearsSafePrefix) {
+    constexpr std::size_t kBufferSize = kMaxEngineSamples + 1;
+    constexpr CSAMPLE kSentinel = -7.0f;
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), kSentinel);
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->process(output.data(), kBufferSize),
+            "bufferSize <= kMaxEngineSamples");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    m_pChannel1->process(output.data(), kBufferSize);
+
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kMaxEngineSamples,
+            [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
+    EXPECT_EQ(output.back(), kSentinel);
+#endif
+}
+
+#if !defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) || !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+TEST_F(EngineBufferTest, ProcessWithChannelLayoutClearsInvalidOutput) {
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    constexpr std::size_t kValidSampleCount = 16;
+    constexpr std::size_t kNonDivisibleSampleCount = kValidSampleCount + 1;
+    constexpr CSAMPLE kPoison = -7.0f;
+    std::array<CSAMPLE, kNonDivisibleSampleCount> output;
+
+    std::fill(output.begin(), output.end(), kPoison);
+    m_pChannel1->getEngineBuffer()->processWithChannelLayout(
+            output.data(), kValidSampleCount, mixxx::audio::ChannelCount());
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kValidSampleCount,
+            [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
+
+    std::fill(output.begin(), output.end(), kPoison);
+    m_pChannel1->getEngineBuffer()->processWithChannelLayout(
+            output.data(),
+            kNonDivisibleSampleCount,
+            mixxx::audio::ChannelCount::stereo());
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+#endif
+#endif
+
+TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
+    EngineBuffer* pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->m_trackEndPositionOld =
+            mixxx::audio::FramePos::fromEngineSamplePos(200.0);
+
+    EXPECT_DOUBLE_EQ(-0.01, pEngineBuffer->fractionalPlayposFromAbsolute(-1.0));
+    EXPECT_DOUBLE_EQ(0.5, pEngineBuffer->fractionalPlayposFromAbsolute(50.0));
+    EXPECT_DOUBLE_EQ(1.0, pEngineBuffer->fractionalPlayposFromAbsolute(101.0));
+}
 
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,

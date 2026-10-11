@@ -12,6 +12,7 @@
 #include "moc_enginedeck.cpp"
 #include "track/track.h"
 #include "util/assert.h"
+#include "util/defs.h"
 #include "util/sample.h"
 
 EngineDeck::EngineDeck(
@@ -26,6 +27,9 @@ EngineDeck::EngineDeck(
                   primaryDeck),
           m_pConfig(pConfig),
 #ifdef __STEM__
+          m_stemBuffer(primaryDeck
+                          ? kMaxEngineFrames * mixxx::kMaxEngineChannelInputCount
+                          : 0),
           m_stemClonedState(false),
 #endif
           m_pInputConfigured(new ControlObject(ConfigKey(getGroup(), "input_configured"))),
@@ -62,6 +66,16 @@ EngineDeck::EngineDeck(
     }
 
     connect(m_pBuffer, &EngineBuffer::trackLoaded, this, &EngineDeck::slotTrackLoaded);
+    connect(m_pBuffer,
+            &EngineBuffer::prepareStemStateForTrackReady,
+            this,
+            &EngineDeck::slotPrepareStemStateForTrackReady,
+            Qt::DirectConnection);
+    connect(m_pBuffer,
+            &EngineBuffer::trackLoadedFromReader,
+            this,
+            &EngineDeck::slotTrackLoadedFromReader,
+            Qt::QueuedConnection);
 
     m_pStemCount = std::make_unique<ControlObject>(ConfigKey(getGroup(), "stem_count"));
     m_pStemCount->setReadOnly();
@@ -103,9 +117,68 @@ void EngineDeck::slotTrackLoaded(TrackPointer pNewTrack,
         }
     }
     m_stemClonedState = false;
+    m_stemClonedStateGeneration = 0;
     if (pNewTrack) {
         int stemCount = pNewTrack->getStemInfo().size();
         m_pStemCount->forceSet(stemCount);
+    } else {
+        m_pStemCount->forceSet(0);
+    }
+}
+
+void EngineDeck::slotPrepareStemStateForTrackReady(
+        TrackPointer,
+        quint64 generation) {
+    VERIFY_OR_DEBUG_ASSERT(m_pStemCount) {
+        return;
+    }
+    if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+
+    const bool clonedForThisLoad =
+            m_stemClonedState && m_stemClonedStateGeneration == generation;
+    if (m_pConfig->getValue(
+                ConfigKey("[Mixer Profile]", "stem_auto_reset"), true) &&
+            !clonedForThisLoad) {
+        for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; stemIdx++) {
+            if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+                return;
+            }
+            m_stemGain[stemIdx]->set(1.0);
+            // Control setters may call direct observers. Stop before the next
+            // write if one of them superseded this request or ejected the deck.
+            if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+                return;
+            }
+            m_stemMute[stemIdx]->set(0.0);
+            if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+                return;
+            }
+        }
+    }
+
+    // Only clear the marker owned by this request. A stale callback cannot
+    // erase the clone state copied for a newer generation.
+    if (m_pBuffer->isCurrentTrackLoadGeneration(generation) &&
+            m_stemClonedStateGeneration == generation) {
+        m_stemClonedState = false;
+        m_stemClonedStateGeneration = 0;
+    }
+}
+
+void EngineDeck::slotTrackLoadedFromReader(
+        TrackPointer pNewTrack,
+        TrackPointer,
+        quint64 generation) {
+    VERIFY_OR_DEBUG_ASSERT(m_pStemCount) {
+        return;
+    }
+    if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
+    }
+    if (pNewTrack) {
+        m_pStemCount->forceSet(pNewTrack->getStemInfo().size());
     } else {
         m_pStemCount->forceSet(0);
     }
@@ -128,20 +201,63 @@ void EngineDeck::addStemHandle(const ChannelHandleAndGroup& stemHandleGroup) {
 }
 
 void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
-    mixxx::audio::ChannelCount chCount = m_pBuffer->getChannelCount();
-    VERIFY_OR_DEBUG_ASSERT(m_stems.size() <= chCount &&
-            m_stemMute.size() <= chCount && m_stemGain.size() <= chCount &&
-            m_stemVuMeter.size() <= chCount) {
+    processStem(pOut, bufferSize, m_pBuffer->getChannelCount());
+}
+
+void EngineDeck::processStem(
+        CSAMPLE* pOut,
+        const std::size_t bufferSize,
+        mixxx::audio::ChannelCount chCount) {
+    // EngineMixer::process() provides a buffer of at most kMaxEngineSamples
+    // samples. Do not clear beyond that established output-buffer contract.
+    DEBUG_ASSERT(bufferSize <= kMaxEngineSamples);
+    if (bufferSize > kMaxEngineSamples) {
+        SampleUtil::clear(pOut, static_cast<SINT>(kMaxEngineSamples));
+        return;
+    }
+
+    VERIFY_OR_DEBUG_ASSERT(chCount % mixxx::kEngineChannelOutputCount == 0) {
+        SampleUtil::clear(pOut, bufferSize);
+        return;
+    }
+    const unsigned int stemCount =
+            chCount / mixxx::kEngineChannelOutputCount;
+    VERIFY_OR_DEBUG_ASSERT(stemCount <= m_stems.size() &&
+            stemCount <= m_stemMute.size() && stemCount <= m_stemGain.size() &&
+            stemCount <= m_stemVuMeter.size() &&
+            stemCount <= m_stemsGainCache.size()) {
+        SampleUtil::clear(pOut, bufferSize);
         return;
     };
-    mixxx::audio::SampleRate sampleRate = mixxx::audio::SampleRate::fromDouble(m_sampleRate.get());
-    unsigned int stemCount = chCount / mixxx::kEngineChannelOutputCount;
-    SINT numFrames = bufferSize / mixxx::kEngineChannelOutputCount;
-    std::size_t allChannelBufferSize = bufferSize * stemCount;
-    if (m_stemBuffer.size() < static_cast<SINT>(allChannelBufferSize)) {
-        m_stemBuffer = mixxx::SampleBuffer(allChannelBufferSize);
+    const std::size_t processingBufferSize =
+            bufferSize - bufferSize % mixxx::kEngineChannelOutputCount;
+    if (processingBufferSize != bufferSize) {
+        // The stem pipeline operates on complete stereo frames. Process the
+        // complete frames and explicitly clear the incomplete tail so it
+        // cannot retain samples from an earlier callback.
+        SampleUtil::clear(
+                pOut + processingBufferSize, bufferSize - processingBufferSize);
     }
-    m_pBuffer->process(m_stemBuffer.data(), allChannelBufferSize);
+    if (processingBufferSize == 0) {
+        return;
+    }
+    mixxx::audio::SampleRate sampleRate = mixxx::audio::SampleRate::fromDouble(m_sampleRate.get());
+    SINT numFrames = processingBufferSize / mixxx::kEngineChannelOutputCount;
+    const std::size_t stemBufferCapacity =
+            static_cast<std::size_t>(m_stemBuffer.size());
+    DEBUG_ASSERT(stemCount > 0);
+    if (stemCount == 0 || processingBufferSize > stemBufferCapacity / stemCount) {
+        // The stem scratch buffer is prepared for the largest engine callback
+        // in the constructor. Never allocate or use a partial buffer from the
+        // audio callback if an invalidly large callback reaches this path.
+        DEBUG_ASSERT(false);
+        SampleUtil::clear(pOut, bufferSize);
+        return;
+    }
+    const std::size_t allChannelBufferSize = processingBufferSize * stemCount;
+    DEBUG_ASSERT(allChannelBufferSize <= stemBufferCapacity);
+    m_pBuffer->processWithChannelLayout(
+            m_stemBuffer.data(), allChannelBufferSize, chCount);
 
     CSAMPLE* pIn = m_stemBuffer.data();
 
@@ -178,7 +294,7 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
         pEngineEffectsManager->processPostFaderInPlace(m_stems[stemIdx].handle(),
                 m_pEffectsManager->getMainHandle(),
                 pOut,
-                bufferSize,
+                processingBufferSize,
                 sampleRate,
                 featureState,
                 m_stemsGainCache[stemIdx],
@@ -189,7 +305,7 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
         // gain) gain changes will yield to audio cracks.
         m_stemsGainCache[stemIdx] = stemGain;
 
-        m_stemVuMeter[stemIdx]->process(pOut, bufferSize);
+        m_stemVuMeter[stemIdx]->process(pOut, processingBufferSize);
 
         // Put back the stem frames into the steam buffer (LRLR -> LR......LR......)
         SampleUtil::insertStereoToMulti(
@@ -204,7 +320,14 @@ void EngineDeck::processStem(CSAMPLE* pOut, const std::size_t bufferSize) {
     SampleUtil::mixMultichannelToStereo(pOut, pIn, numFrames, chCount);
 }
 
-void EngineDeck::cloneStemState(const EngineDeck* deckToClone) {
+void EngineDeck::beginStemTrackLoad(quint64 generation) {
+    m_stemClonedState = false;
+    m_stemClonedStateGeneration = generation;
+}
+
+void EngineDeck::cloneStemState(
+        const EngineDeck* deckToClone,
+        quint64 generation) {
     VERIFY_OR_DEBUG_ASSERT(deckToClone) {
         return;
     }
@@ -219,14 +342,39 @@ void EngineDeck::cloneStemState(const EngineDeck* deckToClone) {
         return;
     }
     for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; stemIdx++) {
+        if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
         m_stemGain[stemIdx]->set(deckToClone->m_stemGain[stemIdx]->get());
+        // Control setters can synchronously notify direct observers. A nested
+        // load must stop this request before it writes another cloned control.
+        if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
         m_stemMute[stemIdx]->set(deckToClone->m_stemMute[stemIdx]->get());
+        if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+            return;
+        }
+    }
+    if (!m_pBuffer->isCurrentTrackLoadGeneration(generation)) {
+        return;
     }
     m_stemClonedState = true;
+    m_stemClonedStateGeneration = generation;
 }
 #endif
 
 void EngineDeck::process(CSAMPLE* pOut, const std::size_t bufferSize) {
+    // EngineMixer::process() provides an output buffer of at most
+    // kMaxEngineSamples samples. Reject an out-of-contract callback before
+    // any processing path can use the oversized value. Only the prefix covered
+    // by the callback contract may be cleared.
+    DEBUG_ASSERT(bufferSize <= kMaxEngineSamples);
+    if (bufferSize > kMaxEngineSamples) {
+        SampleUtil::clear(pOut, static_cast<SINT>(kMaxEngineSamples));
+        return;
+    }
+
     // Feed the incoming audio through if passthrough is active
     const CSAMPLE* sampleBuffer = m_sampleBuffer; // save pointer on stack
     if (isPassthroughActive() && sampleBuffer) {
@@ -242,16 +390,19 @@ void EngineDeck::process(CSAMPLE* pOut, const std::size_t bufferSize) {
             return;
         }
 
+        const mixxx::audio::ChannelCount channelCount =
+                m_pBuffer->getChannelCount();
 #ifdef __STEM__
         // Process the raw audio
-        if (m_pBuffer->getChannelCount() <= mixxx::kEngineChannelOutputCount) {
+        if (channelCount <= mixxx::kEngineChannelOutputCount) {
             // Process a single mono or stereo channel
 #endif
-            m_pBuffer->process(pOut, bufferSize);
+            m_pBuffer->processWithChannelLayout(
+                    pOut, bufferSize, channelCount);
 #ifdef __STEM__
         } else {
             // Process multiple stereo channels (stems) and mix them together
-            processStem(pOut, bufferSize);
+            processStem(pOut, bufferSize, channelCount);
         }
 #endif
         m_pPregain->setSpeedAndScratching(m_pBuffer->getSpeed(), m_pBuffer->getScratching());

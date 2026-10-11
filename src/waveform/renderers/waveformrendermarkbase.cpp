@@ -25,9 +25,8 @@ void WaveformRenderMarkBase::onSetTrack() {
         return;
     }
 
-    // IMPORTANT: make this a QueuedConnection so the slot is called AFTER
-    // objects with DirectConnection (eg. CueControl, which updates the position
-    // COs we need when we iterate over the cues and update marks)
+    // CueControl updates position ControlObjects through a direct connection.
+    // Queue the mark refresh so it reads the cue positions after that update.
     connect(pTrackInfo.get(),
             &Track::cuesUpdated,
             this,
@@ -57,6 +56,14 @@ void WaveformRenderMarkBase::updateMarksFromCues() {
     if (!pTrackInfo) {
         return;
     }
+
+    // First build fixed-position marks for Memory cues
+    // (these are not hotcues and have no CO to bind to).
+    m_marks.syncMemoryCueMarks(
+            m_waveformRenderer->getGroup(),
+            pTrackInfo->getCuePoints(),
+            m_waveformRenderer->getDimBrightThreshold(),
+            *m_waveformRenderer->getWaveformSignalColors());
 
     const int dimBrightThreshold = m_waveformRenderer->getDimBrightThreshold();
     const QList<CuePointer> loadedCues = pTrackInfo->getCuePoints();

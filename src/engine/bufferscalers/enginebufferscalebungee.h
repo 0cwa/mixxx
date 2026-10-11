@@ -1,0 +1,244 @@
+#pragma once
+
+#include <bungee/Bungee.h>
+#include <gtest/gtest_prod.h>
+
+#include <array>
+#include <memory>
+#include <vector>
+
+#include "engine/bufferscalers/enginebufferscale.h"
+#include "engine/readaheadmanager.h"
+#include "util/samplebuffer.h"
+
+class EngineBufferScaleBungeeBufferWindowTest;
+
+// Uses Bungee's low-level grain API to perform time-stretching and pitch-shifting.
+//
+// ## Rate / position semantics
+//
+//   m_dBaseRate    — sample-rate ratio (input SR / output SR); almost always 1.0
+//                    because Bungee's own resample mode handles SR conversion.
+//   m_dTempoRatio  — absolute (unsigned) tempo ratio; 1.0 = original speed.
+//                    Values <MIN_SEEK_SPEED are clamped to 0.0 (stopped).
+//   m_bBackwards   — true when the caller requested a negative tempo ratio.
+//   m_effectiveRate — latched source-frame advance per output frame for
+//                    already-synthesised output and the current grain. New
+//                    m_dBaseRate * m_dTempoRatio requests are adopted only at
+//                    grain boundaries so queued output keeps the tempo that
+//                    produced it.
+//   m_request.speed — signed speed passed to Bungee each grain. Bungee's
+//                    request positions are input frame timestamps, so
+//                    sample-rate conversion must be part of this speed rather
+//                    than only the Mixxx cursor update.
+//
+// ## Input window / InputChunk contract
+//
+//   Bungee's specifyGrain() returns an InputChunk {.begin, .end} representing
+//   the range of input frames it needs for the current grain.  Consecutive
+//   grains overlap, so the same input frames appear in multiple chunks.  This
+//   class maintains a sliding planar input window:
+//
+//     [m_bufferedInputBeginFrame … m_bufferedInputEndFrame)
+//
+//   Before each analyseGrain() call:
+//     1. discardBufferedInputBefore() removes frames no longer needed.
+//     2. appendInputFrames() extends the window forward until it covers
+//        inputChunk.end (or ReadAheadManager runs dry).
+//     3. muteHead / muteTail are computed from the difference between the
+//        requested range and what the window actually covers, then passed
+//        directly to analyseGrain() so Bungee can zero-pad internally.
+//
+// ## Buffer-window invariant
+//
+//   The two pointers m_bufferedInputBeginFrame and m_bufferedInputEndFrame
+//   together with m_channelStride satisfy a single invariant on every grain
+//   boundary:
+//
+//     m_bufferedInputBeginFrame <= currentInputChunk.begin
+//     dataOffset = currentInputChunk.begin - m_bufferedInputBeginFrame
+//     dataOffset + grainSize <= m_channelStride
+//
+//   Where grainSize = currentInputChunk.end - currentInputChunk.begin and
+//   m_channelStride is the per-channel capacity of m_contiguousChannelBuffer.
+//   Violating this invariant causes Bungee's analyseGrain() to read past
+//   the end of m_contiguousChannelBuffer (heap corruption).
+//
+//   discardBufferedInputBefore(framePosition) preserves the invariant in
+//   two regimes:
+//     - Partial discard (framePosition inside the buffered window):
+//       memmove() shifts the unread tail left and advances
+//       m_bufferedInputBeginFrame by the discard count; m_bufferedInputEndFrame
+//       is unchanged.
+//     - Full discard (framePosition >= m_bufferedInputEndFrame, which
+//       happens when grain hops outrun the input window at very high
+//       playback rates): consume the skipped source range before both pointers
+//       jump to framePosition. A pending retry leaves the pointers at the
+//       consumed prefix so the next callback retries without relabelling input;
+//       an exhausted read collapses the empty window to framePosition to retain
+//       the BNG-13 invariant.
+//
+//   processGrain() additionally enforces the invariant defensively: if it
+//   ever computes dataOffset + grainSize > m_channelStride, it sets
+//   m_bResetNeeded = true and returns 0 instead of calling analyseGrain().
+//   This is belt-and-braces protection — discardBufferedInputBefore() must
+//   not rely on it to be correct.
+//
+// ## Thread safety
+//   Not thread-safe; intended for single-threaded engine use only.
+//
+// ## Stretcher lifetime
+//   A valid output signal owns a configured stretcher. The real-time grain
+//   recovery paths must preserve that invariant: a failed muted-grain
+//   recovery may discard the current grain, but must not destroy the only
+//   configured stretcher. Signal changes are the only path that replaces it.
+class EngineBufferScaleBungee final : public EngineBufferScale {
+    Q_OBJECT
+  public:
+    explicit EngineBufferScaleBungee(ReadAheadManager* pReadAheadManager);
+
+    EngineBufferScaleBungee(const EngineBufferScaleBungee&) = delete;
+    EngineBufferScaleBungee& operator=(const EngineBufferScaleBungee&) = delete;
+    EngineBufferScaleBungee(EngineBufferScaleBungee&&) = delete;
+    EngineBufferScaleBungee& operator=(EngineBufferScaleBungee&&) = delete;
+
+    ~EngineBufferScaleBungee() override = default;
+
+    void setScaleParameters(double base_rate,
+            double* pTempoRatio,
+            double* pPitchRatio) override;
+
+    double scaleBuffer(CSAMPLE* pOutputBuffer,
+            SINT iOutputBufferSize) override;
+
+    double getVisualPlayPositionOffset() const override;
+
+    void clear() override;
+
+  private:
+    struct InputReadResult {
+        SINT framesRead;
+        bool retryPending;
+    };
+
+    void onSignalChanged() override;
+
+    // Process a single grain and return the number of output frames produced.
+    SINT processGrain(CSAMPLE* pOutputBuffer, SINT maxFrames);
+
+    // Complete Bungee's call sequence before abandoning a retry-pending grain.
+    void completePendingGrainForReset();
+    bool synthesiseMutedGrain(
+            const Bungee::InputChunk& inputChunk, Bungee::OutputChunk* pOutputChunk);
+
+    // Deinterleave input data into the buffered planar input window for Bungee.
+    void deinterleaveInput(const CSAMPLE* pBuffer, SINT destOffsetFrames, SINT frames);
+
+    // Discard buffered input that is no longer needed by future overlapping grains.
+    bool discardBufferedInputBefore(SINT framePosition, double signedEffectiveRate);
+
+    // Consume skipped source frames from ReadAheadManager without storing them.
+    InputReadResult consumeReadAheadGap(double signedEffectiveRate, SINT framesToConsume);
+
+    // Read more input from ReadAheadManager into the buffered planar window.
+    InputReadResult appendInputFrames(double signedEffectiveRate, SINT framesToRead);
+
+    // Ensure the current input chunk is covered by the buffered planar window.
+    bool ensureInputForCurrentChunk(double signedEffectiveRate);
+
+    // Copy nFrames from m_outputChunk into pDest starting at offsetInChunk.
+    // Uses SampleUtil::interleaveBuffer for the stereo fast path.
+    void copyOutputFrames(CSAMPLE* pDest, SINT offsetInChunk, SINT nFrames) const;
+    bool hasValidOutputChunk() const;
+    double copyFlushOutputFrames(CSAMPLE*& pOutput, SINT& remainingFrames);
+
+    // The read-ahead manager that we use to fetch samples
+    ReadAheadManager* m_pReadAheadManager;
+
+    // Retry state belongs to this scaler. ReadAheadManager itself is shared by
+    // the scaler graph, so a reset of an inactive scaler must not cancel the
+    // active scaler's pending cache-miss retry.
+    ReadAheadManager::RetryState m_retryState;
+
+    // Bungee stretcher instance (using Basic edition)
+    std::unique_ptr<Bungee::Stretcher<Bungee::Basic>> m_pStretcher;
+
+    // Current Bungee request for grain processing.
+    Bungee::Request m_request{};
+
+    // Output chunk for synthesiseGrain.
+    Bungee::OutputChunk m_outputChunk{};
+
+    // Deinterleaved channel pointers into the contiguous buffered input window.
+    std::vector<float*> m_channelBufferPtrs;
+
+    // Single contiguous buffer for all channels (for Bungee's planar format)
+    mixxx::SampleBuffer m_contiguousChannelBuffer;
+
+    // Interleaved read buffer from ReadAheadManager
+    mixxx::SampleBuffer m_interleavedReadBuffer;
+
+    // Playback direction.
+    bool m_bBackwards;
+
+    // Current output channel stride.
+    SINT m_channelStride;
+
+    // Current grain's input chunk.
+    Bungee::InputChunk m_currentInputChunk{};
+
+    // Absolute frame range currently buffered in m_contiguousChannelBuffer.
+    SINT m_bufferedInputBeginFrame;
+    SINT m_bufferedInputEndFrame;
+
+    // Whether we need to reset on the next processed grain.
+    bool m_bResetNeeded;
+
+    // The current input range must be retried without advancing Bungee.
+    bool m_inputRetryPending;
+
+    // Output frames remaining from the current synthesised grain.
+    SINT m_remainingOutputFrames;
+    SINT m_outputChunkConsumed;
+    double m_lastReadFramesProcessed;
+
+    // Maximum number of frames to request from ReadAheadManager in one call.
+    static constexpr SINT kMaxGrainFrames = 4096;
+
+    // Bungee Basic's lapped output exposes the output two synthesis hops
+    // behind the source position used by EngineBuffer. The synthesis hop is
+    // derived from Bungee's sample-rate timing rule in onSignalChanged().
+    SINT m_outputLatencyFrames;
+
+    // Capacity of the buffered planar input window in frames.
+    SINT m_inputBufferFrames;
+
+    // Regression tests pin the buffer-window invariant
+    // (m_bufferedInputBeginFrame / m_bufferedInputEndFrame must both jump
+    // to framePosition when the requested position outruns the buffered
+    // input window).  Without this invariant, processGrain() computes a
+    // dataOffset that exceeds m_channelStride, causing Bungee's Eigen map
+    // to read past m_contiguousChannelBuffer (heap corruption observed at
+    // very high playback rates).
+    // The fixture itself is friended so its protected accessor helpers
+    // (bufferBegin / bufferEnd / channelStride / currentChunkSize) compile.
+    // FRIEND_TEST alone only grants access to the generated test classes,
+    // not to the inherited fixture methods they call.
+    friend class ::EngineBufferScaleBungeeBufferWindowTest;
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndJumpsBothPointersToFramePosition);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndConsumesSkippedReadAheadFrames);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndRetriesAfterTransientZeroRead);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWithGapBeyondEndConsumesPartialReadsBeforeCompleting);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWhenFramePositionInsideBufferDoesNotOverJump);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            DiscardWhenBufferEmptyJumpsToFramePosition);
+    FRIEND_TEST(EngineBufferScaleBungeeBufferWindowTest,
+            HighSpeedGrainOutrunMaintainsDataOffsetInvariant);
+    FRIEND_TEST(EngineBufferScaleBungeeFlushAccountingTest,
+            CopyFlushOutputFramesReportsEffectiveRateAdvance);
+};

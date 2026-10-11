@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <QByteArrayView>
+#include <QElapsedTimer>
 #include <QMetaEnum>
 #include <QScopedPointer>
 #include <QTemporaryFile>
@@ -141,14 +142,20 @@ class ControllerScriptEngineLegacyTest : public ControllerScriptEngineLegacy,
 #endif
                 false);
         m_pEngine->process(1024);
-        while (!deck->getEngineDeck()->getEngineBuffer()->isTrackLoaded()) {
-            QTest::qSleep(100);
+        QElapsedTimer loadDeadline;
+        loadDeadline.start();
+        while (!deck->getEngineDeck()->getEngineBuffer()->isTrackLoaded() &&
+                loadDeadline.elapsed() < 10000) {
+            // Reader readiness is published on the GUI thread.
+            QTest::qWait(1);
         }
+        ASSERT_TRUE(deck->getEngineDeck()->getEngineBuffer()->isTrackLoaded());
         processEvents();
     }
 
     void TearDown() override {
         mixxx::Time::setTestMode(false);
+        KeyUtils::setNotation({});
 #ifdef MIXXX_USE_QML
         m_rootItems.clear();
 #endif
@@ -225,15 +232,14 @@ class ControllerScriptEngineLegacyTest : public ControllerScriptEngineLegacy,
 class ControllerScriptEngineLegacyTimerTest : public ControllerScriptEngineLegacyTest {
   protected:
     std::unique_ptr<ControlPotmeter> m_pCo;
-    std::unique_ptr<ControlPotmeter> m_pCoTimerId;
+    std::unique_ptr<ControlObject> m_pCoTimerId;
 
     void SetUp() override {
         ControllerScriptEngineLegacyTest::SetUp();
         m_pCo = std::make_unique<ControlPotmeter>(ConfigKey("[Test]", "co"), -10.0, 10.0);
         m_pCo->setParameter(0.0);
-        m_pCoTimerId = std::make_unique<ControlPotmeter>(
-                ConfigKey("[Test]", "coTimerId"), -10.0, 50.0);
-        m_pCoTimerId->setParameter(0.0);
+        m_pCoTimerId = std::make_unique<ControlObject>(ConfigKey("[Test]", "coTimerId"));
+        m_pCoTimerId->set(0.0);
         EXPECT_TRUE(evaluateAndAssert("engine.setValue('[Test]', 'co', 0.0);"));
         EXPECT_DOUBLE_EQ(0.0, m_pCo->get());
     }

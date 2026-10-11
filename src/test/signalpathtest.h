@@ -3,6 +3,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QTest>
 #include <QtDebug>
 #include <memory>
@@ -163,6 +165,13 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
         EngineDeck* pEngineDeck = pDeck->getEngineDeck();
         pDeck->slotEjectTrack(1.0);
         DEBUG_ASSERT(!pEngineDeck->getEngineBuffer()->isTrackLoaded());
+
+        bool trackCompletionReceived = false;
+        const auto connection = QObject::connect(pDeck,
+                &BaseTrackPlayer::newTrackLoaded,
+                [&trackCompletionReceived, pTrack](TrackPointer pLoadedTrack) {
+                    trackCompletionReceived = pLoadedTrack == pTrack;
+                });
         pDeck->slotLoadTrack(pTrack,
 #ifdef __STEM__
                 mixxx::StemChannelSelection(),
@@ -172,12 +181,24 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
         // Wait for the track to load.
         ProcessBuffer();
         for (int i = 0; i < 2000; ++i) {
-            if (pEngineDeck->getEngineBuffer()->isTrackLoaded()) {
+            if (pEngineDeck->getEngineBuffer()->isTrackLoaded() &&
+                    trackCompletionReceived) {
+                // Drain queued completion consumers posted by the readiness
+                // publication before callers inspect player or deck metadata.
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
                 break;
             }
+            // Reader success is published after the GUI prepares the track's
+            // controls and posts player completion, so process both queued
+            // stages while waiting.
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
             QTest::qSleep(1); // sleep 1 ms for waiting 2 s at max
         }
-        DEBUG_ASSERT(pEngineDeck->getEngineBuffer()->isTrackLoaded());
+        QObject::disconnect(connection);
+        ASSERT_TRUE(pEngineDeck->getEngineBuffer()->isTrackLoaded())
+                << "timed out waiting for EngineBuffer readiness";
+        ASSERT_TRUE(trackCompletionReceived)
+                << "timed out waiting for newTrackLoaded";
     }
 
     // Asserts that the contents of the output buffer matches a reference
@@ -280,7 +301,7 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
     static const double kDefaultRateRange;
     static const double kDefaultRateDir;
     static const double kRateRangeDivisor;
-    static const int kProcessBufferSize;
+    static constexpr int kProcessBufferSize = 1024;
 };
 
 class SignalPathTest : public BaseSignalPathTest {

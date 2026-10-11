@@ -8,6 +8,7 @@
 #ifdef __STEM__
 #include "engine/engine.h"
 #endif
+#include "control/pollingcontrolproxy.h"
 #include "engine/channels/enginechannel.h"
 #include "mixer/baseplayer.h"
 #include "preferences/colorpalettesettings.h"
@@ -122,6 +123,10 @@ class BaseTrackPlayerImpl : public BaseTrackPlayer {
     void slotCloneFromGroup(const QString& group) final;
     void slotCloneDeck() final;
     void slotTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
+    void slotTrackLoadedFromReader(
+            TrackPointer pNewTrack,
+            TrackPointer pOldTrack,
+            quint64 generation);
     void slotLoadFailed(TrackPointer pTrack, const QString& reason);
     void slotSetReplayGain(mixxx::ReplayGain replayGain);
     /// When the replaygain is adjusted, we modify the track pregain
@@ -158,8 +163,8 @@ class BaseTrackPlayerImpl : public BaseTrackPlayer {
   private:
     void setReplayGain(double value);
 
-    void loadTrack(TrackPointer pTrack);
-    TrackPointer unloadTrack();
+    void loadTrack(TrackPointer pTrack, quint64 generation);
+    TrackPointer unloadTrack(quint64 generation = 0);
 
     void connectLoadedTrack();
     void disconnectLoadedTrack();
@@ -172,6 +177,7 @@ class BaseTrackPlayerImpl : public BaseTrackPlayer {
     EngineDeck* m_pChannel;
     bool m_replaygainPending;
     EngineChannel* m_pChannelToCloneFrom;
+    PollingControlProxy m_pWaveformMaxZoomOut;
 
     PerformanceTimer m_ejectTimer;
 
