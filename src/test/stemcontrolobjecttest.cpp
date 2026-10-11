@@ -1385,6 +1385,10 @@ TEST_P(StemFirstLoadSchedulingFixture, LegacyEjectAndFakeTrackKeepStemCleanupRou
 
     TrackPointer pFakeTrack(Track::newTemporary(
             getTestDir().filePath(QStringLiteral("sine-30.wav"))));
+    pFakeTrack->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(30));
     pBuffer->loadFakeTrack(pFakeTrack, false);
     EXPECT_TRUE(pBuffer->isTrackLoaded());
     EXPECT_EQ(trackLoaded.get(), 1.0);
