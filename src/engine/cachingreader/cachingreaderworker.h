@@ -8,6 +8,7 @@
 #include <QString>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 
 #include "audio/frame.h"
 #include "audio/types.h"
@@ -130,7 +131,8 @@ class CachingReaderWorker : public EngineWorker {
     CachingReaderWorker(const QString& group,
             FIFO<CachingReaderChunkReadRequest>* pChunkReadRequestFIFO,
             FIFO<ReaderStatusUpdate>* pReaderStatusFIFO,
-            mixxx::audio::ChannelCount maxSupportedChannel);
+            mixxx::audio::ChannelCount maxSupportedChannel,
+            bool enableTimingDiagnostics = false);
     ~CachingReaderWorker() override = default;
 
     // Request to load a new track. wake() must be called afterwards.
@@ -191,6 +193,24 @@ class CachingReaderWorker : public EngineWorker {
         return m_diagnosticPublishedStatuses.loadAcquire();
     }
     int diagnosticStatusCapacity() const;
+
+    struct DiagnosticTimingSnapshot {
+        std::int64_t lastRequestWallUsec{-1};
+        std::int64_t lastRequestThreadCpuUsec{-1};
+        std::int64_t maxRequestWallUsec{-1};
+        std::int64_t maxRequestThreadCpuUsec{-1};
+        std::int64_t lastSourceReadWallUsec{-1};
+        std::int64_t lastSourceReadThreadCpuUsec{-1};
+        std::int64_t maxSourceReadWallUsec{-1};
+        std::int64_t maxSourceReadThreadCpuUsec{-1};
+    };
+
+    bool diagnosticTimingEnabled() const {
+        return m_timingDiagnosticsEnabled;
+    }
+    bool diagnosticTimingSnapshot(DiagnosticTimingSnapshot* pSnapshot) const;
+    std::int64_t diagnosticActiveRequestAgeUsec() const;
+    std::int64_t diagnosticActiveSourceReadAgeUsec() const;
 
   signals:
     // Emitted once a new track is loaded and ready to be read from.
@@ -254,8 +274,16 @@ class CachingReaderWorker : public EngineWorker {
     bool loadTrack(const TrackPointer& pTrack, quint64 generation = 0);
 #endif
 
+    struct DiagnosticTimingSample {
+        std::int64_t requestWallUsec{-1};
+        std::int64_t requestThreadCpuUsec{-1};
+        std::int64_t sourceReadWallUsec{-1};
+        std::int64_t sourceReadThreadCpuUsec{-1};
+    };
     ReaderStatusUpdate processReadRequest(
-            const CachingReaderChunkReadRequest& request);
+            const CachingReaderChunkReadRequest& request,
+            DiagnosticTimingSample* pTimingSample);
+    void recordDiagnosticTiming(const DiagnosticTimingSample& sample);
 
     void verifyFirstSound(const CachingReaderChunk* pChunk,
             mixxx::audio::ChannelCount channelCount);
@@ -276,6 +304,7 @@ class CachingReaderWorker : public EngineWorker {
 
     // The maximum number of channel that this reader can support
     mixxx::audio::ChannelCount m_maxSupportedChannel;
+    const bool m_timingDiagnosticsEnabled;
 
     QAtomicInt m_stop;
 
@@ -294,4 +323,22 @@ class CachingReaderWorker : public EngineWorker {
     QAtomicInt m_diagnosticCompletedRequests;
     QAtomicInt m_diagnosticDequeuedRequests;
     QAtomicInt m_diagnosticPublishedStatuses;
+
+    // Opt-in timing pairs are written by the worker and sampled by the
+    // existing CachingReader diagnostics timer. Each wall/CPU pair is one
+    // atomic value; different pairs may be from adjacent requests.
+    std::atomic<std::int64_t> m_diagnosticActiveRequestStartUsec{0};
+    std::atomic<std::int64_t> m_diagnosticActiveSourceReadStartUsec{0};
+    // Each packed pair stores two uint32 microsecond durations. The all-ones
+    // value in either half means unavailable; UINT32_MAX - 1 is the saturation
+    // value. A single atomic load/store keeps wall and CPU from the same call
+    // together without a retry loop.
+    std::atomic<std::uint64_t> m_diagnosticLatestRequestTimingPair{
+            std::numeric_limits<std::uint64_t>::max()};
+    std::atomic<std::uint64_t> m_diagnosticSlowestRequestTimingPair{
+            std::numeric_limits<std::uint64_t>::max()};
+    std::atomic<std::uint64_t> m_diagnosticLatestSampleBufferTimingPair{
+            std::numeric_limits<std::uint64_t>::max()};
+    std::atomic<std::uint64_t> m_diagnosticSlowestSampleBufferTimingPair{
+            std::numeric_limits<std::uint64_t>::max()};
 };

@@ -213,6 +213,7 @@ class CachingReader : public QObject {
     const QString m_group;
 
     void reportDiagnostics();
+    void reportWorkerTimingDiagnostics();
 
     // Thread-safe FIFOs for communication between the engine callback and
     // reader thread.

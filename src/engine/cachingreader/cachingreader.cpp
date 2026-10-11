@@ -1,6 +1,7 @@
 #include "engine/cachingreader/cachingreader.h"
 
 #include <QtDebug>
+#include <QtGlobal>
 #include <algorithm>
 
 #include "engine/controls/seek30control.h"
@@ -77,7 +78,8 @@ CachingReader::CachingReader(const QString& group,
           m_worker(group,
                   &m_chunkReadRequestFIFO,
                   &m_readerStatusUpdateFIFO,
-                  maxSupportedChannel) {
+                  maxSupportedChannel,
+                  qEnvironmentVariableIsSet("MIXXX_CACHE_READER_TIMING")) {
     m_allocatedCachingReaderChunks.reserve(kNumberOfCachedChunksInMemory);
     // Divide up the allocated raw memory buffer into total_chunks
     // chunks. Initialize each chunk to hold nothing and add it to the free
@@ -332,6 +334,7 @@ void CachingReader::reportDiagnostics() {
                            << requestCapacity << "status FIFO" << statusPending
                            << "/" << statusCapacity << "worker progress"
                            << workerProgress;
+            reportWorkerTimingDiagnostics();
             m_diagnosticEpisodeActive = false;
         }
         m_lastReportedWorkerProgress = workerProgress;
@@ -392,6 +395,7 @@ void CachingReader::reportDiagnostics() {
                       << "last read-more failure chunk" << lastReadMoreFailureChunk
                       << "last read-abort chunk" << lastReadAbortChunk
                       << "latest partial-gap range valid" << lastGapRangeValid;
+    reportWorkerTimingDiagnostics();
     if (lastGapRangeValid) {
         kLogger.warning() << m_group << "Latest partial-gap frame range ["
                           << lastGapStartFrame << "," << lastGapEndFrame << ") has"
@@ -403,6 +407,35 @@ void CachingReader::reportDiagnostics() {
     m_lastReportedCacheMisses = cacheMisses;
     m_lastReportedWorkerProgress = workerProgress;
     m_lastReportedActiveChunk = activeChunk;
+}
+
+void CachingReader::reportWorkerTimingDiagnostics() {
+    if (!m_worker.diagnosticTimingEnabled()) {
+        return;
+    }
+    CachingReaderWorker::DiagnosticTimingSnapshot timing;
+    if (!m_worker.diagnosticTimingSnapshot(&timing)) {
+        return;
+    }
+    kLogger.info() << m_group << "CachingReader worker timing:"
+                   << "active request wall usec"
+                   << m_worker.diagnosticActiveRequestAgeUsec()
+                   << "active sample-buffer wall usec"
+                   << m_worker.diagnosticActiveSourceReadAgeUsec()
+                   << "latest request wall usec" << timing.lastRequestWallUsec
+                   << "latest request worker CPU usec"
+                   << timing.lastRequestThreadCpuUsec
+                   << "slowest request wall usec" << timing.maxRequestWallUsec
+                   << "worker CPU usec for slowest request"
+                   << timing.maxRequestThreadCpuUsec
+                   << "latest sample-buffer wall usec"
+                   << timing.lastSourceReadWallUsec
+                   << "latest sample-buffer worker CPU usec"
+                   << timing.lastSourceReadThreadCpuUsec
+                   << "slowest sample-buffer wall usec"
+                   << timing.maxSourceReadWallUsec
+                   << "worker CPU usec for slowest sample-buffer call"
+                   << timing.maxSourceReadThreadCpuUsec;
 }
 
 void CachingReader::freeChunkFromList(CachingReaderChunkForOwner* pChunk) {

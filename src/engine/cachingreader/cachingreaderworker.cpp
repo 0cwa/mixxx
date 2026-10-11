@@ -1,5 +1,11 @@
 #include "engine/cachingreader/cachingreaderworker.h"
 
+#include <algorithm>
+#include <chrono>
+#if defined(Q_OS_LINUX)
+#include <time.h>
+#endif
+
 #include <QAtomicInt>
 #include <QtDebug>
 #ifdef BUILD_TESTING
@@ -23,6 +29,81 @@
 namespace {
 
 mixxx::Logger kLogger("CachingReaderWorker");
+
+using DiagnosticClock = std::chrono::steady_clock;
+constexpr std::uint32_t kUnavailableTimingUsec =
+        std::numeric_limits<std::uint32_t>::max();
+constexpr std::uint32_t kMaximumTimingUsec = kUnavailableTimingUsec - 1;
+#if defined(Q_OS_LINUX) && defined(__x86_64__)
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
+        "Cache timing pairs must be lock-free on x86_64 Linux");
+static_assert(std::atomic<std::int64_t>::is_always_lock_free,
+        "Cache timing ages must be lock-free on x86_64 Linux");
+#endif
+
+std::uint32_t encodeDiagnosticUsec(std::int64_t usec) {
+    if (usec < 0) {
+        return kUnavailableTimingUsec;
+    }
+    return static_cast<std::uint32_t>(std::min<std::int64_t>(
+            usec, static_cast<std::int64_t>(kMaximumTimingUsec)));
+}
+
+std::int64_t decodeDiagnosticUsec(std::uint32_t usec) {
+    if (usec == kUnavailableTimingUsec) {
+        return -1;
+    }
+    return static_cast<std::int64_t>(usec);
+}
+
+std::uint64_t encodeDiagnosticTimingPair(
+        std::int64_t wallUsec, std::int64_t threadCpuUsec) {
+    return (static_cast<std::uint64_t>(encodeDiagnosticUsec(wallUsec)) << 32) |
+            encodeDiagnosticUsec(threadCpuUsec);
+}
+
+std::uint32_t diagnosticTimingPairWall(std::uint64_t timingPair) {
+    return static_cast<std::uint32_t>(timingPair >> 32);
+}
+
+bool diagnosticTimingPairHasLargerWall(
+        std::uint64_t candidatePair, std::uint64_t retainedPair) {
+    const std::uint32_t retainedWall =
+            diagnosticTimingPairWall(retainedPair);
+    return retainedWall == kUnavailableTimingUsec ||
+            diagnosticTimingPairWall(candidatePair) > retainedWall;
+}
+
+void decodeDiagnosticTimingPair(
+        std::uint64_t timingPair,
+        std::int64_t* pWallUsec,
+        std::int64_t* pThreadCpuUsec) {
+    *pWallUsec = decodeDiagnosticUsec(
+            diagnosticTimingPairWall(timingPair));
+    *pThreadCpuUsec = decodeDiagnosticUsec(
+            static_cast<std::uint32_t>(timingPair));
+}
+
+std::int64_t diagnosticMonotonicUsec() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+            DiagnosticClock::now().time_since_epoch())
+            .count();
+}
+
+bool diagnosticWorkerThreadCpuUsec(std::int64_t* pTimeUsec) {
+#if defined(Q_OS_LINUX)
+    timespec threadCpuTime{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &threadCpuTime) != 0) {
+        return false;
+    }
+    *pTimeUsec = static_cast<std::int64_t>(threadCpuTime.tv_sec) * 1'000'000 +
+            threadCpuTime.tv_nsec / 1'000;
+    return true;
+#else
+    (void)pTimeUsec;
+    return false;
+#endif
+}
 
 // we need the last silence frame and the first sound frame
 constexpr SINT kNumSoundFrameToVerify = 2;
@@ -78,12 +159,14 @@ CachingReaderWorker::CachingReaderWorker(
         const QString& group,
         FIFO<CachingReaderChunkReadRequest>* pChunkReadRequestFIFO,
         FIFO<ReaderStatusUpdate>* pReaderStatusFIFO,
-        mixxx::audio::ChannelCount maxSupportedChannel)
+        mixxx::audio::ChannelCount maxSupportedChannel,
+        bool enableTimingDiagnostics)
         : m_group(group),
           m_tag(QString("CachingReaderWorker %1").arg(m_group)),
           m_pChunkReadRequestFIFO(pChunkReadRequestFIFO),
           m_pReaderStatusFIFO(pReaderStatusFIFO),
           m_maxSupportedChannel(maxSupportedChannel),
+          m_timingDiagnosticsEnabled(enableTimingDiagnostics),
           m_diagnosticState(static_cast<int>(DiagnosticState::Waiting)),
           m_diagnosticActiveChunk(-1),
           m_diagnosticLastCompletedChunk(-1),
@@ -130,6 +213,102 @@ int CachingReaderWorker::diagnosticStatusCapacity() const {
     return m_pReaderStatusFIFO->capacity();
 }
 
+bool CachingReaderWorker::diagnosticTimingSnapshot(
+        DiagnosticTimingSnapshot* pSnapshot) const {
+    if (!pSnapshot) {
+        return false;
+    }
+    decodeDiagnosticTimingPair(
+            m_diagnosticLatestRequestTimingPair.load(std::memory_order_relaxed),
+            &pSnapshot->lastRequestWallUsec,
+            &pSnapshot->lastRequestThreadCpuUsec);
+    decodeDiagnosticTimingPair(
+            m_diagnosticSlowestRequestTimingPair.load(std::memory_order_relaxed),
+            &pSnapshot->maxRequestWallUsec,
+            &pSnapshot->maxRequestThreadCpuUsec);
+    decodeDiagnosticTimingPair(
+            m_diagnosticLatestSampleBufferTimingPair.load(
+                    std::memory_order_relaxed),
+            &pSnapshot->lastSourceReadWallUsec,
+            &pSnapshot->lastSourceReadThreadCpuUsec);
+    decodeDiagnosticTimingPair(
+            m_diagnosticSlowestSampleBufferTimingPair.load(
+                    std::memory_order_relaxed),
+            &pSnapshot->maxSourceReadWallUsec,
+            &pSnapshot->maxSourceReadThreadCpuUsec);
+    return true;
+}
+
+std::int64_t CachingReaderWorker::diagnosticActiveRequestAgeUsec() const {
+    const std::int64_t startTokenBefore =
+            m_diagnosticActiveRequestStartUsec.load(std::memory_order_acquire);
+    const int activeChunkBefore = diagnosticActiveChunk();
+    if (startTokenBefore == 0 || activeChunkBefore < 0) {
+        return -1;
+    }
+    const std::int64_t ageUsec =
+            diagnosticMonotonicUsec() - startTokenBefore + 1;
+    const std::int64_t startTokenAfter =
+            m_diagnosticActiveRequestStartUsec.load(std::memory_order_acquire);
+    const int activeChunkAfter = diagnosticActiveChunk();
+    if (startTokenBefore != startTokenAfter ||
+            activeChunkBefore != activeChunkAfter || activeChunkAfter < 0) {
+        return -1;
+    }
+    return std::max<std::int64_t>(0, ageUsec);
+}
+
+std::int64_t CachingReaderWorker::diagnosticActiveSourceReadAgeUsec() const {
+    const std::int64_t startTokenBefore =
+            m_diagnosticActiveSourceReadStartUsec.load(std::memory_order_acquire);
+    const int activeChunkBefore = diagnosticActiveChunk();
+    if (startTokenBefore == 0 || activeChunkBefore < 0) {
+        return -1;
+    }
+    const std::int64_t ageUsec =
+            diagnosticMonotonicUsec() - startTokenBefore + 1;
+    const std::int64_t startTokenAfter =
+            m_diagnosticActiveSourceReadStartUsec.load(std::memory_order_acquire);
+    const int activeChunkAfter = diagnosticActiveChunk();
+    if (startTokenBefore != startTokenAfter ||
+            activeChunkBefore != activeChunkAfter || activeChunkAfter < 0) {
+        return -1;
+    }
+    return std::max<std::int64_t>(0, ageUsec);
+}
+
+void CachingReaderWorker::recordDiagnosticTiming(
+        const DiagnosticTimingSample& sample) {
+    const std::uint64_t requestTimingPair = encodeDiagnosticTimingPair(
+            sample.requestWallUsec, sample.requestThreadCpuUsec);
+    m_diagnosticLatestRequestTimingPair.store(
+            requestTimingPair, std::memory_order_relaxed);
+    const std::uint64_t slowestRequestTimingPair =
+            m_diagnosticSlowestRequestTimingPair.load(
+                    std::memory_order_relaxed);
+    if (diagnosticTimingPairHasLargerWall(
+                requestTimingPair, slowestRequestTimingPair)) {
+        m_diagnosticSlowestRequestTimingPair.store(
+                requestTimingPair, std::memory_order_relaxed);
+    }
+
+    const std::uint64_t sampleBufferTimingPair = encodeDiagnosticTimingPair(
+            sample.sourceReadWallUsec, sample.sourceReadThreadCpuUsec);
+    m_diagnosticLatestSampleBufferTimingPair.store(
+            sampleBufferTimingPair, std::memory_order_relaxed);
+    if (sample.sourceReadWallUsec >= 0) {
+        const std::uint64_t slowestSampleBufferTimingPair =
+                m_diagnosticSlowestSampleBufferTimingPair.load(
+                        std::memory_order_relaxed);
+        if (diagnosticTimingPairHasLargerWall(
+                    sampleBufferTimingPair,
+                    slowestSampleBufferTimingPair)) {
+            m_diagnosticSlowestSampleBufferTimingPair.store(
+                    sampleBufferTimingPair, std::memory_order_relaxed);
+        }
+    }
+}
+
 bool CachingReaderWorker::publishStatus(ReaderStatusUpdate update) {
     const int previousState = m_diagnosticState.loadAcquire();
     m_diagnosticState.storeRelease(
@@ -154,7 +333,8 @@ bool CachingReaderWorker::publishStatus(ReaderStatusUpdate update) {
 }
 
 ReaderStatusUpdate CachingReaderWorker::processReadRequest(
-        const CachingReaderChunkReadRequest& request) {
+        const CachingReaderChunkReadRequest& request,
+        DiagnosticTimingSample* pTimingSample) {
     CachingReaderChunk* pChunk = request.chunk;
     DEBUG_ASSERT(pChunk);
 
@@ -171,9 +351,31 @@ ReaderStatusUpdate CachingReaderWorker::processReadRequest(
     }
 
     // Try to read the data required for the chunk from the audio source
+    std::int64_t sourceReadStartUsec = 0;
+    std::int64_t sourceReadThreadCpuStartUsec = 0;
+    bool sourceReadThreadCpuStartAvailable = false;
+    if (pTimingSample) {
+        sourceReadStartUsec = diagnosticMonotonicUsec();
+        m_diagnosticActiveSourceReadStartUsec.store(
+                sourceReadStartUsec + 1, std::memory_order_release);
+        sourceReadThreadCpuStartAvailable =
+                diagnosticWorkerThreadCpuUsec(&sourceReadThreadCpuStartUsec);
+    }
     const mixxx::IndexRange bufferedFrameIndexRange = pChunk->bufferSampleFrames(
             m_pAudioSource,
             mixxx::SampleBuffer::WritableSlice(m_tempReadBuffer));
+    if (pTimingSample) {
+        pTimingSample->sourceReadWallUsec =
+                diagnosticMonotonicUsec() - sourceReadStartUsec;
+        m_diagnosticActiveSourceReadStartUsec.store(
+                0, std::memory_order_release);
+        std::int64_t sourceReadThreadCpuEndUsec = 0;
+        if (sourceReadThreadCpuStartAvailable &&
+                diagnosticWorkerThreadCpuUsec(&sourceReadThreadCpuEndUsec)) {
+            pTimingSample->sourceReadThreadCpuUsec =
+                    sourceReadThreadCpuEndUsec - sourceReadThreadCpuStartUsec;
+        }
+    }
     DEBUG_ASSERT(!m_pAudioSource ||
             bufferedFrameIndexRange.isSubrangeOf(m_pAudioSource->frameIndexRange()));
     // The readable frame range might have changed
@@ -356,7 +558,36 @@ void CachingReaderWorker::run() {
                 m_diagnosticActiveChunk.storeRelease(chunkIndex);
                 m_diagnosticState.storeRelease(
                         static_cast<int>(DiagnosticState::Decoding));
-                const ReaderStatusUpdate update = processReadRequest(request);
+                DiagnosticTimingSample timingSample;
+                std::int64_t requestStartThreadCpuUsec = 0;
+                const std::int64_t requestStartUsec =
+                        m_timingDiagnosticsEnabled ? diagnosticMonotonicUsec() : 0;
+                if (m_timingDiagnosticsEnabled) {
+                    m_diagnosticActiveRequestStartUsec.store(
+                            requestStartUsec + 1, std::memory_order_release);
+                }
+                const bool requestStartThreadCpuAvailable =
+                        m_timingDiagnosticsEnabled &&
+                        diagnosticWorkerThreadCpuUsec(
+                                &requestStartThreadCpuUsec);
+                const ReaderStatusUpdate update = processReadRequest(
+                        request,
+                        m_timingDiagnosticsEnabled ? &timingSample : nullptr);
+                if (m_timingDiagnosticsEnabled) {
+                    timingSample.requestWallUsec =
+                            diagnosticMonotonicUsec() - requestStartUsec;
+                    m_diagnosticActiveRequestStartUsec.store(
+                            0, std::memory_order_release);
+                    std::int64_t requestEndThreadCpuUsec = 0;
+                    if (requestStartThreadCpuAvailable &&
+                            diagnosticWorkerThreadCpuUsec(
+                                    &requestEndThreadCpuUsec)) {
+                        timingSample.requestThreadCpuUsec =
+                                requestEndThreadCpuUsec -
+                                requestStartThreadCpuUsec;
+                    }
+                    recordDiagnosticTiming(timingSample);
+                }
                 m_diagnosticLastCompletedChunk.storeRelease(chunkIndex);
                 m_diagnosticCompletedRequests.fetchAndAddRelaxed(1);
                 m_diagnosticActiveChunk.storeRelease(-1);
