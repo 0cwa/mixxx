@@ -416,6 +416,15 @@ NS4FX.init = function(id, debug) {
 };
 
 NS4FX.shutdown = function() {
+    if (NS4FX.decks) {
+        for (let i = 1; i <= 4; i++) {
+            const deck = NS4FX.decks[i];
+            if (deck && typeof deck.stopActiveFaderCuts === "function") {
+                deck.stopActiveFaderCuts();
+            }
+        }
+    }
+
     // note: not all of this appears to be strictly necessary, things work fine
     // with out this, but Serato has been observed sending these led reset
     // messages during shutdown. The last sysex message may be necessary to
@@ -1092,6 +1101,9 @@ NS4FX.Deck = function(number, midi_chan) {
                     midi.sendShortMsg(this.midi[0], this.midi[1], value ? 0x7F : 0x01); // LED on/off
                 },
                 startFaderCuts: function(deckGroup, interval) {
+                    if (this.faderCutInterval) {
+                        return;
+                    }
                     let toggle = false;
 
                     this.faderCutInterval = engine.beginTimer(interval, () => {
@@ -1147,8 +1159,20 @@ NS4FX.Deck = function(number, midi_chan) {
         this.hotcue_buttons[k + 4] = this.hotcue_buttons_5_8[k]; // hotcues 5-8
     }
 
+    this.stopActiveFaderCuts = function() {
+        const deckGroup = `[Channel${this.number}]`;
+        this.fadercuts_buttons.forEachComponent(function(button) {
+            if (button instanceof components.Button && button.faderCutInterval) {
+                button.stopFaderCuts(deckGroup);
+            }
+        });
+    };
+
     this.change_padmode = function(padmode) {
         NS4FX.dbg(`Deck ${this.number} change_padmode: from ${this.padmode_str} to ${padmode}`);
+        if (this.padmode_str === "fadercuts" && padmode !== "fadercuts") {
+            this.stopActiveFaderCuts();
+        }
         this.padmode_str = padmode;
         // This is the main pad mode switching logic.
         // It disconnects the old set of pads and connects the new one.
