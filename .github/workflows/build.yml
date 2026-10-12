@@ -8,6 +8,9 @@ on:
       publish:
         type: boolean
         default: false
+      mediafoundation_diagnostic:
+        type: boolean
+        default: false
       branch:
         type: string
         required: true
@@ -47,6 +50,7 @@ permissions:
 
 jobs:
   build:
+    if: inputs.mediafoundation_diagnostic != true || matrix.name == 'Windows Server 2025 VS2026 x64'
     permissions:
       contents: read #  to fetch code (actions/checkout)
       actions: write # to delete outdated caches (gh cache delete)
@@ -437,6 +441,7 @@ jobs:
       - name: "Configure"
         run: >-
           cmake ${{ matrix.cmake_args }} ${{ env.CMAKE_ARGS_EXTRA }}
+          ${{ inputs.mediafoundation_diagnostic == true && '-DBUILD_TESTING=ON -DMEDIAFOUNDATION=ON' || '' }}
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
           -DWARNINGS_FATAL=ON
@@ -467,8 +472,17 @@ jobs:
         uses: ammaraskar/msvc-problem-matcher@0.3.0
 
       - name: "Build"
+        if: inputs.mediafoundation_diagnostic != true
         # Ninja (macOS/Windows) uses all cores by default, make (Linux) only one
         run: cmake --build . --config RelWithDebInfo ${{ runner.os == 'Linux' && '--parallel "$(nproc)"' || '' }}
+        working-directory: build
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+
+      - name: "Build Media Foundation test target"
+        if: inputs.mediafoundation_diagnostic == true
+        run: cmake --build . --config RelWithDebInfo --target mixxx-test
         working-directory: build
         env:
           CC: ${{ matrix.cc }}
@@ -511,7 +525,7 @@ jobs:
           KEY_PREFIX: ${{ matrix.os }}-${{ matrix.compiler_cache_id }}-${{ inputs.branch }}-
 
       - name: "Test"
-        if: matrix.crosscompile != true
+        if: matrix.crosscompile != true && inputs.mediafoundation_diagnostic != true
         run: ctest --timeout 45 ${{ matrix.ctest_args }}
         working-directory: build
         env:
@@ -520,10 +534,61 @@ jobs:
           CTEST_PARALLEL_LEVEL: ${{ runner.os == 'Windows' && 1 || 3 }}
           CTEST_OUTPUT_ON_FAILURE: 1
 
+      - name: "Verify Media Foundation test configuration"
+        id: mf_config
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          $options = @(cmake -LA -N .)
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $requiredOptions = @('BUILD_TESTING:BOOL=ON', 'MEDIAFOUNDATION:BOOL=ON')
+          foreach ($option in $requiredOptions) {
+            if ($options -notcontains $option) {
+              throw "Expected CMake option was not enabled: $option"
+            }
+          }
+          $requiredOptions | Set-Content -Path mf-seek-gap-cmake-options.txt
+        working-directory: build
+
+      - name: "Run Media Foundation tests"
+        id: mf_test
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          ctest --timeout 45 --output-on-failure --verbose --tests-regex '^SoundSourceMediaFoundationTest[.]' --output-junit mf-seek-gap-tests.xml
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          [xml]$report = Get-Content -Raw mf-seek-gap-tests.xml
+          $testCases = $report.SelectNodes('//testcase')
+          if ($testCases.Count -eq 0) {
+            throw 'CTest did not run any SoundSourceMediaFoundationTest cases.'
+          }
+          Write-Host "Executed $($testCases.Count) SoundSourceMediaFoundationTest cases."
+        working-directory: build
+        env:
+          GTEST_COLOR: 1
+          CTEST_PARALLEL_LEVEL: 1
+          CTEST_OUTPUT_ON_FAILURE: 1
+
+      - name: "Upload Media Foundation test evidence"
+        if: always() && inputs.mediafoundation_diagnostic == true && steps.mf_config.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: windows-x64-mf-seek-gap-${{ github.run_id }}
+          path: |
+            build/mf-seek-gap-cmake-options.txt
+            build/mf-seek-gap-tests.xml
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: "[Windows] Sign executables"
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID
+        if: runner.os == 'Windows' && env.AZURE_TENANT_ID && inputs.mediafoundation_diagnostic != true
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -547,7 +612,7 @@ jobs:
       - name: "[Windows] Sign WiX custom action DLL"
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID
+        if: runner.os == 'Windows' && env.AZURE_TENANT_ID && inputs.mediafoundation_diagnostic != true
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -565,7 +630,7 @@ jobs:
           cache-dependencies: false
 
       - name: "[Windows] Install WiX Toolset"
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.mediafoundation_diagnostic != true
         shell: pwsh
         run: |
           dotnet.exe tool install --global wix --version 6.0.2
@@ -573,7 +638,7 @@ jobs:
 
       - name: "Package"
         id: package
-        if: matrix.cpack_generator != null
+        if: matrix.cpack_generator != null && inputs.mediafoundation_diagnostic != true
         # Use retry loop to work around a race condition on macOS causing
         # 'Resource busy' errors with 'hdiutil'. See
         # https://github.com/actions/runner-images/issues/7522
@@ -628,7 +693,7 @@ jobs:
           echo "SMOKE OK"
 
       - name: Upload failed packaging logs
-        if: always() && steps.package.outcome == 'failure' && runner.os == 'windows'
+        if: always() && steps.package.outcome == 'failure' && runner.os == 'windows' && inputs.mediafoundation_diagnostic != true
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.os }}-logs-packages-wix
@@ -691,7 +756,7 @@ jobs:
       - name: "[Windows] Sign installer"
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID
+        if: runner.os == 'Windows' && env.AZURE_TENANT_ID && inputs.mediafoundation_diagnostic != true
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -745,7 +810,7 @@ jobs:
       - name: "[Windows] Install rsync and openssh"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DOWNLOADS_HOSTGATOR_DOT_MIXXX_DOT_ORG_KEY }}
-        if: runner.os == 'Windows' && inputs.publish && env.SSH_PRIVATE_KEY != null
+        if: runner.os == 'Windows' && inputs.publish && env.SSH_PRIVATE_KEY != null && inputs.mediafoundation_diagnostic != true
         run: |
           if (Test-Path "C:\msys64\usr\bin") {
             $msysPath="C:\msys64"
@@ -780,7 +845,7 @@ jobs:
           Add-Content -Path "$Env:GITHUB_ENV" -Value "PATH=$Env:PATH"
 
       - name: "Set up SSH Agent"
-        if: inputs.publish && env.SSH_PRIVATE_KEY != null
+        if: inputs.publish && env.SSH_PRIVATE_KEY != null && inputs.mediafoundation_diagnostic != true
         shell: bash
         env:
           SSH_AUTH_SOCK: /tmp/ssh_agent.sock
@@ -814,13 +879,14 @@ jobs:
       - name: "Upload GitHub Actions artifacts"
         # The AppImage is uploaded by the dedicated "[AppImage] Upload AppImage"
         # step with a stable name used by the publish workflow.
-        if: matrix.artifacts_path != null && matrix.cpack_generator != 'AppImage'
+        if: matrix.artifacts_path != null && matrix.cpack_generator != 'AppImage' && inputs.mediafoundation_diagnostic != true
         uses: actions/upload-artifact@v7.0.1
         with:
           archive: "false"
           path: ${{ matrix.artifacts_path }}
 
   build-flatpak:
+    if: inputs.mediafoundation_diagnostic != true
     name: "Flatpak"
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.10
