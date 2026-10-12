@@ -75,6 +75,9 @@ class SoundSourceMediaFoundation : public SoundSource {
     bool readProperties();
 
     void seekSampleFrame(SINT frameIndex);
+    ReadableSampleFrames readSampleFramesClampedInternal(
+            const WritableSampleFrames& writableSampleFrames,
+            SINT seekTargetFrameIndex);
 
     HRESULT m_hrCoInitialize;
     HRESULT m_hrMFStartup;
@@ -83,7 +86,13 @@ class SoundSourceMediaFoundation : public SoundSource {
 
     StreamUnitConverter m_streamUnitConverter;
 
+    // Next output frame; during a pending gap, the buffered sample may start
+    // later at m_streamGapEndFrameIndex.
     SINT m_currentFrameIndex;
+    // Tick start is held until the next sample; gap end is held until silence
+    // has been emitted through the following sample's timestamp.
+    SINT m_streamTickFrameIndex;
+    SINT m_streamGapEndFrameIndex;
 
     ReadAheadSampleBuffer m_sampleBuffer;
 };

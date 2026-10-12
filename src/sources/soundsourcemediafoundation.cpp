@@ -105,7 +105,9 @@ SoundSourceMediaFoundation::SoundSourceMediaFoundation(const QUrl& url)
           m_hrCoInitialize(E_FAIL),
           m_hrMFStartup(E_FAIL),
           m_pSourceReader(nullptr),
-          m_currentFrameIndex(0) {
+          m_currentFrameIndex(0),
+          m_streamTickFrameIndex(kUnknownFrameIndex),
+          m_streamGapEndFrameIndex(kUnknownFrameIndex) {
 }
 
 SoundSourceMediaFoundation::~SoundSourceMediaFoundation() {
@@ -220,6 +222,8 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
     if (m_currentFrameIndex != frameIndex) {
         // Discard decoded samples
         m_sampleBuffer.clear();
+        m_streamTickFrameIndex = kUnknownFrameIndex;
+        m_streamGapEndFrameIndex = kUnknownFrameIndex;
 
         // Invalidate current position (end of stream to prevent further reading)
         m_currentFrameIndex = frameIndexMax();
@@ -267,13 +271,17 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
                 // current position!
                 m_currentFrameIndex = kUnknownFrameIndex; // prevent further seeking
                 DEBUG_ASSERT(!isValidFrameIndex(m_currentFrameIndex));
-                if (skipFrames != readSampleFramesClamped(WritableSampleFrames(skipFrames)).frameIndexRange()) {
+                if (skipFrames !=
+                        readSampleFramesClampedInternal(
+                                WritableSampleFrames(skipFrames), frameIndex)
+                                .frameIndexRange()) {
                     kLogger.warning()
                             << "Failed to skip frames while seeking"
                             << skipFrames;
                     return; // abort
                 }
-                // Now m_currentFrameIndex reflects the actual position of the reader
+                // Now m_currentFrameIndex reflects the next output position. It can
+                // be the target inside a confirmed stream gap or at a sample timestamp.
                 if (m_currentFrameIndex < frameIndex) {
                     // Skip more frames if the seek has taken us to a position before
                     // the requested target position (see comment above about the behavior
@@ -307,6 +315,14 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
 
 ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         const WritableSampleFrames& writableSampleFrames) {
+    return readSampleFramesClampedInternal(
+            writableSampleFrames,
+            kUnknownFrameIndex);
+}
+
+ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal(
+        const WritableSampleFrames& writableSampleFrames,
+        SINT seekTargetFrameIndex) {
     const SINT firstFrameIndex = writableSampleFrames.frameIndexRange().start();
     if (m_currentFrameIndex != kUnknownFrameIndex) {
         seekSampleFrame(firstFrameIndex);
@@ -331,8 +347,49 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
     const SINT numberOfFramesTotal = writableSampleFrames.frameLength();
 
     CSAMPLE* pSampleBuffer = writableSampleFrames.writableData();
+    const bool isSeekPrefetch =
+            seekTargetFrameIndex != kUnknownFrameIndex &&
+            isValidFrameIndex(seekTargetFrameIndex) &&
+            writableSampleFrames.frameIndexRange().end() == seekTargetFrameIndex &&
+            pSampleBuffer == nullptr && writableSampleFrames.writableLength() == 0;
     SINT numberOfFramesRemaining = numberOfFramesTotal;
+    const auto writeSilence = [&](SINT numberOfFrames) {
+        if (numberOfFrames <= 0) {
+            return;
+        }
+        const SINT numberOfSamples =
+                getSignalInfo().frames2samples(numberOfFrames);
+        if (pSampleBuffer) {
+            SampleUtil::clear(pSampleBuffer, numberOfSamples);
+            pSampleBuffer += numberOfSamples;
+        }
+        m_currentFrameIndex += numberOfFrames;
+        numberOfFramesRemaining -= numberOfFrames;
+    };
+    const auto writePendingGap = [&]() {
+        if (m_streamGapEndFrameIndex == kUnknownFrameIndex) {
+            return;
+        }
+        writeSilence(std::min(
+                numberOfFramesRemaining,
+                std::max<SINT>(0, m_streamGapEndFrameIndex - m_currentFrameIndex)));
+        if (m_currentFrameIndex >= m_streamGapEndFrameIndex) {
+            m_streamGapEndFrameIndex = kUnknownFrameIndex;
+        }
+    };
+    const auto settleTerminalRead = [&]() {
+        // frameIndexMax() is the existing abort sentinel; it is not an EOS time.
+        if (m_currentFrameIndex == kUnknownFrameIndex) {
+            m_currentFrameIndex = frameIndexMax();
+        }
+        m_streamTickFrameIndex = kUnknownFrameIndex;
+        m_streamGapEndFrameIndex = kUnknownFrameIndex;
+    };
     while (numberOfFramesRemaining > 0) {
+        writePendingGap();
+        if (numberOfFramesRemaining == 0) {
+            break; // finished writing a stream gap
+        }
         SampleBuffer::ReadableSlice readableSlice(
                 m_sampleBuffer.shrinkForReading(
                         getSignalInfo().frames2samples(numberOfFramesRemaining)));
@@ -358,6 +415,7 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
         DEBUG_ASSERT(m_sampleBuffer.empty());
 
         if (m_pSourceReader == nullptr) {
+            settleTerminalRead();
             break; // abort if reader is dead
         }
 
@@ -378,6 +436,8 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << hrReadSample
                     << "-> abort decoding";
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
+            settleTerminalRead();
             break; // abort
         }
         if (dwFlags & MF_SOURCE_READERF_ERROR) {
@@ -387,10 +447,14 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << "(MF_SOURCE_READERF_ERROR)"
                     << "-> abort and stop decoding";
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
             safeRelease(&m_pSourceReader); // kill the reader
-            break;                         // abort
+            settleTerminalRead();
+            break; // abort
         } else if (dwFlags & MF_SOURCE_READERF_ENDOFSTREAM) {
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
+            settleTerminalRead();
             break; // finished reading
         } else if (dwFlags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
             kLogger.warning()
@@ -399,22 +463,85 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
                     << "(MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)"
                     << "-> abort decoding";
             DEBUG_ASSERT(pSample == nullptr);
+            safeRelease(&pSample);
+            settleTerminalRead();
             break; // abort
+        } else if (dwFlags & MF_SOURCE_READERF_STREAMTICK) {
+            // Preserve a valid tick timestamp until the next sample gives the gap end.
+            const SINT tickFrameIndex = m_streamUnitConverter.toFrameIndex(streamPos);
+            if (tickFrameIndex != kUnknownFrameIndex &&
+                    isValidFrameIndex(tickFrameIndex)) {
+                m_streamTickFrameIndex = tickFrameIndex;
+            } else {
+                kLogger.warning()
+                        << "Ignoring stream tick with an invalid frame timestamp"
+                        << tickFrameIndex;
+                m_streamTickFrameIndex = kUnknownFrameIndex;
+            }
+            safeRelease(&pSample);
+            continue;
         }
         if (pSample == nullptr) {
-            // ReadSample() may succeed without a sample, e.g. for
-            // MF_SOURCE_READERF_STREAMTICK. The timestamp of a stream tick
-            // marks the start of a gap and must not be used to resolve the
-            // position after seeking.
-            // https://learn.microsoft.com/en-us/windows/win32/api/mfreadwrite/nf-mfreadwrite-imfsourcereader-readsample
             kLogger.warning()
-                    << "IMFSourceReader::ReadSample()"
-                    << "returned no sample with flags"
-                    << dwFlags
-                    << "-> read next sample";
-            continue; // read next sample
+                    << "IMFSourceReader::ReadSample() returned no sample"
+                    << "without a recognized stream flag"
+                    << "(flags =" << dwFlags << ")"
+                    << "-> abort decoding";
+            settleTerminalRead();
+            break; // abort
         }
         SINT readerFrameIndex = m_streamUnitConverter.toFrameIndex(streamPos);
+        if (readerFrameIndex == kUnknownFrameIndex ||
+                !isValidFrameIndex(readerFrameIndex)) {
+            kLogger.warning()
+                    << "Aborting after sample with an invalid frame timestamp"
+                    << readerFrameIndex;
+            safeRelease(&pSample);
+            safeRelease(&m_pSourceReader);
+            m_currentFrameIndex = frameIndexMax();
+            m_streamTickFrameIndex = kUnknownFrameIndex;
+            m_streamGapEndFrameIndex = kUnknownFrameIndex;
+            break; // abort with an untrustworthy sample position
+        }
+        const bool sampleStartsAtSeekTarget =
+                m_currentFrameIndex == kUnknownFrameIndex &&
+                isSeekPrefetch &&
+                readerFrameIndex == seekTargetFrameIndex;
+        if (sampleStartsAtSeekTarget) {
+            // The sample timestamp itself is an exact position anchor. Preserve
+            // the sample for the caller instead of consuming it into the discard
+            // range; a stream tick is not needed to establish this position.
+            m_currentFrameIndex = seekTargetFrameIndex;
+            m_streamGapEndFrameIndex = kUnknownFrameIndex;
+            numberOfFramesRemaining = 0;
+        }
+        if (m_streamTickFrameIndex != kUnknownFrameIndex &&
+                isValidFrameIndex(m_streamTickFrameIndex)) {
+            // A tick is not a reliable seek-position anchor. With a known
+            // cursor, fill from that cursor; while seeking, only use the
+            // explicit target if the tick and sample bracket it.
+            if (!sampleStartsAtSeekTarget &&
+                    m_currentFrameIndex != kUnknownFrameIndex &&
+                    readerFrameIndex > m_streamTickFrameIndex &&
+                    readerFrameIndex > m_currentFrameIndex) {
+                m_streamGapEndFrameIndex = readerFrameIndex;
+            } else if (!sampleStartsAtSeekTarget &&
+                    m_currentFrameIndex == kUnknownFrameIndex &&
+                    isSeekPrefetch &&
+                    m_streamTickFrameIndex <= seekTargetFrameIndex &&
+                    seekTargetFrameIndex < readerFrameIndex) {
+                // The tick still does not establish the decoder position. The
+                // requested seek frame is independently known and lies inside
+                // the gap bounded by this tick and the following sample.
+                // Complete only the range-only prefetch read at that logical
+                // output frame; keep the sample at readerFrameIndex buffered
+                // until a caller reads through the gap.
+                m_streamGapEndFrameIndex = readerFrameIndex;
+                m_currentFrameIndex = seekTargetFrameIndex;
+                numberOfFramesRemaining = 0;
+            }
+        }
+        m_streamTickFrameIndex = kUnknownFrameIndex;
         // TODO: Fix debug assertion in else arm. It has been commented
         // out deliberately to prevent crashes in debug builds.
         // https://github.com/mixxxdj/mixxx/issues/10160
@@ -441,6 +568,7 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClamped(
             //                 << "actual =" << readerFrameIndex;
             //     }
         }
+        writePendingGap();
 
         DWORD dwSampleBufferCount = 0;
         HRESULT hrGetBufferCount =
