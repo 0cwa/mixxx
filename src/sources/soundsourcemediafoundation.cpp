@@ -248,6 +248,11 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
                 InitPropVariantFromInt64(seekPos, &prop);
         DEBUG_ASSERT(SUCCEEDED(hrInitPropVariantFromInt64)); // never fails
         HRESULT hrSetCurrentPosition =
+#ifdef BUILD_TESTING
+                m_setCurrentPositionProvider
+                ? m_setCurrentPositionProvider(seekPos)
+                :
+#endif
                 m_pSourceReader->SetCurrentPosition(GUID_NULL, prop);
         PropVariantClear(&prop);
         if (SUCCEEDED(hrSetCurrentPosition)) {
@@ -423,6 +428,16 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
         LONGLONG streamPos = 0;
         IMFSample* pSample = nullptr;
         HRESULT hrReadSample =
+#ifdef BUILD_TESTING
+                m_readSampleProvider
+                ? m_readSampleProvider(
+                          kStreamIndex,
+                          0,
+                          &dwFlags,
+                          &streamPos,
+                          &pSample)
+                :
+#endif
                 m_pSourceReader->ReadSample(
                         kStreamIndex, // [in]  DWORD dwStreamIndex,
                         0,            // [in]  DWORD dwControlFlags,

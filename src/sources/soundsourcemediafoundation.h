@@ -3,6 +3,10 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 
+#ifdef BUILD_TESTING
+#include <functional>
+#endif
+
 #include "sources/soundsourceprovider.h"
 #include "util/readaheadsamplebuffer.h"
 
@@ -95,6 +99,21 @@ class SoundSourceMediaFoundation : public SoundSource {
     SINT m_streamGapEndFrameIndex;
 
     ReadAheadSampleBuffer m_sampleBuffer;
+
+#ifdef BUILD_TESTING
+    using ReadSampleProvider = std::function<HRESULT(
+            DWORD dwStreamIndex,
+            DWORD dwControlFlags,
+            DWORD* pdwStreamFlags,
+            LONGLONG* pllTimestamp,
+            IMFSample** ppSample)>;
+
+    ReadSampleProvider m_readSampleProvider;
+
+    std::function<HRESULT(LONGLONG)> m_setCurrentPositionProvider;
+
+    friend class SoundSourceMediaFoundationTest;
+#endif
 };
 
 class SoundSourceProviderMediaFoundation : public SoundSourceProvider {
