@@ -114,6 +114,16 @@ bool writeFourChannelWav(const QString& filePath) {
 } // namespace
 
 class StemgenMasterConversionTest : public MixxxTest, SoundSourceProviderRegistration {
+  public:
+    static void convertTrackWithExecutablePaths(StemConverter& converter,
+            const TrackPointer& pTrack,
+            StemConverter::Resolution resolution,
+            const QString& ffmpegPath,
+            const QString& mp4boxPath) {
+        const StemConverter::ExecutablePaths executablePaths{ffmpegPath, mp4boxPath};
+        converter.convertTrack(pTrack, resolution, &executablePaths);
+    }
+
   protected:
     static bool convertMasterToM4A(const QString& inputPath, const QString& outputPath) {
         StemConverter converter;
@@ -420,7 +430,12 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
             &converter,
             &StemConverter::conversionFailed,
             [&failureMessage](TrackId, const QString& message) { failureMessage = message; });
-    converter.convertTrack(pTrack, StemConverter::Resolution::Low);
+    StemgenMasterConversionTest::convertTrackWithExecutablePaths(
+            converter,
+            pTrack,
+            StemConverter::Resolution::Low,
+            QStringLiteral("/mock/ffmpeg"),
+            QStringLiteral("/mock/MP4Box"));
 
     if (hadModelDirectory) {
         qputenv("MIXXX_STEM_MODEL_DIR", previousModelDirectory);
@@ -432,6 +447,86 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     EXPECT_EQ(conversionStartedCount, 0);
     EXPECT_EQ(conversionProgressCount, 0);
     EXPECT_EQ(failureMessage, QStringLiteral("Verified HTDemucs model unavailable"));
+    EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
+}
+
+TEST(StemConverterTest, MissingFFmpegFailsBeforeProcessing) {
+    QTemporaryFile inputFile;
+    ASSERT_TRUE(inputFile.open());
+
+    const auto pTrack = Track::newTemporary(inputFile.fileName());
+    ASSERT_TRUE(pTrack);
+
+    StemConverter converter;
+    int conversionStartedCount = 0;
+    int conversionProgressCount = 0;
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionStarted,
+            [&conversionStartedCount](TrackId, const QString&) { ++conversionStartedCount; });
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionProgress,
+            [&conversionProgressCount](TrackId, float, const QString&) {
+                ++conversionProgressCount;
+            });
+    QString failureMessage;
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionFailed,
+            [&failureMessage](TrackId, const QString& message) { failureMessage = message; });
+
+    StemgenMasterConversionTest::convertTrackWithExecutablePaths(
+            converter,
+            pTrack,
+            StemConverter::Resolution::Low,
+            QString(),
+            QStringLiteral("/mock/MP4Box"));
+
+    EXPECT_EQ(converter.getState(), StemConverter::ConversionState::Failed);
+    EXPECT_EQ(conversionStartedCount, 0);
+    EXPECT_EQ(conversionProgressCount, 0);
+    EXPECT_EQ(failureMessage, QStringLiteral("ffmpeg executable not found"));
+    EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
+}
+
+TEST(StemConverterTest, MissingMP4BoxFailsBeforeProcessing) {
+    QTemporaryFile inputFile;
+    ASSERT_TRUE(inputFile.open());
+
+    const auto pTrack = Track::newTemporary(inputFile.fileName());
+    ASSERT_TRUE(pTrack);
+
+    StemConverter converter;
+    int conversionStartedCount = 0;
+    int conversionProgressCount = 0;
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionStarted,
+            [&conversionStartedCount](TrackId, const QString&) { ++conversionStartedCount; });
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionProgress,
+            [&conversionProgressCount](TrackId, float, const QString&) {
+                ++conversionProgressCount;
+            });
+    QString failureMessage;
+    QObject::connect(
+            &converter,
+            &StemConverter::conversionFailed,
+            [&failureMessage](TrackId, const QString& message) { failureMessage = message; });
+
+    StemgenMasterConversionTest::convertTrackWithExecutablePaths(
+            converter,
+            pTrack,
+            StemConverter::Resolution::Low,
+            QStringLiteral("/mock/ffmpeg"),
+            QString());
+
+    EXPECT_EQ(converter.getState(), StemConverter::ConversionState::Failed);
+    EXPECT_EQ(conversionStartedCount, 0);
+    EXPECT_EQ(conversionProgressCount, 0);
+    EXPECT_EQ(failureMessage, QStringLiteral("MP4Box executable not found"));
     EXPECT_FLOAT_EQ(converter.getProgress(), 0.0f);
 }
 
