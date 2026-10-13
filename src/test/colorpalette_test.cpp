@@ -2,10 +2,24 @@
 
 #include <gtest/gtest.h>
 
+#include "library/rekordbox/rekordboxcolors.h"
 #include "test/mixxxtest.h"
 #include "util/color/predefinedcolorpalettes.h"
 
 class ColorPaletteTest : public MixxxTest {};
+
+TEST_F(ColorPaletteTest, RekordboxTrackPaletteUsesValid24BitRgbCodes) {
+    const auto& colorCodes = mixxx::rekordbox::detail::kTrackColorCodes;
+    const auto& palette = mixxx::PredefinedColorPalettes::kRekordboxTrackColorPalette;
+    ASSERT_EQ(static_cast<int>(colorCodes.size()), palette.size());
+
+    int index = 0;
+    for (const auto code : colorCodes) {
+        EXPECT_TRUE(mixxx::RgbColor::isValidCode(code));
+        EXPECT_EQ(mixxx::RgbColor(code), palette.at(index));
+        ++index;
+    }
+}
 
 TEST_F(ColorPaletteTest, NextColor) {
     const ColorPalette palette = mixxx::PredefinedColorPalettes::kDefaultHotcueColorPalette;

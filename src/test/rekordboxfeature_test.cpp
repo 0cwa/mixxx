@@ -8,6 +8,7 @@
 #include <QTemporaryDir>
 
 #include "library/queryutil.h"
+#include "library/rekordbox/rekordboxcolors.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "track/cue.h"
 #include "track/track.h"
@@ -18,6 +19,11 @@ TEST(RekordboxImportTest, RejectsInvalidDatabaseIds) {
     EXPECT_FALSE(mixxx::rekordbox::isValidDatabaseId(-1));
     EXPECT_FALSE(mixxx::rekordbox::isValidDatabaseId(0));
     EXPECT_TRUE(mixxx::rekordbox::isValidDatabaseId(1));
+}
+
+TEST(RekordboxImportTest, ColorIDTwoMapsToHistoricalRed) {
+    EXPECT_EQ(mixxx::RgbColor(0xF80000),
+            mixxx::rekordbox::detail::colorFromID(2));
 }
 
 TEST(RekordboxImportTest, RequiresWritableDestinationDatabase) {

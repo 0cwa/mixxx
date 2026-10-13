@@ -20,6 +20,7 @@
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/queryutil.h"
+#include "library/rekordbox/rekordboxcolors.h"
 #include "library/rekordbox/rekordboxconstants.h"
 #include "library/rekordbox/rekordboximport.h"
 #include "library/trackcollection.h"
@@ -132,27 +133,6 @@ QString findRekordboxPdbPath(const QString& devicePath) {
     }
     return {};
 }
-
-enum class IDForColor : uint8_t {
-    Pink = 1,
-    Red,
-    Orange,
-    Yellow,
-    Green,
-    Aqua,
-    Blue,
-    Purple
-};
-
-constexpr mixxx::RgbColor kColorForIDPink(0xF870F8);
-constexpr mixxx::RgbColor kColorForIDRed(0xF870900);
-constexpr mixxx::RgbColor kColorForIDOrange(0xF8A030);
-constexpr mixxx::RgbColor kColorForIDYellow(0xF8E331);
-constexpr mixxx::RgbColor kColorForIDGreen(0x1EE000);
-constexpr mixxx::RgbColor kColorForIDAqua(0x16C0F8);
-constexpr mixxx::RgbColor kColorForIDBlue(0x0150F8);
-constexpr mixxx::RgbColor kColorForIDPurple(0x9808F8);
-constexpr mixxx::RgbColor kColorForIDNoColor(0x0);
 
 struct memory_cue_loop_t {
     mixxx::audio::FramePos startPosition;
@@ -439,28 +419,6 @@ int createDevicePlaylist(QSqlDatabase& database, const QString& devicePath) {
     return playlistID;
 }
 
-mixxx::RgbColor colorFromID(int colorID) {
-    switch (static_cast<IDForColor>(colorID)) {
-    case IDForColor::Pink:
-        return kColorForIDPink;
-    case IDForColor::Red:
-        return kColorForIDRed;
-    case IDForColor::Orange:
-        return kColorForIDOrange;
-    case IDForColor::Yellow:
-        return kColorForIDYellow;
-    case IDForColor::Green:
-        return kColorForIDGreen;
-    case IDForColor::Aqua:
-        return kColorForIDAqua;
-    case IDForColor::Blue:
-        return kColorForIDBlue;
-    case IDForColor::Purple:
-        return kColorForIDPurple;
-    }
-    return kColorForIDNoColor;
-}
-
 bool insertTrack(
         QSqlDatabase& database,
         rekordbox_pdb_t::track_row_t* track,
@@ -508,7 +466,8 @@ bool insertTrack(
     query.bindValue(":device", device);
     query.bindValue(":color",
             mixxx::RgbColor::toQVariant(
-                    colorFromID(static_cast<int>(track->color_id()))));
+                    mixxx::rekordbox::detail::colorFromID(
+                            static_cast<int>(track->color_id()))));
 
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
