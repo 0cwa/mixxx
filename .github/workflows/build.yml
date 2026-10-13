@@ -380,9 +380,236 @@ jobs:
           $requiredOptions | Set-Content -Path mf-seek-gap-cmake-options.txt
         working-directory: build
 
+      - name: "Prepare Media Foundation Qt runtime"
+        id: mf_qt_runtime
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $runtimeDir = Join-Path $buildDir 'mf-qt-runtime'
+          $runtimeReportPath = Join-Path $buildDir 'mf-seek-gap-qt-runtime.json'
+          $installLogPath = Join-Path $buildDir 'mf-seek-gap-qt-install.log'
+          $runtimeReport = [ordered]@{
+            status = 'starting'
+            qt6_dir = $null
+            qt_prefix = $null
+            offscreen_plugin_source = $null
+            offscreen_plugin_source_exists = $false
+            offscreen_plugin_deployed = $false
+            runtime_bin = $null
+            runtime_dlls = @()
+            qt_qpa_platform = 'offscreen'
+            qt_plugin_path = $runtimeDir
+            qt_qpa_platform_plugin_path = Join-Path $runtimeDir 'platforms'
+            install_component = 'applocal'
+          }
+
+          $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+          $qtDirLine = Select-String -Path (Join-Path $buildDir 'CMakeCache.txt') -Pattern '^Qt6_DIR:PATH=(.*)$' | Select-Object -First 1
+          if ($null -eq $qtDirLine) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'Qt6_DIR was not found in CMakeCache.txt.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          $qtDir = $qtDirLine.Matches[0].Groups[1].Value
+          $qtPrefix = [System.IO.Path]::GetFullPath((Join-Path $qtDir '..\..'))
+          $qtRoot = Join-Path $qtPrefix 'Qt6'
+          $qtPluginDir = Join-Path $qtRoot 'plugins'
+          $platformSource = Join-Path $qtPluginDir 'platforms\qoffscreen.dll'
+          $platformSource = [System.IO.Path]::GetFullPath($platformSource)
+          $qtBin = Join-Path $qtPrefix 'bin'
+          $platformDir = Join-Path $runtimeDir 'platforms'
+          $platformInstall = Join-Path $platformDir 'qoffscreen.dll'
+
+          $runtimeReport.qt6_dir = $qtDir
+          $runtimeReport.qt_prefix = $qtPrefix
+          $runtimeReport.offscreen_plugin_source = $platformSource
+          $runtimeReport.offscreen_plugin_source_exists = Test-Path $platformSource
+          $runtimeReport.runtime_bin = $qtBin
+          $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+
+          if (-not (Test-Path $platformSource)) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'The Qt offscreen platform plugin qoffscreen.dll is missing from the configured Qt installation.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+          if (-not (Test-Path $qtBin -PathType Container)) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'The configured Qt runtime bin directory is missing.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          cmake --install . --config RelWithDebInfo --component applocal --prefix $runtimeDir --verbose 2>&1 | Tee-Object -FilePath $installLogPath
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -ne 0) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = "CMake applocal runtime installation failed with exit code $installExitCode."
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+          if (-not (Test-Path $platformInstall)) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'The CMake applocal component did not deploy qoffscreen.dll to the test runtime.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          $runtimeDllNames = @('Qt6Core.dll', 'Qt6Gui.dll')
+          $runtimeDllReport = foreach ($dllName in $runtimeDllNames) {
+            $locations = @(
+              (Join-Path $buildDir $dllName),
+              (Join-Path $runtimeDir $dllName),
+              (Join-Path $qtBin $dllName)
+            ) | Where-Object { Test-Path $_ }
+            [pscustomobject]@{
+              name = $dllName
+              found_at = @($locations)
+            }
+          }
+          $runtimeReport.runtime_dlls = @($runtimeDllReport)
+          $missingQtDlls = @($runtimeReport.runtime_dlls | Where-Object { $_.found_at.Count -eq 0 })
+          if ($missingQtDlls.Count -gt 0) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'A Qt DLL required by the offscreen plugin was not found in the build, staged runtime, or Qt bin directory.'
+            $runtimeReport | ConvertTo-Json -Depth 5 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          $runtimeReport.offscreen_plugin_deployed = Test-Path $platformInstall
+          $runtimeReport.qt_qpa_platform_plugin_path = $platformDir
+          $runtimeReport.runtime_path_entries = @($runtimeDir, $qtBin)
+          $runtimeReport.status = 'ready'
+          $runtimeReport | ConvertTo-Json -Depth 5 | Set-Content -Path $runtimeReportPath
+          @($runtimeDir, $qtBin) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Qt offscreen plugin source: $platformSource"
+          Write-Host "Qt offscreen plugin deployed: $platformInstall"
+          Write-Host "Qt runtime DLL directory: $qtBin"
+        working-directory: build
+
+      - name: "Preflight Media Foundation test discovery"
+        id: mf_discovery
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $testExecutable = Join-Path $buildDir 'mixxx-test.exe'
+          $stdoutPath = Join-Path $buildDir 'mf-seek-gap-gtest-list.stdout.log'
+          $stderrPath = Join-Path $buildDir 'mf-seek-gap-gtest-list.stderr.log'
+          $statusPath = Join-Path $buildDir 'mf-seek-gap-gtest-list.status.txt'
+          $process = $null
+          $exitCode = $null
+          $mediaFoundationCases = 0
+          $matchingMediaFoundationNames = @()
+          $status = 'starting'
+          $failureMessage = $null
+          $selector = '^SoundSourceMediaFoundationTest[.]'
+
+          try {
+            Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+            $process = Start-Process `
+              -FilePath $testExecutable `
+              -ArgumentList @('--gtest_list_tests', '--logLevel', 'info') `
+              -WorkingDirectory $env:GITHUB_WORKSPACE `
+              -PassThru `
+              -NoNewWindow `
+              -RedirectStandardOutput $stdoutPath `
+              -RedirectStandardError $stderrPath
+            if (-not $process.WaitForExit(60000)) {
+              $status = 'timeout'
+              try {
+                $process.Kill()
+                if (-not $process.WaitForExit(5000)) {
+                  Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                }
+              } catch {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                Write-Warning "Could not stop timed out list-only preflight: $_"
+              }
+              throw 'The list-only GoogleTest discovery preflight timed out after 60 seconds.'
+            }
+            $process.Refresh()
+            $exitCode = $process.ExitCode
+            $stdout = Get-Content -Raw -Path $stdoutPath
+            if ($exitCode -ne 0) {
+              $status = 'failed'
+              throw "mixxx-test.exe --gtest_list_tests exited with code $exitCode."
+            }
+
+            $mediaFoundationCases = 0
+            $insideMediaFoundationSuite = $false
+            $mediaFoundationSuite = $null
+            foreach ($line in ($stdout -split "`r?`n")) {
+              if ($line -match '^(SoundSourceMediaFoundationTest(?:/[0-9]+)?)\.$') {
+                $insideMediaFoundationSuite = $true
+                $mediaFoundationSuite = $Matches[1]
+                continue
+              }
+              if ($insideMediaFoundationSuite -and $line -match '^\S') {
+                break
+              }
+              if ($insideMediaFoundationSuite -and $line -match '^\s+([^#\s].*)$') {
+                $testName = "$mediaFoundationSuite.$($Matches[1].Trim())"
+                if ($testName -match $selector) {
+                  $matchingMediaFoundationNames += $testName
+                }
+              }
+            }
+            $mediaFoundationCases = $matchingMediaFoundationNames.Count
+            if ($mediaFoundationCases -eq 0) {
+              $status = 'no_matching_cases'
+              throw 'The list-only discovery preflight did not list any cases matching the CTest Media Foundation selector.'
+            }
+            $status = 'passed'
+          } catch {
+            if ($status -eq 'starting') {
+              $status = 'failed'
+            }
+            $errorMessage = $_.Exception.Message
+            $failureMessage = $errorMessage
+            @(
+              "command=$testExecutable --gtest_list_tests --logLevel info"
+              "status=$status"
+              "exit_code=$exitCode"
+              "timeout_seconds=60"
+              "selector=$selector"
+              "mediafoundation_cases_listed=$mediaFoundationCases"
+              "matching_mediafoundation_test_names=$($matchingMediaFoundationNames -join '|')"
+              "failure=$failureMessage"
+              "qt_qpa_platform=$env:QT_QPA_PLATFORM"
+              "qt_plugin_path=$env:QT_PLUGIN_PATH"
+              "qt_qpa_platform_plugin_path=$env:QT_QPA_PLATFORM_PLUGIN_PATH"
+            ) | Set-Content -Path $statusPath
+            throw $errorMessage
+          }
+
+          @(
+            "command=$testExecutable --gtest_list_tests --logLevel info"
+            "status=$status"
+            "exit_code=$exitCode"
+            "timeout_seconds=60"
+            "selector=$selector"
+            "mediafoundation_cases_listed=$mediaFoundationCases"
+            "matching_mediafoundation_test_names=$($matchingMediaFoundationNames -join '|')"
+            "qt_qpa_platform=$env:QT_QPA_PLATFORM"
+            "qt_plugin_path=$env:QT_PLUGIN_PATH"
+            "qt_qpa_platform_plugin_path=$env:QT_QPA_PLATFORM_PLUGIN_PATH"
+          ) | Set-Content -Path $statusPath
+          Write-Host "List-only discovery preflight found $mediaFoundationCases SoundSourceMediaFoundationTest cases."
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime
+          QT_QPA_PLATFORM_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime\platforms
+          QT_DEBUG_PLUGINS: 1
+
       - name: "Run Media Foundation tests"
         id: mf_test
-        if: inputs.mediafoundation_diagnostic == true
+        if: inputs.mediafoundation_diagnostic == true && steps.mf_discovery.outcome == 'success'
         shell: pwsh
         run: |
           ctest --timeout 45 --output-on-failure --verbose --tests-regex '^SoundSourceMediaFoundationTest[.]' --output-junit mf-seek-gap-tests.xml
@@ -400,14 +627,23 @@ jobs:
           GTEST_COLOR: 1
           CTEST_PARALLEL_LEVEL: 1
           CTEST_OUTPUT_ON_FAILURE: 1
+          QT_QPA_PLATFORM: offscreen
+          QT_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime
+          QT_QPA_PLATFORM_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime\platforms
+          QT_DEBUG_PLUGINS: 1
 
       - name: "Upload Media Foundation test evidence"
-        if: always() && inputs.mediafoundation_diagnostic == true && steps.mf_config.outcome == 'success'
+        if: always() && inputs.mediafoundation_diagnostic == true
         uses: actions/upload-artifact@v7.0.1
         with:
           name: windows-x64-mf-seek-gap-${{ github.run_id }}
           path: |
             build/mf-seek-gap-cmake-options.txt
+            build/mf-seek-gap-qt-runtime.json
+            build/mf-seek-gap-qt-install.log
+            build/mf-seek-gap-gtest-list.stdout.log
+            build/mf-seek-gap-gtest-list.stderr.log
+            build/mf-seek-gap-gtest-list.status.txt
             build/mf-seek-gap-tests.xml
             build/Testing/Temporary/LastTest.log
           if-no-files-found: warn
