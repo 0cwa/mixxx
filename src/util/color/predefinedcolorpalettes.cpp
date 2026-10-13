@@ -1,5 +1,7 @@
 #include "predefinedcolorpalettes.h"
 
+#include "library/rekordbox/rekordboxcolors.h"
+
 namespace {
 
 // Default Mixxx Hotcue Color Palette
@@ -32,16 +34,6 @@ constexpr mixxx::RgbColor kMixxxTrackColorWhite(0xFFFFFF);
 constexpr mixxx::RgbColor kMixxxTrackColorAqua(0x00FFFF);
 constexpr mixxx::RgbColor kMixxxTrackColorSpringGreen(0x00FF88);
 constexpr mixxx::RgbColor kMixxxTrackColorBattleshipGrey(0x888888);
-
-// Rekordbox Track Color Palette
-constexpr mixxx::RgbColor kRekordboxTrackColorPink(0xF870F8);
-constexpr mixxx::RgbColor kRekordboxTrackColorRed(0xF870900);
-constexpr mixxx::RgbColor kRekordboxTrackColorOrange(0xF8A030);
-constexpr mixxx::RgbColor kRekordboxTrackColorYellow(0xF8E331);
-constexpr mixxx::RgbColor kRekordboxTrackColorGreen(0x1EE000);
-constexpr mixxx::RgbColor kRekordboxTrackColorAqua(0x16C0F8);
-constexpr mixxx::RgbColor kRekordboxTrackColorBlue(0x0150F8);
-constexpr mixxx::RgbColor kRekordboxTrackColorPurple(0x9808F8);
 
 // Rekordbox Hotcue Color Palette
 constexpr mixxx::RgbColor kRekordboxHotcueColor1(0xDE44CF);
@@ -396,14 +388,14 @@ const ColorPalette PredefinedColorPalettes::kRekordboxTrackColorPalette =
         ColorPalette(QStringLiteral(QT_TRANSLATE_NOOP("PredefinedColorPalettes",
                              "Rekordbox Track Colors")),
                 {
-                        kRekordboxTrackColorPink,
-                        kRekordboxTrackColorRed,
-                        kRekordboxTrackColorOrange,
-                        kRekordboxTrackColorYellow,
-                        kRekordboxTrackColorGreen,
-                        kRekordboxTrackColorAqua,
-                        kRekordboxTrackColorBlue,
-                        kRekordboxTrackColorPurple,
+                        mixxx::rekordbox::detail::colorFromID(1),
+                        mixxx::rekordbox::detail::colorFromID(2),
+                        mixxx::rekordbox::detail::colorFromID(3),
+                        mixxx::rekordbox::detail::colorFromID(4),
+                        mixxx::rekordbox::detail::colorFromID(5),
+                        mixxx::rekordbox::detail::colorFromID(6),
+                        mixxx::rekordbox::detail::colorFromID(7),
+                        mixxx::rekordbox::detail::colorFromID(8),
                 });
 
 const ColorPalette PredefinedColorPalettes::kSeratoDJProTrackColorPalette =
