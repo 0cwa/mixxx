@@ -79,6 +79,9 @@ class SoundSourceMediaFoundation : public SoundSource {
     bool readProperties();
 
     void seekSampleFrame(SINT frameIndex);
+    ReadableSampleFrames readSampleFramesClampedInternal(
+            const WritableSampleFrames& writableSampleFrames,
+            SINT seekTargetFrameIndex);
 
     HRESULT m_hrCoInitialize;
     HRESULT m_hrMFStartup;
@@ -87,10 +90,11 @@ class SoundSourceMediaFoundation : public SoundSource {
 
     StreamUnitConverter m_streamUnitConverter;
 
+    // Next output frame; during a pending gap, the buffered sample may start
+    // later at m_streamGapEndFrameIndex.
     SINT m_currentFrameIndex;
-    // A stream tick announces a gap before the next decoded sample. Keep the
-    // timestamps until the sample arrives so a short read can be completed
-    // with silence without moving the following sample earlier in the stream.
+    // Tick start is held until the next sample; gap end is held until silence
+    // has been emitted through the following sample's timestamp.
     SINT m_streamTickFrameIndex;
     SINT m_streamGapEndFrameIndex;
 
@@ -105,6 +109,8 @@ class SoundSourceMediaFoundation : public SoundSource {
             IMFSample** ppSample)>;
 
     ReadSampleProvider m_readSampleProvider;
+
+    std::function<HRESULT(LONGLONG)> m_setCurrentPositionProvider;
 
     friend class SoundSourceMediaFoundationTest;
 #endif
