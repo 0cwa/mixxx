@@ -2,8 +2,11 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <initializer_list>
 #include <thread>
+#include <utility>
 
 #include "engine/controls/seek30workerstate.h"
 #include "track/track.h"
@@ -134,6 +137,113 @@ TEST(Seek30CommandMailboxTest, SupportsConcurrentProducers) {
     for (std::size_t index = 0; index < actual.size(); ++index) {
         EXPECT_EQ(expected[index].load(std::memory_order_relaxed), actual[index]);
     }
+}
+
+TEST(Seek30WorkerStateTest, ExternalCueAdditionUpdatesNavigationAndDuplicateDetection) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto position = frameAtSeconds(2.0);
+    pTrack->createAndAddCue(mixxx::CueType::Memory, Cue::kNoHotCue, position, position);
+
+    const auto target = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(position, target.position);
+    EXPECT_EQ(generation, target.generation);
+    state.process({Seek30Operation::CreateAtCurrent, generation}, inputsAt(2.0));
+    EXPECT_EQ(1, memoryCueCount(pTrack));
+}
+
+TEST(Seek30WorkerStateTest, ExternalCueRemovalUpdatesNavigation) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto pRemovedCue = pTrack->getCuePoints().front();
+    pTrack->removeCue(pRemovedCue);
+
+    const auto target = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(frameAtSeconds(3.0), target.position);
+    EXPECT_EQ(generation, state.generation());
+    pTrack->removeCuesOfType(mixxx::CueType::Memory);
+    const auto noTarget = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_FALSE(noTarget.position.isValid());
+}
+
+TEST(Seek30WorkerStateTest, ExternalCueMovementReordersNavigationAndDeletion) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto pMovedCue = pTrack->getCuePoints().front();
+    pMovedCue->setStartAndEndPosition(frameAtSeconds(4.0), frameAtSeconds(4.0));
+
+    const auto next = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(frameAtSeconds(3.0), next.position);
+    const auto previous = state.process({Seek30Operation::SeekPrevious, generation}, inputsAt(5.0));
+    EXPECT_EQ(frameAtSeconds(4.0), previous.position);
+    state.process({Seek30Operation::ClearNext, generation}, inputsAt(0.0));
+    EXPECT_TRUE(pTrack->getCuePoints().contains(pMovedCue));
+    EXPECT_FALSE(hasMemoryCueAt(pTrack, frameAtSeconds(3.0)));
+}
+
+TEST(Seek30WorkerStateTest, ConvertedHotCueIsExcludedFromNavigationAndDeletion) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({2.0, 4.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto pConvertedCue = pTrack->getCuePoints().front();
+    pConvertedCue->setType(mixxx::CueType::HotCue);
+    pConvertedCue->setHotCue(0);
+
+    const auto target = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(frameAtSeconds(4.0), target.position);
+    state.process({Seek30Operation::ClearNext, generation}, inputsAt(0.0));
+    EXPECT_TRUE(pTrack->getCuePoints().contains(pConvertedCue));
+    EXPECT_EQ(mixxx::CueType::HotCue, pConvertedCue->getType());
+    EXPECT_EQ(0, memoryCueCount(pTrack));
+}
+
+TEST(Seek30WorkerStateTest, ConvertedMemoryCueIsIncludedInNavigation) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({});
+    const auto position = frameAtSeconds(2.0);
+    const auto pCue = pTrack->createAndAddCue(mixxx::CueType::HotCue, 0, position, position);
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    pCue->setHotCue(Cue::kNoHotCue);
+    pCue->setType(mixxx::CueType::Memory);
+
+    const auto target = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(position, target.position);
+    state.process({Seek30Operation::CreateAtCurrent, generation}, inputsAt(2.0));
+    EXPECT_EQ(1, memoryCueCount(pTrack));
+}
+
+TEST(Seek30WorkerStateTest, OwningWorkerRefreshesAfterProducerCueEdit) {
+    const auto pTrack = trackWithMemoryCues({});
+    std::promise<void> loaded;
+    auto loadedFuture = loaded.get_future();
+    std::promise<void> edited;
+    auto editedFuture = edited.get_future();
+    auto result = std::async(std::launch::async, [&]() {
+        Seek30WorkerState state;
+        state.trackLoaded(pTrack);
+        loaded.set_value();
+        editedFuture.wait();
+        return std::make_pair(std::this_thread::get_id(),
+                state.process({Seek30Operation::SeekNext, state.generation()}, inputsAt(0.0)));
+    });
+    const auto status = loadedFuture.wait_for(std::chrono::seconds(5));
+    const auto position = frameAtSeconds(2.0);
+    if (status == std::future_status::ready) {
+        pTrack->createAndAddCue(mixxx::CueType::Memory, Cue::kNoHotCue, position, position);
+    }
+    edited.set_value();
+    ASSERT_EQ(std::future_status::ready, status);
+    const auto outcome = result.get();
+    EXPECT_NE(std::this_thread::get_id(), outcome.first);
+    EXPECT_EQ(position, outcome.second.position);
 }
 
 TEST(Seek30WorkerStateTest, RepeatedCommandsAndQuantizedDuplicateCreation) {
