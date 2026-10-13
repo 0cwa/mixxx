@@ -71,6 +71,7 @@ jobs:
       ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
       ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
 
+    timeout-minutes: ${{ inputs.mediafoundation_diagnostic == true && 90 || 360 }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     container: ${{ matrix.container }}
@@ -266,7 +267,13 @@ jobs:
       - name: "Create build directory"
         run: mkdir build
 
+      - name: "Record Media Foundation sources before configure"
+        id: mf_checkout_provenance
+        if: inputs.mediafoundation_diagnostic == true
+        run: python tools/ci/mediafoundation_diagnostic.py before-configure
+
       - name: "Configure"
+        id: configure
         run: >-
           cmake ${{ matrix.cmake_args }} ${{ env.CMAKE_ARGS_EXTRA }}
           ${{ inputs.mediafoundation_diagnostic == true && '-DBUILD_TESTING=ON -DMEDIAFOUNDATION=ON' || '' }}
@@ -290,6 +297,10 @@ jobs:
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+
+      - name: "Record Media Foundation sources after configure"
+        if: always() && inputs.mediafoundation_diagnostic == true && steps.mf_checkout_provenance.outcome == 'success' && steps.configure.outcome != 'skipped'
+        run: python tools/ci/mediafoundation_diagnostic.py after-configure
 
       - name: "[Ubuntu/macOS] Set up gcc/clang problem matcher"
         if: runner.os != 'Windows'
@@ -315,6 +326,10 @@ jobs:
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+
+      - name: "Record Media Foundation test build provenance"
+        if: inputs.mediafoundation_diagnostic == true
+        run: python tools/ci/mediafoundation_diagnostic.py after-build
 
       - name: "[Ubuntu/macOS] Print compiler cache stats"
         if: runner.os != 'windows'
@@ -493,6 +508,7 @@ jobs:
 
       - name: "Preflight Media Foundation test discovery"
         id: mf_discovery
+        timeout-minutes: 3
         if: inputs.mediafoundation_diagnostic == true
         shell: pwsh
         run: |
@@ -508,7 +524,7 @@ jobs:
           $matchingMediaFoundationNames = @()
           $status = 'starting'
           $failureMessage = $null
-          $selector = '^SoundSourceMediaFoundationTest[.]'
+          $selector = '^(SoundSourceMediaFoundationTest|ExtractionFailures/SoundSourceMediaFoundation(SampleFailure|BufferedFailure)Test)[.]'
 
           try {
             Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
@@ -541,30 +557,12 @@ jobs:
               throw "mixxx-test.exe --gtest_list_tests exited with code $exitCode."
             }
 
-            $mediaFoundationCases = 0
-            $insideMediaFoundationSuite = $false
-            $mediaFoundationSuite = $null
-            foreach ($line in ($stdout -split "`r?`n")) {
-              if ($line -match '^(SoundSourceMediaFoundationTest(?:/[0-9]+)?)\.$') {
-                $insideMediaFoundationSuite = $true
-                $mediaFoundationSuite = $Matches[1]
-                continue
-              }
-              if ($insideMediaFoundationSuite -and $line -match '^\S') {
-                break
-              }
-              if ($insideMediaFoundationSuite -and $line -match '^\s+([^#\s].*)$') {
-                $testName = "$mediaFoundationSuite.$($Matches[1].Trim())"
-                if ($testName -match $selector) {
-                  $matchingMediaFoundationNames += $testName
-                }
-              }
+            python "$env:GITHUB_WORKSPACE/tools/ci/mediafoundation_diagnostic.py" discovery
+            if ($LASTEXITCODE -ne 0) {
+              throw 'GoogleTest discovery did not contain exactly the 34 enabled, unique reviewed MF cases.'
             }
+            $matchingMediaFoundationNames = @(Get-Content -Raw (Join-Path $buildDir 'mf-seek-gap-discovered-tests.json') | ConvertFrom-Json)
             $mediaFoundationCases = $matchingMediaFoundationNames.Count
-            if ($mediaFoundationCases -eq 0) {
-              $status = 'no_matching_cases'
-              throw 'The list-only discovery preflight did not list any cases matching the CTest Media Foundation selector.'
-            }
             $status = 'passed'
           } catch {
             if ($status -eq 'starting') {
@@ -600,7 +598,7 @@ jobs:
             "qt_plugin_path=$env:QT_PLUGIN_PATH"
             "qt_qpa_platform_plugin_path=$env:QT_QPA_PLATFORM_PLUGIN_PATH"
           ) | Set-Content -Path $statusPath
-          Write-Host "List-only discovery preflight found $mediaFoundationCases SoundSourceMediaFoundationTest cases."
+          Write-Host "List-only discovery preflight found all $mediaFoundationCases reviewed MF cases."
         env:
           QT_QPA_PLATFORM: offscreen
           QT_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime
@@ -609,19 +607,14 @@ jobs:
 
       - name: "Run Media Foundation tests"
         id: mf_test
+        timeout-minutes: 30
         if: inputs.mediafoundation_diagnostic == true && steps.mf_discovery.outcome == 'success'
         shell: pwsh
         run: |
-          ctest --timeout 45 --output-on-failure --verbose --tests-regex '^SoundSourceMediaFoundationTest[.]' --output-junit mf-seek-gap-tests.xml
+          python "$env:GITHUB_WORKSPACE/tools/ci/mediafoundation_diagnostic.py" ctest
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
-          [xml]$report = Get-Content -Raw mf-seek-gap-tests.xml
-          $testCases = $report.SelectNodes('//testcase')
-          if ($testCases.Count -eq 0) {
-            throw 'CTest did not run any SoundSourceMediaFoundationTest cases.'
-          }
-          Write-Host "Executed $($testCases.Count) SoundSourceMediaFoundationTest cases."
         working-directory: build
         env:
           GTEST_COLOR: 1
@@ -644,6 +637,12 @@ jobs:
             build/mf-seek-gap-gtest-list.stdout.log
             build/mf-seek-gap-gtest-list.stderr.log
             build/mf-seek-gap-gtest-list.status.txt
+            build/mf-seek-gap-provenance-*
+            build/mf-seek-gap-expected-tests.json
+            build/mf-seek-gap-discovered-tests.json
+            build/mf-seek-gap-ctest-selection.json
+            build/mf-seek-gap-ctest-list.*
+            build/mf-seek-gap-ctest-run.*
             build/mf-seek-gap-tests.xml
             build/Testing/Temporary/LastTest.log
           if-no-files-found: warn

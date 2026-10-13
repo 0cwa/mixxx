@@ -1,17 +1,6 @@
 name: Pull request or branch build
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
-  push:
-    branches:
-      - "*"
-      - "!main"
-      - "![0-9].[0-9]"
   workflow_dispatch:
     inputs:
       mediafoundation_diagnostic:
@@ -26,6 +15,7 @@ permissions:
 
 jobs:
   stop-build:
+    if: github.event_name == 'workflow_dispatch' && inputs.mediafoundation_diagnostic == true
     name: Check if build should be stopped
     runs-on: ubuntu-slim
     outputs:
