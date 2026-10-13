@@ -6,22 +6,24 @@
 #import <dispatch/dispatch.h>
 
 #include <QDebug>
-#include <QHash>
 #include <QList>
-#include <QMutex>
 #include <QString>
 #include <memory>
+#include <utility>
 
 #include "effects/backends/audiounit/audiounitbackend.h"
 #include "effects/backends/audiounit/audiouniteffectprocessor.h"
 #include "effects/backends/audiounit/audiounitmanifest.h"
+#include "effects/backends/audiounit/audiounitmanifestdiscovery.h"
 #include "effects/defs.h"
-#include "util/compatibility/qmutex.h"
 
 /// An effects backend for Audio Unit (AU) plugins. macOS-only.
 class AudioUnitBackend : public EffectsBackend {
   public:
-    AudioUnitBackend() : m_componentsById([NSMutableDictionary dictionary]) {
+    AudioUnitBackend()
+            : m_componentsById([NSMutableDictionary dictionary]),
+              m_manifestDiscoveryState(
+                      std::make_shared<AudioUnitManifestDiscovery::State>()) {
         loadAudioUnits();
     }
 
@@ -34,22 +36,19 @@ class AudioUnitBackend : public EffectsBackend {
 
     const QList<QString> getEffectIds() const override {
         // Only report effects whose manifest actually finished loading.
-        // If loadAudioUnitsOfType() timed out, some components in
-        // m_componentsById may not have a corresponding manifest yet, and
+        // If loadAudioUnits() timed out, some components in m_componentsById
+        // may not have a corresponding manifest yet, and
         // callers would get a null EffectManifestPointer from getManifest(),
         // which crashes downstream (e.g. EffectManifest::sortLexigraphically).
-        auto locker = lockMutex(&m_mutex);
-        return m_manifestsById.keys();
+        return m_manifestDiscoveryState->effectIds();
     }
 
     EffectManifestPointer getManifest(const QString& effectId) const override {
-        auto locker = lockMutex(&m_mutex);
-        return m_manifestsById.value(effectId);
+        return m_manifestDiscoveryState->manifest(effectId);
     }
 
     const QList<EffectManifestPointer> getManifests() const override {
-        auto locker = lockMutex(&m_mutex);
-        return m_manifestsById.values();
+        return m_manifestDiscoveryState->manifests();
     }
 
     bool canInstantiateEffect(const QString& effectId) const override {
@@ -65,8 +64,7 @@ class AudioUnitBackend : public EffectsBackend {
 
   private:
     NSMutableDictionary<NSString*, AVAudioUnitComponent*>* m_componentsById;
-    QHash<QString, EffectManifestPointer> m_manifestsById;
-    mutable QMutex m_mutex;
+    AudioUnitManifestDiscovery::StatePointer m_manifestDiscoveryState;
 
     void loadAudioUnits() {
         qDebug() << "Loading audio units...";
@@ -128,6 +126,9 @@ class AudioUnitBackend : public EffectsBackend {
             // Use a concurrent background GCD queue to load manifest
             dispatch_queue_t queue = dispatch_get_global_queue(
                     DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+            auto publishManifest =
+                    AudioUnitManifestDiscovery::makeManifestPublisher(
+                            m_manifestDiscoveryState, effectId);
 
             dispatch_group_async(group, queue, ^{
                 dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
@@ -136,10 +137,9 @@ class AudioUnitBackend : public EffectsBackend {
                 auto manifest = EffectManifestPointer(
                         new AudioUnitManifest(effectId, component));
 
-                // Register manifest
-                auto locker = lockMutex(&m_mutex);
-                m_manifestsById[effectId] = manifest;
-                locker.unlock();
+                // This publisher owns the discovery state independently of
+                // the backend, which may have been destroyed after timeout.
+                publishManifest(std::move(manifest));
 
                 dispatch_semaphore_signal(semaphore);
             });
