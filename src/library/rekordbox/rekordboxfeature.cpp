@@ -36,6 +36,7 @@
 #include "track/keyutils.h"
 #include "track/track.h"
 #include "util/color/color.h"
+#include "util/color/rekordboxcolor.h"
 #include "util/db/dbconnectionpooled.h"
 #include "util/db/dbconnectionpooler.h"
 #include "util/sandbox.h"
@@ -148,15 +149,15 @@ enum class IDForColor : uint8_t {
     Purple
 };
 
-constexpr mixxx::RgbColor kColorForIDPink(0xF870F8);
-constexpr mixxx::RgbColor kColorForIDRed(0xF870900);
-constexpr mixxx::RgbColor kColorForIDOrange(0xF8A030);
-constexpr mixxx::RgbColor kColorForIDYellow(0xF8E331);
-constexpr mixxx::RgbColor kColorForIDGreen(0x1EE000);
-constexpr mixxx::RgbColor kColorForIDAqua(0x16C0F8);
-constexpr mixxx::RgbColor kColorForIDBlue(0x0150F8);
-constexpr mixxx::RgbColor kColorForIDPurple(0x9808F8);
-constexpr mixxx::RgbColor kColorForIDNoColor(0x0);
+constexpr mixxx::RgbColor kColorForIDPink = mixxx::rekordbox::checkedIndexedColor<0xF870F8>();
+constexpr mixxx::RgbColor kColorForIDRed = mixxx::rekordbox::checkedIndexedColor<0xF80000>();
+constexpr mixxx::RgbColor kColorForIDOrange = mixxx::rekordbox::checkedIndexedColor<0xF8A030>();
+constexpr mixxx::RgbColor kColorForIDYellow = mixxx::rekordbox::checkedIndexedColor<0xF8E331>();
+constexpr mixxx::RgbColor kColorForIDGreen = mixxx::rekordbox::checkedIndexedColor<0x1EE000>();
+constexpr mixxx::RgbColor kColorForIDAqua = mixxx::rekordbox::checkedIndexedColor<0x16C0F8>();
+constexpr mixxx::RgbColor kColorForIDBlue = mixxx::rekordbox::checkedIndexedColor<0x0150F8>();
+constexpr mixxx::RgbColor kColorForIDPurple = mixxx::rekordbox::checkedIndexedColor<0x9808F8>();
+constexpr mixxx::RgbColor kColorForIDNoColor = mixxx::rekordbox::checkedIndexedColor<0x0>();
 
 struct memory_cue_loop_t {
     mixxx::audio::FramePos startPosition;
@@ -1438,6 +1439,10 @@ void readAnalyze(TrackPointer track,
 
 #ifdef BUILD_TESTING
 namespace mixxx::rekordbox::test {
+
+RgbColor colorFromIDForTest(int colorID) {
+    return colorFromID(colorID);
+}
 
 void readAnalyzeForTest(TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
