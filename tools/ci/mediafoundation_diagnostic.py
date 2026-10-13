@@ -374,9 +374,13 @@ def validate_junit(path, selected):
         if element.tag in ("failure", "error", "skipped"):
             raise ValueError("JUnit contains a failing or skipped MF result")
         if element.tag in ("testsuite", "testsuites"):
-            for key in ("failures", "errors"):
+            for key in ("failures", "errors", "skipped", "disabled"):
                 if int(element.get(key, "0")) != 0:
-                    raise ValueError("JUnit failure/error total is nonzero")
+                    raise ValueError("JUnit unsuccessful total is nonzero")
+            declared = element.get("tests")
+            actual = len(element.findall(".//testcase"))
+            if declared is not None and int(declared) != actual:
+                raise ValueError("JUnit declared test count is inconsistent")
         if element.tag in ("testcase", "testsuite", "testsuites"):
             for key in ("status", "result"):
                 if element.get(key, "").strip().lower() not in (
