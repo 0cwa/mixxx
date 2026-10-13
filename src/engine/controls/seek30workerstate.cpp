@@ -258,6 +258,10 @@ Seek30SeekTarget Seek30WorkerState::process(
         return {{}, m_generation, 0};
     }
 
+    // Cue edits can originate outside this state. Refresh membership and order
+    // on the owning worker before applying the command.
+    rebuildMemoryCueCache();
+
     switch (command.operation) {
     case Seek30Operation::SeekNext:
         return seekNext(inputs);
