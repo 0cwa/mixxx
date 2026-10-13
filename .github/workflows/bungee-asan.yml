@@ -7,10 +7,10 @@
 # Scope:
 #   - Linux only (clang sanitizers don't run on Windows MSVC and the Bungee
 #     bug is not platform-specific).
-#   - Builds only the mixxx-test target and runs the *Bungee* gtest filter,
-#     plus the SettingsManager keylock regression test, keeping the workflow
-#     lean compared with the matrix in build.yml.
-#   - Fires on any change that could affect the Bungee integration; ignores
+#   - Builds only the mixxx-test target and runs focused Bungee,
+#     ReadAheadManager, CachingReader, and SettingsManager keylock tests,
+#     keeping the workflow lean compared with the matrix in build.yml.
+#   - Fires on changes to the Bungee integration or reader code/tests; ignores
 #     unrelated PRs.
 #
 # Detect_leaks=0 because mixxx-test has many process-lifetime singletons
@@ -34,11 +34,15 @@ on:
     paths:
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
+      - "src/engine/readaheadmanager.*"
+      - "src/engine/cachingreader/**"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/preferences/settingsmanager.cpp"
       - "src/test/enginebufferscalebungee*"
       - "src/test/enginebufferbungee*"
+      - "src/test/enginebufferalignmenttest.cpp"
+      - "src/test/readaheadmanager_test.cpp"
       - "src/test/settingsmanager_test.cpp"
       - "lib/bungee/**"
       - "CMakeLists.txt"
@@ -47,11 +51,15 @@ on:
     paths:
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
+      - "src/engine/readaheadmanager.*"
+      - "src/engine/cachingreader/**"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/preferences/settingsmanager.cpp"
       - "src/test/enginebufferscalebungee*"
       - "src/test/enginebufferbungee*"
+      - "src/test/enginebufferalignmenttest.cpp"
+      - "src/test/readaheadmanager_test.cpp"
       - "src/test/settingsmanager_test.cpp"
       - "lib/bungee/**"
       - "CMakeLists.txt"
@@ -171,22 +179,138 @@ jobs:
       - name: "Print ccache stats"
         run: ccache --show-stats
 
-      # Run the Bungee unit + integration tests under ASan, plus the
-      # SettingsManager regression that preserves explicit Bungee keylock
-      # settings. The full mixxx-test suite under ASan would run for >30
-      # minutes; this targeted run completes quickly and exercises the
-      # instrumented Bungee scaler and integration paths.
-      - name: "Run Bungee tests under ASan"
+      # Run focused Bungee, reader retry, and SettingsManager keylock tests
+      # under ASan. The full mixxx-test suite under ASan would run for >30
+      # minutes; this targeted run covers the instrumented Bungee and reader
+      # paths.
+      - name: "Run Bungee and reader tests under ASan"
         working-directory: build
         env:
           GTEST_COLOR: "1"
         run: |
-          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
-          listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
-          test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
-          if [ "$test_count" -eq 0 ]; then
-            echo "No tests matched GTest filter: $test_filter" >&2
-            exit 1
-          fi
+          set -euo pipefail
+          cat > verify_bungee_asan_tests.py <<'PY'
+          import collections
+          import fnmatch
+          import json
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          def list_ids(path):
+              suite = None
+              ids = []
+              for line in Path(path).read_text(encoding="utf-8").splitlines():
+                  text = line.split("#", 1)[0].strip()
+                  if not text:
+                      continue
+                  if line[0].isspace():
+                      if suite:
+                          ids.append(f"{suite}.{text}")
+                  else:
+                      suite = text[:-1] if text.endswith(".") else None
+              return ids
+
+          def xml_count(root, attribute, element):
+              suites = list(root.iter("testsuite"))
+              return max(
+                  int(root.get(attribute, "0")),
+                  sum(int(suite.get(attribute, "0")) for suite in suites),
+                  sum(1 for _ in root.iter(element)),
+              )
+
+          if __name__ == "__main__":
+              mode, *arguments = sys.argv[1:]
+              if mode == "before" and len(arguments) == 3:
+                  list_path, test_filter, output_path = arguments
+                  patterns = test_filter.split(":")
+                  tests = list_ids(list_path)
+                  disabled = [test for test in tests if any(
+                      part.startswith("DISABLED_") for part in re.split(r"[/.]", test)
+                  )]
+                  families = {pattern: [test for test in tests if fnmatch.fnmatchcase(test, pattern)]
+                              for pattern in patterns}
+                  selection = {"filter": test_filter, "listed_count": len(tests), "listed_tests": tests,
+                               "disabled_listed_tests": disabled, "families": families}
+                  Path(output_path).write_text(json.dumps(selection, indent=2) + "\n")
+                  expected = ["*Bungee*", "SettingsManagerTest.*KeylockEngine*",
+                              "ReadAheadManagerTest.*", "CachingReader*.*"]
+                  problems = []
+                  if patterns != expected:
+                      problems.append(f"Unexpected GTest filters: {patterns}")
+                  if not tests or len(set(tests)) != len(tests):
+                      problems.append("GTest list is empty or contains duplicate IDs")
+                  if disabled:
+                      problems.append(f"Selected filter lists disabled tests: {disabled}")
+                  for pattern, matched in families.items():
+                      print(f"Listed {len(matched)} tests for {pattern}")
+                      if not matched:
+                          problems.append(f"No tests matched GTest family filter: {pattern}")
+                  print(f"Listed {len(tests)} tests before execution for GTest filter: {test_filter}")
+                  print(json.dumps(selection, indent=2))
+                  if problems:
+                      raise SystemExit("\n".join(problems))
+              elif mode == "after" and len(arguments) == 4:
+                  selection = json.loads(Path(arguments[0]).read_text())
+                  native_status = int(arguments[2])
+                  problems = []
+                  try:
+                      root = ET.parse(arguments[1]).getroot()
+                      if root.tag not in ("testsuites", "testsuite"):
+                          raise ValueError(f"Unexpected GTest XML root: {root.tag}")
+                      cases = list(root.iter("testcase"))
+                      executed = [f"{case.get('classname')}.{case.get('name')}" for case in cases]
+                      not_run = [test for test, case in zip(executed, cases)
+                                 if case.get("status") in ("notrun", "skipped")
+                                 or case.get("result") in ("suppressed", "skipped")]
+                      xml_tests = int(root.attrib["tests"]) if "tests" in root.attrib else None
+                      counts = {name: xml_count(root, name, element) for name, element in
+                                (("failures", "failure"), ("errors", "error"),
+                                 ("skipped", "skipped"), ("disabled", "disabled"))}
+                  except (OSError, ET.ParseError, KeyError, ValueError) as error:
+                      root, cases, executed, not_run, xml_tests = None, [], [], [], None
+                      counts = {name: None for name in ("failures", "errors", "skipped", "disabled")}
+                      problems.append(f"Unable to read valid GTest XML: {error}")
+                  if root is not None:
+                      if xml_tests != len(selection["listed_tests"]):
+                          problems.append(f"XML tests={xml_tests}; listed={len(selection['listed_tests'])}")
+                      if len(cases) != len(selection["listed_tests"]):
+                          problems.append(f"XML testcases={len(cases)}; listed={len(selection['listed_tests'])}")
+                      if collections.Counter(executed) != collections.Counter(selection["listed_tests"]):
+                          problems.append("XML testcase IDs differ from the exact pre-run list")
+                      if not_run:
+                          problems.append(f"XML has testcases that did not run: {not_run}")
+                      if any(counts[name] for name in counts):
+                          problems.append(f"XML nonzero failures/errors/skips/disabled: {counts}")
+                  family_result = {}
+                  for pattern, listed in selection["families"].items():
+                      ran = [test for test in executed if fnmatch.fnmatchcase(test, pattern)]
+                      exact = bool(listed) and collections.Counter(ran) == collections.Counter(listed)
+                      family_result[pattern] = {"listed": listed, "executed": ran, "exact": exact}
+                      if not exact:
+                          problems.append(f"XML family membership differs for {pattern}")
+                  if native_status != 0:
+                      problems.append(f"mixxx-test exited with status {native_status}")
+                  evidence = {"filter": selection["filter"], "listed_count": len(selection["listed_tests"]),
+                              "listed_tests": selection["listed_tests"], "native_exit_status": native_status,
+                              "xml_tests": xml_tests, "xml_testcases": len(cases), "not_run_tests": not_run, **counts,
+                              "families": family_result, "executed_tests": executed, "problems": problems}
+                  Path(arguments[3]).write_text(json.dumps(evidence, indent=2) + "\n")
+                  print(json.dumps(evidence, indent=2))
+                  if problems:
+                      raise SystemExit("\n".join(problems))
+              else:
+                  raise SystemExit("usage: verifier.py before LIST FILTER SELECTION | after SELECTION XML EXIT EVIDENCE")
+          PY
+
+          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*:ReadAheadManagerTest.*:CachingReader*.*'
+          ./mixxx-test --gtest_list_tests --gtest_filter="$test_filter" > gtest-list.txt 2>&1
+          python3 verify_bungee_asan_tests.py before gtest-list.txt "$test_filter" gtest-selection.json
+          test_count="$(python3 -c 'import json; print(json.load(open("gtest-selection.json"))["listed_count"])')"
           echo "Running $test_count tests matching GTest filter: $test_filter"
-          ./mixxx-test --gtest_filter="$test_filter"
+          set +e
+          ./mixxx-test --gtest_filter="$test_filter" --gtest_output=xml:gtest-results.xml
+          native_exit_status=$?
+          set -e
+          python3 verify_bungee_asan_tests.py after gtest-selection.json gtest-results.xml "$native_exit_status" gtest-evidence.json
