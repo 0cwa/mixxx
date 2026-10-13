@@ -171,10 +171,114 @@ jobs:
           -DINSTALL_USER_UDEV_RULES=OFF
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: "Build mixxx-test"
         working-directory: build
         run: cmake --build . --target mixxx-test -j"$(nproc)"
+
+      - name: "Determine compiled RubberBand R3 capability"
+        working-directory: build
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, shlex, shutil, subprocess
+          from pathlib import Path
+
+          unit = Path("src/engine/bufferscalers/enginebufferscalerubberband.cpp")
+          source = (Path.cwd().parent / unit).resolve()
+          db = json.loads(Path("compile_commands.json").read_text(encoding="utf-8"))
+          rows = [row for row in db if (Path(row["directory"]) / row["file"]).resolve() == source]
+          if len(rows) != 1:
+              raise SystemExit(f"Expected one compile command for {unit}, got {len(rows)}")
+          row = rows[0]
+          original = list(row.get("arguments") or shlex.split(row.get("command", "")))
+          if not original:
+              raise SystemExit("Compile database command is empty")
+          command = original.copy()
+          if Path(command[0]).name == "ccache":
+              command.pop(0)
+          compiler = shutil.which(command.pop(0)) if command else None
+          configured = shutil.which(os.environ.get("CXX", ""))
+          if not compiler or not configured or Path(compiler).resolve() != Path(configured).resolve():
+              raise SystemExit("Compile database compiler does not match configured CXX")
+
+          pairs = {"-o", "-MF", "-MT", "-MQ", "-MJ", "-dependency-file", "--serialize-diagnostics"}
+          drop = {"-c", "-S", "-M", "-MM", "-MD", "-MMD", "-MP", "-emit-obj",
+                  "-emit-llvm", "-fsyntax-only", "--coverage", "-pg"}
+          codegen = ("-O", "-g", "-fPIC", "-fpic", "-fPIE", "-fpie", "-fno-pic",
+                     "-fno-PIC", "-fno-pie", "-fno-PIE", "-fvisibility", "-fstack-protector",
+                     "-fno-stack-protector", "-fno-omit-frame-pointer", "-fomit-frame-pointer",
+                     "-fdata-sections", "-ffunction-sections", "-flto", "-fsanitize=",
+                     "-fno-sanitize=", "-fprofile-", "-fcoverage-", "-fno-common", "-fno-plt",
+                     "-fno-semantic-interposition", "-fno-integrated-as", "-save-temps",
+                     "-ftime-trace", "-fmodules-cache-path=", "-fmodule-cache-path=",
+                     "-fmodule-output=", "-foptimization-record-file=",
+                     "-fdiagnostics-serialize-file=")
+          flags, i = [], 0
+          while i < len(command):
+              arg = command[i]
+              if arg.startswith("@"):
+                  raise SystemExit("Response-file compile command is unsupported")
+              if arg in pairs:
+                  if i + 1 == len(command):
+                      raise SystemExit(f"Missing output/dependency value after {arg}")
+                  i += 2
+                  continue
+              if arg in drop or arg.startswith(codegen):
+                  i += 1
+                  continue
+              if (arg.startswith(("-MF", "-MT", "-MQ", "-MJ")) and len(arg) > 3
+                      or arg.startswith(("--dependency-file=", "--serialize-diagnostics="))):
+                  i += 1
+                  continue
+              if arg.startswith("-o") and len(arg) > 2:
+                  raise SystemExit(f"Attached compiler output flag is unsupported: {arg}")
+              if arg in ("-fmodules", "-fcxx-modules", "-Xclang", "-Xpreprocessor"):
+                  raise SystemExit(f"Unsupported compiler forwarding/module flag: {arg}")
+              if arg.startswith("-Wp,") and any(
+                      dep in arg for dep in ("-MD", "-MMD", "-MF", "-MT", "-MQ")):
+                  raise SystemExit(f"Bundled dependency flag is unsupported: {arg}")
+              path = Path(arg)
+              if not path.is_absolute():
+                  path = Path(row["directory"]) / path
+              if path.resolve() != source:
+                  flags.append(arg)
+              i += 1
+
+          output = subprocess.run([compiler, *flags, "-E", "-dM", "-x", "c++", str(source)],
+                                  cwd=row["directory"], check=True, capture_output=True, text=True).stdout
+          macros = dict(re.findall(r"^#define[ \t]+(\w+)[ \t]*(.*)$", output, re.MULTILINE))
+          predicate = "(RUBBERBAND_API_MAJOR_VERSION>=3||(RUBBERBAND_API_MAJOR_VERSION==2&&RUBBERBAND_API_MINOR_VERSION>=7))"
+          if ("__RUBBERBAND__" not in macros or
+                  re.sub(r"\s+", "", macros.get("RUBBERBANDV3", "")) != predicate):
+              raise SystemExit("Compiled RubberBand define or production R3 predicate is missing")
+
+          def api_version(name):
+              match = re.fullmatch(r"\(?\s*(\d+)\s*\)?", macros.get(name, ""))
+              if not match:
+                  raise SystemExit(f"Missing or malformed compiled macro {name}")
+              return int(match.group(1))
+
+          major, minor = api_version("RUBBERBAND_API_MAJOR_VERSION"), api_version("RUBBERBAND_API_MINOR_VERSION")
+          r3_available = major >= 3 or (major == 2 and minor >= 7)
+          receipt = {
+              "translation_unit": unit.as_posix(),
+              "compile_command_sha256": hashlib.sha256(json.dumps(original, separators=(",", ":")).encode()).hexdigest(),
+              "rubberband_enabled": True,
+              "api_major": major,
+              "api_minor": minor,
+              "predicate": predicate,
+              "r3_available": r3_available,
+              "excluded_tests": ([{
+                  "id": "SettingsManagerTest.RejectsUnavailableRubberBandR3GlobalKeylockEngine",
+                  "reason": ("Compiled RUBBERBANDV3 is true; this test requires R3 to be unavailable. "
+                             "Available-engine migration remains selected."),
+              }] if r3_available else []),
+          }
+          Path("rubberband-capability.json").write_text(json.dumps(receipt, indent=2) + "\n",
+                                                       encoding="utf-8")
+          print(json.dumps(receipt, indent=2))
+          PY
 
       - name: "Print ccache stats"
         run: ccache --show-stats
@@ -198,6 +302,13 @@ jobs:
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
+          BASE_PATTERNS = ["*Bungee*", "SettingsManagerTest.*KeylockEngine*",
+                           "ReadAheadManagerTest.*", "CachingReader*.*"]
+          BASE_FILTER = ":".join(BASE_PATTERNS)
+          UNAVAILABLE_TEST = "SettingsManagerTest.RejectsUnavailableRubberBandR3GlobalKeylockEngine"
+          MIGRATION_TEST = "SettingsManagerTest.MigratesAvailableOptionalGlobalKeylockEngines"
+          PREDICATE = "(RUBBERBAND_API_MAJOR_VERSION>=3||(RUBBERBAND_API_MAJOR_VERSION==2&&RUBBERBAND_API_MINOR_VERSION>=7))"
+
           def list_ids(path):
               suite = None
               ids = []
@@ -214,47 +325,95 @@ jobs:
 
           def xml_count(root, attribute, element):
               suites = list(root.iter("testsuite"))
-              return max(
-                  int(root.get(attribute, "0")),
-                  sum(int(suite.get(attribute, "0")) for suite in suites),
-                  sum(1 for _ in root.iter(element)),
-              )
+              return max(int(root.get(attribute, "0")),
+                         sum(int(suite.get(attribute, "0")) for suite in suites),
+                         sum(1 for _ in root.iter(element)))
+
+          def read_capability(path):
+              cap = json.loads(Path(path).read_text(encoding="utf-8"))
+              if (not isinstance(cap, dict)
+                      or cap.get("translation_unit") !=
+                      "src/engine/bufferscalers/enginebufferscalerubberband.cpp"
+                      or cap.get("rubberband_enabled") is not True
+                      or cap.get("predicate") != PREDICATE
+                      or type(cap.get("r3_available")) is not bool
+                      or type(cap.get("api_major")) is not int
+                      or type(cap.get("api_minor")) is not int
+                      or cap.get("r3_available") != (cap["api_major"] >= 3 or
+                                                      (cap["api_major"] == 2 and cap["api_minor"] >= 7))
+                      or cap.get("excluded_tests") != ([{
+                          "id": UNAVAILABLE_TEST,
+                          "reason": ("Compiled RUBBERBANDV3 is true; this test requires R3 to be unavailable. "
+                                     "Available-engine migration remains selected."),
+                      }] if cap.get("r3_available") else [])
+                      or not re.fullmatch(r"[0-9a-f]{64}", cap.get("compile_command_sha256", ""))):
+                  raise ValueError("Compiled RubberBand capability receipt is invalid")
+              return cap
+
+          def test_filter(cap):
+              excluded = [item["id"] for item in cap["excluded_tests"]]
+              return BASE_FILTER + (f"-{':'.join(excluded)}" if excluded else "")
 
           if __name__ == "__main__":
               mode, *arguments = sys.argv[1:]
               if mode == "before" and len(arguments) == 3:
-                  list_path, test_filter, output_path = arguments
-                  patterns = test_filter.split(":")
-                  tests = list_ids(list_path)
+                  list_path, capability_path, output_path = arguments
+                  cap = read_capability(capability_path)
+                  positive = list_ids(list_path)
+                  excluded = cap["excluded_tests"]
+                  excluded_ids = {item["id"] for item in excluded}
+                  tests = [test for test in positive if test not in excluded_ids]
                   disabled = [test for test in tests if any(
                       part.startswith("DISABLED_") for part in re.split(r"[/.]", test)
                   )]
                   families = {pattern: [test for test in tests if fnmatch.fnmatchcase(test, pattern)]
-                              for pattern in patterns}
-                  selection = {"filter": test_filter, "listed_count": len(tests), "listed_tests": tests,
-                               "disabled_listed_tests": disabled, "families": families}
+                              for pattern in BASE_PATTERNS}
+                  selection = {"filter": test_filter(cap),
+                               "positive_filter_listed_tests": positive, "excluded_tests": excluded,
+                               "listed_count": len(tests), "listed_tests": tests,
+                               "compiled_capability": cap, "disabled_listed_tests": disabled,
+                               "families": families}
                   Path(output_path).write_text(json.dumps(selection, indent=2) + "\n")
-                  expected = ["*Bungee*", "SettingsManagerTest.*KeylockEngine*",
-                              "ReadAheadManagerTest.*", "CachingReader*.*"]
                   problems = []
-                  if patterns != expected:
-                      problems.append(f"Unexpected GTest filters: {patterns}")
-                  if not tests or len(set(tests)) != len(tests):
-                      problems.append("GTest list is empty or contains duplicate IDs")
+                  if not positive or len(set(positive)) != len(positive):
+                      problems.append("Positive family list is empty or contains duplicate IDs")
+                  if UNAVAILABLE_TEST not in positive:
+                      problems.append(f"Positive family list omits {UNAVAILABLE_TEST}")
+                  if MIGRATION_TEST not in tests:
+                      problems.append("Available-engine migration test is missing")
                   if disabled:
                       problems.append(f"Selected filter lists disabled tests: {disabled}")
                   for pattern, matched in families.items():
-                      print(f"Listed {len(matched)} tests for {pattern}")
+                      print(f"Selected {len(matched)} tests for {pattern}")
                       if not matched:
                           problems.append(f"No tests matched GTest family filter: {pattern}")
-                  print(f"Listed {len(tests)} tests before execution for GTest filter: {test_filter}")
                   print(json.dumps(selection, indent=2))
                   if problems:
                       raise SystemExit("\n".join(problems))
-              elif mode == "after" and len(arguments) == 4:
+              elif mode == "after" and len(arguments) == 6:
                   selection = json.loads(Path(arguments[0]).read_text())
-                  native_status = int(arguments[2])
+                  cap = read_capability(arguments[4])
+                  positive = selection.get("positive_filter_listed_tests", [])
+                  excluded = cap["excluded_tests"]
+                  tests = [test for test in positive if test not in {item["id"] for item in excluded}]
                   problems = []
+                  if selection.get("compiled_capability") != cap:
+                      problems.append("Selection capability differs from compiled receipt")
+                  if selection.get("filter") != test_filter(cap) or arguments[5] != selection.get("filter"):
+                      problems.append("Executed filter differs from compiled capability selection")
+                  if UNAVAILABLE_TEST not in positive or selection.get("excluded_tests") != excluded:
+                      problems.append("Recorded exclusion differs from the exact capability-based exclusion")
+                  if selection.get("listed_tests") != tests or selection.get("listed_count") != len(tests):
+                      problems.append("Selected IDs differ from the positive list and exact exclusion")
+                  if MIGRATION_TEST not in tests:
+                      problems.append("Available-engine migration test is absent from selected IDs")
+                  expected_families = {
+                      pattern: [test for test in tests if fnmatch.fnmatchcase(test, pattern)]
+                      for pattern in BASE_PATTERNS
+                  }
+                  if selection.get("families") != expected_families:
+                      problems.append("Recorded family membership differs from selected IDs")
+                  native_status = int(arguments[2])
                   try:
                       root = ET.parse(arguments[1]).getroot()
                       if root.tag not in ("testsuites", "testsuite"):
@@ -292,7 +451,9 @@ jobs:
                           problems.append(f"XML family membership differs for {pattern}")
                   if native_status != 0:
                       problems.append(f"mixxx-test exited with status {native_status}")
-                  evidence = {"filter": selection["filter"], "listed_count": len(selection["listed_tests"]),
+                  evidence = {"filter": selection["filter"],
+                              "positive_filter_listed_count": len(positive), "excluded_tests": excluded,
+                              "compiled_capability": cap, "listed_count": len(selection["listed_tests"]),
                               "listed_tests": selection["listed_tests"], "native_exit_status": native_status,
                               "xml_tests": xml_tests, "xml_testcases": len(cases), "not_run_tests": not_run, **counts,
                               "families": family_result, "executed_tests": executed, "problems": problems}
@@ -301,16 +462,20 @@ jobs:
                   if problems:
                       raise SystemExit("\n".join(problems))
               else:
-                  raise SystemExit("usage: verifier.py before LIST FILTER SELECTION | after SELECTION XML EXIT EVIDENCE")
+                  raise SystemExit(
+                      "usage: verifier.py before LIST CAPABILITY SELECTION | "
+                      "after SELECTION XML EXIT EVIDENCE CAPABILITY FILTER"
+                  )
           PY
 
-          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*:ReadAheadManagerTest.*:CachingReader*.*'
-          ./mixxx-test --gtest_list_tests --gtest_filter="$test_filter" > gtest-list.txt 2>&1
-          python3 verify_bungee_asan_tests.py before gtest-list.txt "$test_filter" gtest-selection.json
+          base_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*:ReadAheadManagerTest.*:CachingReader*.*'
+          ./mixxx-test --gtest_list_tests --gtest_filter="$base_filter" > gtest-list.txt 2>&1
+          python3 verify_bungee_asan_tests.py before gtest-list.txt rubberband-capability.json gtest-selection.json
+          test_filter="$(python3 -c 'import json; print(json.load(open("gtest-selection.json"))["filter"])')"
           test_count="$(python3 -c 'import json; print(json.load(open("gtest-selection.json"))["listed_count"])')"
           echo "Running $test_count tests matching GTest filter: $test_filter"
           set +e
           ./mixxx-test --gtest_filter="$test_filter" --gtest_output=xml:gtest-results.xml
           native_exit_status=$?
           set -e
-          python3 verify_bungee_asan_tests.py after gtest-selection.json gtest-results.xml "$native_exit_status" gtest-evidence.json
+          python3 verify_bungee_asan_tests.py after gtest-selection.json gtest-results.xml "$native_exit_status" gtest-evidence.json rubberband-capability.json "$test_filter"
