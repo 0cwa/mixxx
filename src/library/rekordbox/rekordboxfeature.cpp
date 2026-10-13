@@ -1233,10 +1233,21 @@ void readAnalyze(TrackPointer track,
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
                         int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
+                        mixxx::audio::FramePos endPosition = mixxx::audio::kInvalidFramePos;
+                        if (cueEntry->type() ==
+                                rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP) {
+                            int endTime = static_cast<int>(cueEntry->loop_time()) - timingOffset;
+                            // Ensure no offset times are less than 1
+                            if (endTime < 1) {
+                                endTime = 1;
+                            }
+                            endPosition = mixxx::audio::FramePos(
+                                    sampleRateKhz * static_cast<double>(endTime));
+                        }
                         mixxx::rekordbox::importHotCue(
                                 track,
                                 position,
-                                mixxx::audio::kInvalidFramePos,
+                                endPosition,
                                 hotCueIndex,
                                 QString(),
                                 mixxx::RgbColor::nullopt());
@@ -1300,9 +1311,22 @@ void readAnalyze(TrackPointer track,
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
                         int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
+                        mixxx::audio::FramePos endPosition = mixxx::audio::kInvalidFramePos;
+                        if (cueExtendedEntry->type() ==
+                                rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP) {
+                            int endTime =
+                                    static_cast<int>(cueExtendedEntry->loop_time()) -
+                                    timingOffset;
+                            // Ensure no offset times are less than 1
+                            if (endTime < 1) {
+                                endTime = 1;
+                            }
+                            endPosition = mixxx::audio::FramePos(
+                                    sampleRateKhz * static_cast<double>(endTime));
+                        }
                         mixxx::rekordbox::importHotCue(track,
                                 position,
-                                mixxx::audio::kInvalidFramePos,
+                                endPosition,
                                 hotCueIndex,
                                 fromUtf16BeString(cueExtendedEntry->comment()),
                                 mixxx::RgbColor(qRgb(
@@ -1367,6 +1391,19 @@ void readAnalyze(TrackPointer track,
 }
 
 } // anonymous namespace
+
+namespace mixxx::rekordbox::test {
+
+void readAnalyzeForTest(
+        TrackPointer track,
+        mixxx::audio::SampleRate sampleRate,
+        int timingOffset,
+        bool ignoreCues,
+        const QString& anlzPath) {
+    readAnalyze(track, sampleRate, timingOffset, ignoreCues, anlzPath);
+}
+
+} // namespace mixxx::rekordbox::test
 
 RekordboxPlaylistModel::RekordboxPlaylistModel(QObject* parent,
         TrackCollectionManager* trackCollectionManager,
