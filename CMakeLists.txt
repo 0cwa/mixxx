@@ -3188,6 +3188,13 @@ if(BUILD_TESTING)
     DISCOVERY_MODE PRE_TEST
     DISCOVERY_TIMEOUT 60
   )
+  set_property(
+    DIRECTORY
+    APPEND
+    PROPERTY
+      TEST_INCLUDE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Seek30TestProperties.cmake"
+  )
 
   if(BUILD_BENCH)
     # Benchmarking
