@@ -85,13 +85,23 @@ void Seek30WorkerState::rebuildMemoryCueCache() {
 }
 
 void Seek30WorkerState::sortCueCache() {
-    std::sort(
-            m_memoryCues.begin(),
-            m_memoryCues.end(),
-            [](const CuePointer& pLeft, const CuePointer& pRight) {
-                return pLeft->getStartAndEndPosition().startPosition <
-                        pRight->getStartAndEndPosition().startPosition;
+    struct CueSortSnapshot {
+        CuePointer pCue;
+        mixxx::audio::FramePos position;
+    };
+    QList<CueSortSnapshot> snapshots;
+    snapshots.reserve(m_memoryCues.size());
+    for (const auto& pCue : std::as_const(m_memoryCues)) {
+        snapshots.append({pCue, pCue->getStartAndEndPosition().startPosition});
+    }
+    std::sort(snapshots.begin(),
+            snapshots.end(),
+            [](const CueSortSnapshot& left, const CueSortSnapshot& right) {
+                return left.position < right.position;
             });
+    for (int i = 0; i < snapshots.size(); ++i) {
+        m_memoryCues[i] = snapshots[i].pCue;
+    }
 }
 
 void Seek30WorkerState::createMemoryCueAt(
@@ -258,9 +268,11 @@ Seek30SeekTarget Seek30WorkerState::process(
         return {{}, m_generation, 0};
     }
 
-    // Cue edits can originate outside this state. Refresh membership and order
-    // on the owning worker before applying the command.
-    rebuildMemoryCueCache();
+    if (command.operation != Seek30Operation::ClearAll) {
+        // Cue edits can originate outside this state. Refresh membership and order
+        // on the owning worker before applying the command.
+        rebuildMemoryCueCache();
+    }
 
     switch (command.operation) {
     case Seek30Operation::SeekNext:
