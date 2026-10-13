@@ -39,6 +39,32 @@ const auto kNonConstTempoBeats = Beats(
         QString(),
         0);
 
+TEST(BeatsTest, EqualWhenAllValuesMatch) {
+    const Beats lhs(kStartPosition, kBpm, kSampleRate, QString(), 0);
+    const Beats rhs(kStartPosition, kBpm, kSampleRate, QString(), 0);
+
+    EXPECT_EQ(lhs, rhs);
+    EXPECT_FALSE(lhs != rhs);
+}
+
+TEST(BeatsTest, DifferentSampleRatesAreNotEqual) {
+    const Beats lhs(kStartPosition, kBpm, kSampleRate, QString(), 0);
+    const Beats rhs(kStartPosition,
+            kBpm,
+            audio::SampleRate(44100),
+            QString(),
+            0);
+
+    EXPECT_NE(lhs, rhs);
+}
+
+TEST(BeatsTest, DifferentDownbeatOffsetsAreNotEqual) {
+    const Beats lhs(kStartPosition, kBpm, kSampleRate, QString(), 0);
+    const Beats rhs(kStartPosition, kBpm, kSampleRate, QString(), 1);
+
+    EXPECT_NE(lhs, rhs);
+}
+
 TEST(BeatsTest, ConstTempoGetBpmInRange) {
     EXPECT_DOUBLE_EQ(kBpm.value(),
             kConstTempoBeats.getBpmInRange(kStartPosition, kEndPosition)
