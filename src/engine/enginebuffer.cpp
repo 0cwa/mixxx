@@ -1,4 +1,7 @@
 #include "engine/enginebuffer.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#endif
 
 #ifdef BUILD_TESTING
 #include <mutex>
@@ -434,6 +437,7 @@ EngineBuffer::EngineBuffer(const QString& group,
     m_pSeek30Control = new Seek30Control(group, pConfig);
     addControl(m_pSeek30Control);
     m_pReader->setSeek30Control(m_pSeek30Control);
+    m_pReader->setLoopingControl(m_pLoopingControl);
 
     connect(m_pLoopingControl,
             &LoopingControl::loopReset,
@@ -547,6 +551,7 @@ EngineBuffer::~EngineBuffer() {
 #endif
 
     delete m_pReadAheadManager;
+    m_pReader->setLoopingControl(nullptr);
     delete m_pReader;
 
     qDeleteAll(m_engineControls.rbegin(), m_engineControls.rend());
@@ -855,6 +860,7 @@ bool EngineBuffer::isReverse() const {
 
 // WARNING: Always called from the EngineWorker thread pool
 void EngineBuffer::slotTrackLoading() {
+    m_trackLoadGeneration.fetch_add(1, std::memory_order_acq_rel);
     // Pause EngineBuffer from processing frames
     m_pause.lock();
     // Setting m_iTrackLoading inside a m_pause.lock ensures that
@@ -894,6 +900,15 @@ void EngineBuffer::loadFakeTrack(TrackPointer pTrack, bool bPlay) {
 }
 
 // WARNING: Always called from the EngineWorker thread pool
+#ifdef BUILD_TESTING
+void EngineBuffer::setF001ProbeForTest(F001ProbeForTest* pProbe) {
+    m_pF001ProbeForTest.store(pProbe, std::memory_order_release);
+    m_pCueControl->setF001ProbeForTest(pProbe);
+    m_pLoopingControl->setF001ProbeForTest(pProbe);
+    m_pReader->setF001ProbeForTest(pProbe);
+}
+#endif
+
 void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
         mixxx::audio::SampleRate trackSampleRate,
         mixxx::audio::ChannelCount trackChannelCount,
@@ -901,12 +916,29 @@ void EngineBuffer::slotTrackLoaded(TrackPointer pTrack,
     if (kLogger.traceEnabled()) {
         kLogger.trace() << "slotTrackLoaded" << getGroup();
     }
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::EngineSlotTrackLoaded,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            this,
+            pTrack.get(),
+            trackNumFrame.isValid() ? trackNumFrame.value() : 0,
+            0,
+            0,
+            trackNumFrame.isValid() ? 1U : 0U);
+    if (pTrack) {
+        pTrack->setF001ProbeForTest(m_pF001ProbeForTest.load(std::memory_order_acquire));
+    }
+#endif
+    m_trackLoadGeneration.fetch_add(1, std::memory_order_acq_rel);
     TrackPointer pOldTrack = m_pCurrentTrack;
     m_pause.lock();
 
     m_visualPlayPos->setInvalid();
     m_playPos = kInitialPlayPosition; // for execute seeks to 0.0
     m_pCurrentTrack = pTrack;
+    m_pCurrentTrackRaw.store(pTrack.get(), std::memory_order_release);
 
     m_channelCount = trackChannelCount;
     if (m_channelCount > mixxx::audio::ChannelCount::stereo()) {
@@ -1001,6 +1033,7 @@ void EngineBuffer::ejectTrack() {
     doSeekPlayPos(mixxx::audio::kStartFramePos, SEEK_EXACT);
 
     m_pCurrentTrack.reset();
+    m_pCurrentTrackRaw.store(nullptr, std::memory_order_release);
     setTrackEndPosition(mixxx::audio::kInvalidFramePos);
     m_pTrackSampleRate->set(0);
     m_pTrackLoaded->forceSet(0);
@@ -1045,6 +1078,19 @@ void EngineBuffer::notifyTrackLoaded(
     // Note: we are still in a worker thread.
     const auto trackEndPosition = getTrackEndPosition();
     const auto sampleRate = mixxx::audio::SampleRate::fromDouble(m_pTrackSampleRate->get());
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::EngineNotifyTrackLoaded,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            this,
+            pNewTrack.get(),
+            trackEndPosition.isValid() ? trackEndPosition.value() : 0,
+            0,
+            sampleRate.isValid() ? f001DoubleBitsForTest(sampleRate.toDouble()) : 0,
+            (trackEndPosition.isValid() ? 1U : 0U) |
+                    (sampleRate.isValid() ? 2U : 0U));
+#endif
     for (const auto& pControl : std::as_const(m_engineControls)) {
         pControl->setFrameInfo(m_playPos, trackEndPosition, sampleRate);
         pControl->trackLoaded(pNewTrack);
@@ -1065,6 +1111,19 @@ void EngineBuffer::notifyTrackLoaded(
         m_pBpmControl->trackBpmLockChanged(bpmLocked);
     }
 
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::EngineNotifyTrackLoaded,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::None,
+            this,
+            pNewTrack.get(),
+            trackEndPosition.isValid() ? trackEndPosition.value() : 0,
+            0,
+            sampleRate.isValid() ? f001DoubleBitsForTest(sampleRate.toDouble()) : 0,
+            (trackEndPosition.isValid() ? 1U : 0U) |
+                    (sampleRate.isValid() ? 2U : 0U));
+#endif
     // Inform BaseTrackPlayer via a queued connection
     emit trackLoaded(pNewTrack, pOldTrack);
 }
@@ -2142,6 +2201,35 @@ bool EngineBuffer::isTrackLoaded() const {
 
 TrackPointer EngineBuffer::getLoadedTrack() const {
     return m_pCurrentTrack;
+}
+
+std::optional<EngineBuffer::LoopCueSnapshot>
+EngineBuffer::getLoopCueSnapshot(const TrackPointer& pExpectedTrack) const {
+    if (!pExpectedTrack || m_iTrackLoading.loadAcquire() != 0) {
+        return std::nullopt;
+    }
+
+    const auto generation =
+            m_trackLoadGeneration.load(std::memory_order_acquire);
+    if (m_pCurrentTrackRaw.load(std::memory_order_acquire) !=
+            pExpectedTrack.get()) {
+        return std::nullopt;
+    }
+
+    const auto loopInfo = m_pLoopingControl->tryGetStableLoopInfo();
+
+    if (!loopInfo || m_iTrackLoading.loadAcquire() != 0 ||
+            generation != m_trackLoadGeneration.load(std::memory_order_acquire) ||
+            m_pCurrentTrackRaw.load(std::memory_order_acquire) !=
+                    pExpectedTrack.get()) {
+        return std::nullopt;
+    }
+
+    return LoopCueSnapshot{
+            pExpectedTrack,
+            loopInfo->startPosition,
+            loopInfo->endPosition,
+            generation};
 }
 
 mixxx::audio::FramePos EngineBuffer::getExactPlayPos() const {

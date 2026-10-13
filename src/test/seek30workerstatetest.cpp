@@ -164,6 +164,46 @@ TEST(Seek30WorkerStateTest, RepeatedCommandsAndQuantizedDuplicateCreation) {
     EXPECT_EQ(2, memoryCueCount(pTrack));
 }
 
+TEST(Seek30WorkerStateTest, LoopCueUpdatePreservesIdentityOrderAndRemoval) {
+    const auto pTrack = Track::newTemporary(
+            QStringLiteral("/mixxx-test-data/sine-30.wav"));
+    const auto pSavedLoop = pTrack->createAndAddCue(
+            mixxx::CueType::Loop,
+            2,
+            frameAtSeconds(1.0),
+            frameAtSeconds(2.0));
+
+    Seek30WorkerState state;
+    state.trackLoaded(pTrack);
+    state.updateLoopCue(frameAtSeconds(3.0), frameAtSeconds(4.0));
+
+    auto cues = pTrack->getCuePoints();
+    ASSERT_EQ(2, cues.size());
+    EXPECT_EQ(pSavedLoop, cues.at(0));
+    const auto pTemporaryLoop = cues.at(1);
+    EXPECT_EQ(mixxx::CueType::Loop, pTemporaryLoop->getType());
+    EXPECT_EQ(Cue::kNoHotCue, pTemporaryLoop->getHotCue());
+
+    state.updateLoopCue(frameAtSeconds(5.0), frameAtSeconds(6.0));
+    cues = pTrack->getCuePoints();
+    ASSERT_EQ(2, cues.size());
+    EXPECT_EQ(pSavedLoop, cues.at(0));
+    EXPECT_EQ(pTemporaryLoop, cues.at(1));
+    EXPECT_EQ(frameAtSeconds(5.0),
+            pTemporaryLoop->getStartAndEndPosition().startPosition);
+    EXPECT_EQ(frameAtSeconds(6.0),
+            pTemporaryLoop->getStartAndEndPosition().endPosition);
+
+    pTrack->markClean();
+    state.updateLoopCue(frameAtSeconds(5.0), frameAtSeconds(6.0));
+    EXPECT_FALSE(pTrack->isDirty()); // an unchanged sample must not request saving
+
+    state.updateLoopCue(frameAtSeconds(8.0), frameAtSeconds(7.0));
+    cues = pTrack->getCuePoints();
+    ASSERT_EQ(1, cues.size());
+    EXPECT_EQ(pSavedLoop, cues.front());
+}
+
 TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
     Seek30WorkerState state;
     const auto pOldTrack = trackWithMemoryCues({1.0});

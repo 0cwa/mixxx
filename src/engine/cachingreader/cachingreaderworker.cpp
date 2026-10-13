@@ -1,4 +1,8 @@
 #include "engine/cachingreader/cachingreaderworker.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#include "test/f001rtprobe.h"
+#endif
 
 #include <QAtomicInt>
 #include <QtDebug>
@@ -6,6 +10,7 @@
 #include <utility>
 
 #include "analyzer/analyzersilence.h"
+#include "engine/controls/loopingcontrol.h"
 #include "engine/controls/seek30control.h"
 #include "moc_cachingreaderworker.cpp"
 #include "sources/soundsourceproxy.h"
@@ -22,6 +27,39 @@ mixxx::Logger kLogger("CachingReaderWorker");
 
 // we need the last silence frame and the first sound frame
 constexpr SINT kNumSoundFrameToVerify = 2;
+
+#ifdef BUILD_TESTING
+struct F001NativeTokenResetForTest {
+    explicit F001NativeTokenResetForTest(bool active)
+            : m_active(active) {
+    }
+    ~F001NativeTokenResetForTest() {
+        if (m_active && f001RtProbeSetThreadTokenForTest) {
+            (void)f001RtProbeSetThreadTokenForTest(0);
+        }
+    }
+
+  private:
+    bool m_active;
+};
+
+struct F001NativePreparedCommitForTest {
+    F001NativePreparedCommitForTest(
+            std::atomic<bool>* pPrepared, bool prepared)
+            : m_pPrepared(pPrepared),
+              m_prepared(prepared) {
+    }
+    ~F001NativePreparedCommitForTest() {
+        if (m_prepared) {
+            m_pPrepared->store(true, std::memory_order_release);
+        }
+    }
+
+  private:
+    std::atomic<bool>* m_pPrepared;
+    bool m_prepared;
+};
+#endif
 
 } // anonymous namespace
 
@@ -153,6 +191,15 @@ void CachingReaderWorker::setSeek30Control(Seek30Control* pControl) {
     m_pSeek30Control.store(pControl, std::memory_order_release);
 }
 
+void CachingReaderWorker::setLoopingControl(LoopingControl* pControl) {
+    m_pLoopingControl.store(pControl, std::memory_order_release);
+}
+
+void CachingReaderWorker::notifyLoopCueUpdate() {
+    m_loopCueDirty.store(true);
+    workReady();
+}
+
 void CachingReaderWorker::updateSeek30Track(TrackPointer pNewTrack) {
     m_seek30State.trackLoaded(std::move(pNewTrack));
     m_seek30Generation.store(
@@ -210,6 +257,104 @@ void CachingReaderWorker::processSeek30Commands() {
     } while (m_seek30CommandMailbox.tryPop(&command));
 }
 
+void CachingReaderWorker::processLoopCueUpdate() {
+#ifdef BUILD_TESTING
+    const auto nativeToken =
+            m_f001NativeTokenForTest.load(std::memory_order_acquire);
+    bool nativePrepared = nativeToken != 0 &&
+            m_f001NativePreparedForTest.load(std::memory_order_acquire);
+    if (nativeToken != 0 && !nativePrepared &&
+            f001RtProbePrepareThreadForTest) {
+        // Only an explicitly selected worker (nonzero native token) reserves
+        // a slot. The capture API refuses registration while armed.
+        nativePrepared = f001RtProbePrepareThreadForTest(nativeToken);
+    }
+    if (nativePrepared && f001RtProbeSetThreadTokenForTest) {
+        nativePrepared = f001RtProbeSetThreadTokenForTest(nativeToken);
+    }
+    F001NativePreparedCommitForTest f001PreparedCommit(
+            &m_f001NativePreparedForTest, nativePrepared);
+    F001NativeTokenResetForTest f001TokenReset(nativePrepared);
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::WorkerProcessLoopCueUpdate);
+#endif
+#ifdef BUILD_TESTING
+    // Tests may hold ordinary persistence, but quiescent shutdown must still
+    // execute the production final drain after quitWait sets stop.
+    if (m_holdLoopCuePersistenceForTest.load() && !m_stop.loadAcquire()) {
+        m_loopPersistenceHoldObservedForTest.store(true);
+        return;
+    }
+    m_loopPersistenceHoldObservedForTest.store(false);
+#endif
+    // Clear before observing. A producer completing afterward leaves another
+    // notification pending; no old endpoint tuple can be replayed.
+    if (!m_loopCueDirty.exchange(false)) {
+        return;
+    }
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::WorkerLoopCueUpdate,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            this);
+#endif
+    auto* const pControl = m_pLoopingControl.load(std::memory_order_acquire);
+    if (!pControl) {
+        return;
+    }
+#ifdef BUILD_TESTING
+    const auto info = pControl->tryGetStableLoopInfoForTest(
+            LoopScalarObservationCallerForTest::WorkerRead);
+#else
+    const auto info = pControl->tryGetStableLoopInfo();
+#endif
+#ifdef BUILD_TESTING
+    if (auto* pProbe = m_pF001ProbeForTest.load(std::memory_order_acquire)) {
+        pProbe->recordObject(F001ProbeEventForTest::LoopScalarRead,
+                F001ProbePhaseForTest::After,
+                F001ProbeMethodForTest::None,
+                pControl,
+                this,
+                info && info->startPosition.isValid()
+                        ? info->startPosition.value()
+                        : 0,
+                info && info->endPosition.isValid()
+                        ? info->endPosition.value()
+                        : 0,
+                0,
+                (info ? 1U : 0U) |
+                        (info && info->startPosition.isValid() ? 2U : 0U) |
+                        (info && info->endPosition.isValid() ? 4U : 0U));
+    }
+#endif
+    if (!info) {
+#ifdef BUILD_TESTING
+        m_seek30State.recordUnavailableLoopCueObservationForTest();
+#endif
+        m_loopCueDirty.store(true);
+        workReady();
+        return;
+    }
+    // Only this worker changes m_seek30State's loaded Track. The observation
+    // is applied here and never cached across load/unload operations.
+    m_seek30State.updateLoopCue(info->startPosition, info->endPosition);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::WorkerLoopCueUpdate,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::None,
+            this,
+            pControl,
+            info->startPosition.isValid() ? info->startPosition.value() : 0,
+            info->endPosition.isValid() ? info->endPosition.value() : 0,
+            0,
+            (info->startPosition.isValid() ? 1U : 0U) |
+                    (info->endPosition.isValid() ? 2U : 0U));
+    m_loopPersistenceCompletedForTest.fetch_add(1);
+#endif
+}
+
 void CachingReaderWorker::run() {
     // the id of this thread, for debugging purposes
     static auto lastId = QAtomicInt(0);
@@ -255,8 +400,10 @@ void CachingReaderWorker::run() {
                 }
             }
             processSeek30Commands();
+            processLoopCueUpdate();
         } else {
             processSeek30Commands();
+            processLoopCueUpdate();
             if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
                 m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
                 // Read the requested chunk and send the result. Publish only
@@ -277,10 +424,19 @@ void CachingReaderWorker::run() {
                 m_diagnosticState.storeRelease(
                         static_cast<int>(DiagnosticState::Waiting));
                 Event::end(m_tag);
+#ifdef BUILD_TESTING
+                m_idleEntriesForTest.fetch_add(1);
+#endif
                 m_semaRun.acquire();
                 Event::start(m_tag);
             }
         }
+    }
+
+    // CachingReader's quiescent teardown detaches completed producers before
+    // quitWait(). Controls remain alive until this final worker drain joins.
+    if (m_stop.loadAcquire()) {
+        processLoopCueUpdate();
     }
 }
 
@@ -311,6 +467,7 @@ bool CachingReaderWorker::closeAudioSource() {
 }
 
 bool CachingReaderWorker::unloadTrack() {
+    processLoopCueUpdate();
     if (!closeAudioSource()) {
         return false;
     }
@@ -338,6 +495,7 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
 
     // Keep TrackPointer and cue ownership on this worker even when the
     // EngineBuffer's unload notification originates from another thread.
+    processLoopCueUpdate();
     updateSeek30Track(TrackPointer());
 
     if (!closeAudioSource()) {
@@ -422,6 +580,10 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
 
     updateSeek30Track(pTrack);
 
+    // Adopt the GUI-restored scalar under the new worker Track ownership.
+    // An overlapping scalar store defers observation to a later boundary.
+    m_loopCueDirty.store(true);
+
     // Adjust the internal buffer
     const SINT tempReadBufferSize =
             m_pAudioSource->getSignalInfo().frames2samples(
@@ -456,6 +618,12 @@ bool CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
             m_pAudioSource->getSignalInfo().getSampleRate(),
             m_pAudioSource->getSignalInfo().getChannelCount(),
             mixxx::audio::FramePos(m_pAudioSource->frameLength()));
+
+    // EngineBuffer publishes the new track end through the direct trackLoaded
+    // path. Apply the pending cue update afterward: removing a temporary loop
+    // emits cuesUpdated, whose direct CueControl receiver quantizes against
+    // that track end.
+    processLoopCueUpdate();
     return true;
 }
 

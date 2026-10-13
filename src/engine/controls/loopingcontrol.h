@@ -2,6 +2,11 @@
 
 #include <QObject>
 #include <QStack>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 
 #include "control/controlvalue.h"
 #include "engine/controls/enginecontrol.h"
@@ -16,6 +21,46 @@ class RateControl;
 class LoopMoveControl;
 class BeatJumpControl;
 class BeatLoopingControl;
+class CachingReaderWorker;
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+#endif
+
+#ifdef BUILD_TESTING
+enum class LoopScalarObservationCallerForTest : std::uint8_t {
+    PostSetter,
+    WorkerRead,
+};
+
+struct LoopScalarObservationForTest {
+    LoopScalarObservationCallerForTest caller{
+            LoopScalarObservationCallerForTest::PostSetter};
+    bool stable{false};
+    std::uint64_t revision{0};
+    std::uint64_t writersBefore{0};
+    bool writersBeforeRead{false};
+    bool startValid{false};
+    bool endValid{false};
+    double startPosition{0};
+    double endPosition{0};
+};
+
+struct LoopScalarObservationTraceForTest {
+    static constexpr std::size_t kCapacity = 8;
+    std::array<LoopScalarObservationForTest, kCapacity> entries{};
+    std::atomic<std::size_t> count{0};
+    std::atomic<bool> overflow{false};
+
+    void append(const LoopScalarObservationForTest& entry) {
+        const auto index = count.fetch_add(1, std::memory_order_relaxed);
+        if (index >= entries.size()) {
+            overflow.store(true, std::memory_order_relaxed);
+            return;
+        }
+        entries[index] = entry;
+    }
+};
+#endif
 
 class LoopingControl : public EngineControl {
     Q_OBJECT
@@ -78,11 +123,16 @@ class LoopingControl : public EngineControl {
         LoopSeekMode seekMode = LoopSeekMode::None;
     };
 
-    LoopInfo getLoopInfo() {
+    LoopInfo getLoopInfo() const {
         return m_loopInfo.getValue();
     }
 
+    // One certificate attempt around the existing scalar read (whose ring
+    // retry behavior is unchanged). Empty means overlap or certificate exhaustion.
+    std::optional<LoopInfo> tryGetStableLoopInfo() const;
+
     void setRateControl(RateControl* rateControl);
+    void setLoopCueWorker(CachingReaderWorker* pWorker);
 
     bool isLoopingEnabled() {
         return m_bLoopingEnabled;
@@ -156,10 +206,27 @@ class LoopingControl : public EngineControl {
     void slotLoopHalve(double pressed);
     void slotLoopRemove();
 
+#ifdef BUILD_TESTING
+    void setF001ProbeForTest(F001ProbeForTest* pProbe) {
+        m_pF001ProbeForTest.store(pProbe, std::memory_order_release);
+    }
+#endif
+
   private slots:
     void slotLoopEnabledValueChangeRequest(double enabled);
 
   private:
+#ifdef BUILD_TESTING
+    std::optional<LoopInfo> tryGetStableLoopInfoForTest(
+            LoopScalarObservationCallerForTest caller) const;
+    std::optional<LoopInfo> tryGetStableLoopInfoWithObservationForTest(
+            LoopScalarObservationForTest* pObservation) const;
+    void setLoopScalarObservationTraceForTest(
+            LoopScalarObservationTraceForTest* pTrace) {
+        m_pLoopScalarObservationTraceForTest.store(
+                pTrace, std::memory_order_release);
+    }
+#endif
     void setLoopingEnabled(bool enabled);
     void repeatToggled(double value);
     void setLoopInToCurrentPosition();
@@ -167,7 +234,8 @@ class LoopingControl : public EngineControl {
 
     void storeLoopInfo();
     void restoreLoopInfo();
-    void updateLoopCue(const LoopInfo& loopInfo);
+    void updateLoopCue();
+    void commitLoopInfo(const LoopInfo& loopInfo);
 
     void clearActiveBeatLoop();
     void clearLoopInfoAndControls();
@@ -265,11 +333,34 @@ class LoopingControl : public EngineControl {
     // objects below are written from an engine worker thread
     TrackPointer m_pTrack;
     mixxx::BeatsPointer m_pBeats;
+    // Non-owning worker used to request fresh loop-cue scalar sampling. The
+    // callback never accesses Track/Cue through this pointer.
+    std::atomic<CachingReaderWorker*> m_pLoopCueWorker{nullptr};
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    static constexpr std::uint64_t kCertificateLimit = std::uint64_t{1} << 63;
+    std::atomic<std::uint64_t> m_loopScalarWriters{0};
+    std::atomic<std::uint64_t> m_loopScalarRevision{0};
+    std::atomic<bool> m_loopCertificateExhausted{false};
+#ifdef BUILD_TESTING
+    // Installed before the selected test's scalar publication and cleared
+    // after the worker join. Records use a fixed-capacity atomic index.
+    std::atomic<LoopScalarObservationTraceForTest*>
+            m_pLoopScalarObservationTraceForTest{nullptr};
+    std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+    // Installed before starting a test producer and cleared after its join.
+    // Phase 0 holds an active writer; 1 delays notification; 2 holds an observer.
+    void (*m_loopPublicationHookForTest)(void*, int){nullptr};
+    void* m_loopPublicationContextForTest{nullptr};
+#endif
     // Flag that allows to act quantized only if we have true track beats.
     // See quantizeEnabledAndHasTrueTrackBeats()
     bool m_trueTrackBeats;
 
     friend class LoopingControlTest;
+    friend class CachingReaderWorker;
+    friend class CachingReaderWorkerTest;
+    friend class EngineBufferAlignmentTest;
 };
 
 // Class for handling loop moves of a set size. This allows easy access from

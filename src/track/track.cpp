@@ -1,4 +1,8 @@
 #include "track/track.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#include "test/f001rtprobe.h"
+#endif
 
 #include <QDebug>
 #include <atomic>
@@ -1079,14 +1083,92 @@ void Track::analysisFinished() {
     emit analyzed();
 }
 
+#ifdef BUILD_TESTING
+void Track::setF001ProbeForTest(F001ProbeForTest* pProbe) {
+    m_pF001ProbeForTest.store(pProbe, std::memory_order_release);
+    const auto lock = lockMutex(&m_qMutex);
+    for (const auto& pCue : m_cuePoints) {
+        pCue->setF001ProbeForTest(pProbe);
+    }
+}
+
+QList<CuePointer> Track::getCuePoints() const {
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::GetCuePoints,
+            this);
+    auto lock = lockMutex(&m_qMutex);
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::GetCuePoints,
+            this);
+    auto cues = m_cuePoints;
+    lock.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::GetCuePoints,
+            this);
+    return cues;
+}
+#endif
+
 mixxx::audio::FramePos Track::getMainCuePosition() const {
-    const auto locked = lockMutex(&m_qMutex);
-    return m_record.getMainCuePosition();
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::GetMainCuePosition,
+            this,
+            nullptr);
+#endif
+    auto locked = lockMutex(&m_qMutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::GetMainCuePosition,
+            this,
+            nullptr);
+#endif
+    const auto position = m_record.getMainCuePosition();
+#ifdef BUILD_TESTING
+    locked.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::GetMainCuePosition,
+            this,
+            nullptr);
+#endif
+    return position;
 }
 
 void Track::slotCueUpdated() {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::TrackSlotCueUpdated, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackCueUpdated,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::SlotCueUpdated,
+            this,
+            nullptr);
+#endif
     markDirty();
     emit cuesUpdated();
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackCueUpdated,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::SlotCueUpdated,
+            this,
+            nullptr);
+#endif
 }
 
 CuePointer Track::createAndAddCue(
@@ -1095,6 +1177,10 @@ CuePointer Track::createAndAddCue(
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition,
         mixxx::RgbColor color) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::TrackCreateAndAddCue, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
     VERIFY_OR_DEBUG_ASSERT(hotCueIndex == Cue::kNoHotCue ||
             hotCueIndex >= mixxx::kFirstHotCueIndex) {
         return CuePointer{};
@@ -1108,18 +1194,62 @@ CuePointer Track::createAndAddCue(
             startPosition,
             endPosition,
             color));
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue,
+            this,
+            pCue.get());
+#endif
+
     // While this method could be called from any thread,
     // associated Cue objects should always live on the
     // same thread as their host, namely this->thread().
     pCue->moveToThread(thread());
+#ifdef BUILD_TESTING
+    pCue->setF001ProbeForTest(m_pF001ProbeForTest.load(std::memory_order_acquire));
+#endif
     connect(pCue.get(),
             &Cue::updated,
             this,
             &Track::slotCueUpdated);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::CreateAndAddCue,
+            this,
+            pCue.get());
+#endif
     auto locked = lockMutex(&m_qMutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::CreateAndAddCue,
+            this,
+            pCue.get());
+#endif
     m_cuePoints.push_back(pCue);
     markDirtyAndUnlock(&locked);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::CreateAndAddCue,
+            this,
+            pCue.get());
+#endif
     emit cuesUpdated();
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::CreateAndAddCue,
+            this,
+            pCue.get());
+#endif
     return pCue;
 }
 
@@ -1204,7 +1334,36 @@ void Track::removeCuesOfType(mixxx::CueType type) {
 }
 
 void Track::removeTempLoopCue() {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::TrackRemoveTempLoopCue, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackRemoveTemporaryCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            this,
+            nullptr);
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            this,
+            nullptr);
+#endif
     auto locked = lockMutex(&m_qMutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            this,
+            nullptr);
+#endif
+
     bool dirty = false;
     QMutableListIterator<CuePointer> it(m_cuePoints);
     while (it.hasNext()) {
@@ -1218,8 +1377,38 @@ void Track::removeTempLoopCue() {
     }
     if (dirty) {
         markDirtyAndUnlock(&locked);
+#ifdef BUILD_TESTING
+        f001RecordObjectForTest(m_pF001ProbeForTest,
+                F001ProbeEventForTest::TrackMutex,
+                F001ProbePhaseForTest::Released,
+                F001ProbeMethodForTest::RemoveTempLoopCue,
+                this,
+                nullptr);
+#endif
         emit cuesUpdated();
+    } else {
+#ifdef BUILD_TESTING
+        locked.unlock();
+        f001RecordObjectForTest(m_pF001ProbeForTest,
+                F001ProbeEventForTest::TrackMutex,
+                F001ProbePhaseForTest::Released,
+                F001ProbeMethodForTest::RemoveTempLoopCue,
+                this,
+                nullptr);
+#endif
     }
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackRemoveTemporaryCue,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            this,
+            nullptr,
+            0,
+            0,
+            0,
+            dirty ? 1U : 0U);
+#endif
 }
 
 void Track::swapHotcues(int a, int b) {
@@ -1506,8 +1695,32 @@ void Track::importPendingCueInfosMarkDirtyAndUnlock(
 }
 
 void Track::markDirty() {
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::MarkDirty,
+            this,
+            nullptr);
+#endif
     auto locked = lockMutex(&m_qMutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::MarkDirty,
+            this,
+            nullptr);
+#endif
     setDirtyAndUnlock(&locked, true);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::TrackMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::MarkDirty,
+            this,
+            nullptr);
+#endif
 }
 
 void Track::markClean() {

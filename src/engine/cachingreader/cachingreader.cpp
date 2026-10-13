@@ -3,6 +3,7 @@
 #include <QtDebug>
 #include <algorithm>
 
+#include "engine/controls/loopingcontrol.h"
 #include "engine/controls/seek30control.h"
 #include "moc_cachingreader.cpp"
 #include "util/assert.h"
@@ -118,6 +119,7 @@ CachingReader::CachingReader(const QString& group,
 
 CachingReader::~CachingReader() {
     m_diagnosticsTimer.stop();
+    setLoopingControl(nullptr);
     m_worker.quitWait();
     discardPendingStatusUpdates();
     qDeleteAll(m_chunks);
@@ -128,6 +130,27 @@ void CachingReader::setSeek30Control(Seek30Control* pControl) {
     if (pControl) {
         pControl->setWorker(&m_worker);
     }
+}
+
+#ifdef BUILD_TESTING
+void CachingReader::setF001ProbeForTest(F001ProbeForTest* pProbe) {
+    m_worker.setF001ProbeForTest(pProbe);
+}
+#endif
+
+void CachingReader::setLoopingControl(LoopingControl* pControl) {
+    if (m_pLoopingControl) {
+        m_pLoopingControl->setLoopCueWorker(nullptr);
+    }
+    m_pLoopingControl = pControl;
+    if (pControl) {
+        m_worker.setLoopingControl(pControl);
+        pControl->setLoopCueWorker(&m_worker);
+    }
+    // On teardown the worker retains the non-owning scalar-control pointer
+    // until quitWait() completes its final coalesced drain. EngineBuffer
+    // detaches this producer before deleting the reader and destroys the
+    // control objects only after the reader has joined.
 }
 
 void CachingReader::reportDiagnostics() {

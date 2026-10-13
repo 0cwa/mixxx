@@ -2,12 +2,18 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QEvent>
 #include <QScopedPointer>
+#include <QSemaphore>
+#include <QThread>
 #include <QtDebug>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -20,7 +26,10 @@
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
+#include "engine/engineworkerscheduler.h"
+#include "test/librarytest.h"
 #include "test/mixxxtest.h"
+#include "track/globaltrackcache.h"
 #include "track/track.h"
 #include "util/assert.h"
 #include "util/defs.h"
@@ -302,13 +311,854 @@ TEST_F(CachingReaderStatusQueueTest,
     EXPECT_EQ(CachingReader::STATE_IDLE, reader.m_state.loadAcquire());
 }
 
-class CachingReaderWorkerTest : public ::testing::Test {
+TEST(LoopCueApplyTraceForTest, CapacityOverflowIsBoundedAndSticky) {
+    LoopCueApplyTraceForTest workerTrace;
+    for (std::size_t index = 0;
+            index < LoopCueApplyTraceForTest::kCapacity;
+            ++index) {
+        LoopCueApplySnapshotForTest entry;
+        entry.trackIdentity = static_cast<std::uintptr_t>(index + 1);
+        workerTrace.append(entry);
+    }
+    ASSERT_EQ(LoopCueApplyTraceForTest::kCapacity, workerTrace.count);
+    EXPECT_FALSE(workerTrace.overflow);
+
+    LoopCueApplySnapshotForTest workerOverflowEntry;
+    workerOverflowEntry.trackIdentity = LoopCueApplyTraceForTest::kCapacity + 1;
+    workerTrace.append(workerOverflowEntry);
+    EXPECT_TRUE(workerTrace.overflow);
+    EXPECT_EQ(LoopCueApplyTraceForTest::kCapacity, workerTrace.count);
+    EXPECT_EQ(std::uintptr_t{1}, workerTrace.entries.front().trackIdentity);
+    EXPECT_EQ(LoopCueApplyTraceForTest::kCapacity,
+            workerTrace.entries.back().trackIdentity);
+    workerTrace.append(workerOverflowEntry);
+    EXPECT_TRUE(workerTrace.overflow);
+    EXPECT_EQ(LoopCueApplyTraceForTest::kCapacity, workerTrace.count);
+
+    LoopScalarObservationTraceForTest scalarTrace;
+    for (std::size_t index = 0;
+            index < LoopScalarObservationTraceForTest::kCapacity;
+            ++index) {
+        LoopScalarObservationForTest entry;
+        entry.revision = static_cast<std::uint64_t>(index + 1);
+        scalarTrace.append(entry);
+    }
+    ASSERT_EQ(LoopScalarObservationTraceForTest::kCapacity,
+            scalarTrace.count.load(std::memory_order_relaxed));
+    EXPECT_FALSE(scalarTrace.overflow.load(std::memory_order_relaxed));
+
+    LoopScalarObservationForTest scalarOverflowEntry;
+    scalarOverflowEntry.revision = static_cast<std::uint64_t>(
+            LoopScalarObservationTraceForTest::kCapacity + 1);
+    scalarTrace.append(scalarOverflowEntry);
+    EXPECT_TRUE(scalarTrace.overflow.load(std::memory_order_relaxed));
+    EXPECT_EQ(LoopScalarObservationTraceForTest::kCapacity + 1,
+            scalarTrace.count.load(std::memory_order_relaxed));
+    EXPECT_EQ(std::uint64_t{1}, scalarTrace.entries.front().revision);
+    EXPECT_EQ(LoopScalarObservationTraceForTest::kCapacity,
+            scalarTrace.entries.back().revision);
+    scalarTrace.append(scalarOverflowEntry);
+    EXPECT_TRUE(scalarTrace.overflow.load(std::memory_order_relaxed));
+    EXPECT_EQ(LoopScalarObservationTraceForTest::kCapacity + 2,
+            scalarTrace.count.load(std::memory_order_relaxed));
+}
+
+class CachingReaderWorkerTest : public LibraryTest {
   protected:
+    // Standalone LoopingControl resolves these deck-owned controls at creation.
+    // In particular removal calls setLoopingEnabled(), which reads slip_enabled.
+    ControlObject m_slipEnabled{ConfigKey(kGroup, QStringLiteral("slip_enabled"))};
+    ControlObject m_quantizeEnabled{ConfigKey(kGroup, QStringLiteral("quantize"))};
+    ControlObject m_play{ConfigKey(kGroup, QStringLiteral("play"))};
+    ControlObject m_repeat{ConfigKey(kGroup, QStringLiteral("repeat"))};
+
+    // A real setter runs on the producer thread. Only the selected first
+    // invocation pauses; subsequent setters can finish while A is suspended.
+    // Destruction always releases/joins, including after fatal assertions.
+    class HeldPublication {
+      public:
+        HeldPublication(LoopingControl& control, int phase)
+                : m_control(control),
+                  m_phase(phase) {
+            control.m_loopPublicationContextForTest = this;
+            control.m_loopPublicationHookForTest = [](void* context, int phase) {
+                auto& self = *static_cast<HeldPublication*>(context);
+                if (phase == self.m_phase && self.m_armed.exchange(false)) {
+                    self.m_entered.release();
+                    self.m_release.acquire();
+                }
+            };
+        }
+        ~HeldPublication() {
+            releaseAndJoin();
+            m_control.m_loopPublicationHookForTest = nullptr;
+            m_control.m_loopPublicationContextForTest = nullptr;
+        }
+        template<typename Setter>
+        void start(Setter setter) {
+            m_thread = std::thread(setter);
+        }
+        bool awaitHeld() {
+            return m_entered.tryAcquire(1, 2000);
+        }
+        void releaseAndJoin() {
+            if (m_thread.joinable()) {
+                m_release.release();
+                m_thread.join();
+            }
+        }
+
+      private:
+        LoopingControl& m_control;
+        const int m_phase;
+        std::atomic<bool> m_armed{true};
+        QSemaphore m_entered;
+        QSemaphore m_release;
+        std::thread m_thread;
+    };
+
+    static void holdPersistence(CachingReaderWorker& worker) {
+        worker.m_holdLoopCuePersistenceForTest.store(true);
+        worker.notifyLoopCueUpdate();
+        worker.wakeIfReady();
+    }
+
+    static bool persistenceHeld(const CachingReaderWorker& worker) {
+        return worker.m_loopPersistenceHoldObservedForTest.load();
+    }
+    class SchedulerStartupProbe : public EngineWorker {
+      public:
+        bool takeWake() {
+            return m_semaRun.tryAcquire();
+        }
+    };
     static bool publishStatus(
             CachingReaderWorker& worker, const ReaderStatusUpdate& update) {
         return worker.publishStatus(update);
     }
+
+    static void updateTrack(
+            CachingReaderWorker& worker, const TrackPointer& pTrack) {
+        worker.updateSeek30Track(pTrack);
+    }
+
+    static void setLoopCueApplyTrace(
+            CachingReaderWorker& worker, LoopCueApplyTraceForTest* pTrace) {
+        worker.m_seek30State.setLoopCueApplyTraceForTest(pTrace);
+    }
+
+    static void setLoopScalarObservationTrace(
+            LoopingControl& control, LoopScalarObservationTraceForTest* pTrace) {
+        control.setLoopScalarObservationTraceForTest(pTrace);
+    }
+
+    static void observeLoopScalarForTest(
+            LoopingControl& control, LoopScalarObservationCallerForTest caller) {
+        (void)control.tryGetStableLoopInfoForTest(caller);
+    }
+
+    static void drain(CachingReaderWorker& worker) {
+        worker.processLoopCueUpdate();
+    }
+
+    static void commit(LoopingControl& control, int start, int end) {
+        LoopingControl::LoopInfo info;
+        if (start >= 0) {
+            info.startPosition = mixxx::audio::FramePos{start};
+        }
+        if (end >= 0) {
+            info.endPosition = mixxx::audio::FramePos{end};
+        }
+        control.commitLoopInfo(info);
+    }
+
+    static bool dirty(const CachingReaderWorker& worker) {
+        return worker.m_loopCueDirty.load();
+    }
+
+    static void approachCertificateLimit(LoopingControl& control) {
+        control.m_loopScalarRevision.store(LoopingControl::kCertificateLimit - 1);
+    }
+
+    static bool enteredIdle(const CachingReaderWorker& worker) {
+        return worker.m_idleEntriesForTest.load() != 0;
+    }
+
+    static CachingReaderWorker& readerWorker(CachingReader& reader) {
+        return reader.m_worker;
+    }
+
+    static bool loadNow(CachingReaderWorker& worker, const TrackPointer& track) {
+#ifdef __STEM__
+        return worker.loadTrack(track, mixxx::StemChannelSelection{});
+#else
+        return worker.loadTrack(track);
+#endif
+    }
+
+    static bool unloadNow(CachingReaderWorker& worker) {
+        return worker.unloadTrack();
+    }
+
+    static std::uint64_t idleEntries(const CachingReaderWorker& worker) {
+        return worker.m_idleEntriesForTest.load();
+    }
+
+    static CuePointer temporaryCue(const TrackPointer& track) {
+        for (const auto& cue : track->getCuePoints()) {
+            if (cue->getType() == mixxx::CueType::Loop &&
+                    cue->getHotCue() == Cue::kNoHotCue) {
+                return cue;
+            }
+        }
+        return {};
+    }
+
+    static bool hasRange(const TrackPointer& track, int start, int end) {
+        const auto cue = temporaryCue(track);
+        if (!cue) {
+            return start < 0 && end < 0;
+        }
+        const auto range = cue->getStartAndEndPosition();
+        return range.startPosition == mixxx::audio::FramePos{start} &&
+                range.endPosition == mixxx::audio::FramePos{end};
+    }
 };
+
+TEST_F(CachingReaderWorkerTest, LateNotificationSamplesFinalScalarAndRemoval) {
+    FIFO<CachingReaderChunkReadRequest> requests(1);
+    FIFO<ReaderStatusUpdate> statuses(1);
+    EngineWorkerScheduler scheduler;
+    LoopingControl control(kGroup, config());
+    CachingReaderWorker worker(
+            kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+    worker.setScheduler(&scheduler);
+    worker.setLoopingControl(&control);
+    const auto track = Track::newTemporary(QStringLiteral("/mixxx-test-data/loop.wav"));
+    updateTrack(worker, track);
+
+    control.setLoopCueWorker(&worker);
+    for (bool remove : {false, true}) {
+        commit(control, 100, 200);
+        HeldPublication held(control, 1);
+        held.start([&] { control.slotLoopEndPos(600.0); }); // A: [100,300]
+        ASSERT_TRUE(held.awaitHeld());
+        // B completes the real setter and notification while A is suspended
+        // between its scalar commit and notification. No queue capacity exists.
+        for (int index = 0; index < 64; ++index) {
+            control.slotLoopEndPos(
+                    mixxx::audio::FramePos{500 + index}.toEngineSamplePos());
+        }
+        if (remove) {
+            control.slotLoopStartPos(-1.0);
+            control.slotLoopEndPos(-1.0);
+        }
+        drain(worker);
+        EXPECT_TRUE(hasRange(track, remove ? -1 : 100, remove ? -1 : 563));
+        held.releaseAndJoin();
+        drain(worker);
+        EXPECT_TRUE(hasRange(track, remove ? -1 : 100, remove ? -1 : 563));
+        const auto final = control.tryGetStableLoopInfo();
+        ASSERT_TRUE(final);
+        if (remove) {
+            EXPECT_EQ(mixxx::audio::kInvalidFramePos, final->endPosition);
+        } else {
+            EXPECT_EQ(mixxx::audio::FramePos{563}, final->endPosition);
+        }
+    }
+    control.setLoopCueWorker(nullptr);
+}
+
+TEST_F(CachingReaderWorkerTest, ActiveScalarWriterRearmsDirtyObservation) {
+    FIFO<CachingReaderChunkReadRequest> requests(1);
+    FIFO<ReaderStatusUpdate> statuses(1);
+    EngineWorkerScheduler scheduler;
+    LoopingControl control(kGroup, config());
+    CachingReaderWorker worker(
+            kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+    worker.setScheduler(&scheduler);
+    worker.setLoopingControl(&control);
+    const auto track = Track::newTemporary(QStringLiteral("/mixxx-test-data/loop.wav"));
+    updateTrack(worker, track);
+    commit(control, 100, 200);
+    worker.notifyLoopCueUpdate();
+    drain(worker);
+    HeldPublication held(control, 0);
+    held.start([&] { control.slotLoopEndPos(2400.0); });
+    ASSERT_TRUE(held.awaitHeld());
+    worker.notifyLoopCueUpdate();
+    drain(worker);
+    EXPECT_TRUE(dirty(worker));
+    EXPECT_FALSE(control.tryGetStableLoopInfo());
+    EXPECT_TRUE(hasRange(track, 100, 200));
+    held.releaseAndJoin();
+    drain(worker); // uses the rearmed notification, no additional notify
+    EXPECT_FALSE(dirty(worker));
+    EXPECT_TRUE(hasRange(track, 100, 1200));
+}
+
+TEST_F(CachingReaderWorkerTest, CompletedWriterInvalidatesObservationWithoutLosingDirty) {
+    FIFO<CachingReaderChunkReadRequest> requests(1);
+    FIFO<ReaderStatusUpdate> statuses(1);
+    EngineWorkerScheduler scheduler;
+    LoopingControl control(kGroup, config());
+    CachingReaderWorker worker(
+            kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+    worker.setScheduler(&scheduler);
+    worker.setLoopingControl(&control);
+    const auto track = Track::newTemporary(QStringLiteral("/mixxx-test-data/loop.wav"));
+    updateTrack(worker, track);
+    commit(control, 100, 200);
+    worker.notifyLoopCueUpdate();
+    drain(worker);
+    commit(control, 300, 400);
+    worker.notifyLoopCueUpdate();
+    HeldPublication held(control, 2);
+    held.start([&] { drain(worker); });
+    ASSERT_TRUE(held.awaitHeld());
+    commit(control, 500, 600);
+    worker.notifyLoopCueUpdate();
+    held.releaseAndJoin();
+    // The observer saw A, but B completed before its second certificate check.
+    // Reject A, keep B's dirty request, and converge without another producer.
+    EXPECT_TRUE(hasRange(track, 100, 200));
+    EXPECT_TRUE(dirty(worker));
+    drain(worker);
+    EXPECT_TRUE(hasRange(track, 500, 600));
+    EXPECT_FALSE(dirty(worker));
+}
+
+TEST_F(CachingReaderWorkerTest, ScalarCertificateExhaustionFailsClosed) {
+    LoopingControl control(kGroup, config());
+    commit(control, 100, 200);
+    ASSERT_TRUE(control.tryGetStableLoopInfo());
+    approachCertificateLimit(control);
+    commit(control, 300, 400);
+    EXPECT_FALSE(control.tryGetStableLoopInfo());
+    commit(control, 500, 600);
+    EXPECT_FALSE(control.tryGetStableLoopInfo());
+}
+
+TEST_F(CachingReaderWorkerTest, LateNotificationUsesCurrentOwnerDistinctSentinel) {
+    FIFO<CachingReaderChunkReadRequest> requests(1);
+    FIFO<ReaderStatusUpdate> statuses(1);
+    EngineWorkerScheduler scheduler;
+    LoopingControl control(kGroup, config());
+    CachingReaderWorker worker(
+            kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+    worker.setScheduler(&scheduler);
+    worker.setLoopingControl(&control);
+    const auto oldTrack = Track::newTemporary(QStringLiteral("/mixxx-test-data/old.wav"));
+    const auto newTrack = Track::newTemporary(QStringLiteral("/mixxx-test-data/new.wav"));
+    updateTrack(worker, oldTrack);
+    commit(control, 300, 400);
+    worker.notifyLoopCueUpdate();
+    drain(worker);
+
+    // A delayed notification cannot carry the old owner's [300,400].
+    updateTrack(worker, newTrack);
+    commit(control, 900, 1200);
+    worker.notifyLoopCueUpdate();
+    drain(worker);
+    EXPECT_TRUE(hasRange(oldTrack, 300, 400));
+    EXPECT_TRUE(hasRange(newTrack, 900, 1200));
+    updateTrack(worker, TrackPointer());
+    worker.notifyLoopCueUpdate();
+    drain(worker);
+    EXPECT_TRUE(hasRange(oldTrack, 300, 400));
+    EXPECT_TRUE(hasRange(newTrack, 900, 1200));
+}
+
+TEST_F(CachingReaderWorkerTest, LateNotificationAcrossActualLoadReloadFailureAndUnload) {
+    FIFO<CachingReaderChunkReadRequest> requests(1);
+    FIFO<ReaderStatusUpdate> statuses(32);
+    EngineWorkerScheduler scheduler;
+    LoopingControl control(kGroup, config());
+    CachingReaderWorker worker(
+            kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+    worker.setScheduler(&scheduler);
+    worker.setLoopingControl(&control);
+    const auto path = getTestDir().filePath(QStringLiteral("sine-30.wav"));
+    const auto oldTrack = Track::newTemporary(path);
+    const auto newTrack = Track::newTemporary(path);
+    commit(control, 300, 400);
+    ASSERT_TRUE(loadNow(worker, oldTrack));
+    ASSERT_TRUE(hasRange(oldTrack, 300, 400));
+    control.setLoopCueWorker(&worker);
+    // Real production load/adoption runs serially on this fixture thread,
+    // while a real setter's post-commit notification is held on another thread.
+    // Fixture scalar restoration deliberately does not claim that GUI's two
+    // notifying setters isolate the departing Track (baseline W4 limitation).
+    {
+        HeldPublication held(control, 1);
+        held.start([&] { control.slotLoopEndPos(1000.0); });
+        ASSERT_TRUE(held.awaitHeld());
+        commit(control, 900, 1200);
+        ASSERT_TRUE(loadNow(worker, newTrack));
+        held.releaseAndJoin();
+        drain(worker);
+    }
+    const auto loadedGeneration = worker.seek30Generation();
+    EXPECT_TRUE(hasRange(oldTrack, 300, 400));
+    EXPECT_TRUE(hasRange(newTrack, 900, 1200));
+
+    {
+        HeldPublication held(control, 1);
+        held.start([&] { control.slotLoopEndPos(2600.0); });
+        ASSERT_TRUE(held.awaitHeld());
+        commit(control, 1500, 1800);
+        ASSERT_TRUE(loadNow(worker, newTrack));
+        held.releaseAndJoin();
+        drain(worker);
+    }
+    EXPECT_GT(worker.seek30Generation(), loadedGeneration);
+    EXPECT_TRUE(hasRange(newTrack, 1500, 1800));
+
+    const auto missing = Track::newTemporary(
+            getTestDataDir().filePath(QStringLiteral("missing-loop-source.wav")));
+    {
+        HeldPublication held(control, 1);
+        held.start([&] { control.slotLoopEndPos(4000.0); });
+        ASSERT_TRUE(held.awaitHeld());
+        ASSERT_TRUE(loadNow(worker, missing)); // handled failure
+        held.releaseAndJoin();
+        drain(worker);
+    }
+    EXPECT_FALSE(temporaryCue(missing));
+    EXPECT_TRUE(hasRange(newTrack, 1500, 1800));
+    commit(control, 1500, 1800);
+    ASSERT_TRUE(loadNow(worker, newTrack));
+    {
+        HeldPublication held(control, 1);
+        held.start([&] { control.slotLoopEndPos(4400.0); });
+        ASSERT_TRUE(held.awaitHeld());
+        ASSERT_TRUE(unloadNow(worker));
+        commit(control, 2000, 3000);
+        held.releaseAndJoin();
+        drain(worker);
+    }
+    EXPECT_FALSE(temporaryCue(missing));
+    EXPECT_TRUE(hasRange(newTrack, 1500, 1800));
+    control.setLoopCueWorker(nullptr);
+}
+
+TEST_F(CachingReaderWorkerTest, ReaderFinalDrainSurvivesDatabaseEvictionReload) {
+    auto savedLoopUnchanged = [](const TrackPointer& track) {
+        for (const auto& cue : track->getCuePoints()) {
+            if (cue->getType() == mixxx::CueType::Loop && cue->getHotCue() == 2) {
+                const auto range = cue->getStartAndEndPosition();
+                return range.startPosition == mixxx::audio::FramePos{10} &&
+                        range.endPosition == mixxx::audio::FramePos{20};
+            }
+        }
+        return false;
+    };
+    for (bool remove : {false, true}) {
+        auto track = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        track->createAndAddCue(mixxx::CueType::Loop, 2, mixxx::audio::FramePos{10}, mixxx::audio::FramePos{20});
+        track->createAndAddCue(mixxx::CueType::Loop, Cue::kNoHotCue, mixxx::audio::FramePos{100}, mixxx::audio::FramePos{200});
+        const auto id = internalCollection()->addTrack(track, false);
+        ASSERT_TRUE(id.isValid());
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        if (track->isDirty()) {
+            ASSERT_TRUE(internalCollection()->saveTrack(track.get()));
+        }
+        ASSERT_FALSE(track->isDirty());
+        track.reset();
+        ASSERT_TRUE(GlobalTrackCacheLocker().isEmpty());
+        track = internalCollection()->getTrackById(id);
+        ASSERT_TRUE(track);
+        ASSERT_TRUE(hasRange(track, 100, 200));
+        ASSERT_TRUE(savedLoopUnchanged(track));
+        EngineWorkerScheduler scheduler;
+        LoopingControl control(kGroup, config());
+        std::atomic<bool> actualLoadCompleted{false};
+        LoopCueApplyTraceForTest loopCueApplyTrace;
+        auto reader = std::make_unique<CachingReader>(
+                kGroup, config(), mixxx::audio::ChannelCount::stereo());
+        QObject::connect(reader.get(), &CachingReader::trackLoaded, reader.get(), [&] { actualLoadCompleted.store(true); }, Qt::DirectConnection);
+        reader->setScheduler(&scheduler);
+        reader->setLoopingControl(&control);
+        auto& worker = readerWorker(*reader);
+        commit(control, 100, 200);
+        const auto initialIdle = idleEntries(worker);
+        reader->newTrack(track);
+        worker.wakeIfReady();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while ((!actualLoadCompleted.load() || idleEntries(worker) <= initialIdle ||
+                       !hasRange(track, 100, 200)) &&
+                std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        const bool loadedAndIdle = actualLoadCompleted.load() &&
+                idleEntries(worker) > initialIdle &&
+                hasRange(track, 100, 200);
+        EXPECT_TRUE(loadedAndIdle);
+        if (!loadedAndIdle) {
+            reader.reset();
+            return;
+        }
+        // Acknowledge a hold of ordinary persistence. This forces the final
+        // pending state even if reader startup left a surplus wake. Stop makes
+        // the test-only hold yield to the production final drain.
+        holdPersistence(worker);
+        const auto holdDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!persistenceHeld(worker) &&
+                std::chrono::steady_clock::now() < holdDeadline) {
+            std::this_thread::yield();
+        }
+        ASSERT_TRUE(persistenceHeld(worker));
+        CachingReaderWorkerTest::setLoopCueApplyTrace(worker, &loopCueApplyTrace);
+        // Flush only SETUP notifications, then save any decoder/load metadata.
+        // The existing temporary cue was persisted and reloaded above; neither
+        // a new unsaved cue nor queued setup slots may mask final-resize loss.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        if (track->isDirty()) {
+            ASSERT_TRUE(internalCollection()->saveTrack(track.get()));
+        }
+        ASSERT_FALSE(track->isDirty());
+        auto existingCue = temporaryCue(track);
+        ASSERT_TRUE(existingCue);
+        EXPECT_EQ(track->thread(), existingCue->thread());
+        QThread* const trackOwnerThread = track->thread();
+        EXPECT_EQ(QThread::currentThread(), trackOwnerThread);
+        std::atomic<int> cueUpdates{0};
+        std::atomic<bool> wrongEmitter{false};
+        QObject observer;
+        QObject::connect(existingCue.get(), &Cue::updated, &observer, [&] {
+            cueUpdates.fetch_add(1);
+            if (QThread::currentThread() != &worker) {
+                wrongEmitter.store(true);
+            } }, Qt::DirectConnection);
+        std::atomic<int> queuedCueUpdates{0};
+        std::atomic<bool> wrongQueuedReceiverThread{false};
+        QObject queuedObserver;
+        EXPECT_EQ(trackOwnerThread, queuedObserver.thread());
+        QObject::connect(existingCue.get(), &Cue::updated, &queuedObserver, [&] {
+            queuedCueUpdates.fetch_add(1);
+            if (QThread::currentThread() != trackOwnerThread) {
+                wrongQueuedReceiverThread.store(true);
+            } }, Qt::AutoConnection);
+        LoopScalarObservationTraceForTest scalarObservationTrace;
+        CachingReaderWorkerTest::setLoopScalarObservationTrace(
+                control, &scalarObservationTrace);
+        control.slotLoopStartPos(
+                remove ? mixxx::audio::FramePos::kLegacyInvalidEnginePosition
+                       : mixxx::audio::FramePos{2000}.toEngineSamplePos());
+        control.slotLoopEndPos(
+                remove ? mixxx::audio::FramePos::kLegacyInvalidEnginePosition
+                       : mixxx::audio::FramePos{7000}.toEngineSamplePos());
+        CachingReaderWorkerTest::observeLoopScalarForTest(
+                control, LoopScalarObservationCallerForTest::PostSetter);
+        EXPECT_TRUE(dirty(worker));
+        EXPECT_TRUE(hasRange(track, 100, 200));
+        EXPECT_FALSE(track->isDirty());
+        reader.reset(); // production detach, quitWait, final drain, owner release
+        CachingReaderWorkerTest::setLoopScalarObservationTrace(control, nullptr);
+        ASSERT_FALSE(loopCueApplyTrace.overflow);
+        ASSERT_FALSE(scalarObservationTrace.overflow.load(std::memory_order_relaxed));
+        // No processEvents/sendPostedEvents until after eviction and reload.
+        // In the resize case Cue::updated is queued to Track's owning thread;
+        // synchronous save visibility must not depend on delivery of that slot.
+        EXPECT_TRUE(track->isDirty());
+        const auto afterJoinCue = temporaryCue(track);
+        std::ostringstream traceText;
+        traceText << "remove=" << remove
+                  << "; overflow=" << loopCueApplyTrace.overflow
+                  << "; count=" << loopCueApplyTrace.count
+                  << "; after_join_cue_present=" << static_cast<bool>(afterJoinCue)
+                  << "; after_join_has_expected_range="
+                  << hasRange(track, remove ? -1 : 2000, remove ? -1 : 7000);
+        if (afterJoinCue) {
+            const auto range = afterJoinCue->getStartAndEndPosition();
+            traceText << "; after_join_cue=";
+            if (range.startPosition.isValid()) {
+                traceText << range.startPosition.value();
+            } else {
+                traceText << "invalid";
+            }
+            traceText << ',';
+            if (range.endPosition.isValid()) {
+                traceText << range.endPosition.value();
+            } else {
+                traceText << "invalid";
+            }
+        }
+        for (std::size_t index = 0; index < loopCueApplyTrace.count; ++index) {
+            const auto& entry = loopCueApplyTrace.entries[index];
+            traceText << "; entry[" << index << "]={branch="
+                      << static_cast<unsigned>(entry.branch)
+                      << ", observed_start=";
+            if (entry.observedStartValid) {
+                traceText << entry.observedStart;
+            } else {
+                traceText << "invalid";
+            }
+            traceText << ", observed_end=";
+            if (entry.observedEndValid) {
+                traceText << entry.observedEnd;
+            } else {
+                traceText << "invalid";
+            }
+            traceText << ", track_identity=" << entry.trackIdentity
+                      << ", track_matches="
+                      << (entry.trackIdentity == reinterpret_cast<std::uintptr_t>(track.get()))
+                      << ", track_id_valid=" << entry.trackIdValid
+                      << ", cue_identity=" << entry.cueIdentity
+                      << ", cue_matches="
+                      << (entry.cueIdentity == reinterpret_cast<std::uintptr_t>(existingCue.get()))
+                      << ", cue_before_present=" << entry.cueBeforePresent
+                      << ", cue_before=";
+            if (entry.cueBeforeStartValid) {
+                traceText << entry.cueBeforeStart;
+            } else {
+                traceText << "invalid";
+            }
+            traceText << ',';
+            if (entry.cueBeforeEndValid) {
+                traceText << entry.cueBeforeEnd;
+            } else {
+                traceText << "invalid";
+            }
+            traceText << ", cue_after_present=" << entry.cueAfterPresent
+                      << ", cue_after=";
+            if (entry.cueAfterStartValid) {
+                traceText << entry.cueAfterStart;
+            } else {
+                traceText << "invalid";
+            }
+            traceText << ',';
+            if (entry.cueAfterEndValid) {
+                traceText << entry.cueAfterEnd;
+            } else {
+                traceText << "invalid";
+            }
+            traceText << '}';
+        }
+        RecordProperty(remove ? "f001_loopcue_remove_trace" : "f001_loopcue_resize_trace",
+                traceText.str());
+        std::ostringstream scalarTraceText;
+        scalarTraceText << "overflow=" << scalarObservationTrace.overflow.load()
+                        << "; count=";
+        const auto scalarObservationCount = std::min(
+                scalarObservationTrace.count.load(),
+                LoopScalarObservationTraceForTest::kCapacity);
+        scalarTraceText << scalarObservationCount;
+        for (std::size_t index = 0; index < scalarObservationCount; ++index) {
+            const auto& observation = scalarObservationTrace.entries[index];
+            scalarTraceText << "; entry[" << index << "]={caller="
+                            << (observation.caller ==
+                                                LoopScalarObservationCallerForTest::PostSetter
+                                        ? "post_setter"
+                                        : "worker_read")
+                            << ", stable=" << observation.stable
+                            << ", revision=" << observation.revision
+                            << ", writers_before=";
+            if (observation.writersBeforeRead) {
+                scalarTraceText << observation.writersBefore;
+            } else {
+                scalarTraceText << "unread";
+            }
+            scalarTraceText << ", start=";
+            if (!observation.stable) {
+                scalarTraceText << "unavailable,unavailable";
+            } else {
+                if (observation.startValid) {
+                    scalarTraceText << observation.startPosition;
+                } else {
+                    scalarTraceText << "invalid";
+                }
+                scalarTraceText << ',';
+                if (observation.endValid) {
+                    scalarTraceText << observation.endPosition;
+                } else {
+                    scalarTraceText << "invalid";
+                }
+            }
+            scalarTraceText << '}';
+        }
+        RecordProperty(
+                remove ? "f001_loopcue_remove_scalar_trace"
+                       : "f001_loopcue_resize_scalar_trace",
+                scalarTraceText.str());
+        EXPECT_EQ(remove ? 0 : 1, cueUpdates.load());
+        EXPECT_FALSE(wrongEmitter.load());
+        EXPECT_EQ(0, queuedCueUpdates.load());
+        EXPECT_FALSE(wrongQueuedReceiverThread.load());
+        EXPECT_TRUE(hasRange(track, remove ? -1 : 2000, remove ? -1 : 7000));
+        EXPECT_TRUE(savedLoopUnchanged(track));
+        if (!remove) {
+            EXPECT_EQ(existingCue, temporaryCue(track));
+        }
+        existingCue.reset();
+        track.reset();
+        ASSERT_TRUE(GlobalTrackCacheLocker().isEmpty());
+        const auto reloaded = internalCollection()->getTrackById(id);
+        ASSERT_TRUE(reloaded);
+        const auto reloadedCue = temporaryCue(reloaded);
+        std::ostringstream reloadedTrace;
+        reloadedTrace << "remove=" << remove
+                      << "; cue_present=" << static_cast<bool>(reloadedCue)
+                      << "; has_expected_range="
+                      << hasRange(reloaded, remove ? -1 : 2000, remove ? -1 : 7000);
+        if (reloadedCue) {
+            const auto range = reloadedCue->getStartAndEndPosition();
+            reloadedTrace << "; cue=";
+            if (range.startPosition.isValid()) {
+                reloadedTrace << range.startPosition.value();
+            } else {
+                reloadedTrace << "invalid";
+            }
+            reloadedTrace << ',';
+            if (range.endPosition.isValid()) {
+                reloadedTrace << range.endPosition.value();
+            } else {
+                reloadedTrace << "invalid";
+            }
+        }
+        RecordProperty(remove ? "f001_loopcue_remove_reloaded_trace" : "f001_loopcue_resize_reloaded_trace",
+                reloadedTrace.str());
+        EXPECT_TRUE(hasRange(reloaded, remove ? -1 : 2000, remove ? -1 : 7000));
+        EXPECT_TRUE(savedLoopUnchanged(reloaded));
+        // Deliver the diagnostic queued copy only after durable state and
+        // Track eviction have already been checked.
+        QCoreApplication::sendPostedEvents(&queuedObserver, QEvent::MetaCall);
+        EXPECT_EQ(remove ? 0 : 1, queuedCueUpdates.load());
+        EXPECT_FALSE(wrongQueuedReceiverThread.load());
+    }
+}
+
+TEST_F(CachingReaderWorkerTest, FinalScalarDrainsAfterStatusBackpressure) {
+    for (bool remove : {false, true}) {
+        FIFO<CachingReaderChunkReadRequest> requests(1);
+        FIFO<ReaderStatusUpdate> statuses(1);
+        auto occupied = ReaderStatusUpdate::trackUnloaded();
+        ASSERT_EQ(1, statuses.write(&occupied, 1));
+        EngineWorkerScheduler scheduler;
+        LoopingControl control(kGroup, config());
+        CachingReaderWorker worker(
+                kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+        worker.setScheduler(&scheduler);
+        worker.setLoopingControl(&control);
+        const auto track = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        commit(control, 100, 200);
+#ifdef __STEM__
+        worker.newTrack(track, mixxx::StemChannelSelection{});
+#else
+        worker.newTrack(track);
+#endif
+        worker.start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (worker.diagnosticState() !=
+                        CachingReaderWorker::DiagnosticState::PublishingStatus &&
+                std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        const bool reachedBackpressure = worker.diagnosticState() ==
+                CachingReaderWorker::DiagnosticState::PublishingStatus;
+        EXPECT_TRUE(reachedBackpressure);
+        EXPECT_FALSE(temporaryCue(track));
+        commit(control, remove ? -1 : 2000, remove ? -1 : 7000);
+        worker.notifyLoopCueUpdate();
+        EXPECT_TRUE(dirty(worker));
+        worker.quitWait();
+        EXPECT_TRUE(hasRange(track, remove ? -1 : 2000, remove ? -1 : 7000));
+    }
+}
+
+TEST_F(CachingReaderWorkerTest, IdleUpdateObservedBeforeShutdown) {
+    FIFO<CachingReaderChunkReadRequest> requests(1);
+    FIFO<ReaderStatusUpdate> statuses(1);
+    auto scheduler = std::make_unique<EngineWorkerScheduler>();
+    LoopingControl control(kGroup, config());
+    CachingReaderWorker worker(
+            kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+    worker.setScheduler(scheduler.get());
+    worker.setLoopingControl(&control);
+    const auto track = Track::newTemporary(QStringLiteral("/mixxx-test-data/idle.wav"));
+    updateTrack(worker, track);
+    worker.start();
+    const auto idleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!enteredIdle(worker) &&
+            std::chrono::steady_clock::now() < idleDeadline) {
+        std::this_thread::yield();
+    }
+    const bool reachedIdle =
+            enteredIdle(worker);
+    // Register probe last: its first wake proves the scheduler has already
+    // passed this reader in its initial worker scan, before we publish work.
+    SchedulerStartupProbe probe;
+    probe.setScheduler(scheduler.get());
+    probe.workReady();
+    scheduler->start();
+    const auto startupDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool schedulerStarted = false;
+    while (std::chrono::steady_clock::now() < startupDeadline) {
+        if (probe.takeWake()) {
+            schedulerStarted = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    commit(control, 2000, 7000);
+    worker.notifyLoopCueUpdate();
+    scheduler->runWorkers();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool observedBeforeQuit = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        // Repeat the real notification plus mixer scheduling boundary. This
+        // also tolerates the scheduler's inherited scan-to-wait wake window;
+        // no direct workerReady call bypasses the handoff being tested.
+        worker.notifyLoopCueUpdate();
+        scheduler->runWorkers();
+        if (hasRange(track, 2000, 7000)) {
+            observedBeforeQuit = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(reachedIdle);
+    EXPECT_TRUE(schedulerStarted);
+    EXPECT_TRUE(observedBeforeQuit); // captured before shutdown's final drain
+    worker.quitWait();
+    scheduler.reset(); // stop scheduler before destroying registered workers
+}
+
+TEST_F(CachingReaderWorkerTest, PendingScalarDrainsOnShutdown) {
+    for (bool remove : {false, true}) {
+        FIFO<CachingReaderChunkReadRequest> requests(1);
+        FIFO<ReaderStatusUpdate> statuses(1);
+        EngineWorkerScheduler scheduler;
+        LoopingControl control(kGroup, config());
+        CachingReaderWorker worker(
+                kGroup, &requests, &statuses, mixxx::audio::ChannelCount::stereo());
+        worker.setScheduler(&scheduler);
+        worker.setLoopingControl(&control);
+        const auto track = Track::newTemporary(QStringLiteral("/mixxx-test-data/final.wav"));
+        updateTrack(worker, track);
+        commit(control, 100, 200);
+        worker.notifyLoopCueUpdate();
+        drain(worker);
+        worker.start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!enteredIdle(worker) &&
+                std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        const bool reachedIdle =
+                enteredIdle(worker);
+        commit(control, remove ? -1 : 2000, remove ? -1 : 7000);
+        worker.notifyLoopCueUpdate();
+        // Scheduler is deliberately never started: only quitWait wakes worker.
+        EXPECT_TRUE(reachedIdle);
+        EXPECT_TRUE(dirty(worker));
+        EXPECT_TRUE(hasRange(track, 100, 200));
+        worker.quitWait();
+        EXPECT_TRUE(hasRange(track, remove ? -1 : 2000, remove ? -1 : 7000));
+    }
+}
 
 TEST_F(CachingReaderWorkerTest,
         ShutdownPublicationFailureSuppressesLoadFailureSignal) {

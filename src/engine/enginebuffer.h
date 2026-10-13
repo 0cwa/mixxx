@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 
 #include "audio/frame.h"
 #include "audio/types.h"
@@ -73,6 +74,9 @@ class EngineSync;
 class EngineWorkerScheduler;
 class VisualPlayPosition;
 class EngineMixer;
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+#endif
 
 class EngineBuffer : public EngineObject {
      Q_OBJECT
@@ -193,6 +197,19 @@ class EngineBuffer : public EngineObject {
 
     bool isTrackLoaded() const;
     TrackPointer getLoadedTrack() const;
+
+    struct LoopCueSnapshot {
+        TrackPointer pTrack;
+        mixxx::audio::FramePos startPosition;
+        mixxx::audio::FramePos endPosition;
+        std::uint64_t generation{0};
+    };
+
+    // Returns a coherent scalar loop snapshot only while the expected Track
+    // is loaded and its load generation is stable. This is a GUI-side clone
+    // handoff; it never waits for or touches the reader worker.
+    std::optional<LoopCueSnapshot> getLoopCueSnapshot(
+            const TrackPointer& pExpectedTrack) const;
     void ejectTrack();
 
     mixxx::audio::FramePos getExactPlayPos() const;
@@ -226,6 +243,7 @@ class EngineBuffer : public EngineObject {
     static void setTestReaderFactory(
             TestReaderFactory factory,
             void* pContext = nullptr);
+    void setF001ProbeForTest(F001ProbeForTest* pProbe);
 #endif
 
     // For injection of fake tracks.
@@ -429,6 +447,7 @@ class EngineBuffer : public EngineObject {
     friend class CueControlTest;
     friend class HotcueControlTest;
     friend class LoopingControlTest;
+    friend class EngineBufferAlignmentTest;
 
     LoopingControl* m_pLoopingControl; // used for tests
 #ifdef BUILD_TESTING
@@ -455,6 +474,9 @@ class EngineBuffer : public EngineObject {
     FRIEND_TEST(CueControlTest, SeekOnSetCuePlay);
 #endif
     CueControl* m_pCueControl;
+#ifdef BUILD_TESTING
+    std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+#endif
     Seek30Control* m_pSeek30Control{nullptr};
 
     QList<EngineControl*> m_engineControls;
@@ -639,6 +661,7 @@ class EngineBuffer : public EngineObject {
 
     // Is true if the previous buffer was silent due to pausing
     QAtomicInt m_iTrackLoading;
+    std::atomic<std::uint64_t> m_trackLoadGeneration{0};
     bool m_bPlayAfterLoading;
     // Records the sample rate so we can detect when it changes. Initialized to
     // 0 to guarantee we see a change on the first callback.
@@ -651,6 +674,7 @@ class EngineBuffer : public EngineObject {
     QAtomicInt m_iChannelCount;
 
     TrackPointer m_pCurrentTrack;
+    std::atomic<Track*> m_pCurrentTrackRaw{nullptr};
 #ifdef __SCALER_DEBUG__
     QFile df;
     QTextStream writer;

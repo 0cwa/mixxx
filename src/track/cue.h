@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QMutex>
 #include <QObject>
+#include <atomic>
 #include <memory>
 #include <type_traits> // static_assert
 
@@ -11,6 +12,10 @@
 #include "track/cueinfo.h"
 #include "util/color/rgbcolor.h"
 #include "util/db/dbid.h"
+
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+#endif
 
 class Cue : public QObject {
     Q_OBJECT
@@ -87,6 +92,12 @@ class Cue : public QObject {
 
     StartAndEndPositions getStartAndEndPosition() const;
 
+#ifdef BUILD_TESTING
+    void setF001ProbeForTest(F001ProbeForTest* pProbe) {
+        m_pF001ProbeForTest.store(pProbe, std::memory_order_release);
+    }
+#endif
+
     mixxx::CueInfo getCueInfo(
             mixxx::audio::SampleRate sampleRate) const;
 
@@ -99,6 +110,9 @@ class Cue : public QObject {
     void setId(DbId dbId);
 
     mutable QMutex m_mutex;
+#ifdef BUILD_TESTING
+    std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+#endif
 
     bool m_bDirty;
     DbId m_dbId;

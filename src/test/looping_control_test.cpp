@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QScopedPointer>
+#include <QTest>
 #include <QtDebug>
+#include <atomic>
 #include <memory>
 
 #include "control/controlobject.h"
@@ -10,6 +14,7 @@
 #include "engine/controls/loopingcontrol.h"
 #include "mixxxtest.h"
 #include "test/mockedenginebackendtest.h"
+#include "track/track.h"
 
 namespace {
 
@@ -18,6 +23,85 @@ namespace {
 constexpr double kLoopPositionMaxAbsError = 0.000000001;
 
 constexpr auto kTrackEndPosition = mixxx::audio::FramePos{150000000};
+
+bool hasTemporaryLoopCue(
+        const TrackPointer& pTrack,
+        const mixxx::audio::FramePos& startPosition,
+        const mixxx::audio::FramePos& endPosition) {
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const auto& pCue : cuePoints) {
+        if (pCue && pCue->getType() == mixxx::CueType::Loop &&
+                pCue->getHotCue() == Cue::kNoHotCue) {
+            const auto loop = pCue->getStartAndEndPosition();
+            if (loop.startPosition == startPosition &&
+                    loop.endPosition == endPosition) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool hasTemporaryLoopCue(const TrackPointer& pTrack) {
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const auto& pCue : cuePoints) {
+        if (pCue && pCue->getType() == mixxx::CueType::Loop &&
+                pCue->getHotCue() == Cue::kNoHotCue) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template<typename Progress>
+bool waitForTemporaryLoopCue(
+        const TrackPointer& pTrack,
+        const mixxx::audio::FramePos& startPosition,
+        const mixxx::audio::FramePos& endPosition,
+        Progress progress) {
+    for (int attempt = 0; attempt < 2000; ++attempt) {
+        if (hasTemporaryLoopCue(pTrack, startPosition, endPosition)) {
+            return true;
+        }
+        progress();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        QTest::qSleep(1);
+    }
+    return false;
+}
+
+template<typename Progress>
+bool waitForNoTemporaryLoopCue(
+        const TrackPointer& pTrack,
+        Progress progress) {
+    for (int attempt = 0; attempt < 2000; ++attempt) {
+        if (!hasTemporaryLoopCue(pTrack)) {
+            return true;
+        }
+        progress();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        QTest::qSleep(1);
+    }
+    return false;
+}
+
+template<typename Progress>
+bool waitForLoadedTrack(
+        EngineBuffer* pEngineBuffer,
+        const TrackPointer& pTrack,
+        const std::shared_ptr<std::atomic<bool>>& trackLoadedSignalObserved,
+        Progress progress) {
+    for (int attempt = 0; attempt < 2000; ++attempt) {
+        if (trackLoadedSignalObserved->load(std::memory_order_acquire) &&
+                pEngineBuffer->getLoopCueSnapshot(pTrack).has_value()) {
+            return true;
+        }
+        progress();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        QTest::qSleep(1);
+    }
+    return false;
+}
 } // namespace
 
 class LoopingControlTest : public MockedEngineBackendTest {
@@ -96,6 +180,10 @@ class LoopingControlTest : public MockedEngineBackendTest {
         return m_pLoopEnabled->get() > 0.0;
     }
 
+    LoopingControl* loopingControl() {
+        return m_pChannel1->getEngineBuffer()->m_pLoopingControl;
+    }
+
     void setCurrentPosition(mixxx::audio::FramePos position) {
         m_pChannel1->getEngineBuffer()->queueNewPlaypos(position, EngineBuffer::SEEK_STANDARD);
         ProcessBuffer();
@@ -148,6 +236,85 @@ TEST_F(LoopingControlTest, LoopSet) {
     EXPECT_FALSE(isLoopEnabled());
     EXPECT_FRAMEPOS_EQ_CONTROL(mixxx::audio::kStartFramePos, m_pLoopStartPoint);
     EXPECT_FRAMEPOS_EQ_CONTROL(mixxx::audio::FramePos{100}, m_pLoopEndPoint);
+}
+
+TEST_F(LoopingControlTest, LoopCuePersistenceAfterDirectCallbackUpdates) {
+    const auto pTrack = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    auto* const pEngineBuffer = m_pChannel1->getEngineBuffer();
+    const auto trackLoadedSignalObserved =
+            std::make_shared<std::atomic<bool>>(false);
+    const auto trackLoadedConnection = QObject::connect(
+            pEngineBuffer,
+            &EngineBuffer::trackLoaded,
+            QCoreApplication::instance(),
+            [trackLoadedSignalObserved, pTrack](TrackPointer pLoadedTrack, TrackPointer) {
+                if (pLoadedTrack == pTrack) {
+                    trackLoadedSignalObserved->store(true, std::memory_order_release);
+                }
+            },
+            Qt::QueuedConnection);
+    ASSERT_TRUE(trackLoadedConnection);
+    loadTrack(m_pMixerDeck1.get(), pTrack);
+    const bool targetTrackLoaded = waitForLoadedTrack(
+            pEngineBuffer,
+            pTrack,
+            trackLoadedSignalObserved,
+            [this] { ProcessBuffer(); });
+    QObject::disconnect(trackLoadedConnection);
+    ASSERT_TRUE(targetTrackLoaded);
+    const bool bpmUpdated = pTrack->trySetBpm(60.0);
+    ASSERT_TRUE(bpmUpdated || pTrack->getBpm() == 60.0);
+
+    const auto initialStart = mixxx::audio::FramePos{1000};
+    const auto initialEnd = mixxx::audio::FramePos{5000};
+    m_pLoopStartPoint->set(initialStart.toEngineSamplePos());
+    m_pLoopEndPoint->set(initialEnd.toEngineSamplePos());
+    ASSERT_TRUE(waitForTemporaryLoopCue(
+            pTrack, initialStart, initialEnd, [this] { ProcessBuffer(); }));
+
+    m_pButtonReloopToggle->set(1.0);
+    m_pButtonReloopToggle->set(0.0);
+    ASSERT_TRUE(loopingControl()->isLoopingEnabled());
+
+    m_pButtonLoopIn->set(1.0);
+    ASSERT_TRUE(loopingControl()->isAdjustLoopInActive());
+    setCurrentPosition(mixxx::audio::FramePos{2000});
+    const auto movedStart = mixxx::audio::FramePos{2000};
+    // Observe the new range before release. This makes the active adjustment
+    // reach LoopingControl::process() and its reader-worker handoff; the
+    // release slot below can no longer be the only source of the update.
+    ASSERT_TRUE(waitForTemporaryLoopCue(
+            pTrack, movedStart, initialEnd, [this] { ProcessBuffer(); }));
+    ASSERT_TRUE(loopingControl()->isAdjustLoopInActive());
+    m_pButtonLoopIn->set(0.0);
+    ASSERT_TRUE(waitForTemporaryLoopCue(
+            pTrack, movedStart, initialEnd, [this] { ProcessBuffer(); }));
+
+    m_pButtonLoopOut->set(1.0);
+    ASSERT_TRUE(loopingControl()->isAdjustLoopOutActive());
+    setCurrentPosition(mixxx::audio::FramePos{7000});
+    const auto movedEnd = mixxx::audio::FramePos{7000};
+    ASSERT_TRUE(waitForTemporaryLoopCue(
+            pTrack, movedStart, movedEnd, [this] { ProcessBuffer(); }));
+    ASSERT_TRUE(loopingControl()->isAdjustLoopOutActive());
+    m_pButtonLoopOut->set(0.0);
+    ASSERT_TRUE(waitForTemporaryLoopCue(
+            pTrack, movedStart, movedEnd, [this] { ProcessBuffer(); }));
+
+    loopingControl()->slotLoopMove(1.0);
+    const auto movedAgainStart =
+            movedStart + mixxx::audio::FrameDiff_t{44100};
+    const auto movedAgainEnd = movedEnd + mixxx::audio::FrameDiff_t{44100};
+    ASSERT_TRUE(waitForTemporaryLoopCue(
+            pTrack,
+            movedAgainStart,
+            movedAgainEnd,
+            [this] { ProcessBuffer(); }));
+
+    loopingControl()->slotLoopRemove();
+    EXPECT_TRUE(waitForNoTemporaryLoopCue(
+            pTrack, [this] { ProcessBuffer(); }));
 }
 
 TEST_F(LoopingControlTest, LoopSetFractionalFrames) {

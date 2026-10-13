@@ -21,6 +21,10 @@ template<class DataType>
 class FIFO;
 
 class Seek30Control;
+class LoopingControl;
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+#endif
 
 // POD with trivial ctor/dtor/copy for passing through FIFO
 typedef struct CachingReaderChunkReadRequest {
@@ -129,6 +133,25 @@ class CachingReaderWorker : public EngineWorker {
     // any track-loaded callback or command can use it.
     void setSeek30Control(Seek30Control* pControl);
 
+    // Coalesced notification only; scalar sampling and Track/Cue mutation
+    // remain entirely within one worker operation.
+    void notifyLoopCueUpdate();
+
+    void setLoopingControl(LoopingControl* pControl);
+
+#ifdef BUILD_TESTING
+    void setF001ProbeForTest(F001ProbeForTest* pProbe) {
+        m_pF001ProbeForTest.store(pProbe, std::memory_order_release);
+        m_seek30State.setF001ProbeForTest(pProbe);
+    }
+    void setF001NativeTokenForTest(std::uint32_t token) {
+        m_f001NativeTokenForTest.store(token, std::memory_order_release);
+    }
+    bool f001NativePreparedForTest() const {
+        return m_f001NativePreparedForTest.load(std::memory_order_acquire);
+    }
+#endif
+
     // Called by DirectConnection callbacks. The newest command is dropped when
     // the fixed mailbox is full; the overflow count is saturating.
     bool enqueueSeek30Command(Seek30Operation operation);
@@ -179,7 +202,18 @@ class CachingReaderWorker : public EngineWorker {
 
   private:
     friend class CachingReaderWorkerTest;
+    friend class EngineBufferAlignmentTest;
 #ifdef BUILD_TESTING
+    std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+    std::atomic<std::uint32_t> m_f001NativeTokenForTest{0};
+    std::atomic<bool> m_f001NativePreparedForTest{false};
+    // Fixture-owned gate: installed off callback, used only on the worker.
+    // Leaves dirty work pending so a test can hold source persistence while
+    // the destination follows its normal load/clone route.
+    std::atomic<bool> m_holdLoopCuePersistenceForTest{false};
+    std::atomic<bool> m_loopPersistenceHoldObservedForTest{false};
+    std::atomic<std::uint64_t> m_loopPersistenceCompletedForTest{0};
+    std::atomic<std::uint64_t> m_idleEntriesForTest{0};
     FRIEND_TEST(CachingReaderWorkerTest,
             ShutdownPublicationFailureSuppressesLoadFailureSignal);
 #endif
@@ -238,6 +272,7 @@ class CachingReaderWorker : public EngineWorker {
     // Track and cue ownership is updated only from run()'s worker thread.
     void updateSeek30Track(TrackPointer pNewTrack);
     void processSeek30Commands();
+    void processLoopCueUpdate();
     void recordSeek30CommandOverflow();
 
     // The current audio source of the track loaded
@@ -255,7 +290,10 @@ class CachingReaderWorker : public EngineWorker {
     QAtomicInt m_stop;
 
     std::atomic<Seek30Control*> m_pSeek30Control{nullptr};
+    std::atomic<LoopingControl*> m_pLoopingControl{nullptr};
     Seek30CommandMailbox m_seek30CommandMailbox;
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    std::atomic<bool> m_loopCueDirty{false};
     Seek30WorkerState m_seek30State;
     std::atomic<std::uint64_t> m_seek30Generation{0};
     std::atomic<std::uint64_t> m_seek30CommandOverflowCount{0};

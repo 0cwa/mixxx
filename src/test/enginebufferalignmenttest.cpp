@@ -8,20 +8,28 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDataStream>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QSaveFile>
+#include <QScopeGuard>
+#include <QSemaphore>
 #include <QTest>
 #include <QTextStream>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <span>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -29,17 +37,22 @@
 #ifdef __BUNGEE__
 #include "engine/bufferscalers/enginebufferscalebungee.h"
 #endif
+
 #ifdef __SIGNALSMITH__
 #include "engine/bufferscalers/enginebufferscalesignalsmith.h"
 #endif
 #include "engine/bufferscalers/enginebufferscalelinear.h"
 #include "engine/bufferscalers/enginebufferscalest.h"
 #include "engine/cachingreader/cachingreader.h"
+#include "engine/controls/cuecontrol.h"
 #include "engine/controls/enginecontrol.h"
+#include "engine/controls/loopingcontrol.h"
 #include "engine/engine.h"
 #include "engine/enginebuffer.h"
 #include "engine/readaheadmanager.h"
 #include "test/signalpathtest.h"
+#include "test/f001probe.h"
+#include "test/f001rtprobe.h"
 #include "track/track.h"
 #include "util/performancetimer.h"
 #include "util/sample.h"
@@ -1111,6 +1124,101 @@ void writeEngineMarkerFailureTrace(const char* engine,
 
 class EngineBufferAlignmentTest : public BaseSignalPathTest {
   protected:
+    class HeldLoopSnapshot {
+      public:
+        HeldLoopSnapshot(EngineBuffer& buffer, const TrackPointer& track)
+                : m_control(*buffer.m_pLoopingControl) {
+            m_control.m_loopPublicationContextForTest = this;
+            m_control.m_loopPublicationHookForTest = [](void* context, int phase) {
+                auto& self = *static_cast<HeldLoopSnapshot*>(context);
+                if (phase == 2 && self.m_armed.exchange(false)) {
+                    self.m_entered.release();
+                    self.m_release.acquire();
+                }
+            };
+            m_thread = std::thread([this, &buffer, track] {
+                m_result = buffer.getLoopCueSnapshot(track);
+            });
+        }
+        ~HeldLoopSnapshot() {
+            finish();
+            m_control.m_loopPublicationHookForTest = nullptr;
+            m_control.m_loopPublicationContextForTest = nullptr;
+        }
+        bool awaitHeld() {
+            return m_entered.tryAcquire(1, 2000);
+        }
+        std::optional<EngineBuffer::LoopCueSnapshot> finish() {
+            if (m_thread.joinable()) {
+                m_release.release();
+                m_thread.join();
+            }
+            return m_result;
+        }
+
+      private:
+        LoopingControl& m_control;
+        std::atomic<bool> m_armed{true};
+        QSemaphore m_entered;
+        QSemaphore m_release;
+        std::thread m_thread;
+        std::optional<EngineBuffer::LoopCueSnapshot> m_result;
+    };
+
+    static void holdLoopPersistence(EngineBuffer& buffer, bool hold) {
+        auto& worker = buffer.m_pReader->m_worker;
+        worker.m_holdLoopCuePersistenceForTest.store(hold);
+        worker.notifyLoopCueUpdate();
+    }
+
+    static bool loopPersistenceHeld(EngineBuffer& buffer) {
+        return buffer.m_pReader->m_worker.m_loopPersistenceHoldObservedForTest.load();
+    }
+
+    static std::uint64_t completedLoopPersistence(EngineBuffer& buffer) {
+        return buffer.m_pReader->m_worker.m_loopPersistenceCompletedForTest.load();
+    }
+
+    static CuePointer temporaryLoopCue(const TrackPointer& track) {
+        for (const auto& cue : track->getCuePoints()) {
+            if (cue->getType() == mixxx::CueType::Loop &&
+                    cue->getHotCue() == Cue::kNoHotCue) {
+                return cue;
+            }
+        }
+        return {};
+    }
+
+    static void setF001LoadCuesHold(
+            EngineBuffer& buffer, F001LoadCuesHoldForTest* pHold) {
+        buffer.m_pCueControl->setF001LoadCuesHoldForTest(pHold);
+    }
+
+    static CueControl* f001CueControl(const EngineBuffer& buffer) {
+        return buffer.m_pCueControl;
+    }
+
+    static LoopingControl* f001LoopingControl(const EngineBuffer& buffer) {
+        return buffer.m_pLoopingControl;
+    }
+
+    static CachingReaderWorker* f001Worker(const EngineBuffer& buffer) {
+        return &buffer.m_pReader->m_worker;
+    }
+
+    static Seek30WorkerState* f001SeekState(const EngineBuffer& buffer) {
+        return &buffer.m_pReader->m_worker.m_seek30State;
+    }
+
+    static mixxx::audio::FramePos f001TrackEnd(const EngineBuffer& buffer) {
+        return buffer.getTrackEndPosition();
+    }
+
+    static bool f001ReaderIdle(const EngineBuffer& buffer) {
+        return buffer.m_pReader->m_state.loadAcquire() ==
+                CachingReader::STATE_IDLE;
+    }
+
     static void SetUpTestSuite() {
         EngineBuffer::setTestReaderFactory(
                 &makeDeterministicReader,
@@ -1121,6 +1229,1074 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
         EngineBuffer::setTestReaderFactory(nullptr);
     }
 };
+
+// This base is deliberately constructed before EngineBufferAlignmentTest.
+// C++ destroys the engine fixture, including CachingReader's worker join,
+// before destroying this recorder and its queued-signal receivers.
+class F001ProbeStorage {
+  protected:
+    struct RequiredEvent {
+        F001ProbeEventForTest event;
+        F001ProbePhaseForTest phase;
+        const void* object{nullptr};
+        const void* related{nullptr};
+        bool checkObject{false};
+        bool checkRelated{false};
+        bool checkEnd{false};
+        double end{0};
+        bool checkResult{false};
+        double result{0};
+        bool checkStart{false};
+        double start{0};
+    };
+
+    struct SelectedHookCheck {
+        std::uint32_t token;
+        F001ProbeEventForTest event;
+        F001ProbePhaseForTest phase;
+        F001ProbeMethodForTest method;
+        const void* object;
+        const void* related;
+        std::optional<double> start;
+        std::optional<double> end;
+        std::optional<std::uint32_t> flags;
+        bool mustHit;
+    };
+
+    ~F001ProbeStorage() {
+        QCoreApplication::sendPostedEvents(&m_queuedCueReceiver, QEvent::MetaCall);
+        QCoreApplication::sendPostedEvents(&m_queuedTrackReceiver, QEvent::MetaCall);
+        QCoreApplication::sendPostedEvents(&m_loadReceiver, QEvent::MetaCall);
+        EXPECT_FALSE(m_probe.overflowed());
+        EXPECT_FALSE(m_hold.timedOut.load(std::memory_order_acquire));
+        if (m_probe.overflowed()) {
+            return;
+        }
+        std::size_t nextRequired = 0;
+        std::size_t directCueSignals = 0;
+        std::size_t queuedCueSignals = 0;
+        std::size_t directTrackSignals = 0;
+        std::size_t queuedTrackSignals = 0;
+        std::size_t matchingFrameInfo = 0;
+        for (std::size_t index = 0; index < m_probe.count(); ++index) {
+            const auto& entry = m_probe.entry(index);
+            if (entry.caseToken == m_routeToken) {
+                if (m_requireFrameInfo &&
+                        entry.event == F001ProbeEventForTest::CueControlFrameInfo &&
+                        entry.relatedIdentity == reinterpret_cast<std::uintptr_t>(
+                                m_expectedFrameInfoTrack) &&
+                        entry.positionA == m_expectedFrameInfoEnd &&
+                        entry.scalarBits ==
+                                (m_expectedFrameInfoRate == 0
+                                                ? 0
+                                                : f001DoubleBitsForTest(
+                                                          m_expectedFrameInfoRate)) &&
+                        entry.flags == m_expectedFrameInfoFlags) {
+                    ++matchingFrameInfo;
+                }
+                EXPECT_NE(F001ProbeEventForTest::CueControlQuantizeRenderer,
+                        entry.event)
+                        << "A–D must use the loaded-track bound overload";
+                if (entry.event == F001ProbeEventForTest::CueSignalDirect &&
+                        entry.objectIdentity ==
+                                reinterpret_cast<std::uintptr_t>(m_expectedCue)) {
+                    ++directCueSignals;
+                    EXPECT_NE(entry.currentThreadIdentity, entry.affinityIdentity);
+                } else if (entry.event == F001ProbeEventForTest::CueSignalQueued &&
+                        entry.objectIdentity ==
+                                reinterpret_cast<std::uintptr_t>(m_expectedCue)) {
+                    ++queuedCueSignals;
+                    EXPECT_EQ(entry.currentThreadIdentity, entry.affinityIdentity);
+                } else if (entry.event == F001ProbeEventForTest::TrackSignalDirect &&
+                        entry.objectIdentity ==
+                                reinterpret_cast<std::uintptr_t>(m_expectedTrack)) {
+                    ++directTrackSignals;
+                    if (m_trackDirectOffAffinity) {
+                        EXPECT_NE(entry.currentThreadIdentity, entry.affinityIdentity);
+                    } else {
+                        EXPECT_EQ(entry.currentThreadIdentity, entry.affinityIdentity);
+                    }
+                } else if (entry.event == F001ProbeEventForTest::TrackSignalQueued &&
+                        entry.objectIdentity ==
+                                reinterpret_cast<std::uintptr_t>(m_expectedTrack)) {
+                    ++queuedTrackSignals;
+                    EXPECT_EQ(entry.currentThreadIdentity, entry.affinityIdentity);
+                }
+            }
+            if (entry.caseToken == m_negativeToken) {
+                for (std::size_t forbidden = 0;
+                        forbidden < m_forbiddenCount;
+                        ++forbidden) {
+                    EXPECT_NE(m_forbidden[forbidden], entry.event)
+                            << "Unexpected negative-control event at sequence "
+                            << entry.sequence;
+                }
+            }
+            if (entry.caseToken != m_routeToken ||
+                    nextRequired == m_requiredCount) {
+                continue;
+            }
+            const auto& expected = m_required[nextRequired];
+            if (entry.event != expected.event || entry.phase != expected.phase ||
+                    (expected.checkObject &&
+                            entry.objectIdentity !=
+                                    reinterpret_cast<std::uintptr_t>(expected.object)) ||
+                    (expected.checkRelated &&
+                            entry.relatedIdentity !=
+                                    reinterpret_cast<std::uintptr_t>(expected.related)) ||
+                    (expected.checkEnd && entry.positionB != expected.end) ||
+                    (expected.checkResult &&
+                            entry.scalarBits != f001DoubleBitsForTest(expected.result)) ||
+                    (expected.checkStart && entry.positionA != expected.start)) {
+                continue;
+            }
+            ++nextRequired;
+        }
+        EXPECT_EQ(m_requiredCount, nextRequired)
+                << "Ordered F001 route evidence is incomplete";
+        if (m_expectedCue) {
+            EXPECT_GT(directCueSignals, 0U);
+            EXPECT_GT(queuedCueSignals, 0U);
+        }
+        if (m_expectedTrack) {
+            EXPECT_GT(directTrackSignals, 0U);
+            EXPECT_GT(queuedTrackSignals, 0U);
+        }
+        if (m_requireFrameInfo) {
+            EXPECT_GT(matchingFrameInfo, 0U);
+        }
+        for (std::size_t checkIndex = 0; checkIndex < m_hookCheckCount;
+                ++checkIndex) {
+            const auto& check = m_hookChecks[checkIndex];
+            std::size_t hits = 0;
+            for (std::size_t index = 0; index < m_probe.count(); ++index) {
+                const auto& entry = m_probe.entry(index);
+                if (entry.caseToken == check.token &&
+                        entry.event == check.event &&
+                        entry.phase == check.phase &&
+                        entry.method == check.method &&
+                        (!check.object || entry.objectIdentity ==
+                                        reinterpret_cast<std::uintptr_t>(
+                                                check.object)) &&
+                        (!check.related || entry.relatedIdentity ==
+                                        reinterpret_cast<std::uintptr_t>(
+                                                check.related)) &&
+                        (!check.start || entry.positionA == *check.start) &&
+                        (!check.end || entry.positionB == *check.end) &&
+                        (!check.flags || entry.flags == *check.flags)) {
+                    ++hits;
+                }
+            }
+            if (check.mustHit) {
+                EXPECT_GT(hits, 0U) << "Missing selected hook check " << checkIndex;
+            } else {
+                EXPECT_EQ(hits, 0U) << "Excluded hook fired " << checkIndex;
+            }
+        }
+    }
+
+    void checkHook(bool mustHit,
+            std::uint32_t token,
+            F001ProbeEventForTest event,
+            F001ProbePhaseForTest phase,
+            F001ProbeMethodForTest method = F001ProbeMethodForTest::None,
+            const void* object = nullptr,
+            const void* related = nullptr,
+            std::optional<double> start = {},
+            std::optional<double> end = {},
+            std::optional<std::uint32_t> flags = {}) {
+        ASSERT_LT(m_hookCheckCount, m_hookChecks.size());
+        m_hookChecks[m_hookCheckCount++] = {token,
+                event,
+                phase,
+                method,
+                object,
+                related,
+                start,
+                end,
+                flags,
+                mustHit};
+    }
+
+    void checkLockPhases(bool mustHit,
+            std::uint32_t token,
+            F001ProbeEventForTest event,
+            F001ProbeMethodForTest method,
+            const void* object = nullptr) {
+        checkHook(mustHit, token, event, F001ProbePhaseForTest::Attempt, method, object);
+        checkHook(mustHit, token, event, F001ProbePhaseForTest::Acquired, method, object);
+        checkHook(mustHit, token, event, F001ProbePhaseForTest::Released, method, object);
+    }
+
+    void checkPair(std::uint32_t positiveToken,
+            std::uint32_t excludedToken,
+            F001ProbeEventForTest event,
+            F001ProbePhaseForTest phase,
+            F001ProbeMethodForTest method = F001ProbeMethodForTest::None,
+            const void* object = nullptr,
+            const void* related = nullptr) {
+        checkHook(true, positiveToken, event, phase, method, object, related);
+        checkHook(false, excludedToken, event, phase, method, object, related);
+    }
+
+    void checkLockPair(std::uint32_t positiveToken,
+            std::uint32_t excludedToken,
+            F001ProbeEventForTest event,
+            F001ProbeMethodForTest method,
+            const void* object = nullptr) {
+        checkLockPhases(true, positiveToken, event, method, object);
+        checkLockPhases(false, excludedToken, event, method, object);
+    }
+
+    void requireRoute(std::uint32_t token,
+            std::initializer_list<RequiredEvent> events) {
+        ASSERT_LE(events.size(), m_required.size());
+        m_routeToken = token;
+        m_requiredCount = events.size();
+        std::copy(events.begin(), events.end(), m_required.begin());
+        m_probe.setCaseToken(token);
+    }
+
+    void forbidOnToken(std::uint32_t token,
+            std::initializer_list<F001ProbeEventForTest> events) {
+        ASSERT_LE(events.size(), m_forbidden.size());
+        m_negativeToken = token;
+        m_forbiddenCount = events.size();
+        std::copy(events.begin(), events.end(), m_forbidden.begin());
+        m_probe.setCaseToken(token);
+    }
+
+    void observeCue(const CuePointer& cue) {
+        QObject::connect(cue.get(),
+                &Cue::updated,
+                &m_directCueReceiver,
+                [this, cue] {
+                    m_probe.recordObject(F001ProbeEventForTest::CueSignalDirect,
+                            F001ProbePhaseForTest::Point,
+                            F001ProbeMethodForTest::None,
+                            cue.get());
+                },
+                Qt::DirectConnection);
+        QObject::connect(cue.get(),
+                &Cue::updated,
+                &m_queuedCueReceiver,
+                [this, cue] {
+                    m_probe.recordObject(F001ProbeEventForTest::CueSignalQueued,
+                            F001ProbePhaseForTest::Point,
+                            F001ProbeMethodForTest::None,
+                            cue.get());
+                },
+                Qt::QueuedConnection);
+    }
+
+    void observeTrack(const TrackPointer& track) {
+        QObject::connect(track.get(),
+                &Track::cuesUpdated,
+                &m_directTrackReceiver,
+                [this, track] {
+                    m_probe.recordObject(F001ProbeEventForTest::TrackSignalDirect,
+                            F001ProbePhaseForTest::Point,
+                            F001ProbeMethodForTest::None,
+                            track.get());
+                },
+                Qt::DirectConnection);
+        QObject::connect(track.get(),
+                &Track::cuesUpdated,
+                &m_queuedTrackReceiver,
+                [this, track] {
+                    m_probe.recordObject(F001ProbeEventForTest::TrackSignalQueued,
+                            F001ProbePhaseForTest::Point,
+                            F001ProbeMethodForTest::None,
+                            track.get());
+                },
+                Qt::QueuedConnection);
+    }
+
+    void requireSignalRoute(const Cue* cue,
+            const Track* track,
+            bool trackDirectOffAffinity) {
+        m_expectedCue = cue;
+        m_expectedTrack = track;
+        m_trackDirectOffAffinity = trackDirectOffAffinity;
+    }
+
+    void requireFrameInfo(const Track* track,
+            double end,
+            double sampleRate,
+            std::uint32_t flags) {
+        m_requireFrameInfo = true;
+        m_expectedFrameInfoTrack = track;
+        m_expectedFrameInfoEnd = end;
+        m_expectedFrameInfoRate = sampleRate;
+        m_expectedFrameInfoFlags = flags;
+    }
+
+    F001ProbeForTest m_probe;
+    F001LoadCuesHoldForTest m_hold;
+    QObject m_directCueReceiver;
+    QObject m_queuedCueReceiver;
+    QObject m_directTrackReceiver;
+    QObject m_queuedTrackReceiver;
+    QObject m_loadReceiver;
+    std::atomic<bool> m_bLoadSignalSeen{false};
+    std::array<RequiredEvent, 12> m_required{};
+    std::size_t m_requiredCount{0};
+    std::uint32_t m_routeToken{0};
+    std::array<F001ProbeEventForTest, 8> m_forbidden{};
+    std::size_t m_forbiddenCount{0};
+    std::uint32_t m_negativeToken{0};
+    const Cue* m_expectedCue{nullptr};
+    const Track* m_expectedTrack{nullptr};
+    bool m_trackDirectOffAffinity{false};
+    bool m_requireFrameInfo{false};
+    const Track* m_expectedFrameInfoTrack{nullptr};
+    double m_expectedFrameInfoEnd{0};
+    double m_expectedFrameInfoRate{0};
+    std::uint32_t m_expectedFrameInfoFlags{0};
+    std::array<SelectedHookCheck, 96> m_hookChecks{};
+    std::size_t m_hookCheckCount{0};
+};
+
+class F001ProbeAlignmentTest : public F001ProbeStorage,
+                               public EngineBufferAlignmentTest {
+  protected:
+    QString createShortWav() {
+        const auto path = getTestDataDir().filePath(QStringLiteral("f001-short.wav"));
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) {
+            return {};
+        }
+        constexpr quint32 dataBytes = 2 * kSampleRate * 2 * sizeof(qint16);
+        QDataStream stream(&file);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.writeRawData("RIFF", 4);
+        stream << quint32{36 + dataBytes};
+        stream.writeRawData("WAVEfmt ", 8);
+        stream << quint32{16} << quint16{1} << quint16{2};
+        stream << quint32{kSampleRate} << quint32{kSampleRate * 4};
+        stream << quint16{4} << quint16{16};
+        stream.writeRawData("data", 4);
+        stream << dataBytes;
+        constexpr std::array<char, 4096> silence{};
+        for (quint32 remaining = dataBytes; remaining > 0;) {
+            const auto count = std::min<quint32>(remaining, silence.size());
+            if (stream.writeRawData(silence.data(), count) != count) {
+                return {};
+            }
+            remaining -= count;
+        }
+        return stream.status() == QDataStream::Ok && file.commit()
+                ? path
+                : QString{};
+    }
+
+    template<typename Predicate>
+    bool progressUntil(Predicate predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 2000) {
+            ProcessBuffer();
+            QCoreApplication::processEvents();
+            if (predicate()) {
+                return true;
+            }
+            QTest::qSleep(1);
+        }
+        return false;
+    }
+
+    ~F001ProbeAlignmentTest() override {
+        // Release a held refresh even if a fatal assertion returned early.
+        m_hold.release.release();
+        setF001LoadCuesHold(*m_pChannel1->getEngineBuffer(), nullptr);
+    }
+};
+
+TEST(F001ProbeForTest, OverflowIsBoundedAndSticky) {
+    F001ProbeForTest probe;
+    probe.setCaseToken(71);
+    for (std::size_t index = 0; index < F001ProbeForTest::kCapacity; ++index) {
+        probe.record(F001ProbeEventForTest::LoopScalarRead,
+                F001ProbePhaseForTest::Point,
+                F001ProbeMethodForTest::None,
+                nullptr);
+    }
+    ASSERT_EQ(F001ProbeForTest::kCapacity, probe.count());
+    ASSERT_FALSE(probe.overflowed());
+    EXPECT_EQ(71U, probe.entry(0).caseToken);
+    EXPECT_EQ(F001ProbeForTest::kCapacity,
+            probe.entry(F001ProbeForTest::kCapacity - 1).sequence);
+
+    probe.record(F001ProbeEventForTest::LoopScalarRead,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None,
+            nullptr);
+    EXPECT_TRUE(probe.overflowed());
+    EXPECT_EQ(F001ProbeForTest::kCapacity, probe.count());
+    EXPECT_EQ(F001ProbeForTest::kCapacity,
+            probe.entry(F001ProbeForTest::kCapacity - 1).sequence);
+}
+
+TEST(F001RtProbeForTest, CalibratesAvailableInterposition) {
+    if (!f001RtProbeInitializeForTest ||
+            !f001RtProbeCalibrateAllocatorsForTest ||
+            !f001RtProbeCalibratePthreadForTest ||
+            !f001RtProbeCalibrateWaitConditionForTest) {
+        GTEST_SKIP() << "The optional process-local interposer is absent";
+    }
+    if (!f001RtProbeInitializeForTest()) {
+        GTEST_SKIP() << "Required native delegates are unavailable";
+    }
+    ASSERT_TRUE(f001RtProbeCalibrateAllocatorsForTest());
+    ASSERT_TRUE(f001RtProbeCalibratePthreadForTest());
+    if (!f001RtProbeCalibrateWaitConditionForTest()) {
+        GTEST_SKIP() << "Qt wakeAll symbol is not observable in this build";
+    }
+}
+
+TEST_F(F001ProbeAlignmentTest, RemovalUsesAttachedTrackBound) {
+    const auto track = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    const auto saved = track->createAndAddCue(mixxx::CueType::Loop,
+            2,
+            mixxx::audio::FramePos{1000},
+            mixxx::audio::FramePos{5000});
+    track->createAndAddCue(mixxx::CueType::Loop,
+            Cue::kNoHotCue,
+            mixxx::audio::FramePos{2000},
+            mixxx::audio::FramePos{7000});
+    auto* const source = m_pChannel1->getEngineBuffer();
+    loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(progressUntil([&] {
+        return source->getLoopCueSnapshot(track).has_value();
+    }));
+    ASSERT_TRUE(f001TrackEnd(*source).isValid());
+    ASSERT_TRUE(temporaryLoopCue(track));
+    source->setF001ProbeForTest(&m_probe);
+    track->setF001ProbeForTest(&m_probe);
+    observeTrack(track);
+    requireSignalRoute(nullptr, track.get(), true);
+    const double end = f001TrackEnd(*source).value();
+    requireRoute(101,
+            {{F001ProbeEventForTest::WorkerLoopCueUpdate,
+                     F001ProbePhaseForTest::Before},
+                    {F001ProbeEventForTest::Seek30LoopCueUpdate,
+                            F001ProbePhaseForTest::Before},
+                    {F001ProbeEventForTest::TrackRemoveTemporaryCue,
+                            F001ProbePhaseForTest::Before,
+                            track.get(),
+                            nullptr,
+                            true},
+                    {F001ProbeEventForTest::CueControlTrackCuesUpdated,
+                            F001ProbePhaseForTest::Point},
+                    {F001ProbeEventForTest::CueControlQuantizeExplicit,
+                            F001ProbePhaseForTest::Before,
+                            nullptr,
+                            track.get(),
+                            false,
+                            true,
+                            true,
+                            end}});
+    checkPair(101, 103, F001ProbeEventForTest::LoopScalarRead,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, f001LoopingControl(*source));
+    checkPair(101, 103, F001ProbeEventForTest::LoopScalarRead,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::None, f001LoopingControl(*source));
+    checkPair(101, 103, F001ProbeEventForTest::WorkerLoopCueUpdate,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, f001Worker(*source));
+    checkPair(101, 103, F001ProbeEventForTest::Seek30LoopCueUpdate,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, f001SeekState(*source));
+    checkPair(101, 103, F001ProbeEventForTest::TrackRemoveTemporaryCue,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            track.get());
+    checkLockPair(101, 103, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::RemoveTempLoopCue, track.get());
+    checkLockPair(101, 103, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::GetCuePoints, track.get());
+    checkLockPair(101, 103, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::GetMainCuePosition, track.get());
+    checkLockPair(101, 103, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetType, saved.get());
+    checkLockPair(101, 103, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetHotCue, saved.get());
+    checkPair(101, 103, F001ProbeEventForTest::CueControlTrackCuesUpdated,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, f001CueControl(*source));
+    checkLockPair(101, 103, F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            f001CueControl(*source));
+    checkPair(101, 103, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            f001CueControl(*source), track.get());
+    checkPair(101, 103, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::LoadCuesFromTrack, nullptr, track.get());
+    checkHook(true, 101, F001ProbeEventForTest::TrackRemoveTemporaryCue,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            track.get(), nullptr, {}, {}, 1U);
+    const auto completionsBefore = completedLoopPersistence(*source);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 0.0);
+    ASSERT_TRUE(progressUntil([&] {
+        return completedLoopPersistence(*source) > completionsBefore &&
+                !temporaryLoopCue(track);
+    }));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    EXPECT_EQ(mixxx::audio::FramePos{1000}, saved->getPosition());
+    EXPECT_EQ(mixxx::audio::FramePos{5000}, saved->getEndPosition());
+
+    // Repeat the actual invalid loop publication with no temporary Cue left.
+    // Its worker/removal events must be present, while dirty notification and
+    // CueControl refresh must stay absent.
+    forbidOnToken(102, {});
+    const auto repeatBefore = completedLoopPersistence(*source);
+    holdLoopPersistence(*source, false);
+    ASSERT_TRUE(progressUntil([&] {
+        return completedLoopPersistence(*source) > repeatBefore;
+    }));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    checkHook(true, 102, F001ProbeEventForTest::WorkerLoopCueUpdate,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::None, f001Worker(*source));
+    checkHook(true, 102, F001ProbeEventForTest::Seek30LoopCueUpdate,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, f001SeekState(*source));
+    checkHook(true, 102, F001ProbeEventForTest::TrackRemoveTemporaryCue,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::RemoveTempLoopCue,
+            track.get(), nullptr, {}, {}, 0U);
+    checkHook(false, 102, F001ProbeEventForTest::TrackSignalDirect,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, track.get());
+    checkHook(false, 102, F001ProbeEventForTest::CueControlTrackCuesUpdated,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, f001CueControl(*source));
+    checkHook(false, 102, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, f001CueControl(*source));
+
+    forbidOnToken(103,
+            {F001ProbeEventForTest::WorkerLoopCueUpdate,
+                    F001ProbeEventForTest::CueControlQuantizeExplicit,
+                    F001ProbeEventForTest::CueControlQuantizeRenderer});
+    const auto unrelated = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    unrelated->setF001ProbeForTest(&m_probe);
+    checkHook(true, 103, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, unrelated.get());
+    unrelated->createAndAddCue(mixxx::CueType::MainCue,
+            Cue::kNoHotCue,
+            mixxx::audio::FramePos{100},
+            mixxx::audio::kInvalidFramePos);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+}
+
+TEST_F(F001ProbeAlignmentTest, ResizeQueuesOwnerThreadRefresh) {
+    const auto track = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    const auto cue = track->createAndAddCue(mixxx::CueType::Loop,
+            Cue::kNoHotCue,
+            mixxx::audio::FramePos{2000},
+            mixxx::audio::FramePos{7000});
+    auto* const source = m_pChannel1->getEngineBuffer();
+    loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(progressUntil([&] {
+        return source->getLoopCueSnapshot(track).has_value();
+    }));
+    ASSERT_TRUE(f001TrackEnd(*source).isValid());
+    source->setF001ProbeForTest(&m_probe);
+    track->setF001ProbeForTest(&m_probe);
+    observeCue(cue);
+    observeTrack(track);
+    requireSignalRoute(cue.get(), track.get(), false);
+    const double end = f001TrackEnd(*source).value();
+    requireRoute(201,
+            {{F001ProbeEventForTest::WorkerLoopCueUpdate,
+                     F001ProbePhaseForTest::Before},
+                    {F001ProbeEventForTest::Seek30LoopCueUpdate,
+                            F001ProbePhaseForTest::Before},
+                    {F001ProbeEventForTest::CueSetStartAndEnd,
+                            F001ProbePhaseForTest::Before,
+                            cue.get(),
+                            nullptr,
+                            true},
+                    {F001ProbeEventForTest::CueSignalDirect,
+                            F001ProbePhaseForTest::Point,
+                            cue.get(),
+                            nullptr,
+                            true},
+                    {F001ProbeEventForTest::TrackCueUpdated,
+                            F001ProbePhaseForTest::Before,
+                            track.get(),
+                            nullptr,
+                            true},
+                    {F001ProbeEventForTest::CueControlTrackCuesUpdated,
+                            F001ProbePhaseForTest::Point},
+                    {F001ProbeEventForTest::CueControlQuantizeExplicit,
+                            F001ProbePhaseForTest::Before,
+                            nullptr,
+                            track.get(),
+                            false,
+                            true,
+                            true,
+                            end}});
+    checkPair(201, 202, F001ProbeEventForTest::CueSetStartAndEnd,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition, cue.get());
+    checkPair(201, 202, F001ProbeEventForTest::CueSignalDirect,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, cue.get());
+    checkPair(201, 202, F001ProbeEventForTest::CueSignalQueued,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, cue.get());
+    checkLockPair(201, 202, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition, cue.get());
+    checkPair(201, 202, F001ProbeEventForTest::TrackCueUpdated,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::SlotCueUpdated, track.get());
+    checkPair(201, 202, F001ProbeEventForTest::TrackSignalDirect,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, track.get());
+    checkPair(201, 202, F001ProbeEventForTest::TrackSignalQueued,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, track.get());
+    checkLockPair(201, 202, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::MarkDirty, track.get());
+    checkPair(201, 202, F001ProbeEventForTest::CueControlTrackCuesUpdated,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, f001CueControl(*source));
+    checkLockPair(201, 202, F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            f001CueControl(*source));
+    checkPair(201, 202, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            f001CueControl(*source), track.get());
+    checkLockPair(201, 203, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::GetCuePoints, track.get());
+    checkLockPair(201, 203, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::GetMainCuePosition, track.get());
+    checkLockPair(201, 203, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetType, cue.get());
+    checkLockPair(201, 203, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetHotCue, cue.get());
+    checkLockPair(201, 203, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetStartAndEndPosition, cue.get());
+    const auto completionsBefore = completedLoopPersistence(*source);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_start_position")),
+            mixxx::audio::FramePos{3000}.toEngineSamplePos());
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_end_position")),
+            mixxx::audio::FramePos{8000}.toEngineSamplePos());
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_enabled")), 1.0);
+    ASSERT_TRUE(progressUntil([&] {
+        const auto range = cue->getStartAndEndPosition();
+        return completedLoopPersistence(*source) > completionsBefore &&
+                range.startPosition == mixxx::audio::FramePos{3000} &&
+                range.endPosition == mixxx::audio::FramePos{8000};
+    }));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+
+    forbidOnToken(202,
+            {F001ProbeEventForTest::CueSetStartAndEnd,
+                    F001ProbeEventForTest::TrackCueUpdated,
+                    F001ProbeEventForTest::CueControlQuantizeExplicit});
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_start_position")),
+            mixxx::audio::FramePos{3000}.toEngineSamplePos());
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_end_position")),
+            mixxx::audio::FramePos{8000}.toEngineSamplePos());
+    const auto unchangedBefore = completedLoopPersistence(*source);
+    holdLoopPersistence(*source, false);
+    ASSERT_TRUE(progressUntil([&] {
+        return completedLoopPersistence(*source) > unchangedBefore;
+    }));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    checkHook(true, 202, F001ProbeEventForTest::WorkerLoopCueUpdate,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::None,
+            f001Worker(*source), nullptr, 3000, 8000, 3U);
+    checkHook(true, 202, F001ProbeEventForTest::Seek30LoopCueUpdate,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            f001SeekState(*source), nullptr, 3000, 8000, 3U);
+
+    // An unrelated Track must not exercise the attached Track/Cue getter path.
+    m_probe.setCaseToken(203);
+    const auto unrelated = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    unrelated->setF001ProbeForTest(&m_probe);
+    checkHook(true, 203, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, unrelated.get());
+    unrelated->createAndAddCue(mixxx::CueType::Jump,
+            1,
+            mixxx::audio::FramePos{100},
+            mixxx::audio::kInvalidFramePos);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+}
+
+TEST_F(F001ProbeAlignmentTest, EjectWaitsForAttachedTrackRefresh) {
+    const auto track = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    const auto mainCue = track->createAndAddCue(mixxx::CueType::MainCue,
+            Cue::kNoHotCue,
+            mixxx::audio::FramePos{1500},
+            mixxx::audio::kInvalidFramePos);
+    auto* const source = m_pChannel1->getEngineBuffer();
+    loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(f001TrackEnd(*source).isValid());
+    source->setF001ProbeForTest(&m_probe);
+    track->setF001ProbeForTest(&m_probe);
+    observeTrack(track);
+    requireSignalRoute(nullptr, track.get(), true);
+    const double endA = f001TrackEnd(*source).value();
+    requireFrameInfo(nullptr, 0, 0, 0);
+    setF001LoadCuesHold(*source, &m_hold);
+    requireRoute(301,
+            {{F001ProbeEventForTest::CueControlTrackCuesUpdated,
+                     F001ProbePhaseForTest::Point},
+                    {F001ProbeEventForTest::CueControlLoadCues,
+                            F001ProbePhaseForTest::Acquired,
+                            nullptr,
+                            track.get(),
+                            false,
+                            true,
+                            true,
+                            endA},
+                    {F001ProbeEventForTest::EngineNotifyTrackLoaded,
+                            F001ProbePhaseForTest::Before},
+                    {F001ProbeEventForTest::CueControlTrackLoaded,
+                            F001ProbePhaseForTest::Attempt},
+                    {F001ProbeEventForTest::CueControlQuantizeExplicit,
+                            F001ProbePhaseForTest::Before,
+                            nullptr,
+                            track.get(),
+                            false,
+                            true,
+                            true,
+                            endA},
+                    // Released is recorded after unlock, so a waiter may
+                    // acquire before that diagnostic entry is appended.
+                    {F001ProbeEventForTest::CueControlTrackLoaded,
+                            F001ProbePhaseForTest::Acquired},
+                    {F001ProbeEventForTest::CueControlTrackLoaded,
+                            F001ProbePhaseForTest::Clear}});
+    checkPair(301, 302, F001ProbeEventForTest::EngineNotifyTrackLoaded,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, source);
+    checkPair(301, 302, F001ProbeEventForTest::CueControlFrameInfo,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source));
+    checkPair(301, 302, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source));
+    checkPair(301, 302, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source));
+    checkPair(301, 302, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Clear,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source));
+    checkPair(301, 302, F001ProbeEventForTest::CueControlTrackCuesUpdated,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, f001CueControl(*source));
+    checkLockPair(301, 302, F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            f001CueControl(*source));
+    checkLockPair(301, 302, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::GetCuePoints, track.get());
+    checkLockPair(301, 302, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetPosition, mainCue.get());
+    checkPair(301, 302, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            f001CueControl(*source), track.get());
+    std::thread refresh([track] {
+        track->createAndAddCue(mixxx::CueType::Intro,
+                Cue::kNoHotCue,
+                mixxx::audio::FramePos{2000},
+                mixxx::audio::FramePos{4000});
+    });
+    const auto joinRefresh = qScopeGuard([&] {
+        m_hold.release.release();
+        if (refresh.joinable()) {
+            refresh.join();
+        }
+    });
+    ASSERT_TRUE(m_hold.entered.tryAcquire(1, 2000));
+    std::atomic<bool> sawEjectAttempt{false};
+    std::thread release([&] {
+        sawEjectAttempt.store(m_hold.trackLoadAttempt.tryAcquire(1, 2000));
+        m_hold.release.release();
+    });
+    const auto joinRelease = qScopeGuard([&] {
+        if (release.joinable()) {
+            release.join();
+        }
+    });
+    source->ejectTrack();
+    release.join();
+    refresh.join();
+    setF001LoadCuesHold(*source, nullptr);
+    ASSERT_TRUE(sawEjectAttempt.load());
+    ASSERT_FALSE(m_hold.timedOut.load());
+    ASSERT_TRUE(progressUntil([&] { return f001ReaderIdle(*source); }));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+
+    forbidOnToken(302, {F001ProbeEventForTest::CueControlQuantizeExplicit});
+    const auto completionsBefore = completedLoopPersistence(*source);
+    holdLoopPersistence(*source, false);
+    ASSERT_TRUE(progressUntil([&] {
+        return completedLoopPersistence(*source) > completionsBefore;
+    }));
+    track->createAndAddCue(mixxx::CueType::Jump,
+            1,
+            mixxx::audio::FramePos{3000},
+            mixxx::audio::kInvalidFramePos);
+    checkHook(true, 302, F001ProbeEventForTest::WorkerLoopCueUpdate,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, f001Worker(*source));
+    checkHook(true, 302, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, track.get());
+    checkHook(true, 302, F001ProbeEventForTest::TrackSignalDirect,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, track.get());
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+}
+
+TEST_F(F001ProbeAlignmentTest, ReplacementSeparatesTrackBounds) {
+    const auto shortPath = createShortWav();
+    ASSERT_FALSE(shortPath.isEmpty());
+    const auto trackA = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    const auto trackB = Track::newTemporary(shortPath);
+    const auto mainA = mixxx::audio::FramePos{28 * 44100};
+    const auto mainB = mixxx::audio::FramePos{28 * kSampleRate};
+    const auto mainCueA = trackA->createAndAddCue(mixxx::CueType::MainCue,
+            Cue::kNoHotCue,
+            mainA,
+            mixxx::audio::kInvalidFramePos);
+    trackB->setAudioProperties(mixxx::audio::ChannelCount::stereo(),
+            mixxx::audio::SampleRate(kSampleRate),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(2));
+    const auto mainCueB = trackB->createAndAddCue(mixxx::CueType::MainCue,
+            Cue::kNoHotCue,
+            mainB,
+            mixxx::audio::kInvalidFramePos);
+    ASSERT_TRUE(trackB->trySetBeats(mixxx::Beats::fromConstTempo(
+            trackB->getSampleRate(),
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm{120.0})));
+    auto* const source = m_pChannel1->getEngineBuffer();
+    loadTrack(m_pMixerDeck1.get(), trackA);
+    ASSERT_TRUE(trackA->trySetBeats(mixxx::Beats::fromConstTempo(
+            trackA->getSampleRate(),
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm{120.0})));
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("quantize")), 1.0);
+    ASSERT_TRUE(f001TrackEnd(*source).isValid());
+    source->setF001ProbeForTest(&m_probe);
+    trackA->setF001ProbeForTest(&m_probe);
+    const double endA = f001TrackEnd(*source).value();
+    observeTrack(trackA);
+    observeTrack(trackB);
+    requireSignalRoute(nullptr, trackA.get(), true);
+    requireFrameInfo(trackB.get(), 2 * kSampleRate, kSampleRate, 3);
+    QObject::connect(source,
+            &EngineBuffer::trackLoaded,
+            &m_loadReceiver,
+            [this, trackB](TrackPointer loaded, TrackPointer) {
+                if (loaded == trackB) {
+                    m_bLoadSignalSeen.store(true, std::memory_order_release);
+                }
+            },
+            Qt::QueuedConnection);
+    setF001LoadCuesHold(*source, &m_hold);
+    requireRoute(401,
+            {{F001ProbeEventForTest::CueControlLoadCues,
+                     F001ProbePhaseForTest::Acquired,
+                     nullptr,
+                     trackA.get(),
+                     false,
+                     true,
+                     true,
+                     endA},
+                    {F001ProbeEventForTest::CueControlTrackLoaded,
+                            F001ProbePhaseForTest::Attempt,
+                            nullptr,
+                            trackB.get(),
+                            false,
+                            true},
+                    {F001ProbeEventForTest::CueControlQuantizeExplicit,
+                            F001ProbePhaseForTest::After,
+                            mainCueA.get(),
+                            trackA.get(),
+                            true,
+                            true,
+                            true,
+                            endA,
+                            true,
+                            mainA.value()},
+                    // The A result must precede B installation; the
+                    // post-unlock Released entry has no cross-thread order.
+                    {F001ProbeEventForTest::CueControlTrackLoaded,
+                            F001ProbePhaseForTest::Install,
+                            nullptr,
+                            trackB.get(),
+                            false,
+                            true},
+                    {F001ProbeEventForTest::CueControlTrackLoaded,
+                            F001ProbePhaseForTest::Connect,
+                            nullptr,
+                            trackB.get(),
+                            false,
+                            true},
+                    {F001ProbeEventForTest::CueControlQuantizeExplicit,
+                            F001ProbePhaseForTest::Before,
+                            nullptr,
+                            trackB.get(),
+                            false,
+                            true,
+                            true,
+                            2 * kSampleRate},
+                    {F001ProbeEventForTest::CueControlQuantizeExplicit,
+                            F001ProbePhaseForTest::After,
+                            mainCueB.get(),
+                            trackB.get(),
+                            true,
+                            true,
+                            true,
+                            2 * kSampleRate,
+                            true,
+                            2 * kSampleRate}});
+    checkPair(401, 402, F001ProbeEventForTest::EngineSlotTrackLoaded,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, source, trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::EngineNotifyTrackLoaded,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None, source, trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::EngineNotifyTrackLoaded,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::None, source, trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlFrameInfo,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source), trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source), trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source));
+    checkPair(401, 402, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Install,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source), trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Connect,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source), trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::TrackLoaded,
+            f001CueControl(*source));
+    checkPair(401, 402, F001ProbeEventForTest::CueControlTrackCuesUpdated,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None, f001CueControl(*source));
+    checkLockPair(401, 402, F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            f001CueControl(*source));
+    checkHook(true, 401, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, trackA.get());
+    checkHook(false, 402, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, trackB.get());
+    checkLockPhases(true, 401, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::CreateAndAddCue, trackA.get());
+    checkLockPhases(false, 402, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::CreateAndAddCue, trackB.get());
+    checkLockPair(401, 402, F001ProbeEventForTest::TrackMutex,
+            F001ProbeMethodForTest::GetCuePoints, trackB.get());
+    checkLockPair(401, 402, F001ProbeEventForTest::CueMutex,
+            F001ProbeMethodForTest::CueGetPosition, mainCueB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            f001CueControl(*source), trackB.get());
+    checkPair(401, 402, F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            mainCueB.get(), trackB.get());
+    std::thread refresh([trackA] {
+        trackA->createAndAddCue(mixxx::CueType::Intro,
+                Cue::kNoHotCue,
+                mixxx::audio::FramePos{2000},
+                mixxx::audio::FramePos{4000});
+    });
+    const auto joinRefresh = qScopeGuard([&] {
+        m_hold.release.release();
+        if (refresh.joinable()) {
+            refresh.join();
+        }
+    });
+    ASSERT_TRUE(m_hold.entered.tryAcquire(1, 2000));
+    std::atomic<bool> sawReplacementAttempt{false};
+    std::thread release([&] {
+        sawReplacementAttempt.store(m_hold.trackLoadAttempt.tryAcquire(1, 2000));
+        m_hold.release.release();
+    });
+    const auto joinRelease = qScopeGuard([&] {
+        if (release.joinable()) {
+            release.join();
+        }
+    });
+    loadTrack(m_pMixerDeck1.get(), trackB);
+    release.join();
+    refresh.join();
+    setF001LoadCuesHold(*source, nullptr);
+    ASSERT_TRUE(sawReplacementAttempt.load());
+    ASSERT_FALSE(m_hold.timedOut.load());
+    ASSERT_TRUE(progressUntil([&] {
+        return m_bLoadSignalSeen.load(std::memory_order_acquire);
+    }));
+    ASSERT_TRUE(f001TrackEnd(*source).isValid());
+    EXPECT_EQ(2 * kSampleRate, f001TrackEnd(*source).value());
+    EXPECT_NE(endA, f001TrackEnd(*source).value());
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+
+    forbidOnToken(402, {F001ProbeEventForTest::CueControlQuantizeExplicit});
+    checkHook(true, 402, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, trackA.get());
+    trackA->createAndAddCue(mixxx::CueType::Jump,
+            1,
+            mixxx::audio::FramePos{5000},
+            mixxx::audio::kInvalidFramePos);
+    const auto unrelated = Track::newTemporary(shortPath);
+    unrelated->setF001ProbeForTest(&m_probe);
+    checkHook(true, 402, F001ProbeEventForTest::TrackCreateCue,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CreateAndAddCue, unrelated.get());
+    unrelated->createAndAddCue(mixxx::CueType::Jump,
+            1,
+            mixxx::audio::FramePos{6000},
+            mixxx::audio::kInvalidFramePos);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+}
 
 TEST_F(EngineBufferAlignmentTest, CommonScalerPositionTrace) {
     const QString traceDirectory = qEnvironmentVariable(
@@ -2100,6 +3276,164 @@ TEST_F(EngineBufferAlignmentTest, SignalSmithStretchedMarkerTracksEnginePosition
 }
 #endif
 
+TEST_F(EngineBufferAlignmentTest, SnapshotRejectsCompletedSourceReloadDuringObservation) {
+    const auto track = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    track->createAndAddCue(mixxx::CueType::Loop, Cue::kNoHotCue, mixxx::audio::FramePos{1000}, mixxx::audio::FramePos{5000});
+    auto* const source = m_pChannel1->getEngineBuffer();
+    auto progressUntil = [this](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 2000) {
+            ProcessBuffer();
+            QCoreApplication::processEvents();
+            if (predicate()) {
+                return true;
+            }
+            QTest::qSleep(1);
+        }
+        return false;
+    };
+    loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(progressUntil([&] {
+        return source->getLoopCueSnapshot(track).has_value();
+    }));
+    const auto original = source->getLoopCueSnapshot(track);
+    ASSERT_TRUE(original);
+    const auto different = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    EXPECT_FALSE(source->getLoopCueSnapshot(different));
+
+    // Hold ordinary worker observation so only the test observer can take
+    // the scalar-read barrier. Real player load + worker notifications continue.
+    const auto releaseHold = qScopeGuard([&] { holdLoopPersistence(*source, false); });
+    holdLoopPersistence(*source, true);
+    ASSERT_TRUE(progressUntil([&] { return loopPersistenceHeld(*source); }));
+    HeldLoopSnapshot observer(*source, track);
+    ASSERT_TRUE(observer.awaitHeld());
+    // The helper moves only the const observer to a test thread. This is not
+    // a new concurrent GUI clone transaction contract. Ownership transition
+    // uses the actual path-backed player/reader load route on its normal threads.
+    loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(progressUntil([&] {
+        const auto current = source->getLoopCueSnapshot(track);
+        return current && current->generation != original->generation;
+    }));
+    EXPECT_FALSE(observer.finish());
+}
+
+TEST_F(EngineBufferAlignmentTest, CloneUsesStableSourceLoopCueSnapshot) {
+    const auto track = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    const auto saved = track->createAndAddCue(
+            mixxx::CueType::Loop, 2, mixxx::audio::FramePos{1000}, mixxx::audio::FramePos{5000});
+    auto* const source = m_pChannel1->getEngineBuffer();
+    auto* const target = m_pChannel2->getEngineBuffer();
+    auto progressUntil = [this](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 2000) {
+            ProcessBuffer();
+            QCoreApplication::processEvents();
+            if (predicate()) {
+                return true;
+            }
+            QTest::qSleep(1);
+        }
+        return false;
+    };
+    loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(progressUntil([&] {
+        return source->getLoopCueSnapshot(track).has_value();
+    }));
+    // Start creation with no temporary cue; the saved hotcue remains.
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 0.0);
+    ASSERT_TRUE(progressUntil([&] { return !temporaryLoopCue(track); }));
+
+    const auto releaseHolds = qScopeGuard([&] {
+        holdLoopPersistence(*source, false);
+    });
+    struct Case {
+        int start;
+        int end;
+        bool enabled;
+    };
+    for (const auto& scenario :
+            {Case{2000, 7000, true}, Case{3000, 8000, true}, Case{-1, -1, false}}) {
+        holdLoopPersistence(*source, true);
+        ASSERT_TRUE(progressUntil([&] { return loopPersistenceHeld(*source); }));
+        const auto before = temporaryLoopCue(track);
+        const auto beforeRange = before
+                ? before->getStartAndEndPosition()
+                : Cue::StartAndEndPositions{};
+        if (scenario.start < 0) {
+            ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 1.0);
+            ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 0.0);
+        } else {
+            ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_start_position")),
+                    mixxx::audio::FramePos{scenario.start}.toEngineSamplePos());
+            ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_end_position")),
+                    mixxx::audio::FramePos{scenario.end}.toEngineSamplePos());
+            ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_enabled")), 1.0);
+        }
+        // This is the actual deferred-persistence witness, before target load
+        // can mutate the same shared Track through its own reader.
+        EXPECT_EQ(before, temporaryLoopCue(track));
+        if (before) {
+            EXPECT_EQ(beforeRange.startPosition,
+                    before->getStartAndEndPosition().startPosition);
+            EXPECT_EQ(beforeRange.endPosition,
+                    before->getStartAndEndPosition().endPosition);
+        }
+        const auto snapshot = source->getLoopCueSnapshot(track);
+        ASSERT_TRUE(snapshot);
+        EXPECT_EQ(scenario.start < 0 ? mixxx::audio::kInvalidFramePos
+                                     : mixxx::audio::FramePos{scenario.start},
+                snapshot->startPosition);
+        const auto previousTarget = target->getLoopCueSnapshot(track);
+        m_pMixerDeck2->slotCloneFromGroup(m_sGroup1);
+        ASSERT_TRUE(progressUntil([&] {
+            const auto currentTarget = target->getLoopCueSnapshot(track);
+            return currentTarget &&
+                    (!previousTarget ||
+                            currentTarget->generation != previousTarget->generation) &&
+                    ControlObject::get(ConfigKey(
+                            m_sGroup2, QStringLiteral("loop_enabled"))) ==
+                    (scenario.enabled ? 1.0 : 0.0);
+        }));
+        auto assertTarget = [&] {
+            const auto targetSnapshot = target->getLoopCueSnapshot(track);
+            ASSERT_TRUE(targetSnapshot);
+            EXPECT_EQ(snapshot->startPosition, targetSnapshot->startPosition);
+            EXPECT_EQ(snapshot->endPosition, targetSnapshot->endPosition);
+            EXPECT_EQ(saved, track->getCuePoints().front());
+            EXPECT_EQ(mixxx::audio::FramePos{1000},
+                    saved->getStartAndEndPosition().startPosition);
+            EXPECT_EQ(mixxx::audio::FramePos{5000},
+                    saved->getStartAndEndPosition().endPosition);
+        };
+        assertTarget();
+        const auto sourceDrainsBeforeRelease = completedLoopPersistence(*source);
+        holdLoopPersistence(*source, false);
+        ASSERT_TRUE(progressUntil([&] {
+            // Target persistence mutates the same Track. Only this source's
+            // completion counter proves the formerly held source drain ran.
+            if (completedLoopPersistence(*source) <= sourceDrainsBeforeRelease) {
+                return false;
+            }
+            const auto cue = temporaryLoopCue(track);
+            if (scenario.start < 0) {
+                return !cue;
+            }
+            return cue && cue->getStartAndEndPosition().startPosition == mixxx::audio::FramePos{scenario.start} &&
+                    cue->getStartAndEndPosition().endPosition ==
+                    mixxx::audio::FramePos{scenario.end};
+        }));
+        assertTarget();
+    }
+}
+
 #ifdef __BUNGEE__
 TEST_F(EngineBufferAlignmentTest, BungeeEngineMarkerTracksEnginePosition) {
     TrackPointer track = Track::newTemporary();
@@ -2647,4 +3981,96 @@ TEST_F(EngineBufferAlignmentTest, BungeeCloneMarkersAreCallbackOrderIndependent)
                 << ", slope=" << comparison.slope;
     }
 }
+
 #endif
+
+// This native-only route uses no F001 source recorder, QList observer, or Cue
+// getter trace. The worker owns its token independently of the test thread.
+class F001NativeWorkerRouteTest : public EngineBufferAlignmentTest {};
+
+TEST_F(F001NativeWorkerRouteTest, SelectedWorkerTokenReachesRealWorker) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "The native capture boundary is available only on Linux";
+#endif
+    if (!f001RtProbeInitializeForTest ||
+            !f001RtProbePrepareThreadForTest ||
+            !f001RtProbeSetThreadTokenForTest ||
+            !f001RtProbeSelectedScopesIdleForTest ||
+            !f001RtProbeBuffersForTest) {
+        GTEST_SKIP() << "The isolated capture object is not bound";
+    }
+    ASSERT_TRUE(f001RtProbeInitializeForTest());
+    ASSERT_TRUE(f001RtProbePrepareThreadForTest(0xF001D004));
+
+    const auto track = Track::newTemporary(
+            getTestDir().filePath(QStringLiteral("sine-30.wav")));
+    loadTrack(m_pMixerDeck1.get(), track);
+    auto& buffer = *m_pChannel1->getEngineBuffer();
+    auto* const worker = f001Worker(buffer);
+    ASSERT_NE(nullptr, worker);
+    worker->setF001NativeTokenForTest(0xF001D005);
+    const auto beforePrewarm = completedLoopPersistence(buffer);
+    worker->notifyLoopCueUpdate();
+    QElapsedTimer timer;
+    timer.start();
+    while ((!worker->f001NativePreparedForTest() ||
+                   completedLoopPersistence(buffer) == beforePrewarm) &&
+            timer.elapsed() < 2000) {
+        ProcessBuffer(); // register and warm the selected worker while disarmed
+        QTest::qSleep(1);
+    }
+    ASSERT_TRUE(worker->f001NativePreparedForTest());
+    ASSERT_GT(completedLoopPersistence(buffer), beforePrewarm);
+    const auto before = completedLoopPersistence(buffer);
+
+    ASSERT_TRUE(f001RtProbeResetForTest());
+    f001RtProbeArmForTest(true);
+    const bool callbackExcluded =
+            f001RtProbeSetThreadTokenForTest(0); // exclude callback thread
+    worker->notifyLoopCueUpdate();
+    timer.restart();
+    while (completedLoopPersistence(buffer) == before &&
+            timer.elapsed() < 2000) {
+        ProcessBuffer(); // the real scheduler wakes the worker
+        QTest::qSleep(1);
+    }
+    while (!f001RtProbeSelectedScopesIdleForTest() &&
+            timer.elapsed() < 2000) {
+        QTest::qSleep(1);
+    }
+    f001RtProbeArmForTest(false);
+    worker->setF001NativeTokenForTest(0);
+    ASSERT_TRUE(callbackExcluded);
+    ASSERT_GT(completedLoopPersistence(buffer), before);
+    ASSERT_TRUE(f001RtProbeQuiescentForTest());
+    ASSERT_FALSE(f001RtProbeOverflowedForTest());
+
+    std::size_t slots = 0;
+    const auto* buffers = f001RtProbeBuffersForTest(&slots);
+    ASSERT_NE(nullptr, buffers);
+    std::uint32_t entries = 0;
+    std::uint32_t exits = 0;
+    std::uint64_t workerTid = 0;
+    for (std::size_t slot = 0; slot < slots; ++slot) {
+        const auto count = std::min<std::uint32_t>(
+                buffers[slot].eventCount.load(std::memory_order_acquire),
+                F001RtProbeThreadBufferForTest::kCapacity);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const auto& event = buffers[slot].events[i];
+            if (event.caseToken != 0xF001D005 ||
+                    event.scope !=
+                            F001RtProbeScopeForTest::WorkerProcessLoopCueUpdate) {
+                continue;
+            }
+            if (event.kind == F001RtProbeEventKindForTest::ScopeEnter) {
+                ++entries;
+                workerTid = event.threadId;
+            } else if (event.kind == F001RtProbeEventKindForTest::ScopeExit) {
+                ++exits;
+                EXPECT_EQ(workerTid, event.threadId);
+            }
+        }
+    }
+    EXPECT_EQ(1U, entries);
+    EXPECT_EQ(1U, exits);
+}

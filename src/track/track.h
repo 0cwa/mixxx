@@ -4,6 +4,7 @@
 #include <QList>
 #include <QObject>
 #include <QStack>
+#include <atomic>
 #include <QUrl>
 #include <memory>
 
@@ -23,6 +24,10 @@
 #include "util/fileaccess.h"
 #include "util/performancetimer.h"
 #include "waveform/waveform.h"
+
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+#endif
 
 class Track : public QObject {
     Q_OBJECT
@@ -341,11 +346,16 @@ class Track : public QObject {
     void removeCue(const CuePointer& pCue);
     void removeCuesOfType(mixxx::CueType);
     void removeTempLoopCue();
+#ifdef BUILD_TESTING
+    QList<CuePointer> getCuePoints() const;
+    void setF001ProbeForTest(F001ProbeForTest* pProbe);
+#else
     QList<CuePointer> getCuePoints() const {
         const QMutexLocker lock(&m_qMutex);
         // lock thread-unsafe copy constructors of QList
         return m_cuePoints;
     }
+#endif
     void swapHotcues(int a, int b);
     void setCuePoints(const QList<CuePointer>& cuePoints);
 
@@ -611,6 +621,9 @@ class Track : public QObject {
 
     // Mutex protecting access to object
     mutable QT_RECURSIVE_MUTEX m_qMutex;
+#ifdef BUILD_TESTING
+    std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+#endif
 
     // The file
     mixxx::FileAccess m_fileAccess;

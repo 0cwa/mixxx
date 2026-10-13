@@ -1,9 +1,13 @@
 #include "engine/controls/loopingcontrol.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#endif
 
 #include <QtDebug>
 
 #include "control/controlobject.h"
 #include "control/controlpushbutton.h"
+#include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/bpmcontrol.h"
 #include "engine/controls/enginecontrol.h"
 #include "engine/controls/ratecontrol.h"
@@ -342,12 +346,12 @@ void LoopingControl::slotLoopScale(double scaleFactor) {
             ? LoopSeekMode::Changed
             : LoopSeekMode::MovedOut;
 
-    m_loopInfo.setValue(loopInfo);
+    commitLoopInfo(loopInfo);
     emit loopUpdated(loopInfo.startPosition, loopInfo.endPosition);
 
     // Update CO for loop end marker
     m_pCOLoopEndPosition->set(loopInfo.endPosition.toEngineSamplePos());
-    updateLoopCue(loopInfo);
+    updateLoopCue();
 }
 
 void LoopingControl::slotLoopHalve(double pressed) {
@@ -690,10 +694,10 @@ void LoopingControl::setLoop(mixxx::audio::FramePos startPosition,
         loopInfo.endPosition = endPosition;
         loopInfo.seekMode = LoopSeekMode::None;
         clearActiveBeatLoop();
-        m_loopInfo.setValue(loopInfo);
+        commitLoopInfo(loopInfo);
         m_pCOLoopStartPosition->set(loopInfo.startPosition.toEngineSamplePos());
         m_pCOLoopEndPosition->set(loopInfo.endPosition.toEngineSamplePos());
-        updateLoopCue(loopInfo);
+        updateLoopCue();
     }
     setLoopingEnabled(enabled);
 
@@ -796,8 +800,8 @@ void LoopingControl::setLoopInToCurrentPosition() {
         clearActiveBeatLoop();
     }
 
-    m_loopInfo.setValue(loopInfo);
-    updateLoopCue(loopInfo);
+    commitLoopInfo(loopInfo);
+    updateLoopCue();
     //qDebug() << "set loop_in to " << loopInfo.startPosition;
 }
 
@@ -806,17 +810,18 @@ void LoopingControl::setLoopInToCurrentPosition() {
 /// Track::loopRemove() signal (relayed via CueControl and EngineBuffer)
 void LoopingControl::slotLoopRemove() {
     setLoopingEnabled(false);
-    // This also calls updateLoopCue() which removes the CuePointer from the track
+    // This also queues updateLoopCue(), which removes the temporary CuePointer
+    // from the track on the reader worker.
     clearLoopInfoAndControls();
 }
 
 void LoopingControl::clearLoopInfoAndControls() {
     LoopInfo loopInfo;
-    m_loopInfo.setValue(loopInfo);
+    commitLoopInfo(loopInfo);
     m_oldLoopInfo = loopInfo;
     m_pCOLoopStartPosition->set(loopInfo.startPosition.toEngineSamplePosMaybeInvalid());
     m_pCOLoopEndPosition->set(loopInfo.endPosition.toEngineSamplePosMaybeInvalid());
-    updateLoopCue(loopInfo);
+    updateLoopCue();
 }
 
 void LoopingControl::slotLoopIn(double pressed) {
@@ -924,7 +929,6 @@ void LoopingControl::setLoopOutToCurrentPosition() {
     loopInfo.endPosition = position;
 
     m_pCOLoopEndPosition->set(loopInfo.endPosition.toEngineSamplePosMaybeInvalid());
-    updateLoopCue(loopInfo);
 
     // start looping
     if (loopInfo.startPosition.isValid() && loopInfo.endPosition.isValid()) {
@@ -943,11 +947,16 @@ void LoopingControl::setLoopOutToCurrentPosition() {
     }
     //qDebug() << "set loop_out to " << loopInfo.endPosition;
 
-    m_loopInfo.setValue(loopInfo);
+    commitLoopInfo(loopInfo);
+    updateLoopCue();
 }
 
 void LoopingControl::setRateControl(RateControl* rateControl) {
     m_pRateControl = rateControl;
+}
+
+void LoopingControl::setLoopCueWorker(CachingReaderWorker* pWorker) {
+    m_pLoopCueWorker.store(pWorker, std::memory_order_release);
 }
 
 void LoopingControl::slotLoopOut(double pressed) {
@@ -1129,8 +1138,8 @@ void LoopingControl::slotLoopStartPos(double positionSamples) {
     }
 
     m_pCOLoopStartPosition->set(loopInfo.startPosition.toEngineSamplePosMaybeInvalid());
-    m_loopInfo.setValue(loopInfo);
-    updateLoopCue(loopInfo);
+    commitLoopInfo(loopInfo);
+    updateLoopCue();
 }
 
 void LoopingControl::slotLoopEndPos(double positionSamples) {
@@ -1160,8 +1169,8 @@ void LoopingControl::slotLoopEndPos(double positionSamples) {
     loopInfo.endPosition = position;
     loopInfo.seekMode = LoopSeekMode::MovedOut;
     m_pCOLoopEndPosition->set(position.toEngineSamplePosMaybeInvalid());
-    m_loopInfo.setValue(loopInfo);
-    updateLoopCue(loopInfo);
+    commitLoopInfo(loopInfo);
+    updateLoopCue();
 }
 
 // This is called from the engine thread
@@ -1670,11 +1679,11 @@ void LoopingControl::slotBeatLoop(double beats,
         break;
     }
 
-    m_loopInfo.setValue(newloopInfo);
+    commitLoopInfo(newloopInfo);
     emit loopUpdated(newloopInfo.startPosition, newloopInfo.endPosition);
     m_pCOLoopStartPosition->set(newloopInfo.startPosition.toEngineSamplePos());
     m_pCOLoopEndPosition->set(newloopInfo.endPosition.toEngineSamplePos());
-    updateLoopCue(newloopInfo);
+    updateLoopCue();
 
     if (enable) {
         setLoopingEnabled(true);
@@ -1853,42 +1862,128 @@ void LoopingControl::slotLoopMove(double beats) {
 
         loopInfo.startPosition = newLoopStartPosition;
         loopInfo.endPosition = newLoopEndPosition;
-        m_loopInfo.setValue(loopInfo);
+        commitLoopInfo(loopInfo);
         emit loopUpdated(loopInfo.startPosition, loopInfo.endPosition);
         m_pCOLoopStartPosition->set(loopInfo.startPosition.toEngineSamplePosMaybeInvalid());
         m_pCOLoopEndPosition->set(loopInfo.endPosition.toEngineSamplePosMaybeInvalid());
-        updateLoopCue(loopInfo);
+        updateLoopCue();
     }
 }
 
-void LoopingControl::updateLoopCue(const LoopInfo& loopInfo) {
-    // Skip if we don't have a track.
-    // Also skip in tests where we only have fake tracks w/o location.
-    if (!m_pTrack || m_pTrack->getLocation().isEmpty()) {
-        return;
+void LoopingControl::commitLoopInfo(const LoopInfo& loopInfo) {
+    // SC count/revision operations bracket every existing scalar store.
+    // The sticky exhaustion flag is set halfway through the counter domain,
+    // before wrap can make an observation look unchanged. There must be fewer
+    // than 2^63 simultaneously active scalar writers (bounded by live threads).
+    if (m_loopScalarWriters.fetch_add(1) >= kCertificateLimit - 1) {
+        m_loopCertificateExhausted.store(true);
     }
-
-    // We need valid start/end and start < end for a loop cue
-    if (!loopInfo.startPosition.isValid() || !loopInfo.endPosition.isValid() ||
-            loopInfo.endPosition <= loopInfo.startPosition) {
-        m_pTrack->removeTempLoopCue();
-        return;
+#ifdef BUILD_TESTING
+    if (m_loopPublicationHookForTest) {
+        m_loopPublicationHookForTest(m_loopPublicationContextForTest, 0);
     }
+#endif
+    m_loopInfo.setValue(loopInfo);
+    if (m_loopScalarRevision.fetch_add(1) >= kCertificateLimit - 1) {
+        m_loopCertificateExhausted.store(true);
+    }
+    m_loopScalarWriters.fetch_sub(1);
+}
 
-    const QList<CuePointer> cuePoints = m_pTrack->getCuePoints();
-    for (const auto& pCue : cuePoints) {
-        if (pCue->getType() == mixxx::CueType::Loop && pCue->getHotCue() == Cue::kNoHotCue) {
-            pCue->setStartAndEndPosition(loopInfo.startPosition, loopInfo.endPosition);
-            return;
+std::optional<LoopingControl::LoopInfo> LoopingControl::tryGetStableLoopInfo() const {
+#ifdef BUILD_TESTING
+    return tryGetStableLoopInfoWithObservationForTest(nullptr);
+#else
+    const auto revision = m_loopScalarRevision.load();
+    if (m_loopCertificateExhausted.load() ||
+            revision >= kCertificateLimit || m_loopScalarWriters.load() != 0) {
+        return std::nullopt;
+    }
+    const auto info = m_loopInfo.getValue();
+    if (m_loopScalarWriters.load() != 0 ||
+            m_loopScalarRevision.load() != revision ||
+            m_loopCertificateExhausted.load()) {
+        return std::nullopt;
+    }
+    return info;
+#endif
+}
+
+#ifdef BUILD_TESTING
+std::optional<LoopingControl::LoopInfo>
+LoopingControl::tryGetStableLoopInfoForTest(
+        LoopScalarObservationCallerForTest caller) const {
+    auto* const pTrace = m_pLoopScalarObservationTraceForTest.load(
+            std::memory_order_acquire);
+    if (!pTrace) {
+        return tryGetStableLoopInfoWithObservationForTest(nullptr);
+    }
+    LoopScalarObservationForTest observation;
+    observation.caller = caller;
+    const auto info = tryGetStableLoopInfoWithObservationForTest(&observation);
+    pTrace->append(observation);
+    return info;
+}
+
+std::optional<LoopingControl::LoopInfo>
+LoopingControl::tryGetStableLoopInfoWithObservationForTest(
+        LoopScalarObservationForTest* pObservation) const {
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::LoopScalarRead,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            this);
+    const auto revision = m_loopScalarRevision.load();
+    if (pObservation) {
+        pObservation->revision = revision;
+    }
+    if (m_loopCertificateExhausted.load() || revision >= kCertificateLimit) {
+        return std::nullopt;
+    }
+    const auto writersBefore = m_loopScalarWriters.load();
+    if (pObservation) {
+        pObservation->writersBefore = writersBefore;
+        pObservation->writersBeforeRead = true;
+    }
+    if (writersBefore != 0) {
+        return std::nullopt;
+    }
+    const auto info = m_loopInfo.getValue();
+    if (m_loopPublicationHookForTest) {
+        m_loopPublicationHookForTest(m_loopPublicationContextForTest, 2);
+    }
+    if (m_loopScalarWriters.load() != 0 ||
+            m_loopScalarRevision.load() != revision ||
+            m_loopCertificateExhausted.load()) {
+        return std::nullopt;
+    }
+    if (pObservation) {
+        pObservation->stable = true;
+        pObservation->startValid = info.startPosition.isValid();
+        pObservation->endValid = info.endPosition.isValid();
+        if (pObservation->startValid) {
+            pObservation->startPosition = info.startPosition.value();
+        }
+        if (pObservation->endValid) {
+            pObservation->endPosition = info.endPosition.value();
         }
     }
+    return info;
+}
+#endif
 
-    // We didn't find a loop cue to modify, create a new one
-    m_pTrack->createAndAddCue(
-            mixxx::CueType::Loop,
-            Cue::kNoHotCue,
-            loopInfo.startPosition,
-            loopInfo.endPosition);
+void LoopingControl::updateLoopCue() {
+#ifdef BUILD_TESTING
+    if (m_loopPublicationHookForTest) {
+        m_loopPublicationHookForTest(m_loopPublicationContextForTest, 1);
+    }
+#endif
+    // Notifications carry no endpoints or owner generation. A delayed caller
+    // only requests a fresh scalar observation on the existing reader worker.
+    if (auto* const pWorker =
+                    m_pLoopCueWorker.load(std::memory_order_acquire)) {
+        pWorker->notifyLoopCueUpdate();
+    }
 }
 
 /// Used to simulate looping while slip mode is enabled

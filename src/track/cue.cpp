@@ -1,4 +1,8 @@
 #include "track/cue.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#include "test/f001rtprobe.h"
+#endif
 
 #include "audio/frame.h"
 #include "moc_cue.cpp"
@@ -135,8 +139,31 @@ void Cue::setId(DbId cueId) {
 }
 
 mixxx::CueType Cue::getType() const {
-    const auto lock = lockMutex(&m_mutex);
-    return m_type;
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::CueGetType,
+            this);
+#endif
+    auto lock = lockMutex(&m_mutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::CueGetType,
+            this);
+#endif
+    const auto value = m_type;
+#ifdef BUILD_TESTING
+    lock.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::CueGetType,
+            this);
+#endif
+    return value;
 }
 
 void Cue::setType(mixxx::CueType type) {
@@ -151,8 +178,31 @@ void Cue::setType(mixxx::CueType type) {
 }
 
 mixxx::audio::FramePos Cue::getPosition() const {
-    const auto lock = lockMutex(&m_mutex);
-    return m_startPosition;
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::CueGetPosition,
+            this);
+#endif
+    auto lock = lockMutex(&m_mutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::CueGetPosition,
+            this);
+#endif
+    const auto value = m_startPosition;
+#ifdef BUILD_TESTING
+    lock.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::CueGetPosition,
+            this);
+#endif
+    return value;
 }
 
 void Cue::setStartPosition(mixxx::audio::FramePos position) {
@@ -180,21 +230,97 @@ void Cue::setEndPosition(mixxx::audio::FramePos position) {
 void Cue::setStartAndEndPosition(
         mixxx::audio::FramePos startPosition,
         mixxx::audio::FramePos endPosition) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::CueSetStartAndEndPosition, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition,
+            this);
+#endif
     auto lock = lockMutex(&m_mutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition,
+            this);
+#endif
     if (m_startPosition == startPosition &&
             m_endPosition == endPosition) {
+#ifdef BUILD_TESTING
+        lock.unlock();
+        f001RecordObjectForTest(m_pF001ProbeForTest,
+                F001ProbeEventForTest::CueMutex,
+                F001ProbePhaseForTest::Released,
+                F001ProbeMethodForTest::CueSetStartAndEndPosition,
+                this);
+#endif
         return;
     }
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueSetStartAndEnd,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition,
+            this,
+            nullptr,
+            startPosition.isValid() ? startPosition.value() : 0,
+            endPosition.isValid() ? endPosition.value() : 0,
+            0,
+            (startPosition.isValid() ? 1U : 0U) |
+                    (endPosition.isValid() ? 2U : 0U));
+#endif
     m_startPosition = startPosition;
     m_endPosition = endPosition;
     m_bDirty = true;
     lock.unlock();
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition,
+            this);
+#endif
     emit updated();
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueSetStartAndEnd,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::CueSetStartAndEndPosition,
+            this);
+#endif
 }
 
 Cue::StartAndEndPositions Cue::getStartAndEndPosition() const {
-    const auto lock = lockMutex(&m_mutex);
-    return {m_startPosition, m_endPosition};
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::CueGetStartAndEndPosition,
+            this);
+#endif
+    auto lock = lockMutex(&m_mutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::CueGetStartAndEndPosition,
+            this);
+#endif
+    const StartAndEndPositions positions{m_startPosition, m_endPosition};
+#ifdef BUILD_TESTING
+    lock.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::CueGetStartAndEndPosition,
+            this);
+#endif
+    return positions;
 }
 
 void Cue::shiftPositionFrames(mixxx::audio::FrameDiff_t frameOffset) {
@@ -233,8 +359,31 @@ void Cue::setHotCue(int n) {
 }
 
 int Cue::getHotCue() const {
-    const auto lock = lockMutex(&m_mutex);
-    return m_iHotCue;
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::CueGetHotCue,
+            this);
+#endif
+    auto lock = lockMutex(&m_mutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::CueGetHotCue,
+            this);
+#endif
+    const auto value = m_iHotCue;
+#ifdef BUILD_TESTING
+    lock.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueMutex,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::CueGetHotCue,
+            this);
+#endif
+    return value;
 }
 
 QString Cue::getLabel() const {

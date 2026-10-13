@@ -100,6 +100,12 @@ class EngineMixer : public QObject, public AudioSource {
         return m_pEngineSync.get();
     }
 
+#ifdef BUILD_TESTING
+    EngineWorkerScheduler* f001WorkerSchedulerForTest() const {
+        return m_pWorkerScheduler.get();
+    }
+#endif
+
     // These are really only exposed for tests to use.
     std::span<const CSAMPLE> getMainBuffer() const;
     std::span<const CSAMPLE> getBoothBuffer() const;

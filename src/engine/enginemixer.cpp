@@ -1,6 +1,9 @@
 #include "engine/enginemixer.h"
 
 #include <algorithm>
+#ifdef BUILD_TESTING
+#include "test/f001rtprobe.h"
+#endif
 #include <memory>
 
 #include "audio/types.h"
@@ -410,6 +413,10 @@ void EngineMixer::processChannels(std::size_t bufferSize) {
 }
 
 void EngineMixer::process(const std::size_t bufferSize) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::MixerProcess);
+#endif
     DEBUG_ASSERT(bufferSize <= static_cast<int>(kMaxEngineSamples));
 
     static bool haveSetName = false;

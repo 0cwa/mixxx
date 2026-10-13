@@ -3,6 +3,7 @@
 #include <QMessageBox>
 #include <QMetaMethod>
 #include <memory>
+#include <optional>
 
 #include "control/controlencoder.h"
 #include "control/controlobject.h"
@@ -399,9 +400,17 @@ void BaseTrackPlayerImpl::loadTrack(TrackPointer pTrack) {
         return;
     }
 
+    std::optional<EngineBuffer::LoopCueSnapshot> cloneLoopCueSnapshot;
+    if (m_pChannelToCloneFrom) {
+        cloneLoopCueSnapshot =
+                m_pChannelToCloneFrom->getEngineBuffer()->getLoopCueSnapshot(
+                        m_pLoadedTrack);
+    }
+
     // Maybe adopt loop from channel to clone from.
     // The loop in and out points must be set here and not in slotTrackLoaded
-    // so LoopingControl::trackLoaded can access them.
+    // so the target LoopingControl and reader worker see the adopted values
+    // during the load handoff.
     //
     // Restore loop from the first loop cue with minimum hotcue number.
     // For the volatile "most recent loop" the hotcue number will be -1.
@@ -420,7 +429,15 @@ void BaseTrackPlayerImpl::loadTrack(TrackPointer pTrack) {
         pLoopCue = pCue;
     }
 
-    if (pLoopCue) {
+    if (cloneLoopCueSnapshot &&
+            cloneLoopCueSnapshot->pTrack == m_pLoadedTrack) {
+        newLoopIn = cloneLoopCueSnapshot->startPosition.isValid()
+                ? cloneLoopCueSnapshot->startPosition.toEngineSamplePos()
+                : kNoTrigger;
+        newLoopOut = cloneLoopCueSnapshot->endPosition.isValid()
+                ? cloneLoopCueSnapshot->endPosition.toEngineSamplePos()
+                : kNoTrigger;
+    } else if (pLoopCue) {
         const auto loop = pLoopCue->getStartAndEndPosition();
         if (loop.startPosition.isValid() && loop.endPosition.isValid() &&
                 loop.startPosition <= loop.endPosition) {

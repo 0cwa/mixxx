@@ -153,6 +153,7 @@ class TrackCollection : public QObject,
     FRIEND_TEST(TrackDAOTest, detectMovedTracks);
     FRIEND_TEST(TrackDAOTest, bpmLockPreservedForTrackWithoutBeats);
     FRIEND_TEST(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly);
+    FRIEND_TEST(CachingReaderWorkerTest, ReaderFinalDrainSurvivesDatabaseEvictionReload);
     TrackId addTrack(
             const TrackPointer& pTrack,
             bool unremove);

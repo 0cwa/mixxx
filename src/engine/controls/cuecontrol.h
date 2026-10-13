@@ -5,6 +5,7 @@
 #include <QAtomicInt>
 #include <QAtomicPointer>
 #include <QList>
+#include <atomic>
 
 #include "engine/controls/enginecontrol.h"
 #include "preferences/colorpalettesettings.h"
@@ -18,6 +19,10 @@ class ControlObject;
 class ControlPushButton;
 class ControlIndicator;
 class ControlProxy;
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+struct F001LoadCuesHoldForTest;
+#endif
 
 enum class CueMode {
     Mixxx,
@@ -215,6 +220,14 @@ class CueControl : public EngineControl {
     SeekOnLoadMode getSeekOnLoadPreference();
     void trackLoaded(TrackPointer pNewTrack) override;
     void trackBeatsUpdated(mixxx::BeatsPointer pBeats) override;
+#ifdef BUILD_TESTING
+    void setF001ProbeForTest(F001ProbeForTest* pProbe) {
+        m_pF001ProbeForTest.store(pProbe, std::memory_order_release);
+    }
+    void setF001LoadCuesHoldForTest(F001LoadCuesHoldForTest* pHold) {
+        m_pF001LoadCuesHoldForTest.store(pHold, std::memory_order_release);
+    }
+#endif
 
   signals:
     void loopRemove();
@@ -297,6 +310,9 @@ class CueControl : public EngineControl {
     void setCurrentSavedLoopControlAndActivate(HotcueControl* pControl);
     void loadCuesFromTrack();
     mixxx::audio::FramePos quantizeCuePoint(mixxx::audio::FramePos position);
+    mixxx::audio::FramePos quantizeCuePoint(
+            mixxx::audio::FramePos position,
+            mixxx::audio::FramePos trackEndPosition);
     mixxx::audio::FramePos getQuantizedCurrentPosition();
     TrackAt getTrackAt() const;
     void seekOnLoad(mixxx::audio::FramePos seekOnLoadPosition);
@@ -388,7 +404,15 @@ class CueControl : public EngineControl {
 
     // Must be locked when using the m_pLoadedTrack and it's properties
     QT_RECURSIVE_MUTEX m_trackMutex;
+#ifdef BUILD_TESTING
+    std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+    std::atomic<F001LoadCuesHoldForTest*> m_pF001LoadCuesHoldForTest{nullptr};
+#endif
     TrackPointer m_pLoadedTrack; // is written from an engine worker thread
+    // Guarded by m_trackMutex and paired with m_pLoadedTrack. Read-ahead cue
+    // quantization continues to use m_pTrackSamples.
+    mixxx::audio::FramePos m_loadedTrackEndPosition{
+            mixxx::audio::kInvalidFramePos};
 
     friend class HotcueControlTest;
 };

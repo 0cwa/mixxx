@@ -766,7 +766,7 @@ TrackId TrackDAO::addTracksAddTrack(const TrackPointer& pTrack, bool unremove) {
         if (m_trackLocationIdColumn == UndefinedRecordIndex) {
             m_trackLocationIdColumn =
                     m_pQueryTrackLocationSelect->record().indexOf(
-                            LIBRARYTABLE_MIXXXDELETED);
+                            LIBRARYTABLE_ID);
         }
         DbId trackLocationId;
         while (m_pQueryTrackLocationSelect->next()) {

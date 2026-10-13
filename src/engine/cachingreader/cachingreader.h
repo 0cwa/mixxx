@@ -20,6 +20,10 @@
 #include "util/types.h"
 
 class Seek30Control;
+class LoopingControl;
+#ifdef BUILD_TESTING
+class F001ProbeForTest;
+#endif
 
 // A Hint is an indication to the CachingReader that a certain section of a
 // SoundSource will be used 'soon' and so it should be brought into memory by
@@ -143,6 +147,10 @@ class CachingReader : public QObject {
     }
 
     void setSeek30Control(Seek30Control* pControl);
+    void setLoopingControl(LoopingControl* pControl);
+#ifdef BUILD_TESTING
+    void setF001ProbeForTest(F001ProbeForTest* pProbe);
+#endif
 
   protected:
     struct RetryReadResult {
@@ -172,6 +180,8 @@ class CachingReader : public QObject {
 
   private:
     friend class CachingReaderStatusQueueTest;
+    friend class CachingReaderWorkerTest;
+    friend class EngineBufferAlignmentTest;
 #ifdef BUILD_TESTING
     FRIEND_TEST(CachingReaderStatusQueueTest, ReadDoesNotResetCallbackBudget);
     FRIEND_TEST(CachingReaderStatusQueueTest,
@@ -292,5 +302,6 @@ class CachingReader : public QObject {
     // The readable frame index range as reported by the worker.
     mixxx::IndexRange m_readableFrameIndexRange;
 
+    LoopingControl* m_pLoopingControl{nullptr};
     CachingReaderWorker m_worker;
 };

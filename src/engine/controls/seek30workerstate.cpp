@@ -1,4 +1,8 @@
 #include "engine/controls/seek30workerstate.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#include "test/f001rtprobe.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -67,6 +71,201 @@ void Seek30WorkerState::trackLoaded(TrackPointer pNewTrack) {
     m_pLoadedTrack = std::move(pNewTrack);
     ++m_generation;
     rebuildMemoryCueCache();
+}
+
+#ifdef BUILD_TESTING
+void Seek30WorkerState::recordUnavailableLoopCueObservationForTest() {
+    auto* const pTrace = m_pLoopCueApplyTraceForTest.load(std::memory_order_acquire);
+    if (!pTrace) {
+        return;
+    }
+    LoopCueApplySnapshotForTest snapshot;
+    snapshot.branch = LoopCueApplySnapshotForTest::Branch::StableObservationUnavailable;
+    if (m_pLoadedTrack) {
+        snapshot.trackIdentity = reinterpret_cast<std::uintptr_t>(m_pLoadedTrack.get());
+        snapshot.trackIdValid = m_pLoadedTrack->getId().isValid();
+    }
+    pTrace->append(snapshot);
+}
+#endif
+
+void Seek30WorkerState::updateLoopCue(
+        const mixxx::audio::FramePos& startPosition,
+        const mixxx::audio::FramePos& endPosition) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::Seek30UpdateLoopCue, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    if (auto* pProbe = m_pF001ProbeForTest.load(std::memory_order_acquire)) {
+        pProbe->record(F001ProbeEventForTest::Seek30LoopCueUpdate,
+                F001ProbePhaseForTest::Before,
+                F001ProbeMethodForTest::None,
+                this,
+                m_pLoadedTrack.get(),
+                startPosition.isValid() ? startPosition.value() : 0,
+                endPosition.isValid() ? endPosition.value() : 0,
+                0,
+                (startPosition.isValid() ? 1U : 0U) |
+                        (endPosition.isValid() ? 2U : 0U));
+    }
+    auto* const pTrace = m_pLoopCueApplyTraceForTest.load(std::memory_order_acquire);
+    LoopCueApplySnapshotForTest snapshot;
+    if (pTrace) {
+        snapshot.observedStartValid = startPosition.isValid();
+        snapshot.observedEndValid = endPosition.isValid();
+        if (snapshot.observedStartValid) {
+            snapshot.observedStart = startPosition.value();
+        }
+        if (snapshot.observedEndValid) {
+            snapshot.observedEnd = endPosition.value();
+        }
+        if (m_pLoadedTrack) {
+            snapshot.trackIdentity = reinterpret_cast<std::uintptr_t>(m_pLoadedTrack.get());
+            snapshot.trackIdValid = m_pLoadedTrack->getId().isValid();
+        }
+    }
+    const auto recordCueRange = [](const CuePointer& cue,
+                                        bool* pPresent,
+                                        bool* pStartValid,
+                                        bool* pEndValid,
+                                        double* pStart,
+                                        double* pEnd) {
+        if (!cue) {
+            *pPresent = false;
+            return;
+        }
+        *pPresent = true;
+        const auto range = cue->getStartAndEndPosition();
+        *pStartValid = range.startPosition.isValid();
+        *pEndValid = range.endPosition.isValid();
+        if (*pStartValid) {
+            *pStart = range.startPosition.value();
+        }
+        if (*pEndValid) {
+            *pEnd = range.endPosition.value();
+        }
+    };
+    const auto findTemporaryLoopCue = [](const QList<CuePointer>& cues) {
+        for (const auto& cue : cues) {
+            if (cue && cue->getType() == mixxx::CueType::Loop &&
+                    cue->getHotCue() == Cue::kNoHotCue) {
+                return cue;
+            }
+        }
+        return CuePointer{};
+    };
+    const auto record = [&](LoopCueApplySnapshotForTest::Branch branch,
+                                const CuePointer& beforeCue,
+                                const CuePointer& afterCue,
+                                bool captureBeforeRange) {
+        if (!pTrace) {
+            return;
+        }
+        snapshot.branch = branch;
+        if (beforeCue) {
+            snapshot.cueIdentity = reinterpret_cast<std::uintptr_t>(beforeCue.get());
+        } else if (afterCue) {
+            snapshot.cueIdentity = reinterpret_cast<std::uintptr_t>(afterCue.get());
+        }
+        if (captureBeforeRange) {
+            recordCueRange(beforeCue,
+                    &snapshot.cueBeforePresent,
+                    &snapshot.cueBeforeStartValid,
+                    &snapshot.cueBeforeEndValid,
+                    &snapshot.cueBeforeStart,
+                    &snapshot.cueBeforeEnd);
+        }
+        recordCueRange(afterCue,
+                &snapshot.cueAfterPresent,
+                &snapshot.cueAfterStartValid,
+                &snapshot.cueAfterEndValid,
+                &snapshot.cueAfterStart,
+                &snapshot.cueAfterEnd);
+        pTrace->append(snapshot);
+    };
+#endif
+    if (!m_pLoadedTrack || m_pLoadedTrack->getLocation().isEmpty()) {
+#ifdef BUILD_TESTING
+        record(LoopCueApplySnapshotForTest::Branch::NoLoadedTrack, {}, {}, true);
+#endif
+        return;
+    }
+
+    if (!startPosition.isValid() || !endPosition.isValid() ||
+            endPosition <= startPosition) {
+#ifdef BUILD_TESTING
+        const auto beforeCue = pTrace
+                ? findTemporaryLoopCue(m_pLoadedTrack->getCuePoints())
+                : CuePointer{};
+#endif
+        m_pLoadedTrack->removeTempLoopCue();
+#ifdef BUILD_TESTING
+        const auto afterCue = pTrace
+                ? findTemporaryLoopCue(m_pLoadedTrack->getCuePoints())
+                : CuePointer{};
+        record(LoopCueApplySnapshotForTest::Branch::RemoveTemporaryCue,
+                beforeCue,
+                afterCue,
+                true);
+#endif
+        return;
+    }
+
+    const QList<CuePointer> cuePoints = m_pLoadedTrack->getCuePoints();
+    for (const auto& pCue : cuePoints) {
+        if (pCue && pCue->getType() == mixxx::CueType::Loop &&
+                pCue->getHotCue() == Cue::kNoHotCue) {
+            const auto previous = pCue->getStartAndEndPosition();
+            if (previous.startPosition != startPosition ||
+                    previous.endPosition != endPosition) {
+#ifdef BUILD_TESTING
+                if (pTrace) {
+                    snapshot.cueBeforePresent = true;
+                    snapshot.cueBeforeStartValid = previous.startPosition.isValid();
+                    snapshot.cueBeforeEndValid = previous.endPosition.isValid();
+                    if (snapshot.cueBeforeStartValid) {
+                        snapshot.cueBeforeStart = previous.startPosition.value();
+                    }
+                    if (snapshot.cueBeforeEndValid) {
+                        snapshot.cueBeforeEnd = previous.endPosition.value();
+                    }
+                }
+#endif
+                pCue->setStartAndEndPosition(startPosition, endPosition);
+                // Cue::updated may queue Track::slotCueUpdated to the GUI.
+                // Make this worker's change save-visible before its drain
+                // returns, including shutdown without another GUI event pass.
+                m_pLoadedTrack->markDirty();
+#ifdef BUILD_TESTING
+                record(LoopCueApplySnapshotForTest::Branch::UpdateExistingCue,
+                        pCue,
+                        pCue,
+                        false);
+#endif
+            } else {
+#ifdef BUILD_TESTING
+                record(LoopCueApplySnapshotForTest::Branch::ExistingCueUnchanged,
+                        pCue,
+                        pCue,
+                        true);
+#endif
+            }
+            return;
+        }
+    }
+
+    m_pLoadedTrack->createAndAddCue(
+            mixxx::CueType::Loop,
+            Cue::kNoHotCue,
+            startPosition,
+            endPosition);
+#ifdef BUILD_TESTING
+    const auto afterCue = pTrace
+            ? findTemporaryLoopCue(m_pLoadedTrack->getCuePoints())
+            : CuePointer{};
+    record(LoopCueApplySnapshotForTest::Branch::CreateTemporaryCue, {}, afterCue, true);
+#endif
 }
 
 void Seek30WorkerState::rebuildMemoryCueCache() {

@@ -1,4 +1,8 @@
 #include "engine/controls/cuecontrol.h"
+#ifdef BUILD_TESTING
+#include "test/f001probe.h"
+#include "test/f001rtprobe.h"
+#endif
 
 #include "control/controlindicator.h"
 #include "control/controlobject.h"
@@ -574,7 +578,59 @@ void CueControl::detachCue(HotcueControl* pControl) {
 // via seekOnLoad(). There is the theoretical and pending issue of a delayed control
 // command intended for the old track that might be performed instead.
 void CueControl::trackLoaded(TrackPointer pNewTrack) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::CueControlTrackLoaded, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+    // EngineBuffer publishes FrameInfo immediately before calling this method.
+    // Capture it before waiting for m_trackMutex, since a later lifecycle
+    // notification can update FrameInfo while the previous Track is still
+    // attached to this CueControl.
+    const auto loadedFrameInfo = frameInfo();
+    const auto newTrackEndPosition = loadedFrameInfo.trackEndPosition;
+    if (pNewTrack) {
+        VERIFY_OR_DEBUG_ASSERT(newTrackEndPosition.isValid()) {
+            return;
+        }
+    }
+
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlFrameInfo,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::TrackLoaded,
+            this,
+            pNewTrack.get(),
+            newTrackEndPosition.isValid() ? newTrackEndPosition.value() : 0,
+            0,
+            loadedFrameInfo.sampleRate.isValid()
+                    ? f001DoubleBitsForTest(loadedFrameInfo.sampleRate.toDouble())
+                    : 0,
+            (newTrackEndPosition.isValid() ? 1U : 0U) |
+                    (loadedFrameInfo.sampleRate.isValid() ? 2U : 0U));
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::TrackLoaded,
+            this,
+            pNewTrack.get());
+    if (auto* pHold = m_pF001LoadCuesHoldForTest.load(std::memory_order_acquire)) {
+        pHold->trackLoadAttempt.release();
+    }
+#endif
     auto lock = lockMutex(&m_trackMutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::TrackLoaded,
+            this,
+            m_pLoadedTrack.get(),
+            m_loadedTrackEndPosition.isValid() ? m_loadedTrackEndPosition.value() : 0,
+            0,
+            0,
+            m_loadedTrackEndPosition.isValid() ? 1U : 0U);
+#endif
     if (m_pLoadedTrack) {
         disconnect(m_pLoadedTrack.get(), nullptr, this, nullptr);
 
@@ -597,13 +653,44 @@ void CueControl::trackLoaded(TrackPointer pNewTrack) {
         m_n60dBSoundStartPosition.setValue(Cue::kNoPosition);
         setHotcueFocusIndex(Cue::kNoHotCue);
         m_pLoadedTrack.reset();
+        m_loadedTrackEndPosition = mixxx::audio::kInvalidFramePos;
         m_usedSeekOnLoadPosition.setValue(mixxx::audio::kStartFramePos);
+#ifdef BUILD_TESTING
+        f001RecordObjectForTest(m_pF001ProbeForTest,
+                F001ProbeEventForTest::CueControlTrackLoaded,
+                F001ProbePhaseForTest::Clear,
+                F001ProbeMethodForTest::TrackLoaded,
+                this);
+#endif
     }
 
     if (!pNewTrack) {
+#ifdef BUILD_TESTING
+        lock.unlock();
+        f001RecordObjectForTest(m_pF001ProbeForTest,
+                F001ProbeEventForTest::CueControlTrackLoaded,
+                F001ProbePhaseForTest::Released,
+                F001ProbeMethodForTest::TrackLoaded,
+                this);
+#endif
         return;
     }
+    // Install the new bound while the same mutex protects the loaded Track,
+    // before connecting its cue-change signals.
+    m_loadedTrackEndPosition = newTrackEndPosition;
     m_pLoadedTrack = pNewTrack;
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Install,
+            F001ProbeMethodForTest::TrackLoaded,
+            this,
+            pNewTrack.get(),
+            newTrackEndPosition.value(),
+            0,
+            0,
+            1U);
+#endif
 
     connect(m_pLoadedTrack.get(),
             &Track::analyzed,
@@ -625,8 +712,22 @@ void CueControl::trackLoaded(TrackPointer pNewTrack) {
             &Track::loopRemove,
             this,
             &CueControl::loopRemove);
-
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Connect,
+            F001ProbeMethodForTest::TrackLoaded,
+            this,
+            pNewTrack.get());
+#endif
     lock.unlock();
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlTrackLoaded,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::TrackLoaded,
+            this);
+#endif
 
     // Use pNewTrack from now, because m_pLoadedTrack might have been reset
     // immediately after leaving the locking scope!
@@ -719,10 +820,48 @@ void CueControl::slotCueModeChanged(double) {
 }
 
 void CueControl::loadCuesFromTrack() {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::CueControlLoadCuesFromTrack, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbePhaseForTest::Attempt,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            this);
+#endif
     auto lock = lockMutex(&m_trackMutex);
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbePhaseForTest::Acquired,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            this,
+            m_pLoadedTrack.get(),
+            m_loadedTrackEndPosition.isValid() ? m_loadedTrackEndPosition.value() : 0,
+            0,
+            0,
+            m_loadedTrackEndPosition.isValid() ? 1U : 0U);
+    if (auto* pHold = m_pF001LoadCuesHoldForTest.load(std::memory_order_acquire)) {
+        pHold->entered.release();
+        if (!pHold->release.tryAcquire(1, 2000)) {
+            pHold->timedOut.store(true, std::memory_order_release);
+        }
+    }
+#endif
     if (!m_pLoadedTrack) {
+#ifdef BUILD_TESTING
+        lock.unlock();
+        f001RecordObjectForTest(m_pF001ProbeForTest,
+                F001ProbeEventForTest::CueControlLoadCues,
+                F001ProbePhaseForTest::Released,
+                F001ProbeMethodForTest::LoadCuesFromTrack,
+                this);
+#endif
         return;
     }
+    const auto trackEndPosition = m_loadedTrackEndPosition;
 
     QSet<int> active_hotcues;
     CuePointer pMainCue;
@@ -798,8 +937,10 @@ void CueControl::loadCuesFromTrack() {
     }
 
     if (pIntroCue) {
-        const auto startPosition = quantizeCuePoint(pIntroCue->getPosition());
-        const auto endPosition = quantizeCuePoint(pIntroCue->getEndPosition());
+        const auto startPosition = quantizeCuePoint(
+                pIntroCue->getPosition(), trackEndPosition);
+        const auto endPosition = quantizeCuePoint(
+                pIntroCue->getEndPosition(), trackEndPosition);
 
         m_pIntroStartPosition->set(startPosition.toEngineSamplePosMaybeInvalid());
         m_pIntroStartEnabled->forceSet(startPosition.isValid());
@@ -813,8 +954,10 @@ void CueControl::loadCuesFromTrack() {
     }
 
     if (pOutroCue) {
-        const auto startPosition = quantizeCuePoint(pOutroCue->getPosition());
-        const auto endPosition = quantizeCuePoint(pOutroCue->getEndPosition());
+        const auto startPosition = quantizeCuePoint(
+                pOutroCue->getPosition(), trackEndPosition);
+        const auto endPosition = quantizeCuePoint(
+                pOutroCue->getEndPosition(), trackEndPosition);
 
         m_pOutroStartPosition->set(startPosition.toEngineSamplePosMaybeInvalid());
         m_pOutroStartEnabled->forceSet(startPosition.isValid());
@@ -858,8 +1001,31 @@ void CueControl::loadCuesFromTrack() {
     }
 
     DEBUG_ASSERT(mainCuePosition.isValid());
-    const auto quantizedMainCuePosition = quantizeCuePoint(mainCuePosition);
+    const auto quantizedMainCuePosition =
+            quantizeCuePoint(mainCuePosition, trackEndPosition);
     m_pCuePoint->set(quantizedMainCuePosition.toEngineSamplePosMaybeInvalid());
+#ifdef BUILD_TESTING
+    // For this completed main-cue quantization event, the primary identity is
+    // the selected Cue. The related identity remains the attached Track.
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::After,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            pMainCue.get(),
+            m_pLoadedTrack.get(),
+            mainCuePosition.value(),
+            trackEndPosition.value(),
+            f001DoubleBitsForTest(quantizedMainCuePosition.value()),
+            1U);
+#endif
+#ifdef BUILD_TESTING
+    lock.unlock();
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlLoadCues,
+            F001ProbePhaseForTest::Released,
+            F001ProbeMethodForTest::LoadCuesFromTrack,
+            this);
+#endif
 }
 
 void CueControl::trackAnalyzed() {
@@ -897,6 +1063,17 @@ void CueControl::trackAnalyzed() {
 }
 
 void CueControl::trackCuesUpdated() {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::CueControlTrackCuesUpdated, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlTrackCuesUpdated,
+            F001ProbePhaseForTest::Point,
+            F001ProbeMethodForTest::None,
+            this);
+#endif
     loadCuesFromTrack();
 }
 
@@ -2405,16 +2582,57 @@ mixxx::audio::FramePos CueControl::getQuantizedCurrentPosition() {
 }
 
 mixxx::audio::FramePos CueControl::quantizeCuePoint(mixxx::audio::FramePos position) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::CueControlQuantizeRenderer, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlQuantizeRenderer,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            this,
+            m_pLoadedTrack.get(),
+            position.isValid() ? position.value() : 0,
+            0,
+            0,
+            position.isValid() ? 1U : 0U);
+#endif
     // Don't quantize unset cues.
     if (!position.isValid()) {
         return mixxx::audio::kInvalidFramePos;
     }
 
-    // We need to use m_pTrackSamples here because FrameInfo is set later by
-    // the engine and not during EngineBuffer::slotTrackLoaded.
     const auto trackEndPosition =
             mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(
                     m_pTrackSamples->get());
+    return quantizeCuePoint(position, trackEndPosition);
+}
+
+mixxx::audio::FramePos CueControl::quantizeCuePoint(
+        mixxx::audio::FramePos position,
+        mixxx::audio::FramePos trackEndPosition) {
+#ifdef BUILD_TESTING
+    F001RtProbeScopeGuardForTest f001RtScope(
+            F001RtProbeScopeForTest::CueControlQuantizeExplicit, f001CaseTokenForTest(m_pF001ProbeForTest));
+#endif
+#ifdef BUILD_TESTING
+    f001RecordObjectForTest(m_pF001ProbeForTest,
+            F001ProbeEventForTest::CueControlQuantizeExplicit,
+            F001ProbePhaseForTest::Before,
+            F001ProbeMethodForTest::None,
+            this,
+            m_pLoadedTrack.get(),
+            position.isValid() ? position.value() : 0,
+            trackEndPosition.isValid() ? trackEndPosition.value() : 0,
+            0,
+            (position.isValid() ? 1U : 0U) |
+                    (trackEndPosition.isValid() ? 2U : 0U));
+#endif
+    // Don't quantize unset cues.
+    if (!position.isValid()) {
+        return mixxx::audio::kInvalidFramePos;
+    }
 
     VERIFY_OR_DEBUG_ASSERT(trackEndPosition.isValid()) {
         return mixxx::audio::kInvalidFramePos;
