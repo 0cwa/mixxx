@@ -279,6 +279,32 @@ TEST(Seek30WorkerStateTest, RepeatedCommandsAndQuantizedDuplicateCreation) {
     EXPECT_EQ(2, memoryCueCount(pTrack));
 }
 
+TEST(Seek30WorkerStateTest, ClearAllRemovesExternalMemoryCueAndPreservesHotCue) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0});
+    const auto hotCuePosition = frameAtSeconds(3.0);
+    const auto pHotCue = pTrack->createAndAddCue(
+            mixxx::CueType::HotCue, 0, hotCuePosition, hotCuePosition);
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto externalPosition = frameAtSeconds(2.0);
+    const auto pExternalCue = pTrack->createAndAddCue(
+            mixxx::CueType::Memory, Cue::kNoHotCue, externalPosition, externalPosition);
+    ASSERT_EQ(2, memoryCueCount(pTrack));
+
+    state.process({Seek30Operation::ClearAll, generation}, inputsAt(0.0));
+
+    const auto cues = pTrack->getCuePoints();
+    EXPECT_EQ(0, memoryCueCount(pTrack));
+    EXPECT_FALSE(cues.contains(pExternalCue));
+    ASSERT_EQ(1, cues.size());
+    EXPECT_EQ(pHotCue, cues.front());
+    EXPECT_EQ(mixxx::CueType::HotCue, pHotCue->getType());
+    EXPECT_EQ(0, pHotCue->getHotCue());
+    EXPECT_EQ(hotCuePosition, pHotCue->getStartAndEndPosition().startPosition);
+    EXPECT_EQ(generation, state.generation());
+}
+
 TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
     Seek30WorkerState state;
     const auto pOldTrack = trackWithMemoryCues({1.0});
