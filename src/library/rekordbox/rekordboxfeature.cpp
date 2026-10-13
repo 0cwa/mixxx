@@ -15,6 +15,9 @@
 #include <QUrl>
 #include <QtDebug>
 #include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <optional>
 
 #include "engine/engine.h"
 #include "library/dao/trackschema.h"
@@ -22,6 +25,7 @@
 #include "library/queryutil.h"
 #include "library/rekordbox/rekordboxconstants.h"
 #include "library/rekordbox/rekordboximport.h"
+#include "library/rekordbox/rekordboxparser_test.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "library/treeitem.h"
@@ -1099,12 +1103,17 @@ void importHotCue(TrackPointer track,
         int id,
         const QString& label,
         mixxx::RgbColor::optional_t color) {
+    if (id < mixxx::kFirstHotCueIndex) {
+        return;
+    }
+
     CuePointer pCue = track->findHotcueByIndex(id);
     const mixxx::CueType type = endPosition.isValid()
             ? mixxx::CueType::Loop
             : mixxx::CueType::HotCue;
 
     if (pCue) {
+        pCue->setType(type);
         pCue->setStartAndEndPosition(startPosition, endPosition);
     } else {
         pCue = track->createAndAddCue(
@@ -1112,6 +1121,9 @@ void importHotCue(TrackPointer track,
                 id,
                 startPosition,
                 endPosition);
+    }
+    if (!pCue) {
+        return;
     }
     pCue->setLabel(label);
     if (color) {
@@ -1122,6 +1134,34 @@ void importHotCue(TrackPointer track,
 } // namespace mixxx::rekordbox
 
 namespace {
+
+std::optional<int> hotCueIndexFromRekordboxNumber(uint32_t hotCueNumber) {
+    if (hotCueNumber == 0) {
+        return std::nullopt;
+    }
+    const uint64_t hotCueIndex = static_cast<uint64_t>(hotCueNumber) - 1;
+    if (hotCueIndex > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<int>(hotCueIndex);
+}
+
+std::optional<mixxx::audio::FramePos> hotLoopEndPosition(uint32_t loopTime,
+        int timingOffset,
+        double sampleRateKhz,
+        mixxx::audio::FramePos startPosition) {
+    if (loopTime == 0 || loopTime == std::numeric_limits<uint32_t>::max()) {
+        return std::nullopt;
+    }
+    const int64_t endTime = std::max<int64_t>(
+            static_cast<int64_t>(loopTime) - timingOffset, 1);
+    const auto endPosition = mixxx::audio::FramePos(
+            sampleRateKhz * static_cast<double>(endTime));
+    if (!endPosition.isValid() || endPosition <= startPosition) {
+        return std::nullopt;
+    }
+    return endPosition;
+}
 
 void readAnalyze(TrackPointer track,
         mixxx::audio::SampleRate sampleRate,
@@ -1231,12 +1271,25 @@ void readAnalyze(TrackPointer track,
                         }
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
-                        int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
+                        const auto hotCueIndex =
+                                hotCueIndexFromRekordboxNumber(cueEntry->hot_cue());
+                        if (!hotCueIndex) {
+                            break;
+                        }
+                        auto endPosition = mixxx::audio::kInvalidFramePos;
+                        if (cueEntry->type() == rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP) {
+                            const auto loopEnd = hotLoopEndPosition(
+                                    cueEntry->loop_time(), timingOffset, sampleRateKhz, position);
+                            if (!loopEnd) {
+                                break;
+                            }
+                            endPosition = *loopEnd;
+                        }
                         mixxx::rekordbox::importHotCue(
                                 track,
                                 position,
-                                mixxx::audio::kInvalidFramePos,
-                                hotCueIndex,
+                                endPosition,
+                                *hotCueIndex,
                                 QString(),
                                 mixxx::RgbColor::nullopt());
                     } break;
@@ -1298,11 +1351,27 @@ void readAnalyze(TrackPointer track,
                         }
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
-                        int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
+                        const auto hotCueIndex = hotCueIndexFromRekordboxNumber(
+                                cueExtendedEntry->hot_cue());
+                        if (!hotCueIndex) {
+                            break;
+                        }
+                        auto endPosition = mixxx::audio::kInvalidFramePos;
+                        if (cueExtendedEntry->type() == rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP) {
+                            const auto loopEnd = hotLoopEndPosition(
+                                    cueExtendedEntry->loop_time(),
+                                    timingOffset,
+                                    sampleRateKhz,
+                                    position);
+                            if (!loopEnd) {
+                                break;
+                            }
+                            endPosition = *loopEnd;
+                        }
                         mixxx::rekordbox::importHotCue(track,
                                 position,
-                                mixxx::audio::kInvalidFramePos,
-                                hotCueIndex,
+                                endPosition,
+                                *hotCueIndex,
                                 fromUtf16BeString(cueExtendedEntry->comment()),
                                 mixxx::RgbColor(qRgb(
                                         static_cast<int>(
@@ -1366,6 +1435,20 @@ void readAnalyze(TrackPointer track,
 }
 
 } // anonymous namespace
+
+#ifdef BUILD_TESTING
+namespace mixxx::rekordbox::test {
+
+void readAnalyzeForTest(TrackPointer track,
+        mixxx::audio::SampleRate sampleRate,
+        int timingOffset,
+        bool ignoreCues,
+        const QString& anlzPath) {
+    readAnalyze(track, sampleRate, timingOffset, ignoreCues, anlzPath);
+}
+
+} // namespace mixxx::rekordbox::test
+#endif
 
 RekordboxPlaylistModel::RekordboxPlaylistModel(QObject* parent,
         TrackCollectionManager* trackCollectionManager,

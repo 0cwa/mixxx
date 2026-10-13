@@ -3036,6 +3036,7 @@ if(BUILD_TESTING)
     src/test/portmidienumeratortest.cpp
     src/test/queryutiltest.cpp
     src/test/rekordboxfeature_test.cpp
+    src/test/rekordboxhotloop_test.cpp
     src/test/rangelist_test.cpp
     src/test/readaheadmanager_test.cpp
     src/test/replaygaintest.cpp
