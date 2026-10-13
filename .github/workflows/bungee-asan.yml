@@ -198,6 +198,23 @@ jobs:
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
+          CONDITIONAL_SKIP_ID = "SettingsManagerTest.RejectsUnavailableRubberBandR3GlobalKeylockEngine"
+          CONDITIONAL_SKIP_REASON = "RubberBand R3 is available"
+
+          def conditional_skip(test, case):
+              # This test skips only when the runtime availability check is true.
+              skipped = case.findall("skipped")
+              if (test != CONDITIONAL_SKIP_ID or case.get("status") != "run"
+                      or case.get("result") != "skipped" or len(skipped) != 1):
+                  return None
+              message = skipped[0].get("message", "").replace("\r\n", "\n")
+              text = (skipped[0].text or "").replace("\r\n", "\n")
+              reason = re.sub(r"^(?:[^\n]*[/\\])?settingsmanager_test\.cpp:\d+\n", "", message)
+              if reason != CONDITIONAL_SKIP_REASON or text != message:
+                  return None
+              return {"id": test, "reason": reason, "status": case.get("status"),
+                      "result": case.get("result"), "runtime_state_reported_by_test": "RubberBand R3 available"}
+
           def list_ids(path):
               suite = None
               ids = []
@@ -261,15 +278,25 @@ jobs:
                           raise ValueError(f"Unexpected GTest XML root: {root.tag}")
                       cases = list(root.iter("testcase"))
                       executed = [f"{case.get('classname')}.{case.get('name')}" for case in cases]
-                      not_run = [test for test, case in zip(executed, cases)
-                                 if case.get("status") in ("notrun", "skipped")
-                                 or case.get("result") in ("suppressed", "skipped")]
+                      allowed_skips = []
+                      not_run = []
+                      passed = []
+                      for test, case in zip(executed, cases):
+                          allowed = conditional_skip(test, case)
+                          if allowed:
+                              allowed_skips.append(allowed)
+                          elif (case.get("status") == "run" and case.get("result") == "completed"
+                                and not case.findall("skipped")):
+                              passed.append(test)
+                          else:
+                              not_run.append(test)
                       xml_tests = int(root.attrib["tests"]) if "tests" in root.attrib else None
                       counts = {name: xml_count(root, name, element) for name, element in
                                 (("failures", "failure"), ("errors", "error"),
                                  ("skipped", "skipped"), ("disabled", "disabled"))}
                   except (OSError, ET.ParseError, KeyError, ValueError) as error:
                       root, cases, executed, not_run, xml_tests = None, [], [], [], None
+                      allowed_skips, passed = [], []
                       counts = {name: None for name in ("failures", "errors", "skipped", "disabled")}
                       problems.append(f"Unable to read valid GTest XML: {error}")
                   if root is not None:
@@ -281,13 +308,19 @@ jobs:
                           problems.append("XML testcase IDs differ from the exact pre-run list")
                       if not_run:
                           problems.append(f"XML has testcases that did not run: {not_run}")
-                      if any(counts[name] for name in counts):
-                          problems.append(f"XML nonzero failures/errors/skips/disabled: {counts}")
+                      if any(counts[name] for name in ("failures", "errors", "disabled")):
+                          problems.append(f"XML nonzero failures/errors/disabled: {counts}")
+                      if (counts["skipped"] != len(allowed_skips)
+                              or len(list(root.iter("skipped"))) != len(allowed_skips)
+                              or len(allowed_skips) > 1):
+                          problems.append(f"XML skips differ from justified conditional skips: {counts}")
                   family_result = {}
                   for pattern, listed in selection["families"].items():
                       ran = [test for test in executed if fnmatch.fnmatchcase(test, pattern)]
                       exact = bool(listed) and collections.Counter(ran) == collections.Counter(listed)
-                      family_result[pattern] = {"listed": listed, "executed": ran, "exact": exact}
+                      family_passed = [test for test in passed if fnmatch.fnmatchcase(test, pattern)]
+                      family_result[pattern] = {"listed": listed, "executed": ran, "exact": exact,
+                                                "passed_count": len(family_passed)}
                       if not exact:
                           problems.append(f"XML family membership differs for {pattern}")
                   if native_status != 0:
@@ -295,6 +328,8 @@ jobs:
                   evidence = {"filter": selection["filter"], "listed_count": len(selection["listed_tests"]),
                               "listed_tests": selection["listed_tests"], "native_exit_status": native_status,
                               "xml_tests": xml_tests, "xml_testcases": len(cases), "not_run_tests": not_run, **counts,
+                              "conditional_skipped_tests": allowed_skips,
+                              "passed_count": len(passed), "passed_tests": passed,
                               "families": family_result, "executed_tests": executed, "problems": problems}
                   Path(arguments[3]).write_text(json.dumps(evidence, indent=2) + "\n")
                   print(json.dumps(evidence, indent=2))
@@ -304,6 +339,7 @@ jobs:
                   raise SystemExit("usage: verifier.py before LIST FILTER SELECTION | after SELECTION XML EXIT EVIDENCE")
           PY
 
+          python3 ../tools/ci/test_bungee_asan_validator.py
           test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*:ReadAheadManagerTest.*:CachingReader*.*'
           ./mixxx-test --gtest_list_tests --gtest_filter="$test_filter" > gtest-list.txt 2>&1
           python3 verify_bungee_asan_tests.py before gtest-list.txt "$test_filter" gtest-selection.json
