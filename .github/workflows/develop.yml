@@ -204,19 +204,49 @@ jobs:
             > ../issue82-evidence/audiounitmanager-test-dependencies.txt
           test -s ../issue82-evidence/audiounitbackend-dependencies.txt
           test -s ../issue82-evidence/audiounitmanager-test-dependencies.txt
-          grep -F 'audiounitmanifestdiscovery.h' \
-            ../issue82-evidence/audiounitbackend-dependencies.txt \
-            > /dev/null
-          grep -F 'audiounitmanifestdiscovery.h' \
-            ../issue82-evidence/audiounitmanager-test-dependencies.txt \
-            > /dev/null
+          build_root="$(pwd -P)"
+          repository_root="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+          expected_header="$repository_root/src/effects/backends/audiounit/audiounitmanifestdiscovery.h"
+          require_exact_header_dependency() {
+            python3 - "$1" "$expected_header" "$build_root" <<'PY'
+          import os
+          import sys
+
+          dependency_file, expected_header, build_root = sys.argv[1:]
+
+          def normalized_path(path):
+              if not os.path.isabs(path):
+                  path = os.path.join(build_root, path)
+              return os.path.realpath(path)
+
+          expected = normalized_path(expected_header)
+          matches = []
+          with open(dependency_file, encoding="utf-8") as stream:
+              for line in stream:
+                  if line.startswith("  "):
+                      recorded_path = line[2:].strip()
+                      if normalized_path(recorded_path) == expected:
+                          matches.append(recorded_path)
+
+          if len(matches) != 1:
+              print(
+                  f"expected exactly one dependency on {expected}, found {len(matches)} "
+                  f"in {dependency_file}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print(expected)
+          PY
+          }
+          backend_header_dependency="$(require_exact_header_dependency \
+            ../issue82-evidence/audiounitbackend-dependencies.txt)"
+          manager_test_header_dependency="$(require_exact_header_dependency \
+            ../issue82-evidence/audiounitmanager-test-dependencies.txt)"
           {
             printf 'object=%s\n' "$backend_object"
-            grep -F 'audiounitmanifestdiscovery.h' \
-              ../issue82-evidence/audiounitbackend-dependencies.txt
+            printf 'header_dependency=%s\n' "$backend_header_dependency"
             printf 'object=%s\n' "$manager_test_object"
-            grep -F 'audiounitmanifestdiscovery.h' \
-              ../issue82-evidence/audiounitmanager-test-dependencies.txt
+            printf 'header_dependency=%s\n' "$manager_test_header_dependency"
           } > ../issue82-evidence/manifest-header-dependency-receipt.txt
           test -s ../issue82-evidence/build-target-receipt.txt
           test -s ../issue82-evidence/mixxx-test-link-receipt.txt
