@@ -19,6 +19,8 @@
 
 namespace {
 constexpr int kDecks = 16;
+constexpr int kMaxStemPadTraceRecords = 24;
+constexpr int kMaxStemPadTraceRecordLength = 512;
 
 // Use 1ms for the Alpha-Beta dt. We're assuming the OS actually gives us a 1ms
 // timer.
@@ -485,6 +487,22 @@ void ControllerScriptInterfaceLegacy::trigger(const QString& group, const QStrin
 }
 
 void ControllerScriptInterfaceLegacy::log(const QString& message) {
+    const QString tracePrefix = QStringLiteral("NS4FX_STEM_TRACE ");
+    if (message.startsWith(tracePrefix) &&
+            m_pScriptEngineLegacy->isStemPadTraceEnabled()) {
+        if (m_stemPadTraceLogCount < kMaxStemPadTraceRecords) {
+            ++m_stemPadTraceLogCount;
+            QString traceRecord = message.mid(tracePrefix.size(), kMaxStemPadTraceRecordLength);
+            traceRecord.replace(QChar('\n'), QChar(' '));
+            traceRecord.replace(QChar('\r'), QChar(' '));
+            qCInfo(m_logger).noquote()
+                    << QStringLiteral("ns4fx_stem_trace mono_us=%1 %2")
+                               .arg(mixxx::Time::elapsed().toIntegerMicros())
+                               .arg(traceRecord);
+        }
+        return;
+    }
+
     m_pScriptEngineLegacy->logOrThrowError(QStringLiteral(
             "`engine.log` is deprecated. Use `console.log` instead!"));
     qCDebug(m_logger) << message;

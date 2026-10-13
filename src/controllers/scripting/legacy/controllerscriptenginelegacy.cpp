@@ -15,6 +15,7 @@
 #endif
 
 #include "controllers/controller.h"
+#include "controllers/midi/midicontroller.h"
 #include "controllers/scripting/legacy/controllerscriptinterfacelegacy.h"
 #include "errordialoghandler.h"
 #include "moc_controllerscriptenginelegacy.cpp"
@@ -263,6 +264,16 @@ void ControllerScriptEngineLegacy::setSettings(
         }
         m_settings[name] = pSetting->value();
     }
+}
+
+bool ControllerScriptEngineLegacy::isStemPadTraceEnabled() const {
+    const auto setting = m_settings.constFind(QStringLiteral("traceStemPads"));
+    if (setting == m_settings.constEnd() || !setting.value().toBool()) {
+        return false;
+    }
+
+    const auto* pMidiController = qobject_cast<const MidiController*>(m_pController);
+    return pMidiController && pMidiController->isStemPadTraceEnabled();
 }
 
 bool ControllerScriptEngineLegacy::initialize() {

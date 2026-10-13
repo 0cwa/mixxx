@@ -146,6 +146,7 @@ class ControllerScriptInterfaceLegacy : public QObject {
     QVarLengthArray<bool> m_ramp, m_brakeActive, m_spinbackActive, m_softStartActive;
     QVarLengthArray<AlphaBetaFilter*> m_scratchFilters;
     QHash<int, int> m_scratchTimers;
+    int m_stemPadTraceLogCount{0};
     /// Applies the accumulated movement to the track speed
     void scratchProcess(int timerId);
     void stopScratchTimer(int timerId);

@@ -79,6 +79,9 @@ class ControllerScriptEngineLegacy : public ControllerScriptEngineBase {
 #endif
 
   private:
+    /// Whether the loaded NS4FX trace mapping opted into its bounded trace.
+    bool isStemPadTraceEnabled() const;
+
     struct Setting {
         QString name;
         QJSValue value;

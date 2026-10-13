@@ -1,5 +1,6 @@
 #include "controllers/midi/midicontroller.h"
 
+#include <QFileInfo>
 #include <QJSValue>
 #include <algorithm>
 
@@ -16,10 +17,78 @@
 #include "moc_midicontroller.cpp"
 #include "util/make_const_iterator.h"
 #include "util/math.h"
+#include "util/time.h"
 
 const QString kMakeInputHandlerError = QStringLiteral(
         "Invalid timer callback provided to midi.makeInputHandler. "
         "Please pass a function and make sure that your code contains no syntax errors.");
+
+namespace {
+
+constexpr int kMaxStemPadTracePackets = 8;
+
+const QString kStemPadTraceMappingName =
+        QStringLiteral("Numark NS4FX event-order trace (temporary)");
+const QString kStemPadTraceMappingFile =
+        QStringLiteral("Numark NS4FX event-order trace.midi.xml");
+const QString kStemPadTraceScriptFile =
+        QStringLiteral("Numark-NS4FX-event-order-trace.js");
+const QString kStemPadTraceSetting = QStringLiteral("traceStemPads");
+
+bool isStemPadTraceMapping(const LegacyMidiControllerMapping& mapping) {
+    if (mapping.name() != kStemPadTraceMappingName) {
+        return false;
+    }
+
+    const QFileInfo mappingFile(mapping.filePath());
+    const QString mappingDirectory = mappingFile.canonicalPath();
+    if (mappingFile.fileName() != kStemPadTraceMappingFile || mappingDirectory.isEmpty()) {
+        return false;
+    }
+
+    const bool hasTraceSetting = std::any_of(
+            mapping.getSettings().cbegin(),
+            mapping.getSettings().cend(),
+            [](const auto& setting) {
+                return setting &&
+                        setting->variableName() == kStemPadTraceSetting &&
+                        setting->value().toBool();
+            });
+    if (!hasTraceSetting) {
+        return false;
+    }
+
+    const auto traceScriptCount = std::count_if(
+            mapping.getScriptFiles().cbegin(),
+            mapping.getScriptFiles().cend(),
+            [&mappingDirectory](const auto& script) {
+                return script.name == kStemPadTraceScriptFile &&
+                        script.identifier == QStringLiteral("NS4FX") &&
+                        script.type == LegacyControllerMapping::ScriptFileInfo::Type::Javascript &&
+                        script.file.fileName() == kStemPadTraceScriptFile &&
+                        script.file.exists() && script.file.canonicalPath() == mappingDirectory;
+            });
+    return traceScriptCount == 1;
+}
+
+bool isStemPadTraceKey(const LegacyMidiControllerMapping& mapping,
+        unsigned char status,
+        unsigned char control) {
+    if (control < 0x14 || control > 0x17) {
+        return false;
+    }
+
+    const MidiOpCode opCode = MidiUtils::opCodeFromStatus(status);
+    if (opCode != MidiOpCode::NoteOn && opCode != MidiOpCode::NoteOff) {
+        return false;
+    }
+
+    // Check the exact keys loaded from this mapping. Do not manufacture a
+    // matching release status for an input that is not configured here.
+    return mapping.getInputMappings().contains(MidiKey(status, control).key);
+}
+
+} // namespace
 
 MidiInputHandleJSProxy::MidiInputHandleJSProxy(
         MidiController* pMidiController,
@@ -59,6 +128,8 @@ QString MidiController::mappingExtension() {
 void MidiController::setMapping(std::shared_ptr<LegacyControllerMapping> pMapping) {
     m_pMutableMapping = pMapping;
     m_pMapping = downcastAndClone<LegacyMidiControllerMapping>(pMapping.get());
+    m_traceStemPadsEnabled = m_pMapping && isStemPadTraceMapping(*m_pMapping);
+    m_stemPadTracePacketCount = 0;
 }
 
 QList<LegacyControllerMapping::ScriptFileInfo> MidiController::getMappingScriptFiles() {
@@ -103,6 +174,9 @@ bool MidiController::matchMapping(const MappingInfo& mapping) {
 }
 
 bool MidiController::applyMapping(const QString& resourcePath) {
+    m_traceStemPadsEnabled = m_pMapping && isStemPadTraceMapping(*m_pMapping);
+    m_stemPadTracePacketCount = 0;
+
     // Handles the engine
     bool result = Controller::applyMapping(resourcePath);
 
@@ -310,6 +384,26 @@ void MidiController::receivedShortMessage(unsigned char status,
             }
             return;
         }
+    }
+
+    if (m_traceStemPadsEnabled && m_stemPadTracePacketCount < kMaxStemPadTracePackets &&
+            m_pMapping &&
+            isStemPadTraceKey(*m_pMapping, status, control)) {
+        ++m_stemPadTracePacketCount;
+        qCInfo(m_logInput).noquote()
+                << QStringLiteral(
+                           "ns4fx_stem_trace packet=%1 mono_us=%2 controller=%3 "
+                           "mapping=%4 mapping_file=%5 status=0x%6 control=0x%7 value=%8 "
+                           "portmidi_ms_raw=%9")
+                           .arg(m_stemPadTracePacketCount)
+                           .arg(mixxx::Time::elapsed().toIntegerMicros())
+                           .arg(getName())
+                           .arg(m_pMapping->name())
+                           .arg(QFileInfo(m_pMapping->filePath()).fileName())
+                           .arg(static_cast<unsigned int>(status), 2, 16, QChar('0'))
+                           .arg(static_cast<unsigned int>(control), 2, 16, QChar('0'))
+                           .arg(static_cast<unsigned int>(value))
+                           .arg(timestamp.toIntegerMillis());
     }
 
     for (auto [it, end] =

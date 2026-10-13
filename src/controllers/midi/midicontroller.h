@@ -62,6 +62,11 @@ class MidiController : public Controller {
     bool matchMapping(const MappingInfo& mapping) override;
     bool removeInputMapping(uint16_t key, const MidiInputMapping& mapping);
 
+    // Enabled only for the temporary NS4FX trace mapping with its opt-in set.
+    bool isStemPadTraceEnabled() const {
+        return m_traceStemPadsEnabled;
+    }
+
   signals:
     void messageReceived(unsigned char status, unsigned char control, unsigned char value);
 
@@ -120,6 +125,8 @@ class MidiController : public Controller {
     QHash<uint16_t, MidiInputMapping> m_temporaryInputMappings;
     QList<MidiOutputHandler*> m_outputs;
     std::unique_ptr<LegacyMidiControllerMapping> m_pMapping;
+    bool m_traceStemPadsEnabled{false};
+    int m_stemPadTracePacketCount{0};
     SoftTakeoverCtrl m_st;
     QList<QPair<MidiInputMapping, unsigned char>> m_fourteen_bit_queued_mappings;
 
