@@ -7,9 +7,10 @@
 # Scope:
 #   - Linux only (clang sanitizers don't run on Windows MSVC and the Bungee
 #     bug is not platform-specific).
-#   - Builds only the mixxx-test target and runs the *Bungee* gtest filter,
-#     plus the SettingsManager keylock regression test, keeping the workflow
-#     lean compared with the matrix in build.yml.
+# AI-generated scope description begins.
+#   - Builds only mixxx-test and selects Bungee, ReadAhead, caching-reader,
+#     and SettingsManager keylock tests, keeping the scope focused.
+# End AI-generated scope description.
 #   - Fires on any change that could affect the Bungee integration; ignores
 #     unrelated PRs.
 #
@@ -37,10 +38,8 @@ on:
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/engine/bufferscalers/enginebufferscale.h"
-      - "src/engine/readaheadmanager.cpp"
-      - "src/engine/readaheadmanager.h"
-      - "src/engine/cachingreader/cachingreader.cpp"
-      - "src/engine/cachingreader/cachingreader.h"
+      - "src/engine/readaheadmanager.*"
+      - "src/engine/cachingreader/**"
       - "src/preferences/settingsmanager.cpp"
       - "src/preferences/settingsmanager.h"
       - "src/test/enginebufferscalebungee*"
@@ -60,10 +59,8 @@ on:
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/engine/bufferscalers/enginebufferscale.h"
-      - "src/engine/readaheadmanager.cpp"
-      - "src/engine/readaheadmanager.h"
-      - "src/engine/cachingreader/cachingreader.cpp"
-      - "src/engine/cachingreader/cachingreader.h"
+      - "src/engine/readaheadmanager.*"
+      - "src/engine/cachingreader/**"
       - "src/preferences/settingsmanager.cpp"
       - "src/preferences/settingsmanager.h"
       - "src/test/enginebufferscalebungee*"
@@ -191,17 +188,17 @@ jobs:
       - name: "Print ccache stats"
         run: ccache --show-stats
 
-      # Run the Bungee unit + integration tests under ASan, plus the
-      # SettingsManager regression that preserves explicit Bungee keylock
-      # settings. The full mixxx-test suite under ASan would run for >30
-      # minutes; this targeted run completes quickly and exercises the
-      # instrumented Bungee scaler and integration paths.
+      # AI-generated selection description begins.
+      # Run Bungee, ReadAhead and caching-reader regressions under ASan,
+      # plus the SettingsManager keylock tests. Keep the full suite outside
+      # this focused job and retain the enabled-test discovery guard.
+      # End AI-generated selection description.
       - name: "Run Bungee tests under ASan"
         working-directory: build
         env:
           GTEST_COLOR: "1"
         run: |
-          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
+          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*:ReadAheadManagerTest.*:CachingReader*Test.*'
           listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
           # AI-generated enabled-test guard begins.
           test_count="$(printf '%s\n' "$listed_tests" | awk '
