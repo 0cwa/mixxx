@@ -32,7 +32,8 @@ QList<Seek30MemoryCueSnapshot> snapshotSeek30MemoryCues(
         }
 
         const auto cueSnapshot = pCue->getTypeAndStartPosition();
-        if (cueSnapshot.type == mixxx::CueType::Memory) {
+        if (cueSnapshot.type == mixxx::CueType::Memory &&
+                cueSnapshot.startPosition.isValid()) {
             memoryCues.append(
                     {pCue, cueSnapshot.type, cueSnapshot.startPosition});
         }

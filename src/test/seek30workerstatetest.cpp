@@ -307,6 +307,56 @@ TEST(Seek30WorkerStateTest, CapturesStableCueViewDuringExternalEdits) {
             pMovedCue->getStartAndEndPosition().startPosition);
 }
 
+TEST(Seek30WorkerStateTest, RefreshesExternalMemoryCueInvalidationWithoutTrackReload) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0, 5.0});
+    const auto pCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+    ASSERT_TRUE(pCue);
+
+    pCue->setStartPosition(mixxx::audio::kInvalidFramePos);
+    const auto invalidPositions = pCue->getStartAndEndPosition();
+    ASSERT_FALSE(invalidPositions.startPosition.isValid());
+    ASSERT_TRUE(invalidPositions.endPosition.isValid());
+    const auto initialMemoryCues =
+            snapshotSeek30MemoryCues(pTrack->getCuePoints());
+    ASSERT_EQ(2, initialMemoryCues.size());
+    EXPECT_EQ(frameAtSeconds(3.0), initialMemoryCues.at(0).startPosition);
+    EXPECT_EQ(frameAtSeconds(5.0), initialMemoryCues.at(1).startPosition);
+
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto withoutInvalidStart = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    ASSERT_EQ(frameAtSeconds(3.0), withoutInvalidStart.position);
+
+    pCue->setStartPosition(frameAtSeconds(1.0));
+    const auto withValidStart = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    ASSERT_EQ(frameAtSeconds(1.0), withValidStart.position);
+
+    pCue->setStartPosition(mixxx::audio::kInvalidFramePos);
+    const auto memoryCuesAfterInvalidation =
+            snapshotSeek30MemoryCues(pTrack->getCuePoints());
+    ASSERT_EQ(2, memoryCuesAfterInvalidation.size());
+    EXPECT_EQ(frameAtSeconds(3.0),
+            memoryCuesAfterInvalidation.at(0).startPosition);
+    EXPECT_EQ(frameAtSeconds(5.0),
+            memoryCuesAfterInvalidation.at(1).startPosition);
+    const auto afterExternalInvalidation = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    ASSERT_EQ(frameAtSeconds(3.0), afterExternalInvalidation.position);
+
+    state.process(
+            {Seek30Operation::ClearCurrent, generation}, inputsAt(3.0));
+    EXPECT_FALSE(hasMemoryCueAt(pTrack, frameAtSeconds(3.0)));
+
+    pCue->setStartPosition(frameAtSeconds(1.0));
+    const auto afterRestoration = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(generation, state.generation());
+    EXPECT_EQ(frameAtSeconds(1.0), afterRestoration.position);
+}
+
 TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
     Seek30WorkerState state;
     const auto pOldTrack = trackWithMemoryCues({1.0});
