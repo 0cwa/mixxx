@@ -207,12 +207,13 @@ jobs:
               if (test != CONDITIONAL_SKIP_ID or case.get("status") != "run"
                       or case.get("result") != "skipped" or len(skipped) != 1):
                   return None
-              message = skipped[0].get("message", "").replace("\r\n", "\n")
-              text = (skipped[0].text or "").replace("\r\n", "\n")
-              reason = re.sub(r"^(?:[^\n]*[/\\])?settingsmanager_test\.cpp:\d+\n", "", message)
-              if reason != CONDITIONAL_SKIP_REASON or text != message:
+              message = skipped[0].get("message", "")
+              text = skipped[0].text or ""
+              reason = re.sub(r"^(?:[^\n]*[/\\])?settingsmanager_test\.cpp:\d+\n", "", message.replace("\r\n", "\n"))
+              # GoogleTest 1.14 appends one LF when no stack trace is present.
+              if reason not in (CONDITIONAL_SKIP_REASON, CONDITIONAL_SKIP_REASON + "\n") or text != message:
                   return None
-              return {"id": test, "reason": reason, "status": case.get("status"),
+              return {"id": test, "reason": CONDITIONAL_SKIP_REASON, "status": case.get("status"),
                       "result": case.get("result"), "runtime_state_reported_by_test": "RubberBand R3 available"}
 
           def list_ids(path):
@@ -287,7 +288,8 @@ jobs:
                               allowed_skips.append(allowed)
                           elif (case.get("status") == "run" and case.get("result") == "completed"
                                 and not case.findall("skipped")):
-                              passed.append(test)
+                              if not case.findall("failure") and not case.findall("error"):
+                                  passed.append(test)
                           else:
                               not_run.append(test)
                       xml_tests = int(root.attrib["tests"]) if "tests" in root.attrib else None
