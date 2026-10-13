@@ -1,5 +1,7 @@
 #include "predefinedcolorpalettes.h"
 
+#include "util/color/rekordboxcolor.h"
+
 namespace {
 
 // Default Mixxx Hotcue Color Palette
@@ -34,14 +36,22 @@ constexpr mixxx::RgbColor kMixxxTrackColorSpringGreen(0x00FF88);
 constexpr mixxx::RgbColor kMixxxTrackColorBattleshipGrey(0x888888);
 
 // Rekordbox Track Color Palette
-constexpr mixxx::RgbColor kRekordboxTrackColorPink(0xF870F8);
-constexpr mixxx::RgbColor kRekordboxTrackColorRed(0xF870900);
-constexpr mixxx::RgbColor kRekordboxTrackColorOrange(0xF8A030);
-constexpr mixxx::RgbColor kRekordboxTrackColorYellow(0xF8E331);
-constexpr mixxx::RgbColor kRekordboxTrackColorGreen(0x1EE000);
-constexpr mixxx::RgbColor kRekordboxTrackColorAqua(0x16C0F8);
-constexpr mixxx::RgbColor kRekordboxTrackColorBlue(0x0150F8);
-constexpr mixxx::RgbColor kRekordboxTrackColorPurple(0x9808F8);
+constexpr mixxx::RgbColor kRekordboxTrackColorPink =
+        mixxx::rekordbox::checkedIndexedColor<0xF870F8>();
+constexpr mixxx::RgbColor kRekordboxTrackColorRed =
+        mixxx::rekordbox::checkedIndexedColor<0xF80000>();
+constexpr mixxx::RgbColor kRekordboxTrackColorOrange =
+        mixxx::rekordbox::checkedIndexedColor<0xF8A030>();
+constexpr mixxx::RgbColor kRekordboxTrackColorYellow =
+        mixxx::rekordbox::checkedIndexedColor<0xF8E331>();
+constexpr mixxx::RgbColor kRekordboxTrackColorGreen =
+        mixxx::rekordbox::checkedIndexedColor<0x1EE000>();
+constexpr mixxx::RgbColor kRekordboxTrackColorAqua =
+        mixxx::rekordbox::checkedIndexedColor<0x16C0F8>();
+constexpr mixxx::RgbColor kRekordboxTrackColorBlue =
+        mixxx::rekordbox::checkedIndexedColor<0x0150F8>();
+constexpr mixxx::RgbColor kRekordboxTrackColorPurple =
+        mixxx::rekordbox::checkedIndexedColor<0x9808F8>();
 
 // Rekordbox Hotcue Color Palette
 constexpr mixxx::RgbColor kRekordboxHotcueColor1(0xDE44CF);

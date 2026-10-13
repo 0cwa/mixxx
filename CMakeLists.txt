@@ -1932,6 +1932,7 @@ set(
   src/util/color/colorpalette.h
   src/util/color/predefinedcolorpalettes.h
   src/util/color/rgbcolor.h
+  src/util/color/rekordboxcolor.h
   src/util/colorcomponents.h
   src/util/compatibility/qatomic.h
   src/util/compatibility/qbytearray.h
@@ -3035,6 +3036,7 @@ if(BUILD_TESTING)
     src/test/portmidicontroller_test.cpp
     src/test/portmidienumeratortest.cpp
     src/test/queryutiltest.cpp
+    src/test/rekordboxcolor_test.cpp
     src/test/rekordboxfeature_test.cpp
     src/test/rangelist_test.cpp
     src/test/readaheadmanager_test.cpp
