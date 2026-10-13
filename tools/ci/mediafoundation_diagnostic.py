@@ -44,6 +44,8 @@ BUNGEE_POSTPATCH = {
     ),
 }
 GENERATED_PATH = "lib/bungee/src/Platform.h"
+MANUAL_PATH = "res/Mixxx-Manual.pdf"
+MAX_MANUAL_BYTES = 64 * 1024 * 1024
 ALLOWED_DIRTY = set(BUNGEE_POSTPATCH) - {GENERATED_PATH}
 
 
@@ -192,8 +194,11 @@ def capture(root, build, phase):
     untracked = git(root, "ls-files", "--others", "--exclude-standard", "-z")
     dirty_names = [os.fsdecode(item) for item in dirty.split(b"\0") if item]
     new_paths = [os.fsdecode(item) for item in untracked.split(b"\0") if item]
+    documents = (
+        {MANUAL_PATH} if phase in ("after-configure", "after-build") else set()
+    )
     unexpected = set(dirty_names) - ALLOWED_DIRTY
-    unexpected |= set(new_paths) - {GENERATED_PATH}
+    unexpected |= set(new_paths) - ({GENERATED_PATH} | documents)
     unexpected = sorted(unexpected)
     report = {
         "phase": phase,
@@ -225,6 +230,22 @@ def capture(root, build, phase):
     paths = {name: contained_path(root, name) for name in inputs}
     for name in dirty_names + new_paths:
         contained_path(root, name)
+    document_inventory = {}
+    for name in sorted(set(new_paths) & documents):
+        path = contained_path(root, name)
+        if not path.is_file():
+            raise ValueError("Generated manual must be a regular file")
+        size = path.stat().st_size
+        if not 0 < size <= MAX_MANUAL_BYTES:
+            raise ValueError(
+                "Generated manual exceeds the accepted size bounds"
+            )
+        document_inventory[name] = {
+            "size_bytes": size,
+            "content_omitted": True,
+        }
+    report["uncaptured_generated_documents"] = document_inventory
+    write_json(report_path, report)
     executable = contained_path(root, "build/mixxx-test.exe")
     generated_output = contained_path(
         root, f"build/{prefix.name}-untracked/{GENERATED_PATH}"
@@ -269,7 +290,7 @@ def capture(root, build, phase):
     if blobs != REVIEWED_BLOBS:
         raise ValueError("MF normalized blob differs from reviewed source")
     generated_data = None
-    for name in dirty_names + new_paths:
+    for name in dirty_names + [n for n in new_paths if n == GENERATED_PATH]:
         data = contained_path(root, name).read_bytes()
         digest = hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
         if digest != BUNGEE_POSTPATCH[name]:
