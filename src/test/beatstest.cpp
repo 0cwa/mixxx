@@ -39,6 +39,84 @@ const auto kNonConstTempoBeats = Beats(
         QString(),
         0);
 
+TEST(BeatsTest, EqualConstTempoBeats) {
+    const auto pBeats = Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm, QString(), 2);
+    const auto pEqualBeats = Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm, QString(), 2);
+    ASSERT_NE(nullptr, pBeats);
+    ASSERT_NE(nullptr, pEqualBeats);
+
+    EXPECT_EQ(*pBeats, *pBeats);
+    EXPECT_EQ(*pBeats, *pEqualBeats);
+    EXPECT_EQ(*pEqualBeats, *pBeats);
+    EXPECT_FALSE(*pBeats != *pEqualBeats);
+}
+
+TEST(BeatsTest, EqualNonConstTempoBeats) {
+    const Beats equalBeats(kNonConstTempoBeats.getMarkers(),
+            kNonConstTempoBeats.getLastMarkerPosition(),
+            kNonConstTempoBeats.getLastMarkerBpm(),
+            kSampleRate,
+            QString(),
+            0);
+
+    EXPECT_EQ(kNonConstTempoBeats, equalBeats);
+    EXPECT_FALSE(kNonConstTempoBeats != equalBeats);
+}
+
+TEST(BeatsTest, EqualityIncludesDownbeatsOffset) {
+    const auto pBeats = Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm);
+    ASSERT_NE(nullptr, pBeats);
+    const auto changedBeats = pBeats->trySetDownbeatsOffset(1);
+    ASSERT_TRUE(changedBeats.has_value());
+    ASSERT_NE(nullptr, *changedBeats);
+
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
+    EXPECT_EQ(1, (*changedBeats)->getDownbeatsOffset());
+    EXPECT_NE(*pBeats, **changedBeats);
+    EXPECT_NE(**changedBeats, *pBeats);
+    EXPECT_FALSE(*pBeats == **changedBeats);
+}
+
+TEST(BeatsTest, EqualityIncludesSampleRate) {
+    const auto pBeats = Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm);
+    const auto pDifferentRateBeats =
+            Beats::fromConstTempo(audio::SampleRate(44100), kStartPosition, kBpm);
+    ASSERT_NE(nullptr, pBeats);
+    ASSERT_NE(nullptr, pDifferentRateBeats);
+
+    EXPECT_NE(*pBeats, *pDifferentRateBeats);
+    EXPECT_NE(*pDifferentRateBeats, *pBeats);
+    EXPECT_FALSE(*pBeats == *pDifferentRateBeats);
+}
+
+TEST(BeatsTest, EqualityIgnoresSubVersion) {
+    const auto pBeats =
+            Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm, QStringLiteral("analyzer-a"));
+    const auto pOtherSubVersionBeats =
+            Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm, QStringLiteral("analyzer-b"));
+    ASSERT_NE(nullptr, pBeats);
+    ASSERT_NE(nullptr, pOtherSubVersionBeats);
+
+    EXPECT_EQ(*pBeats, *pOtherSubVersionBeats);
+    EXPECT_FALSE(*pBeats != *pOtherSubVersionBeats);
+}
+
+TEST(BeatsTest, PointerEqualityKeepsIdentityAndNullSemantics) {
+    const BeatsPointer pNullBeats;
+    const BeatsPointer pOtherNullBeats;
+    const auto pBeats = Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm);
+    const auto pEqualBeats = Beats::fromConstTempo(kSampleRate, kStartPosition, kBpm);
+    const BeatsPointer pAliasBeats = pBeats;
+    ASSERT_NE(nullptr, pBeats);
+    ASSERT_NE(nullptr, pEqualBeats);
+
+    EXPECT_EQ(pNullBeats, pOtherNullBeats);
+    EXPECT_EQ(pNullBeats, nullptr);
+    EXPECT_NE(pNullBeats, pBeats);
+    EXPECT_NE(pBeats, pEqualBeats);
+    EXPECT_EQ(pBeats, pAliasBeats);
+}
+
 TEST(BeatsTest, ConstTempoGetBpmInRange) {
     EXPECT_DOUBLE_EQ(kBpm.value(),
             kConstTempoBeats.getBpmInRange(kStartPosition, kEndPosition)
