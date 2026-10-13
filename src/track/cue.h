@@ -30,6 +30,11 @@ class Cue : public QObject {
         mixxx::audio::FramePos endPosition;
     };
 
+    struct TypeAndStartPosition {
+        mixxx::CueType type;
+        mixxx::audio::FramePos startPosition;
+    };
+
     Cue() = delete;
 
     /// For roundtrips during tests
@@ -62,6 +67,7 @@ class Cue : public QObject {
     DbId getId() const;
 
     mixxx::CueType getType() const;
+    TypeAndStartPosition getTypeAndStartPosition() const;
     void setType(mixxx::CueType type);
 
     mixxx::audio::FramePos getPosition() const;

@@ -139,6 +139,11 @@ mixxx::CueType Cue::getType() const {
     return m_type;
 }
 
+Cue::TypeAndStartPosition Cue::getTypeAndStartPosition() const {
+    const auto lock = lockMutex(&m_mutex);
+    return {m_type, m_startPosition};
+}
+
 void Cue::setType(mixxx::CueType type) {
     auto lock = lockMutex(&m_mutex);
     if (m_type == type) {
