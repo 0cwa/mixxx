@@ -208,11 +208,15 @@ TEST(Seek30WorkerStateTest, ConvertedMemoryCueIsIncludedInNavigation) {
     Seek30WorkerState state;
     const auto pTrack = trackWithMemoryCues({});
     const auto position = frameAtSeconds(2.0);
-    const auto pCue = pTrack->createAndAddCue(mixxx::CueType::HotCue, 0, position, position);
+    const auto pCue = pTrack->createAndAddCue(
+            mixxx::CueType::HotCue, Cue::kNoHotCue, position, position);
+    ASSERT_EQ(mixxx::CueType::HotCue, pCue->getType());
+    ASSERT_EQ(Cue::kNoHotCue, pCue->getHotCue());
     state.trackLoaded(pTrack);
     const auto generation = state.generation();
-    pCue->setHotCue(Cue::kNoHotCue);
     pCue->setType(mixxx::CueType::Memory);
+    ASSERT_EQ(mixxx::CueType::Memory, pCue->getType());
+    ASSERT_EQ(Cue::kNoHotCue, pCue->getHotCue());
 
     const auto target = state.process({Seek30Operation::SeekNext, generation}, inputsAt(0.0));
     EXPECT_EQ(position, target.position);
@@ -221,6 +225,7 @@ TEST(Seek30WorkerStateTest, ConvertedMemoryCueIsIncludedInNavigation) {
 }
 
 TEST(Seek30WorkerStateTest, OwningWorkerRefreshesAfterProducerCueEdit) {
+    // CTest bounds the whole process, including future destruction on failure.
     const auto pTrack = trackWithMemoryCues({});
     std::promise<void> loaded;
     auto loadedFuture = loaded.get_future();
