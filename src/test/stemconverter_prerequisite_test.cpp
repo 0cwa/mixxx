@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryFile>
 
 #include "stems/stemconverter.h"
@@ -42,7 +43,10 @@ class StemConverterPrerequisiteTest : public testing::Test {
     void SetUp() override {
         ASSERT_TRUE(m_input.open());
         ASSERT_TRUE(m_tool.open());
+#ifndef Q_OS_WIN
         ASSERT_TRUE(m_tool.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+#endif
+        ASSERT_TRUE(QFileInfo(m_tool.fileName()).isExecutable());
         m_converter.ffmpegPath = m_tool.fileName();
         m_converter.mp4boxPath = m_tool.fileName();
         QObject::connect(&m_converter,
@@ -76,7 +80,8 @@ class StemConverterPrerequisiteTest : public testing::Test {
     }
 
     QTemporaryFile m_input;
-    QTemporaryFile m_tool;
+    // Qt checks executable suffixes on Windows and permission bits on Unix.
+    QTemporaryFile m_tool{QDir::temp().filePath(QStringLiteral("mixxx-stem-tool-XXXXXX.exe"))};
     StubStemConverter m_converter;
     int m_startedCount = 0;
     int m_progressCount = 0;
@@ -100,10 +105,16 @@ TEST_F(StemConverterPrerequisiteTest, RemovedMP4BoxFailsBeforeModelLoading) {
 }
 
 TEST_F(StemConverterPrerequisiteTest, NonExecutableMP4BoxFailsBeforeModelLoading) {
-    ASSERT_TRUE(m_tool.setPermissions(QFile::ReadOwner | QFile::WriteOwner));
-    // Keep FFmpeg usable so the MP4Box-specific failure is exercised.
-    ASSERT_TRUE(m_input.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-    m_converter.ffmpegPath = m_input.fileName();
+    QTemporaryFile nonExecutableTool(
+            QDir::temp().filePath(QStringLiteral("mixxx-stem-tool-XXXXXX.txt")));
+    ASSERT_TRUE(nonExecutableTool.open());
+#ifndef Q_OS_WIN
+    ASSERT_TRUE(nonExecutableTool.setPermissions(QFile::ReadOwner | QFile::WriteOwner));
+#endif
+    ASSERT_TRUE(QFileInfo(nonExecutableTool.fileName()).isFile());
+    ASSERT_FALSE(QFileInfo(nonExecutableTool.fileName()).isExecutable());
+    // FFmpeg keeps the accepted executable fixture; only MP4Box is unusable.
+    m_converter.mp4boxPath = nonExecutableTool.fileName();
     expectPrerequisiteFailure(QStringLiteral("Accepted MP4Box executable unavailable"));
 }
 

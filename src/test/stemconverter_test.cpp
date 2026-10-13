@@ -399,7 +399,15 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     const auto pTrack = Track::newTemporary(inputFile.fileName());
     ASSERT_TRUE(pTrack);
 
-    ASSERT_TRUE(inputFile.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    // Use a Windows executable suffix and Unix executable permission bits.
+    // The resolver stub is separate from the input and is never executed.
+    QTemporaryFile toolFile(
+            QDir::temp().filePath(QStringLiteral("mixxx-stem-model-tool-XXXXXX.exe")));
+    ASSERT_TRUE(toolFile.open());
+#ifndef Q_OS_WIN
+    ASSERT_TRUE(toolFile.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+#endif
+    ASSERT_TRUE(QFileInfo(toolFile.fileName()).isExecutable());
     const bool hadModelDirectory = qEnvironmentVariableIsSet("MIXXX_STEM_MODEL_DIR");
     const QByteArray previousModelDirectory = qgetenv("MIXXX_STEM_MODEL_DIR");
     qputenv("MIXXX_STEM_MODEL_DIR", modelDir.path().toUtf8());
@@ -421,7 +429,7 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
         }
         const QString m_path;
     };
-    ConverterWithAcceptedTools converter(inputFile.fileName());
+    ConverterWithAcceptedTools converter(toolFile.fileName());
     int conversionStartedCount = 0;
     int conversionProgressCount = 0;
     QObject::connect(
