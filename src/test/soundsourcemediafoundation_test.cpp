@@ -322,6 +322,75 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
         source.m_getBufferByIndexProvider = {};
         source.m_lockBufferProvider = {};
     }
+
+    void expectPublicReadFailureShrinksRange(bool partialOutput) {
+        TestSoundSourceMediaFoundation source(testUrl());
+        ASSERT_EQ(AudioSource::OpenResult::Succeeded,
+                source.open(AudioSource::OpenMode::Strict));
+        ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
+        const auto originalFrameRange = source.frameIndexRange();
+        const SINT requestedFrame = source.frameIndexMin() + 10000;
+        const SINT unreadableFrame = requestedFrame + (partialOutput ? 2 : 0);
+        setReadState(source,
+                partialOutput ? requestedFrame : originalFrameRange.end(),
+                kUnknownFrameIndex,
+                kUnknownFrameIndex);
+        ReadSampleQueue readSamples(source.getSignalInfo(), source.frameIndexMin());
+        readSamples.push({S_OK, MF_SOURCE_READERF_STREAMTICK, requestedFrame - 1000, 0});
+        readSamples.push({S_OK, 0, requestedFrame + 2, 4, 41});
+        setReadSampleProvider(source,
+                [&readSamples](DWORD streamIndex,
+                        DWORD controlFlags,
+                        DWORD* pFlags,
+                        LONGLONG* pTimestamp,
+                        IMFSample** ppSample) {
+                    return readSamples(streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
+                });
+        int positionCalls = 0;
+        setCurrentPositionProvider(source,
+                [this, &source, &positionCalls, requestedFrame](LONGLONG streamPosition) {
+                    ++positionCalls;
+                    EXPECT_EQ(requestedFrame - 2112,
+                            frameIndexFromStreamPosition(source, streamPosition));
+                    return S_OK;
+                });
+        injectSampleReadFailure(source, SampleReadFailure::TotalLength);
+        SampleBuffer output(4);
+        for (SINT i = 0; i < 4; ++i) {
+            output[i] = -777;
+        }
+        const auto failedResult = source.readSampleFrames(WritableSampleFrames(
+                IndexRange::forward(requestedFrame, 4), SampleBuffer::WritableSlice(output)));
+        if (partialOutput) {
+            EXPECT_EQ(IndexRange::forward(requestedFrame, 2), failedResult.frameIndexRange());
+            EXPECT_EQ(0, output[0]);
+            EXPECT_EQ(0, output[1]);
+        } else {
+            EXPECT_TRUE(failedResult.frameIndexRange().empty());
+            EXPECT_EQ(-777, output[0]);
+            EXPECT_EQ(-777, output[1]);
+        }
+        EXPECT_EQ(-777, output[2]);
+        EXPECT_EQ(-777, output[3]);
+        EXPECT_EQ(IndexRange::between(originalFrameRange.start(), unreadableFrame),
+                source.frameIndexRange());
+        // The decoder's old abort sentinel is distinct from the shrunken bound.
+        EXPECT_EQ(originalFrameRange.end(), readState(source).currentFrameIndex);
+        EXPECT_EQ(kUnknownFrameIndex, readState(source).streamTickFrameIndex);
+        EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
+        EXPECT_EQ(0, readableSampleCount(source));
+        EXPECT_TRUE(readerIsLive(source));
+        EXPECT_EQ(partialOutput ? 0 : 1, positionCalls);
+        EXPECT_EQ(2, readSamples.callCount());
+
+        clearSampleReadFailure(source);
+        const auto retryResult = source.readSampleFrames(WritableSampleFrames(
+                IndexRange::forward(unreadableFrame, 4), SampleBuffer::WritableSlice(output)));
+        EXPECT_TRUE(retryResult.frameIndexRange().empty());
+        EXPECT_EQ(unreadableFrame, source.frameIndexMax());
+        EXPECT_EQ(partialOutput ? 0 : 1, positionCalls);
+        EXPECT_EQ(2, readSamples.callCount());
+    }
 };
 
 TEST_F(SoundSourceMediaFoundationTest, StreamTickNullThenSamplePreservesShortGap) {
@@ -1103,6 +1172,14 @@ TEST_F(SoundSourceMediaFoundationTest, SeekClearsPendingStreamGap) {
     EXPECT_EQ(kUnknownFrameIndex, state.streamGapEndFrameIndex);
 }
 
+TEST_F(SoundSourceMediaFoundationTest, PublicEmptyFailureMarksFollowingFramesUnreadable) {
+    expectPublicReadFailureShrinksRange(false);
+}
+
+TEST_F(SoundSourceMediaFoundationTest, PublicPartialFailureMarksFollowingFramesUnreadable) {
+    expectPublicReadFailureShrinksRange(true);
+}
+
 class SoundSourceMediaFoundationSampleFailureTest
         : public SoundSourceMediaFoundationTest,
           public ::testing::WithParamInterface<std::tuple<SampleReadFailure, bool>> {
@@ -1117,6 +1194,7 @@ TEST_P(SoundSourceMediaFoundationSampleFailureTest, FailedAnchorCannotCompleteSe
             source.open(AudioSource::OpenMode::Strict));
     ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
 
+    const auto originalFrameRange = source.frameIndexRange();
     const SINT requestedFrame = source.frameIndexMin() + 10000;
     const SINT tickFrame = requestedFrame - 1000;
     const SINT failedSampleFrame = requestedFrame + (exactTarget ? 0 : 2);
@@ -1151,12 +1229,13 @@ TEST_P(SoundSourceMediaFoundationSampleFailureTest, FailedAnchorCannotCompleteSe
         output[i] = -777;
     }
     const auto requestedRange = IndexRange::forward(requestedFrame, 4);
-    const auto failedResult = source.readSampleFrames(
+    const auto failedResult = source.readSampleFramesClamped(
             WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
     EXPECT_TRUE(failedResult.frameIndexRange().empty());
     EXPECT_EQ(1, positionCalls);
     EXPECT_EQ(2, readSamples.callCount());
-    EXPECT_EQ(source.frameIndexMax(), readState(source).currentFrameIndex);
+    EXPECT_EQ(originalFrameRange, source.frameIndexRange());
+    EXPECT_EQ(originalFrameRange.end(), readState(source).currentFrameIndex);
     EXPECT_EQ(kUnknownFrameIndex, readState(source).streamTickFrameIndex);
     EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
     EXPECT_EQ(0, readableSampleCount(source));
@@ -1166,7 +1245,7 @@ TEST_P(SoundSourceMediaFoundationSampleFailureTest, FailedAnchorCannotCompleteSe
     }
 
     clearSampleReadFailure(source);
-    const auto retryResult = source.readSampleFrames(
+    const auto retryResult = source.readSampleFramesClamped(
             WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
     if (!metadataFailure) {
         // Buffer access failures keep the existing dead-reader policy.
@@ -1189,7 +1268,7 @@ TEST_P(SoundSourceMediaFoundationSampleFailureTest, FailedAnchorCannotCompleteSe
     }
 
     const auto nextRange = IndexRange::forward(requestedFrame + 4, 4);
-    const auto nextResult = source.readSampleFrames(
+    const auto nextResult = source.readSampleFramesClamped(
             WritableSampleFrames(nextRange, SampleBuffer::WritableSlice(output)));
     ASSERT_EQ(nextRange, nextResult.frameIndexRange());
     EXPECT_EQ(0, output[0]);
@@ -1230,6 +1309,7 @@ TEST_P(SoundSourceMediaFoundationBufferedFailureTest,
     ASSERT_EQ(AudioSource::OpenResult::Succeeded,
             source.open(AudioSource::OpenMode::Strict));
     ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
+    const auto originalFrameRange = source.frameIndexRange();
     const SINT requestedFrame = source.frameIndexMin() + 10000;
     const SINT returnedFrames = laterBufferFailure ? 3 : 2;
     const SINT retryFrame = requestedFrame + returnedFrames;
@@ -1260,13 +1340,14 @@ TEST_P(SoundSourceMediaFoundationBufferedFailureTest,
     for (SINT i = 0; i < 3; ++i) {
         output[i] = -777;
     }
-    const auto failedResult = source.readSampleFrames(WritableSampleFrames(
+    const auto failedResult = source.readSampleFramesClamped(WritableSampleFrames(
             IndexRange::forward(requestedFrame, 3), SampleBuffer::WritableSlice(output)));
     EXPECT_EQ(IndexRange::forward(requestedFrame, returnedFrames), failedResult.frameIndexRange());
     EXPECT_EQ(0, output[0]);
     EXPECT_EQ(0, output[1]);
     EXPECT_EQ(laterBufferFailure ? 41 : -777, output[2]);
-    EXPECT_EQ(source.frameIndexMax(), readState(source).currentFrameIndex);
+    EXPECT_EQ(originalFrameRange, source.frameIndexRange());
+    EXPECT_EQ(originalFrameRange.end(), readState(source).currentFrameIndex);
     EXPECT_EQ(kUnknownFrameIndex, readState(source).streamTickFrameIndex);
     EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
     EXPECT_EQ(0, readableSampleCount(source));
@@ -1276,7 +1357,7 @@ TEST_P(SoundSourceMediaFoundationBufferedFailureTest,
 
     clearSampleReadFailure(source);
     const auto retryRange = IndexRange::forward(retryFrame, 3);
-    const auto retryResult = source.readSampleFrames(
+    const auto retryResult = source.readSampleFramesClamped(
             WritableSampleFrames(retryRange, SampleBuffer::WritableSlice(output)));
     if (metadataFailure) {
         ASSERT_EQ(retryRange, retryResult.frameIndexRange());
