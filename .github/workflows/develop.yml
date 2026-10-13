@@ -196,9 +196,28 @@ jobs:
             > ../issue82-evidence/mixxx-test-binary.sha256
           shasum -a 256 "$RUNNER_TEMP/issue82-mixxx-test-build.log" \
             > ../issue82-evidence/build-log.sha256
-          find . -type f -name '*.d' \
-            -exec grep -l -F 'audiounitmanifestdiscovery.h' {} + \
-            > ../issue82-evidence/manifest-header-dependency-receipt.txt
+          backend_object='CMakeFiles/mixxx-lib.dir/src/effects/backends/audiounit/audiounitbackend.mm.o'
+          manager_test_object='CMakeFiles/mixxx-test.dir/src/test/audiounitmanager_test.mm.o'
+          ninja -t deps "$backend_object" \
+            > ../issue82-evidence/audiounitbackend-dependencies.txt
+          ninja -t deps "$manager_test_object" \
+            > ../issue82-evidence/audiounitmanager-test-dependencies.txt
+          test -s ../issue82-evidence/audiounitbackend-dependencies.txt
+          test -s ../issue82-evidence/audiounitmanager-test-dependencies.txt
+          grep -F 'audiounitmanifestdiscovery.h' \
+            ../issue82-evidence/audiounitbackend-dependencies.txt \
+            > /dev/null
+          grep -F 'audiounitmanifestdiscovery.h' \
+            ../issue82-evidence/audiounitmanager-test-dependencies.txt \
+            > /dev/null
+          {
+            printf 'object=%s\n' "$backend_object"
+            grep -F 'audiounitmanifestdiscovery.h' \
+              ../issue82-evidence/audiounitbackend-dependencies.txt
+            printf 'object=%s\n' "$manager_test_object"
+            grep -F 'audiounitmanifestdiscovery.h' \
+              ../issue82-evidence/audiounitmanager-test-dependencies.txt
+          } > ../issue82-evidence/manifest-header-dependency-receipt.txt
           test -s ../issue82-evidence/build-target-receipt.txt
           test -s ../issue82-evidence/mixxx-test-link-receipt.txt
           test -s ../issue82-evidence/manifest-header-dependency-receipt.txt
