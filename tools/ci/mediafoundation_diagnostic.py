@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -23,6 +22,31 @@ REVIEWED_HASHES = {
         "0504d3f9ebb6bbcef75c6fe2e701336c" "03c1ebfed98a878ee6fc37f44b5473f4"
     ),
 }
+REVIEWED_BLOBS = dict(
+    zip(
+        REVIEWED_HASHES,
+        (
+            "2af32ea415df0089d4b0db934fdf3fa13935f9fa",
+            "21e168e48427ff322f835e5e5082a1e19285faf7",
+            "856b46521ad39ddf0996252b6f7735a8b6f88a16",
+        ),
+    )
+)
+BUNGEE_POSTPATCH = {
+    "lib/bungee/src/Assert.cpp": (
+        "95162f7dd5792896a3914d7b541f20d6" "3c55fed44ce3938e1ec0b27bdf4b1aa1"
+    ),
+    "lib/bungee/src/Resample.h": (
+        "d3b1c688b0834c784c7168c48c2d3bd2" "f8461fdb7f65dad0f29b1eab459e87c3"
+    ),
+    "lib/bungee/src/Platform.h": (
+        "01e60e8fbd3ef203d08590f49f6d1c92" "83dcefbaed958f48ed04c3939db1913a"
+    ),
+}
+GENERATED_PATH = "lib/bungee/src/Platform.h"
+ALLOWED_DIRTY = set(BUNGEE_POSTPATCH) - {GENERATED_PATH}
+
+
 BASE_CASES = (
     "StreamTickNullThenSamplePreservesShortGap",
     "TerminalNullStatusesSettleUnknownPosition",
@@ -133,23 +157,60 @@ def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
 
 
+def contained_path(root, relative):
+    root = root.resolve()
+    relative = Path(relative)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("Provenance path must remain inside the checkout")
+    candidate = root
+    for part in relative.parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise ValueError("Symlinks are not allowed in provenance paths")
+    if not candidate.resolve().is_relative_to(root):
+        raise ValueError("Provenance path escapes the checkout")
+    return candidate
+
+
 def capture(root, build, phase):
-    prefix = build / f"mf-seek-gap-provenance-{phase}"
+    prefix = contained_path(root, f"build/mf-seek-gap-provenance-{phase}")
+    relative = prefix.relative_to(root)
+    status_path = contained_path(root, relative.with_suffix(".status.txt"))
+    diff_path = contained_path(root, relative.with_suffix(".diff"))
+    report_path = contained_path(root, relative.with_suffix(".json"))
     status = git(root, "status", "--porcelain=v1", "--untracked-files=all")
-    diff = git(root, "diff", "--binary", "--submodule=diff", "HEAD", "--")
-    prefix.with_suffix(".status.txt").write_bytes(status)
-    prefix.with_suffix(".diff").write_bytes(diff)
+    dirty = git(
+        root,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--name-only",
+        "-z",
+        "HEAD",
+        "--",
+    )
     untracked = git(root, "ls-files", "--others", "--exclude-standard", "-z")
-    untracked_hashes = {}
-    for item in untracked.split(b"\0"):
-        if not item:
-            continue
-        relative = os.fsdecode(item)
-        source = root / relative
-        destination = build / f"{prefix.name}-untracked" / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        untracked_hashes[relative] = sha256(source)
+    dirty_names = [os.fsdecode(item) for item in dirty.split(b"\0") if item]
+    new_paths = [os.fsdecode(item) for item in untracked.split(b"\0") if item]
+    unexpected = set(dirty_names) - ALLOWED_DIRTY
+    unexpected |= set(new_paths) - {GENERATED_PATH}
+    unexpected = sorted(unexpected)
+    report = {
+        "phase": phase,
+        "checked_out_commit": git(root, "rev-parse", "HEAD").decode().strip(),
+        "github_sha": os.environ["GITHUB_SHA"],
+        "github_ref": os.environ.get("GITHUB_REF"),
+        "run_id": os.environ.get("GITHUB_RUN_ID"),
+        "dirty_status": status.decode("utf-8", errors="replace").splitlines(),
+        "dirty_tracked_paths": dirty_names,
+        "untracked_paths": new_paths,
+        "unexpected_paths": unexpected,
+        "capture_status": "inventory_only",
+    }
+    status_path.write_bytes(status)
+    write_json(report_path, report)
+    if unexpected:
+        raise ValueError("Unexpected dirty provenance paths; review inventory")
     inputs = list(REVIEWED_HASHES) + [
         "CMakeLists.txt",
         ".github/workflows/develop.yml",
@@ -161,63 +222,134 @@ def capture(root, build, phase):
         "src/test/sine-30.wav",
         "lib/bungee/0001-MSVC-compatibility.patch",
     ]
-    commit = git(root, "rev-parse", "HEAD").decode().strip()
-    hashes = {name: sha256(root / name) for name in inputs}
-    executable = build / "mixxx-test.exe"
-    executable_hash = sha256(executable) if executable.is_file() else None
-    report = {
-        "phase": phase,
-        "checked_out_commit": commit,
-        "github_sha": os.environ["GITHUB_SHA"],
-        "github_ref": os.environ.get("GITHUB_REF"),
-        "run_id": os.environ.get("GITHUB_RUN_ID"),
-        "dirty_status": status.decode("utf-8", errors="replace").splitlines(),
-        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
-        "untracked_file_sha256": untracked_hashes,
-        "source_input_sha256": hashes,
-        "reviewed_mf_sha256": REVIEWED_HASHES,
-        "test_executable_sha256": executable_hash,
-    }
-    write_json(prefix.with_suffix(".json"), report)
-    if commit != report["github_sha"]:
+    paths = {name: contained_path(root, name) for name in inputs}
+    for name in dirty_names + new_paths:
+        contained_path(root, name)
+    executable = contained_path(root, "build/mixxx-test.exe")
+    generated_output = contained_path(
+        root, f"build/{prefix.name}-untracked/{GENERATED_PATH}"
+    )
+    if report["checked_out_commit"] != report["github_sha"]:
         raise ValueError("Checkout commit differs from dispatched GITHUB_SHA")
-    for name, expected in REVIEWED_HASHES.items():
-        if hashes[name] != expected:
-            raise ValueError("MF source bytes differ from the reviewed repair")
+    blobs = {
+        name: git(root, "hash-object", f"--path={name}", str(paths[name]))
+        .decode()
+        .strip()
+        for name in REVIEWED_BLOBS
+    }
+    eol_config = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "config",
+            "--show-origin",
+            "--get-regexp",
+            r"^core\.(autocrlf|eol|safecrlf)$",
+        ],
+        stdout=subprocess.PIPE,
+        check=False,
+    )
+    if eol_config.returncode not in (0, 1):
+        eol_config.check_returncode()
+    hashes = {name: sha256(path) for name, path in paths.items()}
+    executable_hash = sha256(executable) if executable.is_file() else None
+    report.update(
+        source_input_sha256=hashes,
+        mf_git_normalized_blobs=blobs,
+        reviewed_mf_git_blobs=REVIEWED_BLOBS,
+        reviewed_mf_sha256=REVIEWED_HASHES,
+        eol_attributes=git(root, "check-attr", "--all", "--", *inputs)
+        .decode()
+        .splitlines(),
+        eol_configuration=eol_config.stdout.decode().splitlines(),
+        test_executable_sha256=executable_hash,
+    )
+    write_json(report_path, report)
+    if blobs != REVIEWED_BLOBS:
+        raise ValueError("MF normalized blob differs from reviewed source")
+    generated_data = None
+    for name in dirty_names + new_paths:
+        data = contained_path(root, name).read_bytes()
+        digest = hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+        if digest != BUNGEE_POSTPATCH[name]:
+            raise ValueError("Bungee bytes differ from the reviewed patch")
+        if name == GENERATED_PATH:
+            generated_data = data
+    diff = git(
+        root,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+        "HEAD",
+        "--",
+        *sorted(ALLOWED_DIRTY),
+    )
+    diff_path.write_bytes(diff)
+    if generated_data is not None:
+        generated_output.parent.mkdir(parents=True, exist_ok=True)
+        generated_output.write_bytes(generated_data)
+    report.update(
+        capture_status="captured",
+        tracked_diff_sha256=hashlib.sha256(diff).hexdigest(),
+        untracked_file_sha256=(
+            {GENERATED_PATH: hashlib.sha256(generated_data).hexdigest()}
+            if generated_data is not None
+            else {}
+        ),
+    )
+    write_json(report_path, report)
     if phase == "after-build" and not executable.is_file():
         raise ValueError("The built mixxx-test.exe is missing")
 
 
 def run_logged(command, build, stem, timeout):
-    with subprocess.Popen(
+    process = subprocess.Popen(
         command, cwd=build, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    ) as process:
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as initial:
+        stdout, stderr = initial.output or b"", initial.stderr or b""
+        evidence = {
+            "command": command,
+            "timeout_seconds": timeout,
+            "status": "timeout",
+            "stdio_closed": False,
+            "child_termination_confirmed": False,
+        }
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
             if os.name == "nt":
                 try:
-                    subprocess.run(
+                    killed = subprocess.run(
                         ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         timeout=10,
                         check=False,
                     )
-                except (OSError, subprocess.SubprocessError):
-                    process.kill()
+                    evidence["taskkill_exit_code"] = killed.returncode
+                except (OSError, subprocess.SubprocessError) as error:
+                    evidence["taskkill_error"] = type(error).__name__
             process.kill()
-            stdout, stderr = process.communicate(timeout=5)
+            latest_stdout, latest_stderr = process.communicate(timeout=5)
+            stdout, stderr = latest_stdout or stdout, latest_stderr or stderr
+            evidence["stdio_closed"] = True
+        except subprocess.TimeoutExpired as cleanup:
+            stdout = cleanup.output or stdout
+            stderr = cleanup.stderr or stderr
+            evidence["cleanup_error"] = "TimeoutExpired"
+        except (OSError, subprocess.SubprocessError) as error:
+            evidence["cleanup_error"] = type(error).__name__
+        finally:
+            evidence["root_exit_code"] = process.poll()
             (build / f"{stem}.stdout.log").write_bytes(stdout)
             (build / f"{stem}.stderr.log").write_bytes(stderr)
-            write_json(
-                build / f"{stem}.status.json",
-                {"command": command, "timeout_seconds": timeout},
-            )
-            raise subprocess.TimeoutExpired(command, timeout, stdout, stderr)
-        result = subprocess.CompletedProcess(
-            command, process.returncode, stdout, stderr
-        )
+            write_json(build / f"{stem}.status.json", evidence)
+        raise subprocess.TimeoutExpired(command, timeout, stdout, stderr)
+    return_code = process.returncode
+    result = subprocess.CompletedProcess(command, return_code, stdout, stderr)
     (build / f"{stem}.stdout.log").write_bytes(result.stdout)
     (build / f"{stem}.stderr.log").write_bytes(result.stderr)
     write_json(
@@ -232,6 +364,31 @@ def run_logged(command, build, stem, timeout):
     print(result.stderr.decode("utf-8", errors="replace"))
     result.check_returncode()
     return result.stdout
+
+
+def validate_junit(path, selected):
+    report = ET.parse(path)
+    cases = report.findall(".//testcase")
+    require_cases([case.attrib["name"] for case in cases], set(selected))
+    for element in report.iter():
+        if element.tag in ("failure", "error", "skipped"):
+            raise ValueError("JUnit contains a failing or skipped MF result")
+        if element.tag in ("testsuite", "testsuites"):
+            for key in ("failures", "errors"):
+                if int(element.get(key, "0")) != 0:
+                    raise ValueError("JUnit failure/error total is nonzero")
+        if element.tag in ("testcase", "testsuite", "testsuites"):
+            for key in ("status", "result"):
+                if element.get(key, "").strip().lower() not in (
+                    "",
+                    "run",
+                    "passed",
+                    "pass",
+                    "success",
+                    "completed",
+                ):
+                    raise ValueError("JUnit status is not successful")
+    return len(cases)
 
 
 def run_ctest(build):
@@ -261,15 +418,8 @@ def run_ctest(build):
         "mf-seek-gap-ctest-run",
         1650,
     )
-    cases = ET.parse(build / "mf-seek-gap-tests.xml").findall(".//testcase")
-    require_cases([case.attrib["name"] for case in cases], set(selected))
-    if any(
-        case.find("skipped") is not None
-        or case.attrib.get("status") in ("notrun", "disabled")
-        for case in cases
-    ):
-        raise ValueError("CTest skipped a required MF diagnostic case")
-    print(f"Executed all {len(cases)} required MF diagnostic cases")
+    count = validate_junit(build / "mf-seek-gap-tests.xml", selected)
+    print(f"Executed all {count} required MF diagnostic cases")
 
 
 def main():
