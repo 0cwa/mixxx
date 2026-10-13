@@ -42,6 +42,15 @@ struct Seek30SeekTarget {
     std::uint64_t sequence{0};
 };
 
+struct Seek30MemoryCueSnapshot {
+    CuePointer pCue;
+    mixxx::CueType type;
+    mixxx::audio::FramePos startPosition;
+};
+
+QList<Seek30MemoryCueSnapshot> snapshotSeek30MemoryCues(
+        const QList<CuePointer>& cuePoints);
+
 static_assert(std::is_trivially_copyable_v<Seek30Command>);
 static_assert(std::is_trivially_copyable_v<Seek30WorkerInputs>);
 static_assert(std::is_trivially_copyable_v<Seek30SeekTarget>);
@@ -93,6 +102,6 @@ class Seek30WorkerState final {
     Seek30SeekTarget seekPrevious(const Seek30WorkerInputs& inputs);
 
     TrackPointer m_pLoadedTrack;
-    QList<CuePointer> m_memoryCues;
+    QList<Seek30MemoryCueSnapshot> m_memoryCues;
     std::uint64_t m_generation{0};
 };

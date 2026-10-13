@@ -282,6 +282,31 @@ TEST(Seek30WorkerStateTest, RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload
     EXPECT_EQ(frameAtSeconds(1.0), withMemoryCueAgain.position);
 }
 
+TEST(Seek30WorkerStateTest, CapturesStableCueViewDuringExternalEdits) {
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    const auto pMovedCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+    ASSERT_TRUE(pMovedCue);
+
+    const auto memoryCues =
+            snapshotSeek30MemoryCues(pTrack->getCuePoints());
+    ASSERT_EQ(2, memoryCues.size());
+    EXPECT_EQ(pMovedCue, memoryCues.at(0).pCue);
+    EXPECT_EQ(mixxx::CueType::Memory, memoryCues.at(0).type);
+    EXPECT_EQ(frameAtSeconds(1.0), memoryCues.at(0).startPosition);
+    EXPECT_EQ(frameAtSeconds(3.0), memoryCues.at(1).startPosition);
+
+    pMovedCue->setStartAndEndPosition(
+            frameAtSeconds(5.0), frameAtSeconds(5.0));
+    pMovedCue->setType(mixxx::CueType::Loop);
+
+    EXPECT_EQ(mixxx::CueType::Memory, memoryCues.at(0).type);
+    EXPECT_EQ(frameAtSeconds(1.0), memoryCues.at(0).startPosition);
+    EXPECT_EQ(frameAtSeconds(3.0), memoryCues.at(1).startPosition);
+    EXPECT_EQ(mixxx::CueType::Loop, pMovedCue->getType());
+    EXPECT_EQ(frameAtSeconds(5.0),
+            pMovedCue->getStartAndEndPosition().startPosition);
+}
+
 TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
     Seek30WorkerState state;
     const auto pOldTrack = trackWithMemoryCues({1.0});
