@@ -112,6 +112,11 @@ class SoundSourceMediaFoundation : public SoundSource {
 
     std::function<HRESULT(LONGLONG)> m_setCurrentPositionProvider;
 
+    std::function<HRESULT(IMFSample*, DWORD*)> m_getBufferCountProvider;
+    std::function<HRESULT(IMFSample*, DWORD*)> m_getTotalLengthProvider;
+    std::function<HRESULT(IMFSample*, DWORD, IMFMediaBuffer**)> m_getBufferByIndexProvider;
+    std::function<HRESULT(IMFMediaBuffer*, BYTE**, DWORD*)> m_lockBufferProvider;
+
     friend class SoundSourceMediaFoundationTest;
 #endif
 };

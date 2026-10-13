@@ -6,6 +6,7 @@
 #include <cmath>
 #include <deque>
 #include <iomanip>
+#include <tuple>
 #include <utility>
 
 #include "test/mixxxtest.h"
@@ -83,18 +84,62 @@ IMFSample* createSample(
     return pSample;
 }
 
+IMFSample* createSampleWithTwoBuffers(
+        const audio::SignalInfo& signalInfo,
+        SINT frameCount,
+        CSAMPLE firstSampleValue) {
+    const SINT firstFrameCount = frameCount / 2;
+    IMFSample* pSample = createSample(signalInfo, firstFrameCount, firstSampleValue);
+    IMFSample* pSecondSample = createSample(signalInfo,
+            frameCount - firstFrameCount,
+            firstSampleValue + static_cast<CSAMPLE>(signalInfo.frames2samples(firstFrameCount)));
+    if (!pSample || !pSecondSample) {
+        if (pSample) {
+            pSample->Release();
+        }
+        if (pSecondSample) {
+            pSecondSample->Release();
+        }
+        return nullptr;
+    }
+    IMFMediaBuffer* pSecondBuffer = nullptr;
+    HRESULT hr = pSecondSample->GetBufferByIndex(0, &pSecondBuffer);
+    if (SUCCEEDED(hr)) {
+        hr = pSample->AddBuffer(pSecondBuffer);
+        pSecondBuffer->Release();
+    }
+    pSecondSample->Release();
+    if (FAILED(hr)) {
+        ADD_FAILURE() << "Creating a two-buffer sample failed: " << std::hex << hr;
+        pSample->Release();
+        return nullptr;
+    }
+    return pSample;
+}
+
+enum class SampleReadFailure {
+    BufferCount,
+    TotalLength,
+    FirstBuffer,
+    LaterBuffer,
+    FirstLock,
+    LaterLock,
+};
+
 struct ReadSampleEvent {
     ReadSampleEvent(
             HRESULT hrIn,
             DWORD flagsIn,
             SINT frameIndexIn,
             SINT frameCountIn,
-            CSAMPLE firstSampleValueIn = 1)
+            CSAMPLE firstSampleValueIn = 1,
+            bool twoBuffersIn = false)
             : hr(hrIn),
               flags(flagsIn),
               frameIndex(frameIndexIn),
               frameCount(frameCountIn),
-              firstSampleValue(firstSampleValueIn) {
+              firstSampleValue(firstSampleValueIn),
+              twoBuffers(twoBuffersIn) {
     }
 
     HRESULT hr;
@@ -102,6 +147,7 @@ struct ReadSampleEvent {
     SINT frameIndex;
     SINT frameCount;
     CSAMPLE firstSampleValue;
+    bool twoBuffers;
 };
 
 class ReadSampleQueue final {
@@ -139,10 +185,13 @@ class ReadSampleQueue final {
         *pFlags = event.flags;
         *pTimestamp = timestampForFrame(event.frameIndex);
         if (SUCCEEDED(event.hr) && event.frameCount > 0) {
-            *ppSample = createSample(
-                    m_signalInfo,
-                    event.frameCount,
-                    event.firstSampleValue);
+            *ppSample = event.twoBuffers
+                    ? createSampleWithTwoBuffers(m_signalInfo,
+                              event.frameCount,
+                              event.firstSampleValue)
+                    : createSample(m_signalInfo,
+                              event.frameCount,
+                              event.firstSampleValue);
         }
         return event.hr;
     }
@@ -223,6 +272,55 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
 
     SINT readableSampleCount(const SoundSourceMediaFoundation& source) const {
         return source.m_sampleBuffer.readableLength();
+    }
+
+    bool readerIsLive(const SoundSourceMediaFoundation& source) const {
+        return source.m_pSourceReader != nullptr;
+    }
+
+    void injectSampleReadFailure(
+            SoundSourceMediaFoundation& source,
+            SampleReadFailure failure) {
+        source.m_getBufferCountProvider = [failure](IMFSample* pSample, DWORD* pCount) {
+            return failure == SampleReadFailure::BufferCount
+                    ? E_FAIL
+                    : pSample->GetBufferCount(pCount);
+        };
+        source.m_getTotalLengthProvider = [failure](IMFSample* pSample, DWORD* pLength) {
+            return failure == SampleReadFailure::TotalLength
+                    ? E_FAIL
+                    : pSample->GetTotalLength(pLength);
+        };
+        source.m_getBufferByIndexProvider = [failure](IMFSample* pSample,
+                                                    DWORD index,
+                                                    IMFMediaBuffer** ppBuffer) {
+            if ((failure == SampleReadFailure::FirstBuffer && index == 0) ||
+                    (failure == SampleReadFailure::LaterBuffer && index == 1)) {
+                *ppBuffer = nullptr;
+                return E_FAIL;
+            }
+            return pSample->GetBufferByIndex(index, ppBuffer);
+        };
+        source.m_lockBufferProvider = [failure, callCount = 0](
+                                              IMFMediaBuffer* pBuffer,
+                                              BYTE** ppData,
+                                              DWORD* pLength) mutable {
+            const int index = callCount++;
+            if ((failure == SampleReadFailure::FirstLock && index == 0) ||
+                    (failure == SampleReadFailure::LaterLock && index == 1)) {
+                *ppData = nullptr;
+                *pLength = 0;
+                return E_FAIL;
+            }
+            return pBuffer->Lock(ppData, nullptr, pLength);
+        };
+    }
+
+    void clearSampleReadFailure(SoundSourceMediaFoundation& source) {
+        source.m_getBufferCountProvider = {};
+        source.m_getTotalLengthProvider = {};
+        source.m_getBufferByIndexProvider = {};
+        source.m_lockBufferProvider = {};
     }
 };
 
@@ -1004,5 +1102,204 @@ TEST_F(SoundSourceMediaFoundationTest, SeekClearsPendingStreamGap) {
     EXPECT_EQ(kUnknownFrameIndex, state.streamTickFrameIndex);
     EXPECT_EQ(kUnknownFrameIndex, state.streamGapEndFrameIndex);
 }
+
+class SoundSourceMediaFoundationSampleFailureTest
+        : public SoundSourceMediaFoundationTest,
+          public ::testing::WithParamInterface<std::tuple<SampleReadFailure, bool>> {
+};
+
+TEST_P(SoundSourceMediaFoundationSampleFailureTest, FailedAnchorCannotCompleteSeek) {
+    const auto [failure, exactTarget] = GetParam();
+    const bool metadataFailure = failure == SampleReadFailure::BufferCount ||
+            failure == SampleReadFailure::TotalLength;
+    TestSoundSourceMediaFoundation source(testUrl());
+    ASSERT_EQ(AudioSource::OpenResult::Succeeded,
+            source.open(AudioSource::OpenMode::Strict));
+    ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
+
+    const SINT requestedFrame = source.frameIndexMin() + 10000;
+    const SINT tickFrame = requestedFrame - 1000;
+    const SINT failedSampleFrame = requestedFrame + (exactTarget ? 0 : 2);
+    setReadState(source, source.frameIndexMax(), kUnknownFrameIndex, kUnknownFrameIndex);
+
+    ReadSampleQueue readSamples(source.getSignalInfo(), source.frameIndexMin());
+    readSamples.push({S_OK, MF_SOURCE_READERF_STREAMTICK, tickFrame, 0});
+    readSamples.push({S_OK, 0, failedSampleFrame, 4, 41, true});
+    // After discarding A, B must keep its own timestamp, never A's position.
+    readSamples.push({S_OK, MF_SOURCE_READERF_STREAMTICK, tickFrame, 0});
+    readSamples.push({S_OK, 0, requestedFrame + 6, 4, 81});
+    setReadSampleProvider(source,
+            [&readSamples](DWORD streamIndex,
+                    DWORD controlFlags,
+                    DWORD* pFlags,
+                    LONGLONG* pTimestamp,
+                    IMFSample** ppSample) {
+                return readSamples(streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
+            });
+    int positionCalls = 0;
+    setCurrentPositionProvider(source,
+            [this, &source, &positionCalls, requestedFrame](LONGLONG streamPosition) {
+                ++positionCalls;
+                EXPECT_EQ(requestedFrame - 2112,
+                        frameIndexFromStreamPosition(source, streamPosition));
+                return S_OK;
+            });
+    injectSampleReadFailure(source, failure);
+
+    SampleBuffer output(4);
+    for (SINT i = 0; i < 4; ++i) {
+        output[i] = -777;
+    }
+    const auto requestedRange = IndexRange::forward(requestedFrame, 4);
+    const auto failedResult = source.readSampleFrames(
+            WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
+    EXPECT_TRUE(failedResult.frameIndexRange().empty());
+    EXPECT_EQ(1, positionCalls);
+    EXPECT_EQ(2, readSamples.callCount());
+    EXPECT_EQ(source.frameIndexMax(), readState(source).currentFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, readState(source).streamTickFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
+    EXPECT_EQ(0, readableSampleCount(source));
+    EXPECT_EQ(metadataFailure, readerIsLive(source));
+    for (SINT i = 0; i < 4; ++i) {
+        EXPECT_EQ(-777, output[i]);
+    }
+
+    clearSampleReadFailure(source);
+    const auto retryResult = source.readSampleFrames(
+            WritableSampleFrames(requestedRange, SampleBuffer::WritableSlice(output)));
+    if (!metadataFailure) {
+        // Buffer access failures keep the existing dead-reader policy.
+        EXPECT_TRUE(retryResult.frameIndexRange().empty());
+        EXPECT_EQ(1, positionCalls);
+        EXPECT_EQ(2, readSamples.callCount());
+        EXPECT_EQ(0, readableSampleCount(source));
+        EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
+        for (SINT i = 0; i < 4; ++i) {
+            EXPECT_EQ(-777, output[i]);
+        }
+        return;
+    }
+    ASSERT_EQ(requestedRange, retryResult.frameIndexRange());
+    EXPECT_EQ(2, positionCalls);
+    EXPECT_EQ(4, readSamples.callCount());
+    EXPECT_EQ(requestedFrame + 6, readState(source).streamGapEndFrameIndex);
+    for (SINT i = 0; i < 4; ++i) {
+        EXPECT_EQ(0, output[i]);
+    }
+
+    const auto nextRange = IndexRange::forward(requestedFrame + 4, 4);
+    const auto nextResult = source.readSampleFrames(
+            WritableSampleFrames(nextRange, SampleBuffer::WritableSlice(output)));
+    ASSERT_EQ(nextRange, nextResult.frameIndexRange());
+    EXPECT_EQ(0, output[0]);
+    EXPECT_EQ(0, output[1]);
+    EXPECT_EQ(81, output[2]);
+    EXPECT_EQ(82, output[3]);
+    EXPECT_EQ(requestedFrame + 8, readState(source).currentFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
+    EXPECT_EQ(2, readableSampleCount(source));
+    EXPECT_EQ(2, positionCalls);
+    EXPECT_EQ(4, readSamples.callCount());
+}
+
+INSTANTIATE_TEST_SUITE_P(ExtractionFailures,
+        SoundSourceMediaFoundationSampleFailureTest,
+        ::testing::Combine(
+                ::testing::Values(SampleReadFailure::BufferCount,
+                        SampleReadFailure::TotalLength,
+                        SampleReadFailure::FirstBuffer,
+                        SampleReadFailure::LaterBuffer,
+                        SampleReadFailure::FirstLock,
+                        SampleReadFailure::LaterLock),
+                ::testing::Bool()));
+
+class SoundSourceMediaFoundationBufferedFailureTest
+        : public SoundSourceMediaFoundationTest,
+          public ::testing::WithParamInterface<SampleReadFailure> {
+};
+
+TEST_P(SoundSourceMediaFoundationBufferedFailureTest,
+        PreserveOutputPrefixButDiscardBufferedSuffix) {
+    const auto failure = GetParam();
+    const bool metadataFailure = failure == SampleReadFailure::BufferCount ||
+            failure == SampleReadFailure::TotalLength;
+    const bool laterBufferFailure = failure == SampleReadFailure::LaterBuffer ||
+            failure == SampleReadFailure::LaterLock;
+    TestSoundSourceMediaFoundation source(testUrl());
+    ASSERT_EQ(AudioSource::OpenResult::Succeeded,
+            source.open(AudioSource::OpenMode::Strict));
+    ASSERT_EQ(1, source.getSignalInfo().getChannelCount().value());
+    const SINT requestedFrame = source.frameIndexMin() + 10000;
+    const SINT returnedFrames = laterBufferFailure ? 3 : 2;
+    const SINT retryFrame = requestedFrame + returnedFrames;
+    setReadState(source, requestedFrame, kUnknownFrameIndex, kUnknownFrameIndex);
+
+    ReadSampleQueue readSamples(source.getSignalInfo(), source.frameIndexMin());
+    readSamples.push({S_OK, MF_SOURCE_READERF_STREAMTICK, requestedFrame, 0});
+    readSamples.push({S_OK, 0, requestedFrame + 2, 4, 41, true});
+    readSamples.push({S_OK, 0, retryFrame, 4, 81});
+    setReadSampleProvider(source,
+            [&readSamples](DWORD streamIndex,
+                    DWORD controlFlags,
+                    DWORD* pFlags,
+                    LONGLONG* pTimestamp,
+                    IMFSample** ppSample) {
+                return readSamples(streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
+            });
+    int positionCalls = 0;
+    setCurrentPositionProvider(source,
+            [this, &source, &positionCalls, retryFrame](LONGLONG streamPosition) {
+                ++positionCalls;
+                EXPECT_EQ(retryFrame - 2112,
+                        frameIndexFromStreamPosition(source, streamPosition));
+                return S_OK;
+            });
+    injectSampleReadFailure(source, failure);
+    SampleBuffer output(3);
+    for (SINT i = 0; i < 3; ++i) {
+        output[i] = -777;
+    }
+    const auto failedResult = source.readSampleFrames(WritableSampleFrames(
+            IndexRange::forward(requestedFrame, 3), SampleBuffer::WritableSlice(output)));
+    EXPECT_EQ(IndexRange::forward(requestedFrame, returnedFrames), failedResult.frameIndexRange());
+    EXPECT_EQ(0, output[0]);
+    EXPECT_EQ(0, output[1]);
+    EXPECT_EQ(laterBufferFailure ? 41 : -777, output[2]);
+    EXPECT_EQ(source.frameIndexMax(), readState(source).currentFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, readState(source).streamTickFrameIndex);
+    EXPECT_EQ(kUnknownFrameIndex, readState(source).streamGapEndFrameIndex);
+    EXPECT_EQ(0, readableSampleCount(source));
+    EXPECT_EQ(metadataFailure, readerIsLive(source));
+    EXPECT_EQ(0, positionCalls);
+    EXPECT_EQ(2, readSamples.callCount());
+
+    clearSampleReadFailure(source);
+    const auto retryRange = IndexRange::forward(retryFrame, 3);
+    const auto retryResult = source.readSampleFrames(
+            WritableSampleFrames(retryRange, SampleBuffer::WritableSlice(output)));
+    if (metadataFailure) {
+        ASSERT_EQ(retryRange, retryResult.frameIndexRange());
+        EXPECT_EQ(1, positionCalls);
+        EXPECT_EQ(3, readSamples.callCount());
+        EXPECT_EQ(81, output[0]);
+        EXPECT_EQ(82, output[1]);
+        EXPECT_EQ(83, output[2]);
+    } else {
+        EXPECT_TRUE(retryResult.frameIndexRange().empty());
+        EXPECT_EQ(0, positionCalls);
+        EXPECT_EQ(2, readSamples.callCount());
+        EXPECT_EQ(0, readableSampleCount(source));
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(ExtractionFailures,
+        SoundSourceMediaFoundationBufferedFailureTest,
+        ::testing::Values(SampleReadFailure::BufferCount,
+                SampleReadFailure::TotalLength,
+                SampleReadFailure::FirstBuffer,
+                SampleReadFailure::LaterBuffer,
+                SampleReadFailure::FirstLock,
+                SampleReadFailure::LaterLock));
 
 } // namespace mixxx

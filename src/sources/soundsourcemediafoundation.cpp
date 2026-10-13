@@ -390,6 +390,20 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
         m_streamTickFrameIndex = kUnknownFrameIndex;
         m_streamGapEndFrameIndex = kUnknownFrameIndex;
     };
+    const auto abortSampleRead = [&]() {
+        // Seek anchors remain provisional until all sample buffers are read.
+        // Discard any prefix buffered before a failure together with its gap;
+        // retaining either would assign the next sample an incorrect position.
+        m_sampleBuffer.clear();
+        m_streamTickFrameIndex = kUnknownFrameIndex;
+        m_streamGapEndFrameIndex = kUnknownFrameIndex;
+        // Use the existing abort sentinel so the next read must reposition.
+        // The unknown sentinel suppresses seeking while prefetch is in progress.
+        m_currentFrameIndex = frameIndexMax();
+        if (isSeekPrefetch) {
+            numberOfFramesRemaining = numberOfFramesTotal;
+        }
+    };
     while (numberOfFramesRemaining > 0) {
         writePendingGap();
         if (numberOfFramesRemaining == 0) {
@@ -587,6 +601,11 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
 
         DWORD dwSampleBufferCount = 0;
         HRESULT hrGetBufferCount =
+#ifdef BUILD_TESTING
+                m_getBufferCountProvider
+                ? m_getBufferCountProvider(pSample, &dwSampleBufferCount)
+                :
+#endif
                 pSample->GetBufferCount(&dwSampleBufferCount);
         if (FAILED(hrGetBufferCount)) {
             kLogger.warning()
@@ -594,17 +613,25 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
                     << hrGetBufferCount
                     << "-> abort decoding";
             safeRelease(&pSample);
+            abortSampleRead();
             break; // abort
         }
 
         DWORD dwSampleTotalLengthInBytes = 0;
-        HRESULT hrGetTotalLength = pSample->GetTotalLength(&dwSampleTotalLengthInBytes);
+        HRESULT hrGetTotalLength =
+#ifdef BUILD_TESTING
+                m_getTotalLengthProvider
+                ? m_getTotalLengthProvider(pSample, &dwSampleTotalLengthInBytes)
+                :
+#endif
+                pSample->GetTotalLength(&dwSampleTotalLengthInBytes);
         if (FAILED(hrGetTotalLength)) {
             kLogger.warning()
                     << "IMFSample::GetTotalLength() failed"
                     << hrGetTotalLength
                     << "-> abort decoding";
             safeRelease(&pSample);
+            abortSampleRead();
             break; // abort
         }
         // Enlarge temporary buffer (if necessary)
@@ -628,7 +655,13 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
         DWORD dwSampleBufferIndex = 0;
         while (dwSampleBufferIndex < dwSampleBufferCount) {
             IMFMediaBuffer* pMediaBuffer = nullptr;
-            HRESULT hrGetBufferByIndex = pSample->GetBufferByIndex(dwSampleBufferIndex, &pMediaBuffer);
+            HRESULT hrGetBufferByIndex =
+#ifdef BUILD_TESTING
+                    m_getBufferByIndexProvider
+                    ? m_getBufferByIndexProvider(pSample, dwSampleBufferIndex, &pMediaBuffer)
+                    :
+#endif
+                    pSample->GetBufferByIndex(dwSampleBufferIndex, &pMediaBuffer);
             if (FAILED(hrGetBufferByIndex)) {
                 kLogger.warning()
                         << "IMFSample::GetBufferByIndex() failed"
@@ -640,10 +673,18 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
 
             CSAMPLE* pLockedSampleBuffer = nullptr;
             DWORD lockedSampleBufferLengthInBytes = 0;
-            HRESULT hrLock = pMediaBuffer->Lock(
-                    reinterpret_cast<quint8**>(&pLockedSampleBuffer),
-                    nullptr,
-                    &lockedSampleBufferLengthInBytes);
+            HRESULT hrLock =
+#ifdef BUILD_TESTING
+                    m_lockBufferProvider
+                    ? m_lockBufferProvider(pMediaBuffer,
+                              reinterpret_cast<quint8**>(&pLockedSampleBuffer),
+                              &lockedSampleBufferLengthInBytes)
+                    :
+#endif
+                    pMediaBuffer->Lock(
+                            reinterpret_cast<quint8**>(&pLockedSampleBuffer),
+                            nullptr,
+                            &lockedSampleBufferLengthInBytes);
             if (FAILED(hrLock)) {
                 kLogger.warning()
                         << "IMFMediaBuffer::Lock() failed"
@@ -699,6 +740,7 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
                     << "Failed to read all buffered samples"
                     << "-> abort and stop decoding";
             safeRelease(&m_pSourceReader);
+            abortSampleRead();
             break; // abort
         }
     }
