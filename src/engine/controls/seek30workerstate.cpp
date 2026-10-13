@@ -66,7 +66,7 @@ bool Seek30CommandMailbox::tryPop(Seek30Command* pCommand) {
 void Seek30WorkerState::trackLoaded(TrackPointer pNewTrack) {
     m_pLoadedTrack = std::move(pNewTrack);
     ++m_generation;
-    rebuildMemoryCueCache();
+    m_memoryCues.clear();
 }
 
 void Seek30WorkerState::rebuildMemoryCueCache() {
@@ -257,6 +257,10 @@ Seek30SeekTarget Seek30WorkerState::process(
     if (command.generation != m_generation || !m_pLoadedTrack) {
         return {{}, m_generation, 0};
     }
+
+    // Cues may be edited outside this worker after the track is loaded. Refresh
+    // on the worker thread before each command uses the memory-cue cache.
+    rebuildMemoryCueCache();
 
     switch (command.operation) {
     case Seek30Operation::SeekNext:

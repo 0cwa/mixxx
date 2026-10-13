@@ -43,6 +43,19 @@ int memoryCueCount(const TrackPointer& pTrack) {
     return count;
 }
 
+CuePointer memoryCueAt(
+        const TrackPointer& pTrack,
+        const mixxx::audio::FramePos& position) {
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const auto& pCue : cuePoints) {
+        if (pCue && pCue->getType() == mixxx::CueType::Memory &&
+                pCue->getStartAndEndPosition().startPosition == position) {
+            return pCue;
+        }
+    }
+    return {};
+}
+
 bool hasMemoryCueAt(const TrackPointer& pTrack, const mixxx::audio::FramePos& position) {
     const QList<CuePointer> cuePoints = pTrack->getCuePoints();
     for (const auto& pCue : cuePoints) {
@@ -162,6 +175,111 @@ TEST(Seek30WorkerStateTest, RepeatedCommandsAndQuantizedDuplicateCreation) {
     state.process({Seek30Operation::CreateAtCurrent, generation}, inputs);
     state.process({Seek30Operation::CreateAtCurrent, generation}, inputs);
     EXPECT_EQ(2, memoryCueCount(pTrack));
+}
+
+TEST(Seek30WorkerStateTest, RefreshesExternalMemoryCueAdditionWithoutTrackReload) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    const auto initialTarget = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    ASSERT_TRUE(initialTarget.position.isValid());
+    EXPECT_EQ(frameAtSeconds(1.0), initialTarget.position);
+
+    const auto addedPosition = frameAtSeconds(2.0);
+    pTrack->createAndAddCue(
+            mixxx::CueType::Memory,
+            Cue::kNoHotCue,
+            addedPosition,
+            addedPosition);
+
+    const auto target = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(1.5));
+    EXPECT_EQ(generation, state.generation());
+    EXPECT_EQ(addedPosition, target.position);
+}
+
+TEST(Seek30WorkerStateTest, RefreshesExternalMemoryCueRemovalWithoutTrackReload) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    const auto pRemovedCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+    ASSERT_TRUE(pRemovedCue);
+    pTrack->removeCue(pRemovedCue);
+
+    const auto target = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(generation, state.generation());
+    EXPECT_EQ(frameAtSeconds(3.0), target.position);
+}
+
+TEST(Seek30WorkerStateTest, RefreshesExternalMemoryCueMoveAndOrdering) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0, 5.0});
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    const auto pMovedCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+    ASSERT_TRUE(pMovedCue);
+    pMovedCue->setStartAndEndPosition(
+            frameAtSeconds(4.0), frameAtSeconds(4.0));
+
+    auto inputs = inputsAt(0.0);
+    const auto firstTarget = state.process(
+            {Seek30Operation::SeekNext, generation}, inputs);
+    EXPECT_EQ(frameAtSeconds(3.0), firstTarget.position);
+
+    inputs.currentPosition = frameAtSeconds(3.5);
+    const auto movedTarget = state.process(
+            {Seek30Operation::SeekNext, generation}, inputs);
+    EXPECT_EQ(generation, state.generation());
+    EXPECT_EQ(frameAtSeconds(4.0), movedTarget.position);
+}
+
+TEST(Seek30WorkerStateTest, RefreshesMemoryCueTypeChangeToLoopWithoutTrackReload) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    const auto pCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+    ASSERT_TRUE(pCue);
+    pCue->setEndPosition(frameAtSeconds(2.0));
+
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+
+    const auto initialTarget = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    ASSERT_EQ(frameAtSeconds(1.0), initialTarget.position);
+
+    pCue->setType(mixxx::CueType::Loop);
+    const auto withoutMemoryCue = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(generation, state.generation());
+    EXPECT_EQ(frameAtSeconds(3.0), withoutMemoryCue.position);
+}
+
+TEST(Seek30WorkerStateTest, RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload) {
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+    const auto pCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+    ASSERT_TRUE(pCue);
+    pCue->setEndPosition(frameAtSeconds(2.0));
+    pCue->setType(mixxx::CueType::Loop);
+
+    state.trackLoaded(pTrack);
+    const auto generation = state.generation();
+    const auto initialTarget = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    ASSERT_EQ(frameAtSeconds(3.0), initialTarget.position);
+
+    pCue->setType(mixxx::CueType::Memory);
+    const auto withMemoryCueAgain = state.process(
+            {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
+    EXPECT_EQ(generation, state.generation());
+    EXPECT_EQ(frameAtSeconds(1.0), withMemoryCueAgain.position);
 }
 
 TEST(Seek30WorkerStateTest, ClearNearestUsesOneSecondGateAndGeneration) {
