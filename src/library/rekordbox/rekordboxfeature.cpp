@@ -1231,8 +1231,8 @@ void readAnalyze(TrackPointer track,
                             memoryCue.startPosition = position;
                             memoryCue.endPosition = mixxx::audio::kInvalidFramePos;
                             memoryCue.comment = fromUtf16BeString(cueExtendedEntry->comment());
-                            memoryCue.color = colorFromID(static_cast<int>(
-                                    cueExtendedEntry->color_id()));
+                            memoryCue.color = mixxx::rekordbox::detail::colorFromID(
+                                    static_cast<int>(cueExtendedEntry->color_id()));
                             memoryCuesAndLoops << memoryCue;
                         } break;
                         case rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP: {
@@ -1250,8 +1250,8 @@ void readAnalyze(TrackPointer track,
                             loop.endPosition = mixxx::audio::FramePos(
                                     sampleRateKhz * static_cast<double>(endTime));
                             loop.comment = fromUtf16BeString(cueExtendedEntry->comment());
-                            loop.color = colorFromID(static_cast<int>(
-                                    cueExtendedEntry->color_id()));
+                            loop.color = mixxx::rekordbox::detail::colorFromID(
+                                    static_cast<int>(cueExtendedEntry->color_id()));
                             memoryCuesAndLoops << loop;
                         } break;
                         }
