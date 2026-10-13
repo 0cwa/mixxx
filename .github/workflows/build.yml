@@ -8,6 +8,9 @@ on:
       publish:
         type: boolean
         default: false
+      mediafoundation_diagnostic:
+        type: boolean
+        default: false
       branch:
         type: string
         required: true
@@ -53,183 +56,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Ubuntu 24.04
-            os: ubuntu-24.04
-            cmake_args: >-
-              -DQT6=ON
-              -DQML=ON
-              -DBULK=ON
-              -DBUNGEE=ON
-              -DFFMPEG=ON
-              -DLOCALECOMPARE=ON
-              -DMAD=ON
-              -DMODPLUG=ON
-              -DWAVPACK=ON
-              -DINSTALL_USER_UDEV_RULES=OFF
-            ctest_args: []
-            compiler_cache: ccache
-            compiler_cache_path: /home/runner/.cache/ccache
-            compiler_cache_id: qt6
-            cpack_generator: DEB
-            buildenv_basepath: /home/runner/buildenv
-            buildenv_script: tools/debian_buildenv.sh
-            artifacts_name: Ubuntu 24.04 Qt6 DEB
-            artifacts_path: build/*.deb
-            artifacts_slug: ubuntu-jammy
-          - name: macOS 15 x64
-            os: macos-15-intel
-            cmake_args: >-
-              -DBULK=ON
-              -DCOREAUDIO=ON
-              -DHSS1394=ON
-              -DMACOS_BUNDLE=ON
-              -DMODPLUG=ON
-              -DQT6=ON
-              -DQML=OFF
-              -DWAVPACK=ON
-              -DVCPKG_TARGET_TRIPLET=x64-osx-min1100-release
-            # TODO: Fix this broken test on macOS
-            ctest_args: []
-            cpack_generator: DragNDrop
-            compiler_cache: ccache
-            compiler_cache_path: /Users/runner/Library/Caches/ccache
-            compiler_cache_id: x64
-            buildenv_basepath: /Users/runner/buildenv
-            buildenv_script: tools/macos_release_buildenv.sh
-            artifacts_name: macOS Intel DMG
-            artifacts_path: build/*.dmg
-            artifacts_slug: macos-macosintel
-          - name: macOS 15 arm64
-            os: macos-15-intel
-            cmake_args: >-
-              -DBULK=ON
-              -DCOREAUDIO=ON
-              -DHSS1394=ON
-              -DMACOS_BUNDLE=ON
-              -DMODPLUG=ON
-              -DQT6=ON
-              -DQML=ON
-              -DWAVPACK=ON
-              -DVCPKG_TARGET_TRIPLET=arm64-osx-min1100-release
-            # TODO: Fix this broken test on macOS
-            crosscompile: true
-            cpack_generator: DragNDrop
-            compiler_cache: ccache
-            compiler_cache_path: /Users/runner/Library/Caches/ccache
-            compiler_cache_id: arm64
-            buildenv_basepath: /Users/runner/buildenv
-            buildenv_script: tools/macos_arm64-cross-release_buildenv.sh
-            artifacts_name: macOS ARM DMG
-            artifacts_path: build/*.dmg
-            artifacts_slug: macos-macosarm
-          - name: Windows Server 2025 VS2026 x64
-            os: windows-2025-vs2026
-            # Attention: If you change the cmake_args for the Windows CI build,
-            #            also adjust the for the local Windows build setup in
-            #            ./tools/windows_buildenv.bat
-            cmake_args: >-
-              -DBULK=ON
-              -DHSS1394=ON
-              -DLOCALECOMPARE=ON
-              -DMAD=ON
-              -DMEDIAFOUNDATION=ON
-              -DMODPLUG=ON
-              -DQT6=ON
-              -DQML=ON
-              -DWAVPACK=ON
-              -DVCPKG_TARGET_TRIPLET=x64-windows-release
-            cc: cl
-            cxx: cl
-            # TODO: Fix these broken tests on Windows
-            ctest_args: []
-            cpack_generator: WIX
-            buildenv_basepath: C:\buildenv
-            buildenv_script: tools/windows_buildenv.bat
-            artifacts_name: Windows x64 Installer
-            artifacts_path: build/*.msi
-            artifacts_slug: windows-win64
-            arch: x64
-          - name: Windows 11 VS2026 ARM64
-            os: windows-11-vs2026-arm
-            # Attention: If you change the cmake_args for the Windows CI build,
-            #            also adjust the for the local Windows build setup in
-            #            ./tools/windows_buildenv.bat
-            cmake_args: >-
-              -DBULK=ON
-              -DHSS1394=ON
-              -DLOCALECOMPARE=ON
-              -DMAD=ON
-              -DMEDIAFOUNDATION=ON
-              -DMODPLUG=ON
-              -DQT6=ON
-              -DQML=ON
-              -DWAVPACK=ON
-              -DVCPKG_TARGET_TRIPLET=arm64-windows-release
-              -DVCPKG_DEFAULT_HOST_TRIPLET=arm64-windows-release
-            cc: cl
-            cxx: cl
-            # TODO: Fix these broken tests on Windows
-            ctest_args: --exclude-regex '^AutoDJProcessorTest.*$'
-            cpack_generator: WIX
-            buildenv_basepath: C:\buildenv
-            buildenv_script: tools/windows_buildenv.bat
-            artifacts_name: Windows ARM64 Installer
-            artifacts_path: build/*.msi
-            artifacts_slug: windows-winarm
-            arch: arm64
-          - name: Android 15 arm64
-            os: ubuntu-24.04
-            # DBUILD_TESTING=OFF: error: OpenMP support and version of OpenMP (31, 40 or 45) differs
-            cmake_args: >-
-              -DBULK=ON
-              -DQT6=ON
-              -DQML=ON
-              -DHID=ON
-              -DVCPKG_TARGET_TRIPLET=arm64-android
-              -DVCPKG_DEFAULT_HOST_TRIPLET=x64-linux-release
-              -DCMAKE_SYSTEM_NAME=Android
-              -DBUILD_TESTING=OFF
-              -DBUILD_BENCH=OFF
-            buildenv_basepath: /home/runner/buildenv
-            buildenv_script: tools/android_buildenv.sh
-            artifacts_name: Android 15 APK
-            artifacts_path: build/android-build/build/outputs/apk/release/*.apk
-            artifacts_slug: android-15
-            compiler_cache: ccache
-            compiler_cache_path: /home/runner/.cache/ccache
-            crosscompile: true
-            arch: arm64
-          # Ubuntu 22.04 (glibc 2.35) is the lowest viable glibc baseline: the
-          # AppImage must run on as many distributions as possible. Qt 6.11
-          # requires glibc >= 2.34, and the buildenv itself is built on 22.04.
-          # CMake >= 4.2 is provided by the "[AppImage] Set up cmake" step below.
-          - name: AppImage Linux x86_64
-            os: ubuntu-22.04
-            cmake_args: >-
-              -DQT6=ON
-              -DQML=ON
-              -DMIXXX_APPIMAGE=ON
-              -DINSTALL_USER_UDEV_RULES=OFF
-              -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -DNDEBUG"
-              -DCMAKE_INSTALL_PREFIX=/usr
-              -DCMAKE_INSTALL_LIBDIR=lib
-              -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined"
-            ctest_args: []
-            cpack_generator: AppImage
-            # Not a cross-compile: this is a native x86_64 build, so the
-            # shared Test step must run.  The PPA steps are excluded for the
-            # AppImage separately below.
-            crosscompile: false
-            compiler_cache: ccache
-            compiler_cache_path: /home/runner/.cache/ccache
-            compiler_cache_id: appimage-qt6
-            buildenv_basepath: /home/runner/buildenv
-            buildenv_script: tools/appimage_release_buildenv.sh
-            artifacts_name: AppImage Linux x86_64
-            artifacts_path: build/*.AppImage
-            artifacts_slug: linux-appimage
-            arch: x86_64
+        include: >-
+          ${{ fromJSON(
+            inputs.mediafoundation_diagnostic == true &&
+            '[{"name":"Windows Server 2025 VS2026 x64","os":"windows-2025-vs2026","cmake_args":"-DBULK=ON -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DQML=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=x64-windows-release","cc":"cl","cxx":"cl","ctest_args":[],"cpack_generator":"WIX","buildenv_basepath":"C:\\buildenv","buildenv_script":"tools/windows_buildenv.bat","artifacts_name":"Windows x64 Installer","artifacts_path":"build/*.msi","artifacts_slug":"windows-win64","arch":"x64"}]' ||
+            '[{"name":"Ubuntu 24.04","os":"ubuntu-24.04","cmake_args":"-DQT6=ON -DQML=ON -DBULK=ON -DBUNGEE=ON -DFFMPEG=ON -DLOCALECOMPARE=ON -DMAD=ON -DMODPLUG=ON -DWAVPACK=ON -DINSTALL_USER_UDEV_RULES=OFF","ctest_args":[],"compiler_cache":"ccache","compiler_cache_path":"/home/runner/.cache/ccache","compiler_cache_id":"qt6","cpack_generator":"DEB","buildenv_basepath":"/home/runner/buildenv","buildenv_script":"tools/debian_buildenv.sh","artifacts_name":"Ubuntu 24.04 Qt6 DEB","artifacts_path":"build/*.deb","artifacts_slug":"ubuntu-jammy"},{"name":"macOS 15 x64","os":"macos-15-intel","cmake_args":"-DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON -DQT6=ON -DQML=OFF -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=x64-osx-min1100-release","ctest_args":[],"cpack_generator":"DragNDrop","compiler_cache":"ccache","compiler_cache_path":"/Users/runner/Library/Caches/ccache","compiler_cache_id":"x64","buildenv_basepath":"/Users/runner/buildenv","buildenv_script":"tools/macos_release_buildenv.sh","artifacts_name":"macOS Intel DMG","artifacts_path":"build/*.dmg","artifacts_slug":"macos-macosintel"},{"name":"macOS 15 arm64","os":"macos-15-intel","cmake_args":"-DBULK=ON -DCOREAUDIO=ON -DHSS1394=ON -DMACOS_BUNDLE=ON -DMODPLUG=ON -DQT6=ON -DQML=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=arm64-osx-min1100-release","crosscompile":true,"cpack_generator":"DragNDrop","compiler_cache":"ccache","compiler_cache_path":"/Users/runner/Library/Caches/ccache","compiler_cache_id":"arm64","buildenv_basepath":"/Users/runner/buildenv","buildenv_script":"tools/macos_arm64-cross-release_buildenv.sh","artifacts_name":"macOS ARM DMG","artifacts_path":"build/*.dmg","artifacts_slug":"macos-macosarm"},{"name":"Windows Server 2025 VS2026 x64","os":"windows-2025-vs2026","cmake_args":"-DBULK=ON -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DQML=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=x64-windows-release","cc":"cl","cxx":"cl","ctest_args":[],"cpack_generator":"WIX","buildenv_basepath":"C:\\buildenv","buildenv_script":"tools/windows_buildenv.bat","artifacts_name":"Windows x64 Installer","artifacts_path":"build/*.msi","artifacts_slug":"windows-win64","arch":"x64"},{"name":"Windows 11 VS2026 ARM64","os":"windows-11-vs2026-arm","cmake_args":"-DBULK=ON -DHSS1394=ON -DLOCALECOMPARE=ON -DMAD=ON -DMEDIAFOUNDATION=ON -DMODPLUG=ON -DQT6=ON -DQML=ON -DWAVPACK=ON -DVCPKG_TARGET_TRIPLET=arm64-windows-release -DVCPKG_DEFAULT_HOST_TRIPLET=arm64-windows-release","cc":"cl","cxx":"cl","ctest_args":"--exclude-regex ''^AutoDJProcessorTest.*$''","cpack_generator":"WIX","buildenv_basepath":"C:\\buildenv","buildenv_script":"tools/windows_buildenv.bat","artifacts_name":"Windows ARM64 Installer","artifacts_path":"build/*.msi","artifacts_slug":"windows-winarm","arch":"arm64"},{"name":"Android 15 arm64","os":"ubuntu-24.04","cmake_args":"-DBULK=ON -DQT6=ON -DQML=ON -DHID=ON -DVCPKG_TARGET_TRIPLET=arm64-android -DVCPKG_DEFAULT_HOST_TRIPLET=x64-linux-release -DCMAKE_SYSTEM_NAME=Android -DBUILD_TESTING=OFF -DBUILD_BENCH=OFF","buildenv_basepath":"/home/runner/buildenv","buildenv_script":"tools/android_buildenv.sh","artifacts_name":"Android 15 APK","artifacts_path":"build/android-build/build/outputs/apk/release/*.apk","artifacts_slug":"android-15","compiler_cache":"ccache","compiler_cache_path":"/home/runner/.cache/ccache","crosscompile":true,"arch":"arm64"},{"name":"AppImage Linux x86_64","os":"ubuntu-22.04","cmake_args":"-DQT6=ON -DQML=ON -DMIXXX_APPIMAGE=ON -DINSTALL_USER_UDEV_RULES=OFF -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=\"-O2 -DNDEBUG\" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_EXE_LINKER_FLAGS=\"-Wl,--allow-shlib-undefined\"","ctest_args":[],"cpack_generator":"AppImage","crosscompile":false,"compiler_cache":"ccache","compiler_cache_path":"/home/runner/.cache/ccache","compiler_cache_id":"appimage-qt6","buildenv_basepath":"/home/runner/buildenv","buildenv_script":"tools/appimage_release_buildenv.sh","artifacts_name":"AppImage Linux x86_64","artifacts_path":"build/*.AppImage","artifacts_slug":"linux-appimage","arch":"x86_64"}]'
+          ) }}
 
     env:
       # macOS codesigning
@@ -239,6 +71,7 @@ jobs:
       ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
       ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
 
+    timeout-minutes: ${{ inputs.mediafoundation_diagnostic == true && 90 || 360 }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     container: ${{ matrix.container }}
@@ -434,9 +267,16 @@ jobs:
       - name: "Create build directory"
         run: mkdir build
 
+      - name: "Record Media Foundation sources before configure"
+        id: mf_checkout_provenance
+        if: inputs.mediafoundation_diagnostic == true
+        run: python tools/ci/mediafoundation_diagnostic.py before-configure
+
       - name: "Configure"
+        id: configure
         run: >-
           cmake ${{ matrix.cmake_args }} ${{ env.CMAKE_ARGS_EXTRA }}
+          ${{ inputs.mediafoundation_diagnostic == true && '-DBUILD_TESTING=ON -DMEDIAFOUNDATION=ON' || '' }}
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
           -DWARNINGS_FATAL=ON
@@ -458,6 +298,10 @@ jobs:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
 
+      - name: "Record Media Foundation sources after configure"
+        if: always() && inputs.mediafoundation_diagnostic == true && steps.mf_checkout_provenance.outcome == 'success' && steps.configure.outcome != 'skipped'
+        run: python tools/ci/mediafoundation_diagnostic.py after-configure
+
       - name: "[Ubuntu/macOS] Set up gcc/clang problem matcher"
         if: runner.os != 'Windows'
         uses: ammaraskar/gcc-problem-matcher@0.3.0
@@ -467,12 +311,25 @@ jobs:
         uses: ammaraskar/msvc-problem-matcher@0.3.0
 
       - name: "Build"
+        if: inputs.mediafoundation_diagnostic != true
         # Ninja (macOS/Windows) uses all cores by default, make (Linux) only one
         run: cmake --build . --config RelWithDebInfo ${{ runner.os == 'Linux' && '--parallel "$(nproc)"' || '' }}
         working-directory: build
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
+
+      - name: "Build Media Foundation test target"
+        if: inputs.mediafoundation_diagnostic == true
+        run: cmake --build . --config RelWithDebInfo --target mixxx-test
+        working-directory: build
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+
+      - name: "Record Media Foundation test build provenance"
+        if: inputs.mediafoundation_diagnostic == true
+        run: python tools/ci/mediafoundation_diagnostic.py after-build
 
       - name: "[Ubuntu/macOS] Print compiler cache stats"
         if: runner.os != 'windows'
@@ -511,7 +368,7 @@ jobs:
           KEY_PREFIX: ${{ matrix.os }}-${{ matrix.compiler_cache_id }}-${{ inputs.branch }}-
 
       - name: "Test"
-        if: matrix.crosscompile != true
+        if: matrix.crosscompile != true && inputs.mediafoundation_diagnostic != true
         run: ctest --timeout 45 ${{ matrix.ctest_args }}
         working-directory: build
         env:
@@ -520,10 +377,281 @@ jobs:
           CTEST_PARALLEL_LEVEL: ${{ runner.os == 'Windows' && 1 || 3 }}
           CTEST_OUTPUT_ON_FAILURE: 1
 
+      - name: "Verify Media Foundation test configuration"
+        id: mf_config
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          $options = @(cmake -LA -N .)
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $requiredOptions = @('BUILD_TESTING:BOOL=ON', 'MEDIAFOUNDATION:BOOL=ON')
+          foreach ($option in $requiredOptions) {
+            if ($options -notcontains $option) {
+              throw "Expected CMake option was not enabled: $option"
+            }
+          }
+          $requiredOptions | Set-Content -Path mf-seek-gap-cmake-options.txt
+        working-directory: build
+
+      - name: "Prepare Media Foundation Qt runtime"
+        id: mf_qt_runtime
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $runtimeDir = Join-Path $buildDir 'mf-qt-runtime'
+          $runtimeReportPath = Join-Path $buildDir 'mf-seek-gap-qt-runtime.json'
+          $installLogPath = Join-Path $buildDir 'mf-seek-gap-qt-install.log'
+          $runtimeReport = [ordered]@{
+            status = 'starting'
+            qt6_dir = $null
+            qt_prefix = $null
+            offscreen_plugin_source = $null
+            offscreen_plugin_source_exists = $false
+            offscreen_plugin_deployed = $false
+            runtime_bin = $null
+            runtime_dlls = @()
+            qt_qpa_platform = 'offscreen'
+            qt_plugin_path = $runtimeDir
+            qt_qpa_platform_plugin_path = Join-Path $runtimeDir 'platforms'
+            install_component = 'applocal'
+          }
+
+          $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+          $qtDirLine = Select-String -Path (Join-Path $buildDir 'CMakeCache.txt') -Pattern '^Qt6_DIR:PATH=(.*)$' | Select-Object -First 1
+          if ($null -eq $qtDirLine) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'Qt6_DIR was not found in CMakeCache.txt.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          $qtDir = $qtDirLine.Matches[0].Groups[1].Value
+          $qtPrefix = [System.IO.Path]::GetFullPath((Join-Path $qtDir '..\..'))
+          $qtRoot = Join-Path $qtPrefix 'Qt6'
+          $qtPluginDir = Join-Path $qtRoot 'plugins'
+          $platformSource = Join-Path $qtPluginDir 'platforms\qoffscreen.dll'
+          $platformSource = [System.IO.Path]::GetFullPath($platformSource)
+          $qtBin = Join-Path $qtPrefix 'bin'
+          $platformDir = Join-Path $runtimeDir 'platforms'
+          $platformInstall = Join-Path $platformDir 'qoffscreen.dll'
+
+          $runtimeReport.qt6_dir = $qtDir
+          $runtimeReport.qt_prefix = $qtPrefix
+          $runtimeReport.offscreen_plugin_source = $platformSource
+          $runtimeReport.offscreen_plugin_source_exists = Test-Path $platformSource
+          $runtimeReport.runtime_bin = $qtBin
+          $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+
+          if (-not (Test-Path $platformSource)) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'The Qt offscreen platform plugin qoffscreen.dll is missing from the configured Qt installation.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+          if (-not (Test-Path $qtBin -PathType Container)) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'The configured Qt runtime bin directory is missing.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          cmake --install . --config RelWithDebInfo --component applocal --prefix $runtimeDir --verbose 2>&1 | Tee-Object -FilePath $installLogPath
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -ne 0) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = "CMake applocal runtime installation failed with exit code $installExitCode."
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+          if (-not (Test-Path $platformInstall)) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'The CMake applocal component did not deploy qoffscreen.dll to the test runtime.'
+            $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          $runtimeDllNames = @('Qt6Core.dll', 'Qt6Gui.dll')
+          $runtimeDllReport = foreach ($dllName in $runtimeDllNames) {
+            $locations = @(
+              (Join-Path $buildDir $dllName),
+              (Join-Path $runtimeDir $dllName),
+              (Join-Path $qtBin $dllName)
+            ) | Where-Object { Test-Path $_ }
+            [pscustomobject]@{
+              name = $dllName
+              found_at = @($locations)
+            }
+          }
+          $runtimeReport.runtime_dlls = @($runtimeDllReport)
+          $missingQtDlls = @($runtimeReport.runtime_dlls | Where-Object { $_.found_at.Count -eq 0 })
+          if ($missingQtDlls.Count -gt 0) {
+            $runtimeReport.status = 'failed'
+            $runtimeReport.failure = 'A Qt DLL required by the offscreen plugin was not found in the build, staged runtime, or Qt bin directory.'
+            $runtimeReport | ConvertTo-Json -Depth 5 | Set-Content -Path $runtimeReportPath
+            throw $runtimeReport.failure
+          }
+
+          $runtimeReport.offscreen_plugin_deployed = Test-Path $platformInstall
+          $runtimeReport.qt_qpa_platform_plugin_path = $platformDir
+          $runtimeReport.runtime_path_entries = @($runtimeDir, $qtBin)
+          $runtimeReport.status = 'ready'
+          $runtimeReport | ConvertTo-Json -Depth 5 | Set-Content -Path $runtimeReportPath
+          @($runtimeDir, $qtBin) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Qt offscreen plugin source: $platformSource"
+          Write-Host "Qt offscreen plugin deployed: $platformInstall"
+          Write-Host "Qt runtime DLL directory: $qtBin"
+        working-directory: build
+
+      - name: "Preflight Media Foundation test discovery"
+        id: mf_discovery
+        timeout-minutes: 3
+        if: inputs.mediafoundation_diagnostic == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $testExecutable = Join-Path $buildDir 'mixxx-test.exe'
+          $stdoutPath = Join-Path $buildDir 'mf-seek-gap-gtest-list.stdout.log'
+          $stderrPath = Join-Path $buildDir 'mf-seek-gap-gtest-list.stderr.log'
+          $statusPath = Join-Path $buildDir 'mf-seek-gap-gtest-list.status.txt'
+          $process = $null
+          $exitCode = $null
+          $mediaFoundationCases = 0
+          $matchingMediaFoundationNames = @()
+          $status = 'starting'
+          $failureMessage = $null
+          $selector = '^(SoundSourceMediaFoundationTest|ExtractionFailures/SoundSourceMediaFoundation(SampleFailure|BufferedFailure)Test)[.]'
+
+          try {
+            Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+            $process = Start-Process `
+              -FilePath $testExecutable `
+              -ArgumentList @('--gtest_list_tests', '--logLevel', 'info') `
+              -WorkingDirectory $env:GITHUB_WORKSPACE `
+              -PassThru `
+              -NoNewWindow `
+              -RedirectStandardOutput $stdoutPath `
+              -RedirectStandardError $stderrPath
+            if (-not $process.WaitForExit(60000)) {
+              $status = 'timeout'
+              try {
+                $process.Kill()
+                if (-not $process.WaitForExit(5000)) {
+                  Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                }
+              } catch {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                Write-Warning "Could not stop timed out list-only preflight: $_"
+              }
+              throw 'The list-only GoogleTest discovery preflight timed out after 60 seconds.'
+            }
+            $process.Refresh()
+            $exitCode = $process.ExitCode
+            $stdout = Get-Content -Raw -Path $stdoutPath
+            if ($exitCode -ne 0) {
+              $status = 'failed'
+              throw "mixxx-test.exe --gtest_list_tests exited with code $exitCode."
+            }
+
+            python "$env:GITHUB_WORKSPACE/tools/ci/mediafoundation_diagnostic.py" discovery
+            if ($LASTEXITCODE -ne 0) {
+              throw 'GoogleTest discovery did not contain exactly the 34 enabled, unique reviewed MF cases.'
+            }
+            $matchingMediaFoundationNames = @(Get-Content -Raw (Join-Path $buildDir 'mf-seek-gap-discovered-tests.json') | ConvertFrom-Json)
+            $mediaFoundationCases = $matchingMediaFoundationNames.Count
+            $status = 'passed'
+          } catch {
+            if ($status -eq 'starting') {
+              $status = 'failed'
+            }
+            $errorMessage = $_.Exception.Message
+            $failureMessage = $errorMessage
+            @(
+              "command=$testExecutable --gtest_list_tests --logLevel info"
+              "status=$status"
+              "exit_code=$exitCode"
+              "timeout_seconds=60"
+              "selector=$selector"
+              "mediafoundation_cases_listed=$mediaFoundationCases"
+              "matching_mediafoundation_test_names=$($matchingMediaFoundationNames -join '|')"
+              "failure=$failureMessage"
+              "qt_qpa_platform=$env:QT_QPA_PLATFORM"
+              "qt_plugin_path=$env:QT_PLUGIN_PATH"
+              "qt_qpa_platform_plugin_path=$env:QT_QPA_PLATFORM_PLUGIN_PATH"
+            ) | Set-Content -Path $statusPath
+            throw $errorMessage
+          }
+
+          @(
+            "command=$testExecutable --gtest_list_tests --logLevel info"
+            "status=$status"
+            "exit_code=$exitCode"
+            "timeout_seconds=60"
+            "selector=$selector"
+            "mediafoundation_cases_listed=$mediaFoundationCases"
+            "matching_mediafoundation_test_names=$($matchingMediaFoundationNames -join '|')"
+            "qt_qpa_platform=$env:QT_QPA_PLATFORM"
+            "qt_plugin_path=$env:QT_PLUGIN_PATH"
+            "qt_qpa_platform_plugin_path=$env:QT_QPA_PLATFORM_PLUGIN_PATH"
+          ) | Set-Content -Path $statusPath
+          Write-Host "List-only discovery preflight found all $mediaFoundationCases reviewed MF cases."
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime
+          QT_QPA_PLATFORM_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime\platforms
+          QT_DEBUG_PLUGINS: 1
+
+      - name: "Run Media Foundation tests"
+        id: mf_test
+        timeout-minutes: 30
+        if: inputs.mediafoundation_diagnostic == true && steps.mf_discovery.outcome == 'success'
+        shell: pwsh
+        run: |
+          python "$env:GITHUB_WORKSPACE/tools/ci/mediafoundation_diagnostic.py" ctest
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+        working-directory: build
+        env:
+          GTEST_COLOR: 1
+          CTEST_PARALLEL_LEVEL: 1
+          CTEST_OUTPUT_ON_FAILURE: 1
+          QT_QPA_PLATFORM: offscreen
+          QT_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime
+          QT_QPA_PLATFORM_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime\platforms
+          QT_DEBUG_PLUGINS: 1
+
+      - name: "Upload Media Foundation test evidence"
+        if: always() && inputs.mediafoundation_diagnostic == true
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: windows-x64-mf-seek-gap-${{ github.run_id }}
+          path: |
+            build/mf-seek-gap-cmake-options.txt
+            build/mf-seek-gap-qt-runtime.json
+            build/mf-seek-gap-qt-install.log
+            build/mf-seek-gap-gtest-list.stdout.log
+            build/mf-seek-gap-gtest-list.stderr.log
+            build/mf-seek-gap-gtest-list.status.txt
+            build/mf-seek-gap-provenance-*
+            build/mf-seek-gap-expected-tests.json
+            build/mf-seek-gap-discovered-tests.json
+            build/mf-seek-gap-ctest-selection.json
+            build/mf-seek-gap-ctest-list.*
+            build/mf-seek-gap-ctest-run.*
+            build/mf-seek-gap-tests.xml
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: "[Windows] Sign executables"
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID
+        if: runner.os == 'Windows' && env.AZURE_TENANT_ID && inputs.mediafoundation_diagnostic != true
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -547,7 +675,7 @@ jobs:
       - name: "[Windows] Sign WiX custom action DLL"
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID
+        if: runner.os == 'Windows' && env.AZURE_TENANT_ID && inputs.mediafoundation_diagnostic != true
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -565,7 +693,7 @@ jobs:
           cache-dependencies: false
 
       - name: "[Windows] Install WiX Toolset"
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.mediafoundation_diagnostic != true
         shell: pwsh
         run: |
           dotnet.exe tool install --global wix --version 6.0.2
@@ -573,7 +701,7 @@ jobs:
 
       - name: "Package"
         id: package
-        if: matrix.cpack_generator != null
+        if: matrix.cpack_generator != null && inputs.mediafoundation_diagnostic != true
         # Use retry loop to work around a race condition on macOS causing
         # 'Resource busy' errors with 'hdiutil'. See
         # https://github.com/actions/runner-images/issues/7522
@@ -628,7 +756,7 @@ jobs:
           echo "SMOKE OK"
 
       - name: Upload failed packaging logs
-        if: always() && steps.package.outcome == 'failure' && runner.os == 'windows'
+        if: always() && steps.package.outcome == 'failure' && runner.os == 'windows' && inputs.mediafoundation_diagnostic != true
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.os }}-logs-packages-wix
@@ -691,7 +819,7 @@ jobs:
       - name: "[Windows] Sign installer"
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID
+        if: runner.os == 'Windows' && env.AZURE_TENANT_ID && inputs.mediafoundation_diagnostic != true
         uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -745,7 +873,7 @@ jobs:
       - name: "[Windows] Install rsync and openssh"
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DOWNLOADS_HOSTGATOR_DOT_MIXXX_DOT_ORG_KEY }}
-        if: runner.os == 'Windows' && inputs.publish && env.SSH_PRIVATE_KEY != null
+        if: runner.os == 'Windows' && inputs.publish && env.SSH_PRIVATE_KEY != null && inputs.mediafoundation_diagnostic != true
         run: |
           if (Test-Path "C:\msys64\usr\bin") {
             $msysPath="C:\msys64"
@@ -780,7 +908,7 @@ jobs:
           Add-Content -Path "$Env:GITHUB_ENV" -Value "PATH=$Env:PATH"
 
       - name: "Set up SSH Agent"
-        if: inputs.publish && env.SSH_PRIVATE_KEY != null
+        if: inputs.publish && env.SSH_PRIVATE_KEY != null && inputs.mediafoundation_diagnostic != true
         shell: bash
         env:
           SSH_AUTH_SOCK: /tmp/ssh_agent.sock
@@ -814,13 +942,14 @@ jobs:
       - name: "Upload GitHub Actions artifacts"
         # The AppImage is uploaded by the dedicated "[AppImage] Upload AppImage"
         # step with a stable name used by the publish workflow.
-        if: matrix.artifacts_path != null && matrix.cpack_generator != 'AppImage'
+        if: matrix.artifacts_path != null && matrix.cpack_generator != 'AppImage' && inputs.mediafoundation_diagnostic != true
         uses: actions/upload-artifact@v7.0.1
         with:
           archive: "false"
           path: ${{ matrix.artifacts_path }}
 
   build-flatpak:
+    if: inputs.mediafoundation_diagnostic != true
     name: "Flatpak"
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.10
