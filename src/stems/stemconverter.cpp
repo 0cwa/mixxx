@@ -350,10 +350,11 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
     setProgress(0.0f);
 
 #ifdef __STEM_CONVERSION__
+    const ExecutablePaths executablePaths{findFFmpeg(), findMP4Box()};
     // Check packaging prerequisites before loading the model or separating audio.
     // The resolvers retain their existing platform-specific ownership policies.
-    const QFileInfo ffmpegInfo(findFFmpeg());
-    const QFileInfo mp4boxInfo(findMP4Box());
+    const QFileInfo ffmpegInfo(executablePaths.ffmpegPath);
+    const QFileInfo mp4boxInfo(executablePaths.mp4boxPath);
     QString prerequisiteError;
     if (!ffmpegInfo.isFile() || !ffmpegInfo.isExecutable()) {
         prerequisiteError = QStringLiteral("FFmpeg executable unavailable");
@@ -394,7 +395,7 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
 
 #ifdef __STEM_CONVERSION__
     QString stemsDir = getStemsDirectory(trackFilePath);
-    if (!runOnnxSeparation(trackFilePath, stemsDir)) {
+    if (!runOnnxSeparation(trackFilePath, stemsDir, executablePaths)) {
         const QString errorMsg = QStringLiteral("ONNX separation failed");
         kLogger.warning() << errorMsg;
         emit conversionFailed(trackId, errorMsg);
@@ -413,7 +414,7 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
     setProgress(0.5f);
     emit conversionProgress(trackId, 0.5f, QStringLiteral("Converting stems to M4A..."));
 
-    if (!convertStemsToM4A(stemsDir)) {
+    if (!convertStemsToM4A(stemsDir, executablePaths.ffmpegPath)) {
         const QString errorMsg = QStringLiteral("Stem conversion to M4A failed");
         kLogger.warning() << errorMsg;
         emit conversionFailed(trackId, errorMsg);
@@ -424,7 +425,7 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
     setProgress(0.7f);
     emit conversionProgress(trackId, 0.7f, QStringLiteral("Creating STEM container..."));
 
-    if (!createStemContainer(trackFilePath, stemsDir)) {
+    if (!createStemContainer(trackFilePath, stemsDir, executablePaths)) {
         const QString errorMsg = QStringLiteral("STEM container creation failed");
         kLogger.warning() << errorMsg;
         emit conversionFailed(trackId, errorMsg);
@@ -729,6 +730,7 @@ bool StemConverter::runInference(const std::vector<float>& inputAudio,
 }
 
 bool StemConverter::decodeAudioFile(const QString& inputPath,
+        const QString& ffmpegPath,
         int targetSampleRate,
         std::vector<float>& audioData,
         int& sampleRate,
@@ -766,7 +768,6 @@ bool StemConverter::decodeAudioFile(const QString& inputPath,
         }
 
         const QString convertedInputPath = convertedInputDir.filePath("stem-input.wav");
-        const QString ffmpegPath = findFFmpeg();
         if (ffmpegPath.isEmpty()) {
             kLogger.warning() << "ffmpeg executable not found for audio conversion";
             return false;
@@ -789,10 +790,14 @@ bool StemConverter::decodeAudioFile(const QString& inputPath,
                 QStringLiteral("pcm_f32le"),
                 QStringLiteral("-y"),
                 convertedInputPath};
-        ffmpegProcess.start(ffmpegPath, arguments);
-        if (!waitForProcess(&ffmpegProcess, QStringLiteral("ffmpeg audio conversion")) ||
+
+        if (!startAndWaitProcess(&ffmpegProcess,
+                    ffmpegPath,
+                    arguments,
+                    QStringLiteral("ffmpeg audio conversion")) ||
                 ffmpegProcess.exitStatus() != QProcess::NormalExit ||
-                ffmpegProcess.exitCode() != 0 || !QFile::exists(convertedInputPath)) {
+                ffmpegProcess.exitCode() != 0 ||
+                !QFile::exists(convertedInputPath)) {
             kLogger.warning() << "ffmpeg could not convert audio to the model format"
                               << ffmpegProcess.readAllStandardError();
             return false;
@@ -908,7 +913,9 @@ bool StemConverter::saveStemToWav(const std::vector<float>& audioData,
     return true;
 }
 
-bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QString& outputDir) {
+bool StemConverter::runOnnxSeparation(const QString& trackFilePath,
+        const QString& outputDir,
+        const ExecutablePaths& executablePaths) {
     kLogger.info() << "Starting ONNX separation for:" << trackFilePath;
 
     if (!loadOnnxModel()) {
@@ -923,6 +930,7 @@ bool StemConverter::runOnnxSeparation(const QString& trackFilePath, const QStrin
 
     if (!decodeAudioFile(
                 trackFilePath,
+                executablePaths.ffmpegPath,
                 modelConfig.sampleRate,
                 audioData,
                 sampleRate,
@@ -1054,7 +1062,7 @@ QString StemConverter::getStemOutputPath(const QString& stemsDir) {
             stemsDirInfo.fileName() + QStringLiteral(".stem.m4a"));
 }
 
-bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
+bool StemConverter::convertStemsToM4A(const QString& stemsDir, const QString& ffmpegPath) {
     kLogger.info() << "Converting stems to M4A:" << stemsDir;
 
     QDir dir(stemsDir);
@@ -1065,7 +1073,6 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
 
     QStringList stemNames = {"drums", "bass", "other", "vocals"};
 
-    const QString ffmpegPath = findFFmpeg();
     if (ffmpegPath.isEmpty()) {
         kLogger.warning() << "ffmpeg executable not found";
         return false;
@@ -1086,8 +1093,10 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
              << "-c:a" << "alac"
              << "-y" << m4aPath;
 
-        ffmpegProcess.start(ffmpegPath, args);
-        if (!waitForProcess(&ffmpegProcess, QStringLiteral("ffmpeg stem conversion"))) {
+        if (!startAndWaitProcess(&ffmpegProcess,
+                    ffmpegPath,
+                    args,
+                    QStringLiteral("ffmpeg stem conversion"))) {
             return false;
         }
 
@@ -1103,9 +1112,14 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
 }
 
 bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& outputPath) {
+    return convertTrackToM4A(inputPath, outputPath, findFFmpeg());
+}
+
+bool StemConverter::convertTrackToM4A(const QString& inputPath,
+        const QString& outputPath,
+        const QString& ffmpegPath) {
     kLogger.info() << "Converting to M4A:" << inputPath;
 
-    const QString ffmpegPath = findFFmpeg();
     if (ffmpegPath.isEmpty()) {
         kLogger.warning() << "ffmpeg executable not found";
         return false;
@@ -1120,9 +1134,10 @@ bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& o
     arguments << "-c:a" << "alac";
     arguments << "-y" << outputPath;
 
-    process.start(ffmpegPath, arguments);
-
-    if (!waitForProcess(&process, QStringLiteral("ffmpeg track conversion"))) {
+    if (!startAndWaitProcess(&process,
+                ffmpegPath,
+                arguments,
+                QStringLiteral("ffmpeg track conversion"))) {
         return false;
     }
 
@@ -1136,26 +1151,22 @@ bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& o
     return true;
 }
 
-bool StemConverter::createStemContainer(const QString& trackFilePath, const QString& stemsDir) {
+bool StemConverter::createStemContainer(const QString& trackFilePath,
+        const QString& stemsDir,
+        const ExecutablePaths& executablePaths) {
     kLogger.info() << "Creating STEM container";
 
     const QString outputPath = getStemOutputPath(stemsDir);
 
     // Create mixdown M4A from original track
     QString mixdownM4A = stemsDir + "/mixdown.m4a";
-    if (!convertTrackToM4A(trackFilePath, mixdownM4A)) {
+    if (!convertTrackToM4A(trackFilePath, mixdownM4A, executablePaths.ffmpegPath)) {
         kLogger.warning() << "Failed to create mixdown M4A";
         return false;
     }
 
     // Create multi-track M4A with ffmpeg
     // Combine: mixdown.m4a + drums.m4a + bass.m4a + other.m4a + vocals.m4a
-    const QString ffmpegPath = findFFmpeg();
-    if (ffmpegPath.isEmpty()) {
-        kLogger.warning() << "ffmpeg executable not found";
-        return false;
-    }
-
     QProcess ffmpegProcess;
     QStringList ffmpegArgs;
 
@@ -1191,9 +1202,10 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
     kLogger.info() << "Running ffmpeg to create multi-track M4A...";
     kLogger.info() << "Command: ffmpeg" << ffmpegArgs.join(" ");
 
-    ffmpegProcess.start(ffmpegPath, ffmpegArgs);
-
-    if (!waitForProcess(&ffmpegProcess, QStringLiteral("ffmpeg STEM container creation"))) {
+    if (!startAndWaitProcess(&ffmpegProcess,
+                executablePaths.ffmpegPath,
+                ffmpegArgs,
+                QStringLiteral("ffmpeg STEM container creation"))) {
         return false;
     }
 
@@ -1212,7 +1224,7 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
     kLogger.info() << "Multi-track M4A created:" << outputPath;
 
     // Add STEM metadata atom
-    if (!addStemMetadata(outputPath)) {
+    if (!addStemMetadata(outputPath, executablePaths.mp4boxPath)) {
         kLogger.warning() << "Failed to add STEM metadata";
         return false;
     }
@@ -1278,6 +1290,14 @@ QString StemConverter::createStemManifest() {
     return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
 }
 
+bool StemConverter::startAndWaitProcess(QProcess* process,
+        const QString& executable,
+        const QStringList& arguments,
+        const QString& description) {
+    process->start(executable, arguments);
+    return waitForProcess(process, description);
+}
+
 QString StemConverter::findFFmpeg() {
     return QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
 }
@@ -1323,10 +1343,9 @@ QString StemConverter::findMP4Box() {
 #endif
 }
 
-bool StemConverter::addStemMetadata(const QString& outputPath) {
+bool StemConverter::addStemMetadata(const QString& outputPath, const QString& mp4boxPath) {
     kLogger.info() << "Adding STEM metadata to:" << outputPath;
 
-    QString mp4boxPath = findMP4Box();
     if (mp4boxPath.isEmpty()) {
         kLogger.warning() << "MP4Box not found";
         return false;
@@ -1364,9 +1383,11 @@ bool StemConverter::addStemMetadata(const QString& outputPath) {
     mp4boxArgs << outputPath;
 
     kLogger.info() << "Running MP4Box:" << mp4boxPath << mp4boxArgs.join(" ");
-    mp4boxProcess.start(mp4boxPath, mp4boxArgs);
 
-    if (!waitForProcess(&mp4boxProcess, QStringLiteral("MP4Box metadata update"))) {
+    if (!startAndWaitProcess(&mp4boxProcess,
+                mp4boxPath,
+                mp4boxArgs,
+                QStringLiteral("MP4Box metadata update"))) {
         QFile::remove(tempJsonPath);
         return false;
     }

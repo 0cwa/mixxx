@@ -4,6 +4,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -15,11 +16,14 @@
 
 #include "track/track.h"
 
+class QProcess;
+
 /// Converts audio tracks to STEM format using ONNX Runtime and mp4box
 class StemConverter : public QObject {
     Q_OBJECT
 
     friend class StemgenMasterConversionTest;
+    friend class StemConverterPrerequisiteTest;
 
   public:
     enum class Resolution {
@@ -136,6 +140,16 @@ class StemConverter : public QObject {
     void conversionFailed(TrackId trackId, const QString& errorMessage);
 
   private:
+    struct ExecutablePaths {
+        QString ffmpegPath;
+        QString mp4boxPath;
+    };
+
+    virtual bool startAndWaitProcess(QProcess* process,
+            const QString& executable,
+            const QStringList& arguments,
+            const QString& description);
+
 #ifdef __STEM_CONVERSION__
     static constexpr int kModelChannels = 2;
     static constexpr std::size_t kChunkFrames = 343980;
@@ -157,12 +171,13 @@ class StemConverter : public QObject {
     virtual bool loadOnnxModel();
 
     /// Step 2: Run ONNX inference on audio file
-    bool runInference(const std::vector<float>& inputAudio,
+    virtual bool runInference(const std::vector<float>& inputAudio,
             int sampleRate,
             std::vector<std::vector<float>>& outputStems);
 
     /// Step 3: Decode audio file to WAV using ffmpeg
-    bool decodeAudioFile(const QString& inputPath,
+    virtual bool decodeAudioFile(const QString& inputPath,
+            const QString& ffmpegPath,
             int targetSampleRate,
             std::vector<float>& audioData,
             int& sampleRate,
@@ -177,7 +192,9 @@ class StemConverter : public QObject {
             std::size_t originalFrames);
 
     /// Main ONNX separation function
-    virtual bool runOnnxSeparation(const QString& trackFilePath, const QString& outputDir);
+    virtual bool runOnnxSeparation(const QString& trackFilePath,
+            const QString& outputDir,
+            const ExecutablePaths& executablePaths);
 #endif
 
     void setProgress(float progress);
@@ -186,10 +203,12 @@ class StemConverter : public QObject {
     void setTrackPath(const QString& trackPath);
 
     /// Convert separated stems (WAV) to M4A format
-    bool convertStemsToM4A(const QString& stemsDir);
+    bool convertStemsToM4A(const QString& stemsDir, const QString& ffmpegPath);
 
     /// Create STEM container using ffmpeg and mp4box
-    bool createStemContainer(const QString& trackFilePath, const QString& stemsDir);
+    bool createStemContainer(const QString& trackFilePath,
+            const QString& stemsDir,
+            const ExecutablePaths& executablePaths);
 
     /// Create STEM manifest JSON
     QString createStemManifest();
@@ -204,10 +223,13 @@ class StemConverter : public QObject {
     virtual QString findFFmpeg();
 
     /// Add STEM metadata atom using MP4Box
-    bool addStemMetadata(const QString& outputPath);
+    bool addStemMetadata(const QString& outputPath, const QString& mp4boxPath);
 
     /// Convert a single track to M4A format
     bool convertTrackToM4A(const QString& inputPath, const QString& outputPath);
+    bool convertTrackToM4A(const QString& inputPath,
+            const QString& outputPath,
+            const QString& ffmpegPath);
 
 #ifdef __STEM_CONVERSION__
     // ONNX Runtime members
