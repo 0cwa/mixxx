@@ -90,10 +90,10 @@ SpinBox {
         x: root.mirrored ? 0 : parent.width - width
     }
     validator: DoubleValidator {
-        bottom: Math.min(root.from, root.to)
+        bottom: Math.min(root.from, root.to) / root.decimalFactor
         decimals: root.precision
         notation: DoubleValidator.StandardNotation
-        top: Math.max(root.from, root.to)
+        top: Math.max(root.from, root.to) / root.decimalFactor
     }
 
     onValueChanged: {

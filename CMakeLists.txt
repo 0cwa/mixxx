@@ -3134,6 +3134,7 @@ if(BUILD_TESTING)
         src/test/latenightlayoutstate_test.cpp
         src/test/themeqml_test.cpp
         src/test/interfaceqml_test.cpp
+        src/test/settingsspinboxqml_test.cpp
     )
   endif()
 
