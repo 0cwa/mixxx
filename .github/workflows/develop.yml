@@ -1,94 +1,350 @@
-name: Pull request or branch build
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow
+
+name: Issue 82 Audio Unit lifetime qualification
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
-  push:
-    branches:
-      - "*"
-      - "!main"
-      - "![0-9].[0-9]"
   workflow_dispatch:
 
 permissions:
-  contents: read #  to fetch code (actions/checkout)
-  checks: write #  to create new checks (coverallsapp/github-action)
+  contents: read
+
+env:
+  SOURCE_SHA: abc3729493a4e931bc7dcb379faf85f3b67965cb
+  SOURCE_TREE: e2d2372c3d7a40d72812a067d00765dc3945991d
+  TEST_FILTER: AudioUnitManifestDiscoveryTest.DelayedPublicationKeepsStateAlive
 
 jobs:
-  stop-build:
-    name: Check if build should be stopped
-    runs-on: ubuntu-slim
-    outputs:
-      result: ${{ github.event_name == 'push' && steps.stop-build.outputs.result || 'false' }}
+  macos-intel:
+    name: macOS 15 Intel Audio Unit lifetime test
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Check if there is an open PR for this branch
-        id: stop-build
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/github-script@v9
-        env:
-          ORGANIZATION: mixxxdj
-          REPOSITORY: mixxx
+      - name: Check out the reviewed issue 82 source
+        uses: actions/checkout@v7
+        timeout-minutes: 15
         with:
-          script: |
-            try {
-              const branch = context.ref.replace('refs/heads/', '');
-              const { data: pullRequests } = await github.rest.pulls.list({
-                owner: process.env.ORGANIZATION,
-                repo: process.env.REPOSITORY,
-                head: `${context.repo.owner}:${branch}`,
-                state: 'open'
-              });
-              console.log(`There is ${pullRequests.length} PR open upstream for branch '${context.repo.owner}:${branch}'`);
-              return pullRequests.length != 0;
-            } catch (error) {
-              console.log(`Didn't find a PR for branch '${context.repo.owner}:${branch}' on '${process.env.ORGANIZATION}/${process.env.REPOSITORY}'.`);
-              return false;
-            }
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
 
-  pre-commit:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/pre-commit.yml
-    with:
-      pull_request: ${{ github.event_name == 'pull_request' }}
+      - name: Assert and record source and workflow pins
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          mkdir -p issue82-evidence
+          actual_source_sha="$(git rev-parse HEAD)"
+          actual_source_tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$actual_source_sha" = "$SOURCE_SHA"
+          test "$actual_source_tree" = "$SOURCE_TREE"
+          git cat-file -e "${GITHUB_SHA}^{commit}"
+          workflow_tree="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          git status --short --branch > issue82-evidence/source-status.txt
+          git show "${GITHUB_SHA}:.github/workflows/develop.yml" \
+            > issue82-evidence/develop.yml
+          shasum -a 256 issue82-evidence/develop.yml \
+            > issue82-evidence/develop.yml.sha256
+          {
+            printf 'source_sha=%s\n' "$actual_source_sha"
+            printf 'source_tree=%s\n' "$actual_source_tree"
+            printf 'source_parent=%s\n' "$(git rev-parse 'HEAD^')"
+            printf 'workflow_sha=%s\n' "$GITHUB_SHA"
+            printf 'workflow_tree=%s\n' "$workflow_tree"
+            printf 'workflow_ref=%s\n' "$GITHUB_REF"
+            printf 'workflow_path=.github/workflows/develop.yml\n'
+            printf 'workflow_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'workflow_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+            printf 'test_filter=%s\n' "$TEST_FILTER"
+          } > issue82-evidence/pins.txt
+          shasum -a 256 \
+            src/effects/backends/audiounit/audiounitbackend.mm \
+            src/effects/backends/audiounit/audiounitmanifestdiscovery.h \
+            src/test/audiounitmanager_test.mm \
+            > issue82-evidence/tested-source-files.sha256
+          git grep -n -F \
+            '#include "effects/backends/audiounit/audiounitmanifestdiscovery.h"' \
+            -- src/effects/backends/audiounit/audiounitbackend.mm \
+               src/test/audiounitmanager_test.mm \
+            > issue82-evidence/manifest-header-includes.txt
 
-  checks:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/checks.yml
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2.2
+        timeout-minutes: 10
+        with:
+          cmake-version: "3.22.x"
 
-  git:
-    if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/git.yml
+      - name: Install ccache
+        id: install_ccache
+        timeout-minutes: 10
+        run: brew install ccache
 
-  build:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    permissions:
-      contents: read #  to fetch code (actions/checkout)
-      actions: write # to delete outdated caches
-    uses: ./.github/workflows/build.yml
-    with:
-      branch: ${{ github.head_ref || github.ref_name }}
-      ref: ${{ github.ref }}
+      - name: Get build environment name
+        timeout-minutes: 5
+        run: tools/macos_release_buildenv.sh name
+        env:
+          BUILDENV_BASEPATH: /Users/runner/buildenv
 
-  # This task is used as a probe for auto merge
-  # In the future, it could also be used to perform a status update (e.g once the whole CI is passing + is ready for review, add a specific label such as `need review`)
-  ready:
-    name: Ready to merge
-    needs:
-      - pre-commit
-      - checks
-      - git
-      - build
-    runs-on: ubuntu-slim
-    steps:
-      - name: Ready to go
-        run: "exit 0"
+      - name: Set up the native macOS release build environment
+        timeout-minutes: 10
+        run: tools/macos_release_buildenv.sh setup
+        env:
+          BUILDENV_BASEPATH: /Users/runner/buildenv
+
+      - name: Restore ccache read-only
+        id: ccache_cache
+        timeout-minutes: 10
+        uses: actions/cache/restore@v6
+        with:
+          path: /Users/runner/Library/Caches/ccache
+          key: macos-15-intel-x64-${{ github.ref_name }}-${{ env.BUILDENV_NAME || 'system' }}-${{ hashFiles('src/**', 'CMakeLists.txt', 'cmake/**') }}
+          restore-keys: |
+            macos-15-intel-x64-${{ github.ref_name }}
+            macos-15-intel-x64-${{ github.base_ref }}
+            macos-15-intel-x64
+
+      - name: Set up ccache
+        id: setup_ccache
+        timeout-minutes: 5
+        run: |
+          ccache --zero-stats
+          ccache --max-size=2G
+
+      - name: Record build environment and cache observation
+        timeout-minutes: 5
+        env:
+          CCACHE_CACHE_HIT: ${{ steps.ccache_cache.outputs.cache-hit }}
+          CCACHE_CACHE_PRIMARY_KEY: ${{ steps.ccache_cache.outputs.cache-primary-key }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'buildenv_name=%s\n' "$BUILDENV_NAME"
+            printf 'buildenv_url=%s\n' "$BUILDENV_URL"
+            printf 'vcpkg_target_triplet=%s\n' "$VCPKG_TARGET_TRIPLET"
+            printf 'cmake_generator=%s\n' "$CMAKE_GENERATOR"
+            printf 'ccache_cache_hit=%s\n' "$CCACHE_CACHE_HIT"
+            printf 'ccache_cache_primary_key=%s\n' "$CCACHE_CACHE_PRIMARY_KEY"
+            printf 'ccache_restore_prefixes=macos-15-intel-x64-%s;macos-15-intel-x64-%s;macos-15-intel-x64\n' \
+              "$GITHUB_REF_NAME" "${GITHUB_BASE_REF:-}"
+          } > issue82-evidence/build-environment.txt
+
+      - name: Create build directory
+        timeout-minutes: 5
+        run: mkdir build
+
+      - name: Configure native test target
+        timeout-minutes: 45
+        working-directory: build
+        run: |
+          set -euo pipefail
+          cmake \
+            -DBULK=ON \
+            -DCOREAUDIO=ON \
+            -DHSS1394=ON \
+            -DMACOS_BUNDLE=ON \
+            -DMODPLUG=ON \
+            -DQT6=ON \
+            -DQML=OFF \
+            -DWAVPACK=ON \
+            -DVCPKG_TARGET_TRIPLET=x64-osx-min1100-release \
+            -DBUILD_TESTING=ON \
+            -DAU_EFFECTS=ON \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" \
+            -DWARNINGS_FATAL=ON \
+            -DDEBUG_ASSERTIONS_FATAL=OFF \
+            -DBATTERY=ON \
+            -DBROADCAST=ON \
+            -DDOWNLOAD_MANUAL=ON \
+            -DHID=ON \
+            -DKEYFINDER=ON \
+            -DLILV=ON \
+            -DOPUS=ON \
+            -DQTKEYCHAIN=ON \
+            -DVINYLCONTROL=ON \
+            -DCMAKE_VERBOSE_MAKEFILE=OFF \
+            -L \
+            ..
+          grep -E '^(AU_EFFECTS|BUILD_TESTING|CMAKE_BUILD_TYPE|CMAKE_GENERATOR|VCPKG_TARGET_TRIPLET):' \
+            CMakeCache.txt \
+            > ../issue82-evidence/cmake-config.txt
+
+      - name: Build only mixxx-test and retain compile and link receipts
+        timeout-minutes: 70
+        working-directory: build
+        env:
+          CCACHE_NOCOMPRESS: true
+        run: |
+          set -euo pipefail
+          cmake --build . \
+            --config RelWithDebInfo \
+            --target mixxx-test \
+            --parallel 2 \
+            --verbose \
+            2>&1 | tee "$RUNNER_TEMP/issue82-mixxx-test-build.log"
+          grep -E 'audiounitbackend\.mm|audiounitmanager_test\.mm|mixxx-test' \
+            "$RUNNER_TEMP/issue82-mixxx-test-build.log" \
+            > ../issue82-evidence/build-target-receipt.txt
+          grep -E -- '(^|[[:space:]])-o[[:space:]]+(\./)?mixxx-test([[:space:]]|$)' \
+            "$RUNNER_TEMP/issue82-mixxx-test-build.log" \
+            > ../issue82-evidence/mixxx-test-link-receipt.txt
+          test -x ./mixxx-test
+          file ./mixxx-test > ../issue82-evidence/mixxx-test-binary.txt
+          shasum -a 256 ./mixxx-test \
+            > ../issue82-evidence/mixxx-test-binary.sha256
+          shasum -a 256 "$RUNNER_TEMP/issue82-mixxx-test-build.log" \
+            > ../issue82-evidence/build-log.sha256
+          find . -type f -name '*.d' \
+            -exec grep -l -F 'audiounitmanifestdiscovery.h' {} + \
+            > ../issue82-evidence/manifest-header-dependency-receipt.txt
+          test -s ../issue82-evidence/build-target-receipt.txt
+          test -s ../issue82-evidence/mixxx-test-link-receipt.txt
+          test -s ../issue82-evidence/manifest-header-dependency-receipt.txt
+          grep -F 'audiounitbackend.mm' ../issue82-evidence/build-target-receipt.txt
+          grep -F 'audiounitmanager_test.mm' ../issue82-evidence/build-target-receipt.txt
+          grep -F 'mixxx-test' ../issue82-evidence/build-target-receipt.txt
+
+      - name: Print compiler cache stats
+        if: always() && steps.setup_ccache.outcome == 'success'
+        timeout-minutes: 5
+        run: |
+          ccache --show-stats | tee issue82-evidence/ccache-stats.txt
+          ccache --cleanup
+
+      - name: List and run the exact Audio Unit lifetime test
+        timeout-minutes: 5
+        env:
+          QT_QPA_PLATFORM: offscreen
+          HOME: ${{ runner.temp }}/issue82-test-home
+          XDG_CONFIG_HOME: ${{ runner.temp }}/issue82-test-home/config
+          XDG_DATA_HOME: ${{ runner.temp }}/issue82-test-home/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/issue82-test-home/cache
+          GTEST_COLOR: 0
+        run: |
+          set -euo pipefail
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+          {
+            printf 'QT_QPA_PLATFORM=%s\n' "$QT_QPA_PLATFORM"
+            printf 'HOME=%s\n' "$HOME"
+            printf 'XDG_CONFIG_HOME=%s\n' "$XDG_CONFIG_HOME"
+            printf 'XDG_DATA_HOME=%s\n' "$XDG_DATA_HOME"
+            printf 'XDG_CACHE_HOME=%s\n' "$XDG_CACHE_HOME"
+            printf 'configured_test_timeout_minutes=5\n'
+          } > issue82-evidence/test-isolation.txt
+
+          set +e
+          ./build/mixxx-test \
+            --gtest_list_tests \
+            --gtest_filter="$TEST_FILTER" \
+            > issue82-evidence/gtest-list.txt 2>&1
+          list_exit_code=$?
+          set -e
+          printf '%s\n' "$list_exit_code" \
+            > issue82-evidence/gtest-list-native-exit-code.txt
+          cat issue82-evidence/gtest-list.txt
+          python3 - "$list_exit_code" issue82-evidence/gtest-list.txt <<'PY'
+          import pathlib
+          import sys
+
+          exit_code = int(sys.argv[1])
+          listing = pathlib.Path(sys.argv[2]).read_text().splitlines()
+          assert exit_code == 0, f"gtest_list_tests exited {exit_code}"
+
+          suites = []
+          tests = []
+          current_suite = None
+          for line in listing:
+              if line and not line[0].isspace() and line.endswith("."):
+                  current_suite = line.strip()
+                  suites.append(current_suite)
+              elif line and line[0].isspace() and current_suite is not None:
+                  test_name = line.strip().split("#", 1)[0].strip()
+                  if test_name:
+                      tests.append(current_suite + test_name)
+
+          expected_suite = "AudioUnitManifestDiscoveryTest."
+          expected_test = (
+              "AudioUnitManifestDiscoveryTest.DelayedPublicationKeepsStateAlive"
+          )
+          assert suites == [expected_suite], f"unexpected suites: {suites}"
+          assert tests == [expected_test], f"unexpected tests: {tests}"
+          pathlib.Path("issue82-evidence/gtest-selected-count.txt").write_text(
+              f"suites={len(suites)}\ntests={len(tests)}\n"
+          )
+          PY
+
+          set +e
+          ./build/mixxx-test \
+            --gtest_filter="$TEST_FILTER" \
+            --gtest_output=xml:issue82-evidence/delayed-publication.xml \
+            > issue82-evidence/gtest-output.txt 2>&1
+          test_exit_code=$?
+          set -e
+          printf '%s\n' "$test_exit_code" \
+            > issue82-evidence/gtest-native-exit-code.txt
+          cat issue82-evidence/gtest-output.txt
+          python3 - "$test_exit_code" issue82-evidence/delayed-publication.xml \
+            issue82-evidence/gtest-output.txt <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          exit_code = int(sys.argv[1])
+          xml_path = pathlib.Path(sys.argv[2])
+          output = pathlib.Path(sys.argv[3]).read_text()
+          root = ET.parse(xml_path).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+          test_cases = root.findall(".//testcase")
+          failures = root.findall(".//failure")
+          errors = root.findall(".//error")
+          skipped = root.findall(".//skipped")
+          declared_tests = sum(
+              int(suite.attrib.get("tests", "0"))
+              for suite in suites
+          )
+          declared_failures = sum(
+              int(suite.attrib.get("failures", "0"))
+              for suite in suites
+          )
+          declared_errors = sum(
+              int(suite.attrib.get("errors", "0"))
+              for suite in suites
+          )
+          declared_skipped = sum(
+              int(suite.attrib.get("skipped", "0"))
+              for suite in suites
+          )
+          summary = (
+              f"native_exit_code={exit_code}\n"
+              f"tests={len(test_cases)}\n"
+              f"failures={len(failures)}\n"
+              f"errors={len(errors)}\n"
+              f"skipped={len(skipped)}\n"
+              f"xml_declared_tests={declared_tests}\n"
+              f"xml_declared_failures={declared_failures}\n"
+              f"xml_declared_errors={declared_errors}\n"
+              f"xml_declared_skipped={declared_skipped}\n"
+          )
+          pathlib.Path("issue82-evidence/gtest-result-summary.txt").write_text(
+              summary
+          )
+          assert exit_code == 0, f"test process exited {exit_code}"
+          assert len(test_cases) == 1, f"unexpected testcase count: {len(test_cases)}"
+          assert declared_tests == 1, f"unexpected XML test count: {declared_tests}"
+          assert not failures and declared_failures == 0, "test failure reported"
+          assert not errors and declared_errors == 0, "test error reported"
+          assert not skipped and declared_skipped == 0, "test was skipped"
+          assert "[  PASSED  ] 1 test." in output, "GTest pass summary missing"
+          PY
+
+      - name: Upload bounded qualification evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue82-audiounit-macos-intel-${{ github.run_id }}
+          path: issue82-evidence/
+          if-no-files-found: warn
+          retention-days: 14
