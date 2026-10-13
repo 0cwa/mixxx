@@ -6,13 +6,75 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QList>
 
 #include "effects/backends/audiounit/audiounitmanager.h"
+#include "effects/backends/audiounit/audiounitmanifestdiscovery.h"
 
 class AudioUnitManagerTest : public ::testing::Test {};
+
+TEST(AudioUnitManifestDiscoveryTest, DelayedPublicationKeepsStateAlive) {
+    using namespace AudioUnitManifestDiscovery;
+
+    const QString effectId = QStringLiteral("delayed-manifest");
+    StatePointer state = std::make_shared<State>();
+    std::weak_ptr<State> weakState = state;
+    auto publishManifest = makeManifestPublisher(state, effectId);
+
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_semaphore_t started = dispatch_semaphore_create(0);
+    dispatch_semaphore_t releaseTask = dispatch_semaphore_create(0);
+    dispatch_semaphore_t published = dispatch_semaphore_create(0);
+    dispatch_semaphore_t finishTask = dispatch_semaphore_create(0);
+
+    dispatch_group_async(group,
+            dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+            ^{
+                dispatch_semaphore_signal(started);
+                dispatch_semaphore_wait(releaseTask, DISPATCH_TIME_FOREVER);
+                publishManifest(EffectManifestPointer{});
+                dispatch_semaphore_signal(published);
+                dispatch_semaphore_wait(finishTask, DISPATCH_TIME_FOREVER);
+            });
+
+    const long startedResult = dispatch_semaphore_wait(
+            started, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    EXPECT_EQ(startedResult, 0);
+
+    // The held task means discovery cannot finish before this nonblocking
+    // wait, matching the backend's bounded startup timeout.
+    const long discoveryWait = dispatch_group_wait(group, DISPATCH_TIME_NOW);
+    EXPECT_NE(discoveryWait, 0);
+
+    // Drop both references held by the simulated backend and this test. The
+    // queued task's publisher must keep the shared state alive on its own.
+    state.reset();
+    publishManifest = {};
+    EXPECT_FALSE(weakState.expired());
+
+    dispatch_semaphore_signal(releaseTask);
+    const long publishResult = dispatch_semaphore_wait(
+            published, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    EXPECT_EQ(publishResult, 0);
+
+    if (publishResult == 0) {
+        auto completedState = weakState.lock();
+        if (completedState) {
+            EXPECT_TRUE(completedState->effectIds().contains(effectId));
+        } else {
+            ADD_FAILURE() << "The delayed task released its discovery state";
+        }
+    }
+
+    dispatch_semaphore_signal(finishTask);
+    const long completionResult = dispatch_group_wait(
+            group, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    EXPECT_EQ(completionResult, 0);
+}
 
 // When AudioComponentInstantiate fails, dispatch_group_leave must still be
 // called so that waitForAudioUnit returns promptly instead of blocking for
