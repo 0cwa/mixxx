@@ -350,6 +350,23 @@ void StemConverter::convertTrack(const TrackPointer& pTrack, Resolution resoluti
     setProgress(0.0f);
 
 #ifdef __STEM_CONVERSION__
+    // Check packaging prerequisites before loading the model or separating audio.
+    // The resolvers retain their existing platform-specific ownership policies.
+    const QFileInfo ffmpegInfo(findFFmpeg());
+    const QFileInfo mp4boxInfo(findMP4Box());
+    QString prerequisiteError;
+    if (!ffmpegInfo.isFile() || !ffmpegInfo.isExecutable()) {
+        prerequisiteError = QStringLiteral("FFmpeg executable unavailable");
+    } else if (!mp4boxInfo.isFile() || !mp4boxInfo.isExecutable()) {
+        prerequisiteError = QStringLiteral("Accepted MP4Box executable unavailable");
+    }
+    if (!prerequisiteError.isEmpty()) {
+        kLogger.warning() << prerequisiteError;
+        emit conversionFailed(trackId, prerequisiteError);
+        setState(ConversionState::Failed);
+        return;
+    }
+
     // Validate the verified model before entering Processing or announcing
     // conversion progress. A missing or unloadable model is an early
     // configuration failure, not a failed audio processing step.
@@ -749,7 +766,7 @@ bool StemConverter::decodeAudioFile(const QString& inputPath,
         }
 
         const QString convertedInputPath = convertedInputDir.filePath("stem-input.wav");
-        const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        const QString ffmpegPath = findFFmpeg();
         if (ffmpegPath.isEmpty()) {
             kLogger.warning() << "ffmpeg executable not found for audio conversion";
             return false;
@@ -1048,7 +1065,7 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
 
     QStringList stemNames = {"drums", "bass", "other", "vocals"};
 
-    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffmpegPath = findFFmpeg();
     if (ffmpegPath.isEmpty()) {
         kLogger.warning() << "ffmpeg executable not found";
         return false;
@@ -1088,7 +1105,7 @@ bool StemConverter::convertStemsToM4A(const QString& stemsDir) {
 bool StemConverter::convertTrackToM4A(const QString& inputPath, const QString& outputPath) {
     kLogger.info() << "Converting to M4A:" << inputPath;
 
-    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffmpegPath = findFFmpeg();
     if (ffmpegPath.isEmpty()) {
         kLogger.warning() << "ffmpeg executable not found";
         return false;
@@ -1133,7 +1150,7 @@ bool StemConverter::createStemContainer(const QString& trackFilePath, const QStr
 
     // Create multi-track M4A with ffmpeg
     // Combine: mixdown.m4a + drums.m4a + bass.m4a + other.m4a + vocals.m4a
-    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffmpegPath = findFFmpeg();
     if (ffmpegPath.isEmpty()) {
         kLogger.warning() << "ffmpeg executable not found";
         return false;
@@ -1259,6 +1276,10 @@ QString StemConverter::createStemManifest() {
 
     QJsonDocument doc(root);
     return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+}
+
+QString StemConverter::findFFmpeg() {
+    return QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
 }
 
 QString StemConverter::findMP4Box() {

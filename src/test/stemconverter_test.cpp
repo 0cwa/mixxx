@@ -11,6 +11,7 @@
 #include <QUrl>
 #include <algorithm>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #ifdef __STEM_CONVERSION__
@@ -398,11 +399,29 @@ TEST(StemConverterTest, MissingVerifiedBaseModelFailsBeforeProcessing) {
     const auto pTrack = Track::newTemporary(inputFile.fileName());
     ASSERT_TRUE(pTrack);
 
+    ASSERT_TRUE(inputFile.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
     const bool hadModelDirectory = qEnvironmentVariableIsSet("MIXXX_STEM_MODEL_DIR");
     const QByteArray previousModelDirectory = qgetenv("MIXXX_STEM_MODEL_DIR");
     qputenv("MIXXX_STEM_MODEL_DIR", modelDir.path().toUtf8());
 
-    StemConverter converter;
+    // Isolate model validation from the host's packaging tools. This file is
+    // only a resolver stub and is never executed.
+    class ConverterWithAcceptedTools final : public StemConverter {
+      public:
+        explicit ConverterWithAcceptedTools(QString path)
+                : m_path(std::move(path)) {
+        }
+
+      private:
+        QString findFFmpeg() override {
+            return m_path;
+        }
+        QString findMP4Box() override {
+            return m_path;
+        }
+        const QString m_path;
+    };
+    ConverterWithAcceptedTools converter(inputFile.fileName());
     int conversionStartedCount = 0;
     int conversionProgressCount = 0;
     QObject::connect(

@@ -47,7 +47,7 @@ class StemConverter : public QObject {
     explicit StemConverter(QObject* parent = nullptr);
     ~StemConverter() override = default;
 
-    /// Convert a track to STEM format. Model validation failures are reported
+    /// Convert a track to STEM format. Prerequisite and model failures are reported
     /// before conversion starts and leave progress at 0.0.
     /// @param pTrack Track to convert
     /// @param resolution Output resolution (only Low is currently supported)
@@ -154,7 +154,7 @@ class StemConverter : public QObject {
     std::size_t m_originalFrames = 0;
 
     /// Step 1: Load the selected ONNX model from the configured model directory.
-    bool loadOnnxModel();
+    virtual bool loadOnnxModel();
 
     /// Step 2: Run ONNX inference on audio file
     bool runInference(const std::vector<float>& inputAudio,
@@ -177,7 +177,7 @@ class StemConverter : public QObject {
             std::size_t originalFrames);
 
     /// Main ONNX separation function
-    bool runOnnxSeparation(const QString& trackFilePath, const QString& outputDir);
+    virtual bool runOnnxSeparation(const QString& trackFilePath, const QString& outputDir);
 #endif
 
     void setProgress(float progress);
@@ -198,7 +198,10 @@ class StemConverter : public QObject {
     /// package-owned executable under their sandbox prefix. Other Linux builds
     /// require the dpkg-managed gpac package; unsupported package managers fail
     /// closed, while other platforms use PATH lookup.
-    QString findMP4Box();
+    virtual QString findMP4Box();
+
+    /// Use the existing PATH policy for FFmpeg at preflight and packaging.
+    virtual QString findFFmpeg();
 
     /// Add STEM metadata atom using MP4Box
     bool addStemMetadata(const QString& outputPath);

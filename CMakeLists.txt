@@ -3341,6 +3341,7 @@ if(BUILD_TESTING)
     src/test/configobject_test.cpp
     src/test/settingsmanager_test.cpp
     $<$<BOOL:${STEM_CONVERSION}>:src/test/stemconverter_test.cpp>
+    $<$<BOOL:${STEM_CONVERSION}>:src/test/stemconverter_prerequisite_test.cpp>
     src/test/controller_mapping_validation_test.cpp
     src/test/controller_mapping_settings_test.cpp
     src/test/controllers/controller_columnid_regression_test.cpp
