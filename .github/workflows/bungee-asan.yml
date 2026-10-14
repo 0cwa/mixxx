@@ -57,8 +57,8 @@ jobs:
 
       - name: "Bind the run to the reviewed F001 source"
         env:
-          EXPECTED_SOURCE_COMMIT: 48b3bd6876b7dac2163c5a3c49f5aaee4ed05c56
-          EXPECTED_SOURCE_TREE: b0ba99b349ca9966b2f1e3b41f71dcada64ede0e
+          EXPECTED_SOURCE_COMMIT: 270ad9a0c1c9f86e01c280ecc1e8d13889181811
+          EXPECTED_SOURCE_TREE: 1acca5ed8f221c8ffb7cea670f82e723ded53b1b
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
