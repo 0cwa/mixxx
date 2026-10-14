@@ -1,61 +1,18 @@
-# yaml-language-server: $schema=https://json.schemastore.org/github-workflow
+# F001: Manually dispatched Linux AddressSanitizer diagnostic for the exact
+# 24 GTests encoded in the verifier below. The run is bound to the reviewed
+# source commit and records the selected list, XML results, and native log.
+# This focused cloud run supplements the host allocation, lock, affinity, and
+# calibration gates; it does not close those independent checks.
 #
-# BNG-13: AddressSanitizer build that runs the Bungee scaler tests so any future
-# overflow of m_contiguousChannelBuffer is caught at test time rather than in
-# production.
-#
-# Scope:
-#   - Linux only (clang sanitizers don't run on Windows MSVC and the Bungee
-#     bug is not platform-specific).
-#   - Builds only the mixxx-test target and runs the *Bungee* gtest filter,
-#     plus the SettingsManager keylock regression test, keeping the workflow
-#     lean compared with the matrix in build.yml.
-#   - Fires on any change that could affect the Bungee integration; ignores
-#     unrelated PRs.
-#
-# Detect_leaks=0 because mixxx-test has many process-lifetime singletons
-# whose leaks would mask the heap-overflow signal we actually care about.
-# halt_on_error=1 + abort_on_error=1 ensures the CI job fails immediately
-# on the first ASan-detected issue with a usable backtrace.
+# Detect_leaks=0 because mixxx-test has process-lifetime singletons; ASan
+# memory errors still stop the run and are also checked in the saved log.
 
-name: Bungee ASan
-
+name: F001 Cloud Native ASan
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - main
-      - "2.6"
-      - feature/bungee
-      - bungee-engine-full
-    paths:
-      - "cmake/modules/FindBungee.cmake"
-      - "src/engine/enginebuffer.*"
-      - "src/engine/controls/keycontrol.*"
-      - "src/engine/bufferscalers/enginebufferscalebungee.*"
-      - "src/preferences/settingsmanager.cpp"
-      - "src/test/enginebufferscalebungee*"
-      - "src/test/enginebufferbungee*"
-      - "src/test/settingsmanager_test.cpp"
-      - "lib/bungee/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/bungee-asan.yml"
-  pull_request:
-    paths:
-      - "cmake/modules/FindBungee.cmake"
-      - "src/engine/enginebuffer.*"
-      - "src/engine/controls/keycontrol.*"
-      - "src/engine/bufferscalers/enginebufferscalebungee.*"
-      - "src/preferences/settingsmanager.cpp"
-      - "src/test/enginebufferscalebungee*"
-      - "src/test/enginebufferbungee*"
-      - "src/test/settingsmanager_test.cpp"
-      - "lib/bungee/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/bungee-asan.yml"
   workflow_dispatch:
 
 permissions:
@@ -63,7 +20,7 @@ permissions:
 
 jobs:
   asan:
-    name: Linux ASan + Bungee tests
+    name: Linux ASan + F001 tests
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -97,6 +54,48 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: "Bind the run to the reviewed F001 source"
+        env:
+          EXPECTED_SOURCE_COMMIT: e1633c07a44414ed51ed904f3c7b968070b8277a
+          EXPECTED_SOURCE_TREE: 814b265cf3b2219653678ac9a560e67f11a5b24b
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_SOURCE_COMMIT"
+          test "$(git rev-parse "${EXPECTED_SOURCE_COMMIT}^{tree}")" = "$EXPECTED_SOURCE_TREE"
+          changed_paths="$(git diff --name-only "$EXPECTED_SOURCE_COMMIT" "$GITHUB_SHA")"
+          test "$changed_paths" = ".github/workflows/bungee-asan.yml"
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_SOURCE_COMMIT"]
+          head = os.environ["GITHUB_SHA"]
+          record = {
+              "source_commit": expected,
+              "source_tree": os.environ["EXPECTED_SOURCE_TREE"],
+              "workflow_commit": head,
+              "workflow_tree": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True
+              ).strip(),
+              "workflow_blob": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD:.github/workflows/bungee-asan.yml"], text=True
+              ).strip(),
+              "changed_paths_from_source": [
+                  line for line in subprocess.check_output(
+                      ["git", "diff", "--name-only", expected, head], text=True
+                  ).splitlines() if line
+              ],
+              "binding": "pass",
+          }
+          Path("f001-source-binding.json").write_text(
+              json.dumps(record, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(record, indent=2))
+          PY
+
       - name: "Ensure that all tags are fetched"
         run: git fetch origin --force --tags
 
@@ -114,7 +113,7 @@ jobs:
           clang --version
 
       - name: "Set up ccache"
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5 read-only restore
         with:
           path: /home/runner/.cache/ccache
           key: ubuntu-24.04-asan-${{ github.ref }}-${{ github.run_number }}
@@ -131,9 +130,8 @@ jobs:
       - name: "Create build directory"
         run: mkdir build
 
-      # Minimal feature set: enable BUNGEE + tests + ASan; everything that
-      # would just cost compile time without exercising the Bungee path is
-      # turned OFF.  BUILD_BENCH is OFF so we don't depend on libpfm.
+      # Retain the successful Linux ASan recipe while keeping the build
+      # focused on mixxx-test. BUILD_BENCH is OFF so libpfm is not required.
       - name: "Configure (CMake, ASan)"
         working-directory: build
         run: >-
@@ -163,30 +161,278 @@ jobs:
           -DINSTALL_USER_UDEV_RULES=OFF
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: "Build mixxx-test"
         working-directory: build
         run: cmake --build . --target mixxx-test -j"$(nproc)"
 
       - name: "Print ccache stats"
-        run: ccache --show-stats
+        working-directory: build
+        run: ccache --show-stats | tee ccache-stats.txt
 
-      # Run the Bungee unit + integration tests under ASan, plus the
-      # SettingsManager regression that preserves explicit Bungee keylock
-      # settings. The full mixxx-test suite under ASan would run for >30
-      # minutes; this targeted run completes quickly and exercises the
-      # instrumented Bungee scaler and integration paths.
-      - name: "Run Bungee tests under ASan"
+      # Run the exact F001 selector set once and preserve its list, XML, log,
+      # and machine-readable evidence for review.
+      - name: "Run exact F001 selectors under ASan"
         working-directory: build
         env:
           GTEST_COLOR: "1"
         run: |
-          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
-          listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
-          test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
-          if [ "$test_count" -eq 0 ]; then
-            echo "No tests matched GTest filter: $test_filter" >&2
-            exit 1
-          fi
-          echo "Running $test_count tests matching GTest filter: $test_filter"
-          ./mixxx-test --gtest_filter="$test_filter"
+          set -euo pipefail
+          cat > verify_f001_asan_tests.py <<'PY'
+          #!/usr/bin/env python3
+          """Verify the exact F001 GTest selector list and one ASan XML result."""
+
+          import collections
+          import json
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          F001_SELECTOR_IDS = [
+              "CachingReaderStatusQueueTest.ProcessLeavesUpdatesBeyondCallbackBudgetQueued",
+              "CachingReaderStatusQueueTest.ReadDoesNotResetCallbackBudget",
+              "CachingReaderStatusQueueTest.ProcessDiscardsChunkResultWhileTrackIsUnloading",
+              "CachingReaderStatusQueueTest.TeardownDrainReclaimsQueuedChunksWithoutStateTransitions",
+              "CachingReaderStatusQueueTest.ProcessRecyclesChunkIntoFixedFreePool",
+              "CachingReaderStatusQueueTest.RecyclesChunksAcrossFreePoolWraparound",
+              "CachingReaderWorkerTest.LateNotificationSamplesFinalScalarAndRemoval",
+              "CachingReaderWorkerTest.ActiveScalarWriterRearmsDirtyObservation",
+              "CachingReaderWorkerTest.CompletedWriterInvalidatesObservationWithoutLosingDirty",
+              "CachingReaderWorkerTest.ScalarCertificateExhaustionFailsClosed",
+              "CachingReaderWorkerTest.LateNotificationUsesCurrentOwnerDistinctSentinel",
+              "CachingReaderWorkerTest.LateNotificationAcrossActualLoadReloadFailureAndUnload",
+              "CachingReaderWorkerTest.ReaderFinalDrainSurvivesDatabaseEvictionReload",
+              "CachingReaderWorkerTest.FinalScalarDrainsAfterStatusBackpressure",
+              "CachingReaderWorkerTest.IdleUpdateObservedBeforeShutdown",
+              "CachingReaderWorkerTest.PendingScalarDrainsOnShutdown",
+              "CachingReaderWorkerTest.ShutdownPublicationFailureSuppressesLoadFailureSignal",
+              "CachingReaderWorkerTest.ShutdownReclaimsStatusChunkWhenStatusQueueIsFull",
+              "LoopCueApplyTraceForTest.CapacityOverflowIsBoundedAndSticky",
+              "F001ProbeForTest.OverflowIsBoundedAndSticky",
+              "F001ProbeAlignmentTest.RemovalUsesAttachedTrackBound",
+              "F001ProbeAlignmentTest.ResizeQueuesOwnerThreadRefresh",
+              "F001ProbeAlignmentTest.EjectWaitsForAttachedTrackRefresh",
+              "F001ProbeAlignmentTest.ReplacementSeparatesTrackBounds",
+          ]
+          EXPECTED_FILTER = ":".join(F001_SELECTOR_IDS)
+          ASAN_ERROR = re.compile(
+              r"ERROR:\s*(?:AddressSanitizer|LeakSanitizer)\b"
+              r"|AddressSanitizer:\s*(?:DEADLYSIGNAL|CHECK failed|failed to)"
+              r"|SUMMARY:\s*AddressSanitizer\b"
+              r"|LeakSanitizer:\s*detected memory leaks",
+              re.IGNORECASE,
+          )
+
+
+          def parse_gtest_list(text):
+              suite = None
+              ids = []
+              for raw_line in text.splitlines():
+                  if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+                      continue
+                  indent = len(raw_line) - len(raw_line.lstrip())
+                  line = raw_line.split("#", 1)[0].strip()
+                  if not line:
+                      continue
+                  if indent == 0:
+                      suite = line[:-1] if line.endswith(".") else None
+                  elif suite:
+                      ids.append(f"{suite}.{line}")
+              return ids
+
+
+          def asan_diagnostics(text):
+              return [line for line in text.splitlines() if ASAN_ERROR.search(line)]
+
+
+          def validate_list_text(text):
+              actual = parse_gtest_list(text)
+              disabled = [
+                  test_id for test_id in actual
+                  if any(part.startswith("DISABLED_") for part in re.split(r"[/.]", test_id))
+              ]
+              problems = []
+              if not actual:
+                  problems.append("GTest list is empty")
+              if len(actual) != len(set(actual)):
+                  problems.append("GTest list contains duplicate IDs")
+              if collections.Counter(actual) != collections.Counter(F001_SELECTOR_IDS):
+                  problems.append("GTest list does not equal the exact 24 F001 selector IDs")
+              if disabled:
+                  problems.append(f"GTest list contains disabled IDs: {disabled}")
+              diagnostics = asan_diagnostics(text)
+              if diagnostics:
+                  problems.append(f"ASan diagnostics appeared during GTest list: {diagnostics}")
+              selection = {
+                  "filter": EXPECTED_FILTER,
+                  "expected_count": len(F001_SELECTOR_IDS),
+                  "expected_tests": F001_SELECTOR_IDS,
+                  "listed_count": len(actual),
+                  "listed_tests": actual,
+                  "disabled_listed_tests": disabled,
+                  "asan_diagnostics": diagnostics,
+                  "problems": problems,
+              }
+              return selection, problems
+
+
+          def xml_count(root, attribute, element_name):
+              root_value = int(root.get(attribute, "0"))
+              suite_sum = sum(int(node.get(attribute, "0")) for node in root.iter("testsuite"))
+              element_count = sum(1 for _ in root.iter(element_name))
+              return max(root_value, suite_sum, element_count)
+
+
+          def validate_results(selection, xml_text, native_exit_status, log_text):
+              problems = []
+              if selection.get("filter") != EXPECTED_FILTER:
+                  problems.append("Recorded filter differs from the exact F001 selector filter")
+              if selection.get("expected_tests") != F001_SELECTOR_IDS:
+                  problems.append("Recorded expected IDs differ from the verifier's exact F001 list")
+              listed = selection.get("listed_tests", [])
+              if selection.get("listed_count") != len(F001_SELECTOR_IDS):
+                  problems.append("Pre-run list count is not exactly 24")
+              if collections.Counter(listed) != collections.Counter(F001_SELECTOR_IDS):
+                  problems.append("Pre-run list does not contain the exact 24 IDs")
+
+              try:
+                  root = ET.fromstring(xml_text)
+                  if root.tag not in ("testsuites", "testsuite"):
+                      raise ValueError(f"Unexpected GTest XML root: {root.tag}")
+                  cases = list(root.iter("testcase"))
+                  executed = [
+                      f"{case.get('classname')}.{case.get('name')}"
+                      for case in cases
+                  ]
+                  not_run = [
+                      test_id for test_id, case in zip(executed, cases)
+                      if case.get("status") not in (None, "run")
+                      or case.get("result") not in (None, "completed")
+                      or case.find("skipped") is not None
+                      or case.find("disabled") is not None
+                  ]
+                  xml_tests = int(root.attrib["tests"])
+                  counts = {
+                      "failures": xml_count(root, "failures", "failure"),
+                      "errors": xml_count(root, "errors", "error"),
+                      "skipped": xml_count(root, "skipped", "skipped"),
+                      "disabled": xml_count(root, "disabled", "disabled"),
+                  }
+              except (ET.ParseError, KeyError, ValueError) as error:
+                  root = None
+                  cases, executed, not_run, xml_tests = [], [], [], None
+                  counts = {
+                      "failures": None,
+                      "errors": None,
+                      "skipped": None,
+                      "disabled": None,
+                  }
+                  problems.append(f"Unable to read valid GTest XML: {error}")
+
+              if root is not None:
+                  if xml_tests != len(F001_SELECTOR_IDS):
+                      problems.append(f"XML tests={xml_tests}; expected 24")
+                  if len(cases) != len(F001_SELECTOR_IDS):
+                      problems.append(f"XML testcase count={len(cases)}; expected 24")
+                  if collections.Counter(executed) != collections.Counter(F001_SELECTOR_IDS):
+                      problems.append("XML testcase IDs differ from the exact 24 F001 selectors")
+                  if not_run:
+                      problems.append(f"XML contains skipped, disabled, or unrun cases: {not_run}")
+                  if any(value != 0 for value in counts.values()):
+                      problems.append(f"XML has nonzero failures/errors/skips/disabled: {counts}")
+
+              diagnostics = asan_diagnostics(log_text)
+              if diagnostics:
+                  problems.append(f"ASan diagnostics appeared in the native test log: {diagnostics}")
+              if int(native_exit_status) != 0:
+                  problems.append(f"mixxx-test exited with status {native_exit_status}")
+
+              evidence = {
+                  "filter": EXPECTED_FILTER,
+                  "expected_count": len(F001_SELECTOR_IDS),
+                  "expected_tests": F001_SELECTOR_IDS,
+                  "listed_count": selection.get("listed_count"),
+                  "listed_tests": listed,
+                  "native_exit_status": int(native_exit_status),
+                  "native_invocations": 1,
+                  "xml_tests": xml_tests,
+                  "xml_testcases": len(cases),
+                  "executed_tests": executed,
+                  "not_run_tests": not_run,
+                  **counts,
+                  "asan_diagnostics": diagnostics,
+                  "problems": problems,
+              }
+              return evidence, problems
+
+
+          def write_json(path, data):
+              Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+          def main(argv):
+              if argv == ["filter"]:
+                  print(EXPECTED_FILTER)
+                  return 0
+              if len(argv) == 3 and argv[0] == "before":
+                  list_path, selection_path = argv[1:]
+                  selection, problems = validate_list_text(
+                      Path(list_path).read_text(encoding="utf-8")
+                  )
+                  write_json(selection_path, selection)
+                  print(json.dumps(selection, indent=2))
+                  if problems:
+                      raise SystemExit("\n".join(problems))
+                  return 0
+              if len(argv) == 6 and argv[0] == "after":
+                  selection_path, xml_path, native_status, log_path, evidence_path = argv[1:]
+                  selection = json.loads(Path(selection_path).read_text(encoding="utf-8"))
+                  xml_text = Path(xml_path).read_text(encoding="utf-8")
+                  log_text = Path(log_path).read_text(encoding="utf-8")
+                  evidence, problems = validate_results(
+                      selection, xml_text, int(native_status), log_text
+                  )
+                  write_json(evidence_path, evidence)
+                  print(json.dumps(evidence, indent=2))
+                  if problems:
+                      raise SystemExit("\n".join(problems))
+                  return 0
+              raise SystemExit(
+                  "usage: verifier.py filter | before GTEST_LIST SELECTION_JSON | "
+                  "after SELECTION_JSON GTEST_XML EXIT_STATUS TEST_LOG EVIDENCE_JSON"
+              )
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main(sys.argv[1:]))
+          PY
+
+          test_filter="$(python3 verify_f001_asan_tests.py filter)"
+          ./mixxx-test --gtest_list_tests --gtest_filter="$test_filter" > gtest-list.txt 2>&1
+          python3 verify_f001_asan_tests.py before gtest-list.txt gtest-selection.json
+
+          echo "Running exactly 24 F001 GTests once: $test_filter"
+          set +e
+          ./mixxx-test --gtest_filter="$test_filter" --gtest_output=xml:gtest-results.xml > mixxx-test-asan.log 2>&1
+          native_exit_status=$?
+          set -e
+          cat mixxx-test-asan.log
+          python3 verify_f001_asan_tests.py after gtest-selection.json gtest-results.xml "$native_exit_status" mixxx-test-asan.log gtest-evidence.json
+
+      - name: "Upload F001 ASan review evidence"
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: f001-cloud-native-asan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            f001-source-binding.json
+            build/ccache-stats.txt
+            build/gtest-list.txt
+            build/gtest-selection.json
+            build/gtest-results.xml
+            build/gtest-evidence.json
+            build/mixxx-test-asan.log
+          if-no-files-found: warn
+          retention-days: 7
