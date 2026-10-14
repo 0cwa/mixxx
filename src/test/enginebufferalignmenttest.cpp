@@ -3372,9 +3372,11 @@ TEST_F(EngineBufferAlignmentTest, CloneUsesStableSourceLoopCueSnapshot) {
             ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_remove")), 0.0);
         } else {
             ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_start_position")),
-                    mixxx::audio::FramePos{scenario.start}.toEngineSamplePos());
+                    mixxx::audio::FramePos{static_cast<double>(scenario.start)}
+                            .toEngineSamplePos());
             ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_end_position")),
-                    mixxx::audio::FramePos{scenario.end}.toEngineSamplePos());
+                    mixxx::audio::FramePos{static_cast<double>(scenario.end)}
+                            .toEngineSamplePos());
             ControlObject::set(ConfigKey(m_sGroup1, QStringLiteral("loop_enabled")), 1.0);
         }
         // This is the actual deferred-persistence witness, before target load
@@ -3389,7 +3391,7 @@ TEST_F(EngineBufferAlignmentTest, CloneUsesStableSourceLoopCueSnapshot) {
         const auto snapshot = source->getLoopCueSnapshot(track);
         ASSERT_TRUE(snapshot);
         EXPECT_EQ(scenario.start < 0 ? mixxx::audio::kInvalidFramePos
-                                     : mixxx::audio::FramePos{scenario.start},
+                                     : mixxx::audio::FramePos{static_cast<double>(scenario.start)},
                 snapshot->startPosition);
         const auto previousTarget = target->getLoopCueSnapshot(track);
         m_pMixerDeck2->slotCloneFromGroup(m_sGroup1);
@@ -3426,9 +3428,11 @@ TEST_F(EngineBufferAlignmentTest, CloneUsesStableSourceLoopCueSnapshot) {
             if (scenario.start < 0) {
                 return !cue;
             }
-            return cue && cue->getStartAndEndPosition().startPosition == mixxx::audio::FramePos{scenario.start} &&
+            return cue &&
+                    cue->getStartAndEndPosition().startPosition ==
+                    mixxx::audio::FramePos{static_cast<double>(scenario.start)} &&
                     cue->getStartAndEndPosition().endPosition ==
-                    mixxx::audio::FramePos{scenario.end};
+                    mixxx::audio::FramePos{static_cast<double>(scenario.end)};
         }));
         assertTarget();
     }
@@ -4045,13 +4049,13 @@ TEST_F(F001NativeWorkerRouteTest, SelectedWorkerTokenReachesRealWorker) {
     ASSERT_TRUE(f001RtProbeQuiescentForTest());
     ASSERT_FALSE(f001RtProbeOverflowedForTest());
 
-    std::size_t slots = 0;
-    const auto* buffers = f001RtProbeBuffersForTest(&slots);
+    std::size_t bufferCount = 0;
+    const auto* buffers = f001RtProbeBuffersForTest(&bufferCount);
     ASSERT_NE(nullptr, buffers);
     std::uint32_t entries = 0;
     std::uint32_t exits = 0;
     std::uint64_t workerTid = 0;
-    for (std::size_t slot = 0; slot < slots; ++slot) {
+    for (std::size_t slot = 0; slot < bufferCount; ++slot) {
         const auto count = std::min<std::uint32_t>(
                 buffers[slot].eventCount.load(std::memory_order_acquire),
                 F001RtProbeThreadBufferForTest::kCapacity);
