@@ -464,10 +464,10 @@ class CachingReaderWorkerTest : public LibraryTest {
     static void commit(LoopingControl& control, int start, int end) {
         LoopingControl::LoopInfo info;
         if (start >= 0) {
-            info.startPosition = mixxx::audio::FramePos{start};
+            info.startPosition = mixxx::audio::FramePos{static_cast<double>(start)};
         }
         if (end >= 0) {
-            info.endPosition = mixxx::audio::FramePos{end};
+            info.endPosition = mixxx::audio::FramePos{static_cast<double>(end)};
         }
         control.commitLoopInfo(info);
     }
@@ -520,8 +520,9 @@ class CachingReaderWorkerTest : public LibraryTest {
             return start < 0 && end < 0;
         }
         const auto range = cue->getStartAndEndPosition();
-        return range.startPosition == mixxx::audio::FramePos{start} &&
-                range.endPosition == mixxx::audio::FramePos{end};
+        return range.startPosition ==
+                        mixxx::audio::FramePos{static_cast<double>(start)} &&
+                range.endPosition == mixxx::audio::FramePos{static_cast<double>(end)};
     }
 };
 
@@ -547,7 +548,8 @@ TEST_F(CachingReaderWorkerTest, LateNotificationSamplesFinalScalarAndRemoval) {
         // between its scalar commit and notification. No queue capacity exists.
         for (int index = 0; index < 64; ++index) {
             control.slotLoopEndPos(
-                    mixxx::audio::FramePos{500 + index}.toEngineSamplePos());
+                    mixxx::audio::FramePos{static_cast<double>(500 + index)}
+                            .toEngineSamplePos());
         }
         if (remove) {
             control.slotLoopStartPos(-1.0);
