@@ -1,145 +1,131 @@
-# yaml-language-server: $schema=https://json.schemastore.org/github-workflow
-#
-# BNG-13: AddressSanitizer build that runs the Bungee scaler tests so any future
-# overflow of m_contiguousChannelBuffer is caught at test time rather than in
-# production.
-#
-# Scope:
-#   - Linux only (clang sanitizers don't run on Windows MSVC and the Bungee
-#     bug is not platform-specific).
-#   - Builds only the mixxx-test target and runs the *Bungee* gtest filter,
-#     plus the SettingsManager keylock regression test, keeping the workflow
-#     lean compared with the matrix in build.yml.
-#   - Fires on any change that could affect the Bungee integration; ignores
-#     unrelated PRs.
-#
-# Detect_leaks=0 because mixxx-test has many process-lifetime singletons
-# whose leaks would mask the heap-overflow signal we actually care about.
-# halt_on_error=1 + abort_on_error=1 ensures the CI job fails immediately
-# on the first ASan-detected issue with a usable backtrace.
-
-name: Bungee ASan
+# Focused Linux native acceptance for the six reviewed Kybernetria fixes.
+# Deliberately manual: this source candidate has not been published.
+name: Kybernetria Linux Native ASan
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: kybernetria-linux-native-${{ github.ref }}
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - main
-      - "2.6"
-      - feature/bungee
-      - bungee-engine-full
-    paths:
-      - "cmake/modules/FindBungee.cmake"
-      - "src/engine/enginebuffer.*"
-      - "src/engine/controls/keycontrol.*"
-      - "src/engine/bufferscalers/enginebufferscalebungee.*"
-      - "src/preferences/settingsmanager.cpp"
-      - "src/test/enginebufferscalebungee*"
-      - "src/test/enginebufferbungee*"
-      - "src/test/settingsmanager_test.cpp"
-      - "lib/bungee/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/bungee-asan.yml"
-  pull_request:
-    paths:
-      - "cmake/modules/FindBungee.cmake"
-      - "src/engine/enginebuffer.*"
-      - "src/engine/controls/keycontrol.*"
-      - "src/engine/bufferscalers/enginebufferscalebungee.*"
-      - "src/preferences/settingsmanager.cpp"
-      - "src/test/enginebufferscalebungee*"
-      - "src/test/enginebufferbungee*"
-      - "src/test/settingsmanager_test.cpp"
-      - "lib/bungee/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/bungee-asan.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  asan:
-    name: Linux ASan + Bungee tests
+  native-asan:
+    name: Ubuntu 24.04 / Clang 18 / Qt 6.4
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     env:
-      CC: clang
-      CXX: clang++
-      # Address sanitizer runtime options.
-      # detect_leaks=0:   we are hunting heap overflows, not leaks; mixxx-test
-      #                   has many process-lifetime singletons that would
-      #                   otherwise drown the signal.
-      # halt_on_error=1:  fail fast on first overflow.
-      # abort_on_error=1: produce a coredump-style backtrace via SIGABRT.
-      # strict_string_checks=1: catch off-by-one in string ops too.
-      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1"
-      # Instrument the vendored Bungee target and its Mixxx test binary.
-      CFLAGS: "-fsanitize=address -fno-omit-frame-pointer"
-      CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer"
-      # Retain an explicit sanitizer link flag for the static vendor target.
-      LDFLAGS: "-fsanitize=address"
-      # ASAN_OPTIONS already disables leak detection. Keep exitcode=0 as a
-      # belt-and-suspenders guard so leak noise cannot mask heap-overflow
-      # regressions if LSan is re-enabled later.
-      LSAN_OPTIONS: "exitcode=0"
+      SOURCE_SHA: de628708c725e99f5b530ef0ae2bbf7fecae4aad
+      SOURCE_TREE: 7c47fe0687018ac6c9f3e143003820b930959851
+      CC: clang-18
+      CXX: clang++-18
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
+      LSAN_OPTIONS: exitcode=0
+      CFLAGS: -fsanitize=address -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=address
+      FDK_PACKAGE_VERSION: 2.0.2-3~ubuntu4
 
     steps:
-      - name: "Check out repository"
+      - name: Check out the exact source commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          # `git describe` (used by version stamping) needs full history.
+          ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 0
           persist-credentials: false
           submodules: recursive
 
-      - name: "Ensure that all tags are fetched"
-        run: git fetch origin --force --tags
+      - name: Verify source and workflow commit pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          test "$(git rev-parse "$GITHUB_SHA^1")" = "$SOURCE_SHA"
+          changed_paths="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
+          test "$changed_paths" = .github/workflows/bungee-asan.yml
+          mkdir -p "$RUNNER_TEMP/kybernetria-reports/metadata" \
+            "$RUNNER_TEMP/kybernetria-reports/results"
+          {
+            printf 'source_commit=%s\n' "$SOURCE_SHA"
+            printf 'source_tree=%s\n' "$SOURCE_TREE"
+            printf 'workflow_commit=%s\n' "$GITHUB_SHA"
+            printf 'workflow_parent=%s\n' "$(git rev-parse "$GITHUB_SHA^1")"
+            printf 'workflow_tree=%s\n' "$(git rev-parse "$GITHUB_SHA^{tree}")"
+            printf 'workflow_blob=%s\n' \
+              "$(git rev-parse "$GITHUB_SHA:.github/workflows/bungee-asan.yml")"
+            printf 'workflow_changed_paths=%s\n' "$changed_paths"
+            printf 'runner_image=%s\n' "${ImageOS:-unknown}/${ImageVersion:-unknown}"
+          } > "$RUNNER_TEMP/kybernetria-reports/metadata/source-workflow.txt"
 
-      - name: "Set up gcc/clang problem matcher"
-        uses: ammaraskar/gcc-problem-matcher@0f9c86f9e693db67dacf53986e1674de5f2e5f28 # 0.3.0
-
-      - name: "Set up build environment (apt deps)"
+      - name: Set up Debian build dependencies
         run: tools/debian_buildenv.sh setup
         env:
           BUILDENV_BASEPATH: /home/runner/buildenv
 
-      - name: "Install clang + ASan runtime"
+      - name: Install pinned native toolchain and FDK provider
+        shell: bash
         run: |
-          sudo apt-get install -y --no-install-recommends clang lld llvm
-          clang --version
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 llvm-18 ccache \
+            "libfdk-aac-dev=$FDK_PACKAGE_VERSION"
+          clang_version="$(clang-18 --version | head -n 1)"
+          [[ "$clang_version" == *"clang version 18."* ]]
+          qt_version="$(qmake6 -query QT_VERSION)"
+          [[ "$qt_version" == 6.4.* ]]
+          {
+            printf 'clang=%s\n' "$clang_version"
+            printf 'qt=%s\n' "$qt_version"
+            dpkg-query -W -f='${Package}=${Version}\n' libfdk-aac-dev libfdk-aac2
+          } | tee "$RUNNER_TEMP/kybernetria-reports/metadata/toolchain-packages.txt"
+          test "$(dpkg-query -W -f='${Version}' libfdk-aac-dev)" = "$FDK_PACKAGE_VERSION"
+          test "$(dpkg-query -W -f='${Version}' libfdk-aac2)" = "$FDK_PACKAGE_VERSION"
+          provider="$(dpkg-query -L libfdk-aac2 | awk '/\/libfdk-aac\.so\.2$/ { print; exit }')"
+          test -n "$provider"
+          test -f "$provider"
+          provider_real="$(realpath "$provider")"
+          readelf -d "$provider_real" > "$RUNNER_TEMP/kybernetria-reports/metadata/fdk-provider-dynamic.txt"
+          grep -F 'SONAME' "$RUNNER_TEMP/kybernetria-reports/metadata/fdk-provider-dynamic.txt" \
+            | grep -F 'libfdk-aac.so.2'
+          nm -D --defined-only "$provider_real" \
+            | awk '{ print $3 }' | sed 's/@.*//' | sort -u \
+            > "$RUNNER_TEMP/kybernetria-reports/metadata/fdk-compatible-exports.txt"
+          for symbol in aacEncGetLibInfo aacEncOpen aacEncClose aacEncEncode aacEncInfo aacEncoder_SetParam; do
+            grep -Fqx "$symbol" "$RUNNER_TEMP/kybernetria-reports/metadata/fdk-compatible-exports.txt"
+          done
+          {
+            printf 'provider_candidate=%s\n' "$provider"
+            printf 'provider_realpath=%s\n' "$provider_real"
+            printf 'provider_sha256=%s\n' "$(sha256sum "$provider_real" | cut -d' ' -f1)"
+          } > "$RUNNER_TEMP/kybernetria-reports/metadata/fdk-compatible-provider.txt"
 
-      - name: "Set up ccache"
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Restore ccache
+        id: restore_ccache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: /home/runner/.cache/ccache
-          key: ubuntu-24.04-asan-${{ github.ref }}-${{ github.run_number }}
+          key: mixxx-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-bungee-off-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ubuntu-24.04-asan-${{ github.ref }}
-            ubuntu-24.04-asan-
+            mixxx-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-bungee-off-v1-
 
-      - name: "Configure ccache"
+      - name: Configure ccache
         run: |
-          sudo apt-get install -y --no-install-recommends ccache
+          set -euo pipefail
           ccache --zero-stats
           ccache --max-size=2G
 
-      - name: "Create build directory"
-        run: mkdir build
-
-      # Minimal feature set: enable BUNGEE + tests + ASan; everything that
-      # would just cost compile time without exercising the Bungee path is
-      # turned OFF.  BUILD_BENCH is OFF so we don't depend on libpfm.
-      - name: "Configure (CMake, ASan)"
-        working-directory: build
+      - name: Configure Debug ASan build
+        shell: bash
         run: >-
-          cmake -S .. -B .
+          cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Debug
-          -DBUNGEE=ON
+          -DBUNGEE=OFF
           -DSANITIZE_ADDRESS=ON
           -DBUILD_TESTING=ON
           -DBUILD_BENCH=OFF
@@ -164,29 +150,384 @@ jobs:
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-      - name: "Build mixxx-test"
-        working-directory: build
-        run: cmake --build . --target mixxx-test -j"$(nproc)"
+      - name: Build mixxx-test
+        id: build_test
+        run: cmake --build build --target mixxx-test --parallel "$(nproc)"
 
-      - name: "Print ccache stats"
-        run: ccache --show-stats
+      - name: Save ccache after successful test build
+        id: save_ccache
+        if: steps.build_test.outcome == 'success' && !cancelled()
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: /home/runner/.cache/ccache
+          key: mixxx-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-bungee-off-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # Run the Bungee unit + integration tests under ASan, plus the
-      # SettingsManager regression that preserves explicit Bungee keylock
-      # settings. The full mixxx-test suite under ASan would run for >30
-      # minutes; this targeted run completes quickly and exercises the
-      # instrumented Bungee scaler and integration paths.
-      - name: "Run Bungee tests under ASan"
-        working-directory: build
-        env:
-          GTEST_COLOR: "1"
+      - name: Prepare exact selector and XML verifier
+        shell: bash
         run: |
-          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
-          listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
-          test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
-          if [ "$test_count" -eq 0 ]; then
-            echo "No tests matched GTest filter: $test_filter" >&2
+          set -euo pipefail
+          report="$RUNNER_TEMP/kybernetria-reports"
+          cat > "$report/expected-general.txt" <<'EOF'
+          BeatsTest.EqualWhenAllValuesMatch
+          BeatsTest.DifferentSampleRatesAreNotEqual
+          BeatsTest.DifferentDownbeatOffsetsAreNotEqual
+          Seek30WorkerStateTest.RepeatedCommandsAndQuantizedDuplicateCreation
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueAdditionWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueRemovalWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueMoveAndOrdering
+          Seek30WorkerStateTest.RefreshesMemoryCueTypeChangeToLoopWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload
+          Seek30WorkerStateTest.CapturesStableCueViewDuringExternalEdits
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueInvalidationWithoutTrackReload
+          Seek30WorkerStateTest.ClearNearestUsesOneSecondGateAndGeneration
+          Seek30WorkerStateTest.ClearNearestPrefersCueAtOrBeforeOnTie
+          RekordboxImportTest.UpdatesFirstMatchingHotCueWithoutReordering
+          RekordboxImportTest.ImportsLegacyAndExtendedHotCueLoops
+          RekordboxImportTest.AppliesTimingOffsetToHotCueLoopEnd
+          RekordboxImportTest.KeepsLegacyAndExtendedPlainHotCuesUnlooped
+          RekordboxImportTest.ReimportsHotCueLoopBoundsOverExistingCue
+          RekordboxImportTest.ColorIDTwoMapsToHistoricalRed
+          ColorPaletteTest.RekordboxTrackPaletteUsesValid24BitRgbCodes
+          EOF
+          cat > "$report/expected-fdk-incompatible.txt" <<'EOF'
+          FdkAacNativeAcceptance.RejectsProviderMissingAacEncInfo
+          EOF
+          cat > "$report/expected-fdk-compatible.txt" <<'EOF'
+          FdkAacNativeAcceptance.InitializesCompatibleProvider
+          EOF
+          sed -i 's/^          //' "$report"/expected-*.txt
+          cat > "$report/verify_native.py" <<'PY'
+          import collections
+          import json
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+
+          def listed_tests(path):
+              suite = None
+              result = []
+              for original in Path(path).read_text(encoding="utf-8").splitlines():
+                  line = original.split("#", 1)[0].rstrip()
+                  if not line.strip():
+                      continue
+                  if line[0].isspace():
+                      if suite:
+                          result.append(f"{suite}.{line.strip()}")
+                  else:
+                      name = line.strip()
+                      suite = name[:-1] if name.endswith(".") else None
+              return result
+
+
+          def disabled(identifier):
+              return any(part.startswith("DISABLED_") for part in re.split(r"[/.]", identifier))
+
+
+          def read_expected(path):
+              return [line.strip() for line in Path(path).read_text().splitlines() if line.strip()]
+
+
+          def before(list_path, expected_path, result_path):
+              listed = listed_tests(list_path)
+              expected = read_expected(expected_path)
+              problems = []
+              if not expected or len(set(expected)) != len(expected):
+                  problems.append("expected selector file is empty or duplicated")
+              if len(set(listed)) != len(listed):
+                  problems.append("GTest list contains duplicate selectors")
+              if [test for test in listed if disabled(test)]:
+                  problems.append("GTest listed a disabled selector")
+              if collections.Counter(listed) != collections.Counter(expected):
+                  problems.append("registered GTest selector list differs from exact expected set")
+              result = {"expected": expected, "listed": listed, "listed_count": len(listed),
+                        "problems": problems}
+              Path(result_path).write_text(json.dumps(result, indent=2) + "\n")
+              print(json.dumps(result, indent=2))
+              if problems:
+                  raise SystemExit("; ".join(problems))
+
+
+          def after(selection_path, xml_path, exit_code, result_path):
+              selection = json.loads(Path(selection_path).read_text())
+              problems = []
+              try:
+                  root = ET.parse(xml_path).getroot()
+                  if root.tag not in ("testsuites", "testsuite"):
+                      raise ValueError(f"unexpected root element: {root.tag}")
+                  cases = list(root.iter("testcase"))
+                  actual = [f"{case.get('classname')}.{case.get('name')}" for case in cases]
+                  reported_tests = root.get("tests")
+                  if reported_tests is None:
+                      reported_tests = sum(int(suite.get("tests", "0"))
+                                           for suite in root.iter("testsuite"))
+                  else:
+                      reported_tests = int(reported_tests)
+                  counts = {}
+                  for name in ("failures", "errors", "skipped", "disabled"):
+                      counts[name] = [int(node.get(name, "0"))
+                                      for node in [root, *list(root.iter("testsuite"))]]
+                  nonrun = [identifier for identifier, case in zip(actual, cases)
+                            if case.get("status") in ("notrun", "skipped")
+                            or case.get("result") in ("suppressed", "skipped")
+                            or case.find("skipped") is not None]
+                  if reported_tests != len(selection["expected"]):
+                      problems.append(f"XML reported tests={reported_tests}")
+                  if len(cases) != len(selection["expected"]):
+                      problems.append(f"XML testcase count={len(cases)}")
+                  if collections.Counter(actual) != collections.Counter(selection["expected"]):
+                      problems.append("XML testcase IDs differ from the exact expected set")
+                  if nonrun:
+                      problems.append(f"XML contains skipped or unrun testcases: {nonrun}")
+                  if any(value for values in counts.values() for value in values):
+                      problems.append(f"XML has nonzero failure/error/skip/disabled counts: {counts}")
+                  if any(case.find("failure") is not None or case.find("error") is not None
+                         for case in cases):
+                      problems.append("XML contains failure or error elements")
+              except (OSError, ET.ParseError, KeyError, TypeError, ValueError) as error:
+                  root, cases, actual, reported_tests = None, [], [], None
+                  counts, nonrun = {}, []
+                  problems.append(f"unable to verify GTest XML: {error}")
+              if int(exit_code) != 0:
+                  problems.append(f"native test process exited {exit_code}")
+              evidence = {"expected": selection["expected"], "xml_tests": reported_tests,
+                          "xml_testcase_count": len(cases), "executed": actual,
+                          "nonrun": nonrun, "counts": counts, "native_exit": int(exit_code),
+                          "problems": problems}
+              Path(result_path).write_text(json.dumps(evidence, indent=2) + "\n")
+              print(json.dumps(evidence, indent=2))
+              if problems:
+                  raise SystemExit("; ".join(problems))
+
+
+          if __name__ == "__main__":
+              mode, *args = sys.argv[1:]
+              if mode == "before" and len(args) == 3:
+                  before(*args)
+              elif mode == "after" and len(args) == 4:
+                  after(*args)
+              else:
+                  raise SystemExit("usage: verify_native.py before LIST EXPECTED JSON | after JSON XML EXIT JSON")
+          PY
+          python3 -m py_compile "$report/verify_native.py"
+
+      - name: Verify and run exact native selectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/kybernetria-reports"
+          test_bin="$GITHUB_WORKSPACE/build/mixxx-test"
+          test -x "$test_bin"
+          run_one() {
+            local label="$1" expected="$2" filter="$3" provider_mode="${4:-none}"
+            local process_root="$RUNNER_TEMP/kybernetria-private/$label"
+            local output="$report/results/$label"
+            local selector_file="$output/list.txt" xml_file="$output/gtest.xml"
+            local selection="$output/selection.json" evidence="$output/evidence.json"
+            mkdir -m 700 -p "$process_root" "$output"
+            mkdir -m 700 "$process_root/home" "$process_root/config" \
+              "$process_root/data" "$process_root/cache" "$process_root/state" \
+              "$process_root/runtime" "$process_root/tmp"
+            chmod 700 "$process_root/runtime"
+            env HOME="$process_root/home" \
+              XDG_CONFIG_HOME="$process_root/config" \
+              XDG_DATA_HOME="$process_root/data" \
+              XDG_CACHE_HOME="$process_root/cache" \
+              XDG_STATE_HOME="$process_root/state" \
+              XDG_RUNTIME_DIR="$process_root/runtime" \
+              TMPDIR="$process_root/tmp" QT_QPA_PLATFORM=offscreen \
+              "$test_bin" --gtest_list_tests --gtest_filter="$filter" \
+              > "$selector_file" 2> "$process_root/list-stderr.txt"
+            python3 "$report/verify_native.py" before "$selector_file" "$expected" "$selection"
+            local status=0
+            if [[ "$provider_mode" == incompatible ]]; then
+              set +e
+              env HOME="$process_root/home" \
+                XDG_CONFIG_HOME="$process_root/config" \
+                XDG_DATA_HOME="$process_root/data" \
+                XDG_CACHE_HOME="$process_root/cache" \
+                XDG_STATE_HOME="$process_root/state" \
+                XDG_RUNTIME_DIR="$process_root/runtime" \
+                TMPDIR="$process_root/tmp" QT_QPA_PLATFORM=offscreen \
+                LD_DEBUG=libs LD_LIBRARY_PATH="$RUNNER_TEMP/kybernetria-incompatible" \
+                "$test_bin" --gtest_filter="$filter" \
+                --gtest_output="xml:$xml_file" > "$process_root/stdout.txt" 2> "$process_root/loader.txt"
+              status=$?
+              set -e
+              if ! grep -F "$RUNNER_TEMP/kybernetria-incompatible/libfdk-aac.so.2" \
+                  "$process_root/loader.txt" | grep -F 'calling init:' \
+                  > "$report/results/loader-incompatible-match.txt"; then
+                tail -c 16384 "$process_root/loader.txt" > "$output/loader-tail.txt"
+                echo 'Loader did not initialize the incompatible fixture path' >&2
+                exit 1
+              fi
+            elif [[ "$provider_mode" == compatible ]]; then
+              set +e
+              env HOME="$process_root/home" \
+                XDG_CONFIG_HOME="$process_root/config" \
+                XDG_DATA_HOME="$process_root/data" \
+                XDG_CACHE_HOME="$process_root/cache" \
+                XDG_STATE_HOME="$process_root/state" \
+                XDG_RUNTIME_DIR="$process_root/runtime" \
+                TMPDIR="$process_root/tmp" QT_QPA_PLATFORM=offscreen \
+                LD_DEBUG=libs LD_LIBRARY_PATH="${FDK_COMPATIBLE_DIR}" \
+                "$test_bin" --gtest_filter="$filter" \
+                --gtest_output="xml:$xml_file" > "$process_root/stdout.txt" 2> "$process_root/loader.txt"
+              status=$?
+              set -e
+            else
+              set +e
+              env HOME="$process_root/home" \
+                XDG_CONFIG_HOME="$process_root/config" \
+                XDG_DATA_HOME="$process_root/data" \
+                XDG_CACHE_HOME="$process_root/cache" \
+                XDG_STATE_HOME="$process_root/state" \
+                XDG_RUNTIME_DIR="$process_root/runtime" \
+                TMPDIR="$process_root/tmp" QT_QPA_PLATFORM=offscreen \
+                "$test_bin" --gtest_filter="$filter" \
+                --gtest_output="xml:$xml_file" > "$process_root/stdout.txt" 2> "$process_root/stderr.txt"
+              status=$?
+              set -e
+            fi
+            printf '%s\n' "$status" > "$output/exit-code.txt"
+            if [[ "$status" -ne 0 ]]; then
+              tail -c 16384 "$process_root/stdout.txt" > "$output/stdout-tail.txt" || true
+              if [[ -f "$process_root/stderr.txt" ]]; then
+                tail -c 16384 "$process_root/stderr.txt" > "$output/stderr-tail.txt" || true
+              elif [[ -f "$process_root/loader.txt" ]]; then
+                tail -c 16384 "$process_root/loader.txt" > "$output/stderr-tail.txt" || true
+              fi
+            fi
+            python3 "$report/verify_native.py" after "$selection" "$xml_file" "$status" "$evidence"
+            if [[ "$provider_mode" == compatible ]]; then
+              loader_identity_result="$report/results/loader-compatible-identity.txt"
+              printf 'result=pending\n' > "$loader_identity_result"
+              if ! awk -v candidate="$FDK_COMPATIBLE_CANDIDATE" \
+                  -v realpath="$FDK_COMPATIBLE_REALPATH" '
+                    /calling init:/ {
+                      loaded_path = $0
+                      sub(/^.*calling init:[[:space:]]*/, "", loaded_path)
+                      sub(/[[:space:]]*$/, "", loaded_path)
+                      if (loaded_path == candidate || loaded_path == realpath) {
+                        print $0
+                        matched = 1
+                      }
+                    }
+                    END { if (!matched) exit 1 }
+                  ' "$process_root/loader.txt" \
+                  > "$report/results/loader-compatible-match.txt"; then
+                printf 'result=failed\nreason=no_exact_candidate_or_realpath_init_line\n' \
+                  > "$loader_identity_result"
+                tail -c 16384 "$process_root/loader.txt" > "$output/loader-tail.txt"
+                echo 'Loader did not initialize the recorded compatible provider file' >&2
+                exit 1
+              fi
+              printf 'result=passed\nmatched_line_file=loader-compatible-match.txt\n' \
+                > "$loader_identity_result"
+            fi
+          }
+
+          # Direct Seek30 state/snapshot cases do not prove queued-worker/thread timing.
+          general_filter='BeatsTest.EqualWhenAllValuesMatch:BeatsTest.DifferentSampleRatesAreNotEqual:BeatsTest.DifferentDownbeatOffsetsAreNotEqual:Seek30WorkerStateTest.RepeatedCommandsAndQuantizedDuplicateCreation:Seek30WorkerStateTest.RefreshesExternalMemoryCueAdditionWithoutTrackReload:Seek30WorkerStateTest.RefreshesExternalMemoryCueRemovalWithoutTrackReload:Seek30WorkerStateTest.RefreshesExternalMemoryCueMoveAndOrdering:Seek30WorkerStateTest.RefreshesMemoryCueTypeChangeToLoopWithoutTrackReload:Seek30WorkerStateTest.RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload:Seek30WorkerStateTest.CapturesStableCueViewDuringExternalEdits:Seek30WorkerStateTest.RefreshesExternalMemoryCueInvalidationWithoutTrackReload:Seek30WorkerStateTest.ClearNearestUsesOneSecondGateAndGeneration:Seek30WorkerStateTest.ClearNearestPrefersCueAtOrBeforeOnTie:RekordboxImportTest.UpdatesFirstMatchingHotCueWithoutReordering:RekordboxImportTest.ImportsLegacyAndExtendedHotCueLoops:RekordboxImportTest.AppliesTimingOffsetToHotCueLoopEnd:RekordboxImportTest.KeepsLegacyAndExtendedPlainHotCuesUnlooped:RekordboxImportTest.ReimportsHotCueLoopBoundsOverExistingCue:RekordboxImportTest.ColorIDTwoMapsToHistoricalRed:ColorPaletteTest.RekordboxTrackPaletteUsesValid24BitRgbCodes'
+          incompatible_filter='FdkAacNativeAcceptance.RejectsProviderMissingAacEncInfo'
+          compatible_filter='FdkAacNativeAcceptance.InitializesCompatibleProvider'
+          run_one source-regressions "$report/expected-general.txt" "$general_filter"
+
+          mkdir -m 700 "$RUNNER_TEMP/kybernetria-incompatible"
+          clang++-18 -fPIC -shared -Wl,-soname,libfdk-aac.so.2 \
+            -o "$RUNNER_TEMP/kybernetria-incompatible/libfdk-aac.so.2" \
+            src/test/diagnostic/incompatible_fdk_provider.cpp
+          readelf -d "$RUNNER_TEMP/kybernetria-incompatible/libfdk-aac.so.2" \
+            > "$report/metadata/fdk-incompatible-dynamic.txt"
+          grep -F 'SONAME' "$report/metadata/fdk-incompatible-dynamic.txt" \
+            | grep -F 'libfdk-aac.so.2'
+          nm -D --defined-only "$RUNNER_TEMP/kybernetria-incompatible/libfdk-aac.so.2" \
+            | awk '{ print $3 }' | sed 's/@.*//' | sort -u \
+            > "$report/metadata/fdk-incompatible-exports.txt"
+          for symbol in aacEncGetLibInfo aacEncOpen aacEncClose aacEncEncode aacEncoder_SetParam; do
+            grep -Fqx "$symbol" "$report/metadata/fdk-incompatible-exports.txt"
+          done
+          if grep -Fqx aacEncInfo "$report/metadata/fdk-incompatible-exports.txt"; then
+            echo 'Incompatible fixture unexpectedly exports aacEncInfo' >&2
             exit 1
           fi
-          echo "Running $test_count tests matching GTest filter: $test_filter"
-          ./mixxx-test --gtest_filter="$test_filter"
+          {
+            printf 'fixture_path=%s\n' "$RUNNER_TEMP/kybernetria-incompatible/libfdk-aac.so.2"
+            printf 'fixture_sha256=%s\n' \
+              "$(sha256sum "$RUNNER_TEMP/kybernetria-incompatible/libfdk-aac.so.2" | cut -d' ' -f1)"
+            printf 'fixture_source_sha256=%s\n' \
+              "$(sha256sum src/test/diagnostic/incompatible_fdk_provider.cpp | cut -d' ' -f1)"
+          } > "$report/metadata/fdk-incompatible-provider.txt"
+          run_one issue83-incompatible "$report/expected-fdk-incompatible.txt" \
+            "$incompatible_filter" incompatible
+
+          provider_metadata="$report/metadata/fdk-compatible-provider.txt"
+          FDK_COMPATIBLE_CANDIDATE="$(sed -n 's/^provider_candidate=//p' "$provider_metadata")"
+          FDK_COMPATIBLE_REALPATH="$(sed -n 's/^provider_realpath=//p' "$provider_metadata")"
+          FDK_COMPATIBLE_SHA256="$(sed -n 's/^provider_sha256=//p' "$provider_metadata")"
+          test -n "$FDK_COMPATIBLE_CANDIDATE"
+          test -n "$FDK_COMPATIBLE_REALPATH"
+          test -n "$FDK_COMPATIBLE_SHA256"
+          test -f "$FDK_COMPATIBLE_CANDIDATE"
+          test -f "$FDK_COMPATIBLE_REALPATH"
+          test "$(realpath "$FDK_COMPATIBLE_CANDIDATE")" = "$FDK_COMPATIBLE_REALPATH"
+          test "$(sha256sum "$FDK_COMPATIBLE_CANDIDATE" | cut -d' ' -f1)" = "$FDK_COMPATIBLE_SHA256"
+          test "$(sha256sum "$FDK_COMPATIBLE_REALPATH" | cut -d' ' -f1)" = "$FDK_COMPATIBLE_SHA256"
+          candidate_device_inode="$(stat -Lc '%d:%i' "$FDK_COMPATIBLE_CANDIDATE")"
+          realpath_device_inode="$(stat -Lc '%d:%i' "$FDK_COMPATIBLE_REALPATH")"
+          test "$candidate_device_inode" = "$realpath_device_inode"
+          {
+            printf 'provider_candidate=%s\n' "$FDK_COMPATIBLE_CANDIDATE"
+            printf 'provider_realpath=%s\n' "$FDK_COMPATIBLE_REALPATH"
+            printf 'provider_sha256=%s\n' "$FDK_COMPATIBLE_SHA256"
+            printf 'candidate_device_inode=%s\n' "$candidate_device_inode"
+            printf 'realpath_device_inode=%s\n' "$realpath_device_inode"
+            printf 'identity_match=true\n'
+          } > "$report/metadata/fdk-compatible-loader-identity.txt"
+          FDK_COMPATIBLE_DIR="$(dirname "$FDK_COMPATIBLE_REALPATH")"
+          export FDK_COMPATIBLE_CANDIDATE FDK_COMPATIBLE_REALPATH FDK_COMPATIBLE_DIR
+          run_one issue83-compatible "$report/expected-fdk-compatible.txt" \
+            "$compatible_filter" compatible
+
+      - name: Record cache stats and enforce artifact bound
+        if: always()
+        shell: bash
+        env:
+          CCACHE_REQUESTED_KEY: mixxx-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-bungee-off-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          CCACHE_RESTORE_CACHE_HIT: ${{ steps.restore_ccache.outputs.cache-hit }}
+          CCACHE_RESTORE_PRIMARY_KEY: ${{ steps.restore_ccache.outputs.cache-primary-key }}
+          CCACHE_RESTORE_MATCHED_KEY: ${{ steps.restore_ccache.outputs.cache-matched-key }}
+          CCACHE_RESTORE_OUTCOME: ${{ steps.restore_ccache.outcome }}
+          CCACHE_BUILD_OUTCOME: ${{ steps.build_test.outcome }}
+          CCACHE_SAVE_OUTCOME: ${{ steps.save_ccache.outcome }}
+          CCACHE_SAVE_CONCLUSION: ${{ steps.save_ccache.conclusion }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/kybernetria-reports"
+          mkdir -p "$report/metadata"
+          {
+            printf 'requested_key=%s\n' "$CCACHE_REQUESTED_KEY"
+            printf 'restore_cache_hit=%s\n' "$CCACHE_RESTORE_CACHE_HIT"
+            printf 'restore_primary_key=%s\n' "$CCACHE_RESTORE_PRIMARY_KEY"
+            printf 'restore_matched_key=%s\n' "$CCACHE_RESTORE_MATCHED_KEY"
+            printf 'restore_outcome=%s\n' "$CCACHE_RESTORE_OUTCOME"
+            printf 'build_outcome=%s\n' "$CCACHE_BUILD_OUTCOME"
+            printf 'save_outcome=%s\n' "$CCACHE_SAVE_OUTCOME"
+            printf 'save_conclusion=%s\n' "$CCACHE_SAVE_CONCLUSION"
+          } > "$report/metadata/ccache-action.txt"
+          ccache --show-stats > "$report/metadata/ccache-stats.txt" 2>&1 || true
+          size="$(du -sb "$report" | awk '{ print $1 }')"
+          printf 'artifact_bytes=%s\nlimit_bytes=5242880\n' "$size" \
+            > "$report/metadata/artifact-size.txt"
+          test "$size" -le 5242880
+
+      - name: Upload bounded native evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kybernetria-linux-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/kybernetria-reports/
+          if-no-files-found: error
+          retention-days: 7
