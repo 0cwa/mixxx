@@ -215,6 +215,12 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
                 source.m_streamGapEndFrameIndex};
     }
 
+    SINT streamPositionToFrameIndexForTest(
+            const SoundSourceMediaFoundation& source,
+            LONGLONG streamPosition) const {
+        return source.m_streamUnitConverter.toFrameIndex(streamPosition);
+    }
+
     SINT readableSampleCount(const SoundSourceMediaFoundation& source) const {
         return source.m_sampleBuffer.readableLength();
     }
@@ -418,7 +424,7 @@ TEST_F(SoundSourceMediaFoundationTest, FirstPostSeekTickSampleBeforeTargetReache
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -427,15 +433,15 @@ TEST_F(SoundSourceMediaFoundationTest, FirstPostSeekTickSampleBeforeTargetReache
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -474,7 +480,7 @@ TEST_F(
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -483,15 +489,15 @@ TEST_F(
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -533,7 +539,7 @@ TEST_F(
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -542,15 +548,15 @@ TEST_F(
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -617,7 +623,7 @@ TEST_F(SoundSourceMediaFoundationTest, FirstPostSeekTickAfterTargetFailsClosed) 
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -626,15 +632,15 @@ TEST_F(SoundSourceMediaFoundationTest, FirstPostSeekTickAfterTargetFailsClosed) 
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -671,7 +677,7 @@ TEST_F(SoundSourceMediaFoundationTest, InvalidPostSeekTickCannotBracketTarget) {
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -680,15 +686,15 @@ TEST_F(SoundSourceMediaFoundationTest, InvalidPostSeekTickCannotBracketTarget) {
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -726,7 +732,7 @@ TEST_F(SoundSourceMediaFoundationTest, InvalidPostSeekSampleTimestampFailsClosed
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -735,15 +741,15 @@ TEST_F(SoundSourceMediaFoundationTest, InvalidPostSeekSampleTimestampFailsClosed
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -793,8 +799,8 @@ TEST_F(SoundSourceMediaFoundationTest, FirstPostSeekTickAtTargetPreservesGap) {
             });
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -845,7 +851,7 @@ TEST_F(
     SINT currentBeforeFirstSample = source.frameIndexMax();
     setReadSampleProvider(
             source,
-            [&source, &readSamples, &currentBeforeFirstSample](
+            [this, &source, &readSamples, &currentBeforeFirstSample](
                     DWORD streamIndex,
                     DWORD controlFlags,
                     DWORD* pFlags,
@@ -854,15 +860,15 @@ TEST_F(
                 const HRESULT hr = readSamples(
                         streamIndex, controlFlags, pFlags, pTimestamp, ppSample);
                 if (readSamples.callCount() == 2) {
-                    currentBeforeFirstSample = source.m_currentFrameIndex;
+                    currentBeforeFirstSample = readState(source).currentFrameIndex;
                 }
                 return hr;
             });
     SINT positionedAt = kUnknownFrameIndex;
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
@@ -924,8 +930,8 @@ TEST_F(SoundSourceMediaFoundationTest, SeekGapEndingAtTargetDoesNotSilenceTarget
             });
     setCurrentPositionProvider(
             source,
-            [&source, &positionedAt](LONGLONG streamPosition) {
-                positionedAt = source.m_streamUnitConverter.toFrameIndex(streamPosition);
+            [this, &source, &positionedAt](LONGLONG streamPosition) {
+                positionedAt = streamPositionToFrameIndexForTest(source, streamPosition);
                 return S_OK;
             });
 
