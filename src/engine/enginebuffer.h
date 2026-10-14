@@ -476,6 +476,9 @@ class EngineBuffer : public EngineObject {
     CueControl* m_pCueControl;
 #ifdef BUILD_TESTING
     std::atomic<F001ProbeForTest*> m_pF001ProbeForTest{nullptr};
+    QAtomicInt m_f001ProcessCallbacksForTest{0};
+    QAtomicInt m_f001ReaderProcessCallsForTest{0};
+    QAtomicInt m_f001BungeeLayoutGuardReturnsForTest{0};
 #endif
     Seek30Control* m_pSeek30Control{nullptr};
 

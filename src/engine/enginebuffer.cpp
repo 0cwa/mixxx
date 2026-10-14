@@ -1669,6 +1669,9 @@ void EngineBuffer::processWithChannelLayout(
         CSAMPLE* pOutput,
         const std::size_t bufferSize,
         mixxx::audio::ChannelCount callbackChannelCount) {
+#ifdef BUILD_TESTING
+    m_f001ProcessCallbacksForTest.fetchAndAddRelaxed(1);
+#endif
     // Bail if we receive a buffer size with incomplete sample frames. Assert in debug builds.
     const bool validBuffer = callbackChannelCount.isValid() &&
             (bufferSize % callbackChannelCount) == 0;
@@ -1739,6 +1742,9 @@ void EngineBuffer::processWithChannelLayout(
     }
 
     if (!isScalerLayoutCompatible(m_pScale, callbackChannelCount)) {
+#ifdef BUILD_TESTING
+        m_f001BungeeLayoutGuardReturnsForTest.fetchAndAddRelaxed(1);
+#endif
         SampleUtil::clear(pOutput, bufferSize);
         m_pSyncControl->updateAudible();
         m_lastBufferSize = bufferSize;
@@ -1748,6 +1754,9 @@ void EngineBuffer::processWithChannelLayout(
     }
 #endif
 
+#ifdef BUILD_TESTING
+    m_f001ReaderProcessCallsForTest.fetchAndAddRelaxed(1);
+#endif
     m_pReader->process();
 
     if (isTrackLoaded() && m_pause.tryLock()) {

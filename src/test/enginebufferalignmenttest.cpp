@@ -30,6 +30,7 @@
 #include <optional>
 #include <span>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -1226,6 +1227,56 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
                 CachingReader::STATE_TRACK_LOADED;
     }
 
+    static int f001ProcessCallbacks(const EngineBuffer& buffer) {
+        return buffer.m_f001ProcessCallbacksForTest.loadAcquire();
+    }
+
+    static int f001ReaderProcessCalls(const EngineBuffer& buffer) {
+        return buffer.m_f001ReaderProcessCallsForTest.loadAcquire();
+    }
+
+    static int f001BungeeLayoutGuardReturns(const EngineBuffer& buffer) {
+        return buffer.m_f001BungeeLayoutGuardReturnsForTest.loadAcquire();
+    }
+
+    static std::string f001ReaderIdleFailureSnapshot(
+            const EngineBuffer& buffer,
+            int processCallbacksBeforeWait,
+            int readerProcessCallsBeforeWait,
+            int layoutGuardReturnsBeforeWait) {
+        const auto& reader = *buffer.m_pReader;
+        const auto& worker = reader.m_worker;
+        const int ownerState = reader.m_state.loadAcquire();
+        const int workerState = static_cast<int>(worker.diagnosticState());
+        const int activeChunk = worker.diagnosticActiveChunk();
+        const int publishedStatuses = worker.diagnosticPublishedStatuses();
+        const int consumedStatuses = reader.m_diagnosticStatusConsumed.loadAcquire();
+        const int fifoReadable = reader.m_readerStatusUpdateFIFO.readAvailable();
+        const int completedRequests = worker.diagnosticCompletedRequests();
+        const int processCallbacks =
+                buffer.m_f001ProcessCallbacksForTest.loadAcquire() -
+                processCallbacksBeforeWait;
+        const int readerProcessCalls =
+                buffer.m_f001ReaderProcessCallsForTest.loadAcquire() -
+                readerProcessCallsBeforeWait;
+        const int layoutGuardReturns =
+                buffer.m_f001BungeeLayoutGuardReturnsForTest.loadAcquire() -
+                layoutGuardReturnsBeforeWait;
+        std::ostringstream snapshot;
+        snapshot << "F001 reader idle timeout: ownerState=" << ownerState
+                 << " workerState=" << workerState
+                 << " activeChunk=" << activeChunk
+                 << " publishedStatuses=" << publishedStatuses
+                 << " consumedStatuses=" << consumedStatuses
+                 << " pendingStatuses=" << publishedStatuses - consumedStatuses
+                 << " fifoReadable=" << fifoReadable
+                 << " completedRequests=" << completedRequests
+                 << " processCallbacks=" << processCallbacks
+                 << " readerProcessCalls=" << readerProcessCalls
+                 << " layoutGuardReturns=" << layoutGuardReturns;
+        return snapshot.str();
+    }
+
     static void SetUpTestSuite() {
         EngineBuffer::setTestReaderFactory(
                 &makeDeterministicReader,
@@ -1255,7 +1306,15 @@ class F001ProbeStorage {
         double result{0};
         bool checkStart{false};
         double start{0};
+        enum class EndPositionField : std::uint8_t { B,
+            A };
+        EndPositionField endPositionField{EndPositionField::B};
     };
+
+    static RequiredEvent endInPositionA(RequiredEvent event) {
+        event.endPositionField = RequiredEvent::EndPositionField::A;
+        return event;
+    }
 
     struct SelectedHookCheck {
         std::uint32_t token;
@@ -1351,7 +1410,11 @@ class F001ProbeStorage {
                     (expected.checkRelated &&
                             entry.relatedIdentity !=
                                     reinterpret_cast<std::uintptr_t>(expected.related)) ||
-                    (expected.checkEnd && entry.positionB != expected.end) ||
+                    (expected.checkEnd &&
+                            (expected.endPositionField ==
+                                                    RequiredEvent::EndPositionField::A
+                                            ? entry.positionA
+                                            : entry.positionB) != expected.end) ||
                     (expected.checkResult &&
                             entry.scalarBits != f001DoubleBitsForTest(expected.result)) ||
                     (expected.checkStart && entry.positionA != expected.start)) {
@@ -2022,14 +2085,14 @@ TEST_F(F001ProbeAlignmentTest, EjectWaitsForAttachedTrackRefresh) {
     requireRoute(301,
             {{F001ProbeEventForTest::CueControlTrackCuesUpdated,
                      F001ProbePhaseForTest::Point},
-                    {F001ProbeEventForTest::CueControlLoadCues,
+                    endInPositionA({F001ProbeEventForTest::CueControlLoadCues,
                             F001ProbePhaseForTest::Acquired,
                             nullptr,
                             track.get(),
                             false,
                             true,
                             true,
-                            endA},
+                            endA}),
                     {F001ProbeEventForTest::EngineNotifyTrackLoaded,
                             F001ProbePhaseForTest::Before},
                     {F001ProbeEventForTest::CueControlTrackLoaded,
@@ -2110,7 +2173,19 @@ TEST_F(F001ProbeAlignmentTest, EjectWaitsForAttachedTrackRefresh) {
     setF001LoadCuesHold(*source, nullptr);
     ASSERT_TRUE(sawEjectAttempt.load());
     ASSERT_FALSE(m_hold.timedOut.load());
-    ASSERT_TRUE(progressUntil([&] { return f001ReaderIdle(*source); }));
+    const int processCallbacksBeforeWait =
+            f001ProcessCallbacks(*source);
+    const int readerProcessCallsBeforeWait =
+            f001ReaderProcessCalls(*source);
+    const int layoutGuardReturnsBeforeWait =
+            f001BungeeLayoutGuardReturns(*source);
+    const bool readerIdle = progressUntil([&] { return f001ReaderIdle(*source); });
+    if (!readerIdle) {
+        FAIL() << f001ReaderIdleFailureSnapshot(*source,
+                processCallbacksBeforeWait,
+                readerProcessCallsBeforeWait,
+                layoutGuardReturnsBeforeWait);
+    }
     QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
 
     forbidOnToken(302, {F001ProbeEventForTest::CueControlQuantizeExplicit});
@@ -2192,14 +2267,14 @@ TEST_F(F001ProbeAlignmentTest, ReplacementSeparatesTrackBounds) {
             Qt::QueuedConnection);
     setF001LoadCuesHold(*source, &m_hold);
     requireRoute(401,
-            {{F001ProbeEventForTest::CueControlLoadCues,
+            {endInPositionA({F001ProbeEventForTest::CueControlLoadCues,
                      F001ProbePhaseForTest::Acquired,
                      nullptr,
                      trackA.get(),
                      false,
                      true,
                      true,
-                     endA},
+                     endA}),
                     {F001ProbeEventForTest::CueControlTrackLoaded,
                             F001ProbePhaseForTest::Attempt,
                             nullptr,
@@ -2325,6 +2400,10 @@ TEST_F(F001ProbeAlignmentTest, ReplacementSeparatesTrackBounds) {
     std::atomic<bool> sawReplacementAttempt{false};
     std::thread release([&] {
         sawReplacementAttempt.store(m_hold.trackLoadAttempt.tryAcquire(1, 2000));
+        // Track B signals this semaphore before it waits for the CueControl
+        // mutex held by Track A's refresh. Remove the fixture hold before
+        // releasing A so B's later cue load cannot consume the same hold.
+        setF001LoadCuesHold(*source, nullptr);
         m_hold.release.release();
     });
     const auto joinRelease = qScopeGuard([&] {
