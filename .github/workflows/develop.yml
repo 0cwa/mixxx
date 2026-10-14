@@ -10,9 +10,16 @@ on:
   push:
     branches:
       - "*"
+      - "!diagnostic/issue92-pr80-seek-target-20261014-r2"
       - "!main"
       - "![0-9].[0-9]"
   workflow_dispatch:
+    inputs:
+      mediafoundation_diagnostic:
+        description: Run only the Windows x64 Media Foundation test suite
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read #  to fetch code (actions/checkout)
@@ -20,6 +27,7 @@ permissions:
 
 jobs:
   stop-build:
+    if: inputs.mediafoundation_diagnostic != true
     name: Check if build should be stopped
     runs-on: ubuntu-slim
     outputs:
@@ -50,7 +58,7 @@ jobs:
             }
 
   pre-commit:
-    if: needs.stop-build.outputs.result == 'false'
+    if: inputs.mediafoundation_diagnostic != true && needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/pre-commit.yml
@@ -58,7 +66,7 @@ jobs:
       pull_request: ${{ github.event_name == 'pull_request' }}
 
   checks:
-    if: needs.stop-build.outputs.result == 'false'
+    if: inputs.mediafoundation_diagnostic != true && needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/checks.yml
@@ -68,7 +76,7 @@ jobs:
     uses: ./.github/workflows/git.yml
 
   build:
-    if: needs.stop-build.outputs.result == 'false'
+    if: inputs.mediafoundation_diagnostic != true && needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/build.yml
@@ -76,10 +84,18 @@ jobs:
       branch: ${{ github.head_ref || github.ref_name }}
       ref: ${{ github.ref }}
 
+  mediafoundation-diagnostic:
+    name: Windows x64 Issue 92 seek-target test
+    if: inputs.mediafoundation_diagnostic == true
+    permissions:
+      contents: read
+    uses: ./.github/workflows/issue92-seek-target-diagnostic.yml
+
   # This task is used as a probe for auto merge
   # In the future, it could also be used to perform a status update (e.g once the whole CI is passing + is ready for review, add a specific label such as `need review`)
   ready:
     name: Ready to merge
+    if: inputs.mediafoundation_diagnostic != true
     needs:
       - pre-commit
       - checks
