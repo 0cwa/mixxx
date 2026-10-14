@@ -7,6 +7,7 @@ const OnlyActiveDeckEffect = engine.getSetting("OnlyActiveDeckEffect");
 const displayVUFromBothDecks = engine.getSetting("displayVUFromBothDecks");
 const defaultPadMode = engine.getSetting("defaultPadMode");
 const useFadercutsAsStems = engine.getSetting("useFadercutsAsStems");
+const preserveFaderCutLevel = engine.getSetting("preserveFaderCutLevel");
 const useAdditionalHotcues = engine.getSetting("useAdditionalHotcues");
 const exitSlipmodeAfterScratching = engine.getSetting("exitSlipmodeAfterScratching");
 
@@ -961,6 +962,10 @@ NS4FX.Deck = function(number, midi_chan) {
             }
         }
     });
+    this.faderCutsState = {
+        activePadCount: 0,
+        startingVolume: null,
+    };
     this.autoloop_buttons = new components.ComponentContainer({
         updateLEDs: function(deckGroup) {
             for (const button in deck.autoloop_buttons) { // Iterate directly over autoloop_buttons
@@ -1090,8 +1095,10 @@ NS4FX.Deck = function(number, midi_chan) {
                         const speedMultiplier = this.number; // Button 1 = slow, Button 4 = fast
                         const interval = baseInterval / speedMultiplier; // Adjust speed
                         print(`BPM=${bpm}, Base Interval=${baseInterval}ms, Speed Multiplier=${speedMultiplier}, Final Interval=${interval}ms`);
-                        this.startFaderCuts(deckGroup, interval); // Start cuts with calculated speed
-                        this.output(1); // Activate LED
+                        const started = this.startFaderCuts(deckGroup, interval); // Start cuts with calculated speed
+                        if (!preserveFaderCutLevel || started) {
+                            this.output(1); // Activate LED
+                        }
                     } else {
                         this.stopFaderCuts(deckGroup); // Stop fader cuts
                         this.output(0); // Deactivate LED
@@ -1102,26 +1109,61 @@ NS4FX.Deck = function(number, midi_chan) {
                 },
                 startFaderCuts: function(deckGroup, interval) {
                     if (this.faderCutInterval) {
-                        return;
+                        return true;
+                    }
+                    if (preserveFaderCutLevel && deck.faderCutsState.activePadCount === 0) {
+                        const startingVolume = engine.getValue(deckGroup, "volume");
+                        if (!Number.isFinite(startingVolume)) {
+                            return false;
+                        }
+                        deck.faderCutsState.startingVolume = Math.max(0, Math.min(1, startingVolume));
                     }
                     let toggle = false;
 
                     this.faderCutInterval = engine.beginTimer(interval, () => {
                         toggle = !toggle;
-                        const newVolume = toggle ? 1 : 0; // Switch between full volume and silence
+                        const highVolume = preserveFaderCutLevel ? deck.faderCutsState.startingVolume : 1;
+                        const newVolume = toggle ? highVolume : 0; // Switch between the high level and silence
                         print(`Toggle=${toggle}, New Volume=${newVolume}`);
                         engine.setValue(deckGroup, "volume", newVolume);
                     });
                     print(`Timer started with interval ${interval}ms`);
+                    if (preserveFaderCutLevel) {
+                        if (!this.faderCutInterval) {
+                            if (deck.faderCutsState.activePadCount === 0) {
+                                deck.faderCutsState.startingVolume = null;
+                            }
+                            return false;
+                        }
+                        ++deck.faderCutsState.activePadCount;
+                    }
+                    return true;
                 },
                 stopFaderCuts: function(deckGroup) {
-                    if (this.faderCutInterval) {
-                        engine.stopTimer(this.faderCutInterval);
-                        this.faderCutInterval = null;
+                    if (!preserveFaderCutLevel) {
+                        if (this.faderCutInterval) {
+                            engine.stopTimer(this.faderCutInterval);
+                            this.faderCutInterval = null;
+                        }
+
+                        engine.setValue(deckGroup, "volume", 1);
+                        print(`Resetting volume for ${deckGroup} to 1`);
+                        return;
                     }
 
-                    engine.setValue(deckGroup, "volume", 1);
-                    print(`Resetting volume for ${deckGroup} to 1`);
+                    if (!this.faderCutInterval) {
+                        return;
+                    }
+
+                    engine.stopTimer(this.faderCutInterval);
+                    this.faderCutInterval = null;
+                    --deck.faderCutsState.activePadCount;
+                    if (deck.faderCutsState.activePadCount === 0) {
+                        const startingVolume = deck.faderCutsState.startingVolume;
+                        deck.faderCutsState.startingVolume = null;
+                        engine.setValue(deckGroup, "volume", startingVolume);
+                        print(`Restoring volume for ${deckGroup} to ${startingVolume}`);
+                    }
                 },
                 number: i
             });
