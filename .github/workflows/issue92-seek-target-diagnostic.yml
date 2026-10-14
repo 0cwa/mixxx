@@ -1,0 +1,335 @@
+# Narrow manual Windows run for the frozen Issue 92 / PR 80 seek-target source.
+# The caller is the already registered .github/workflows/develop.yml workflow.
+
+name: Issue 92 seek target Windows test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64-mf-tests:
+    name: Windows x64 Media Foundation 14 tests
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Bind this run to the frozen source and workflow child
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_COMMIT: d1b7e7fc7a0de13b15fcdc450f1508c09e79385c
+          EXPECTED_SOURCE_TREE: 32764fede2ab0c204491bef97b3b953337a1f4f8
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          $parent = (git rev-parse 'HEAD^').Trim()
+          $sourceTree = (git rev-parse "$($env:EXPECTED_SOURCE_COMMIT)^{tree}").Trim()
+          if ($head -ne $env:GITHUB_SHA) { throw "Checkout HEAD $head differs from GITHUB_SHA $env:GITHUB_SHA" }
+          if ($parent -ne $env:EXPECTED_SOURCE_COMMIT) { throw "Workflow child parent is $parent, expected $env:EXPECTED_SOURCE_COMMIT" }
+          if ($sourceTree -ne $env:EXPECTED_SOURCE_TREE) { throw "Source tree is $sourceTree, expected $env:EXPECTED_SOURCE_TREE" }
+
+          $expectedPaths = @(
+            '.github/workflows/develop.yml',
+            '.github/workflows/issue92-seek-target-diagnostic.yml'
+          ) | Sort-Object
+          $changedPaths = @(git diff --name-only --no-renames $env:EXPECTED_SOURCE_COMMIT HEAD | Sort-Object)
+          if (($changedPaths -join "`n") -ne ($expectedPaths -join "`n")) {
+            throw "Workflow child changed paths differ. Expected: $($expectedPaths -join ', '); actual: $($changedPaths -join ', ')"
+          }
+
+          $record = [ordered]@{
+            source_commit = $env:EXPECTED_SOURCE_COMMIT
+            source_tree = $sourceTree
+            workflow_commit = $head
+            workflow_tree = (git rev-parse 'HEAD^{tree}').Trim()
+            workflow_blob = (git rev-parse 'HEAD:.github/workflows/issue92-seek-target-diagnostic.yml').Trim()
+            caller_workflow_blob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
+            changed_paths = $changedPaths
+            binding = 'pass'
+          }
+          $record | ConvertTo-Json -Depth 4 | Set-Content -Path "$env:GITHUB_WORKSPACE\source-binding.json"
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2.2
+        with:
+          cmake-version: "3.30.x"
+
+      - name: Set up MSVC x64 developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up Mixxx Windows build environment
+        shell: cmd
+        run: tools\windows_buildenv.bat setup
+        env:
+          BUILDENV_BASEPATH: C:\buildenv
+          BUILDENV_RELEASE: TRUE
+
+      - name: Create build directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Path build | Out-Null
+
+      - name: Configure the Media Foundation test build
+        shell: pwsh
+        working-directory: build
+        run: >-
+          cmake
+          -DBULK=ON
+          -DHSS1394=ON
+          -DLOCALECOMPARE=ON
+          -DMAD=ON
+          -DMEDIAFOUNDATION=ON
+          -DMODPLUG=ON
+          -DQT6=ON
+          -DQML=ON
+          -DWAVPACK=ON
+          -DVCPKG_TARGET_TRIPLET=x64-windows-release
+          -DBUILD_TESTING=ON
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
+          -DWARNINGS_FATAL=ON
+          -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DBATTERY=ON
+          -DBROADCAST=ON
+          -DDOWNLOAD_MANUAL=ON
+          -DHID=ON
+          -DKEYFINDER=ON
+          -DLILV=ON
+          -DOPUS=ON
+          -DQTKEYCHAIN=ON
+          -DVINYLCONTROL=ON
+          -DCMAKE_VERBOSE_MAKEFILE=OFF
+          ${{ env.CMAKE_ARGS_EXTRA }}
+          -L
+          ..
+
+      - name: Build only mixxx-test
+        shell: pwsh
+        working-directory: build
+        run: cmake --build . --config RelWithDebInfo --target mixxx-test
+
+      - name: Prepare the Qt offscreen runtime
+        shell: pwsh
+        working-directory: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $runtimeDir = Join-Path $buildDir 'mf-qt-runtime'
+          $runtimeReportPath = Join-Path $buildDir 'mf-qt-runtime.json'
+          $installLogPath = Join-Path $buildDir 'mf-qt-install.log'
+          $runtimeReport = [ordered]@{
+            status = 'starting'
+            qt6_dir = $null
+            qt_prefix = $null
+            offscreen_plugin_source = $null
+            offscreen_plugin_deployed = $false
+            runtime_dlls = @()
+            qt_qpa_platform = 'offscreen'
+            qt_plugin_path = $runtimeDir
+            qt_qpa_platform_plugin_path = Join-Path $runtimeDir 'platforms'
+          }
+          $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+
+          $qtDirLine = Select-String -Path (Join-Path $buildDir 'CMakeCache.txt') -Pattern '^Qt6_DIR:PATH=(.*)$' | Select-Object -First 1
+          if ($null -eq $qtDirLine) { throw 'Qt6_DIR was not found in CMakeCache.txt.' }
+          $qtDir = $qtDirLine.Matches[0].Groups[1].Value
+          $qtPrefix = [System.IO.Path]::GetFullPath((Join-Path $qtDir '..\..'))
+          $qtRoot = Join-Path $qtPrefix 'Qt6'
+          $qtBin = Join-Path $qtPrefix 'bin'
+          $platformSource = [System.IO.Path]::GetFullPath((Join-Path $qtRoot 'plugins\platforms\qoffscreen.dll'))
+          $platformDir = Join-Path $runtimeDir 'platforms'
+          $platformInstall = Join-Path $platformDir 'qoffscreen.dll'
+          $runtimeReport.qt6_dir = $qtDir
+          $runtimeReport.qt_prefix = $qtPrefix
+          $runtimeReport.offscreen_plugin_source = $platformSource
+          if (-not (Test-Path $platformSource)) { throw 'The configured Qt installation lacks qoffscreen.dll.' }
+          if (-not (Test-Path $qtBin -PathType Container)) { throw 'The configured Qt runtime bin directory is missing.' }
+
+          cmake --install . --config RelWithDebInfo --component applocal --prefix $runtimeDir --verbose 2>&1 | Tee-Object -FilePath $installLogPath
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -ne 0) { throw "CMake applocal runtime installation failed with exit code $installExitCode." }
+          if (-not (Test-Path $platformInstall)) { throw 'The applocal component did not deploy qoffscreen.dll.' }
+
+          $runtimeReport.runtime_dlls = @(
+            foreach ($dllName in @('Qt6Core.dll', 'Qt6Gui.dll')) {
+              $locations = @(
+                (Join-Path $buildDir $dllName),
+                (Join-Path $runtimeDir $dllName),
+                (Join-Path $qtBin $dllName)
+              ) | Where-Object { Test-Path $_ }
+              [pscustomobject]@{ name = $dllName; found_at = @($locations) }
+            }
+          )
+          if (@($runtimeReport.runtime_dlls | Where-Object { $_.found_at.Count -eq 0 }).Count -gt 0) {
+            throw 'A Qt DLL needed by the offscreen plugin is missing.'
+          }
+
+          $runtimeReport.offscreen_plugin_deployed = $true
+          $runtimeReport.status = 'ready'
+          $runtimeReport | ConvertTo-Json -Depth 5 | Set-Content -Path $runtimeReportPath
+          @($runtimeDir, $qtBin) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          @(
+            'QT_QPA_PLATFORM=offscreen'
+            "QT_PLUGIN_PATH=$runtimeDir"
+            "QT_QPA_PLATFORM_PLUGIN_PATH=$platformDir"
+            'QT_DEBUG_PLUGINS=1'
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run and verify the exact 14 GoogleTests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testExecutable = Join-Path $env:GITHUB_WORKSPACE 'build\mixxx-test.exe'
+          $listPath = Join-Path $env:GITHUB_WORKSPACE 'build\seek-target-gtest-list.txt'
+          $xmlPath = Join-Path $env:GITHUB_WORKSPACE 'build\seek-target-gtest-results.xml'
+          $logPath = Join-Path $env:GITHUB_WORKSPACE 'build\seek-target-mixxx-test.log'
+          $evidencePath = Join-Path $env:GITHUB_WORKSPACE 'build\seek-target-test-evidence.json'
+          $expected = @(
+            'SoundSourceMediaFoundationTest.StreamTickNullThenSamplePreservesShortGap'
+            'SoundSourceMediaFoundationTest.TerminalNullStatusesSettleUnknownPosition'
+            'SoundSourceMediaFoundationTest.TerminalNullStatusesPreserveKnownPosition'
+            'SoundSourceMediaFoundationTest.FirstPostSeekTickSampleBeforeTargetReachesTarget'
+            'SoundSourceMediaFoundationTest.FirstPostSeekReadOvershootingTargetIsRejected'
+            'SoundSourceMediaFoundationTest.FirstPostSeekTickBracketedGapPreservesOutput'
+            'SoundSourceMediaFoundationTest.FirstPostSeekTickAfterTargetFailsClosed'
+            'SoundSourceMediaFoundationTest.InvalidPostSeekTickCannotBracketTarget'
+            'SoundSourceMediaFoundationTest.InvalidPostSeekSampleTimestampFailsClosed'
+            'SoundSourceMediaFoundationTest.FirstPostSeekTickAtTargetPreservesGap'
+            'SoundSourceMediaFoundationTest.FirstPostSeekSampleAtTargetPreservesAudio'
+            'SoundSourceMediaFoundationTest.SeekGapEndingAtTargetDoesNotSilenceTarget'
+            'SoundSourceMediaFoundationTest.EarlierTickFillsFromKnownRequestedFrame'
+            'SoundSourceMediaFoundationTest.SeekClearsPendingStreamGap'
+          )
+          $problems = [System.Collections.Generic.List[string]]::new()
+          $filter = $expected -join ':'
+
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+            $listedOutput = @(& $testExecutable --gtest_list_tests --logLevel info 2>&1)
+            $listExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          $listedOutput | Set-Content -Path $listPath
+          $listed = [System.Collections.Generic.List[string]]::new()
+          $insideSuite = $false
+          foreach ($lineObject in $listedOutput) {
+            $line = [string]$lineObject
+            if ($line -match '^(SoundSourceMediaFoundationTest(?:/[0-9]+)?)\.$') {
+              $insideSuite = $true
+              $suite = $Matches[1]
+              continue
+            }
+            if ($insideSuite -and $line -match '^\S') {
+              $insideSuite = $false
+              $suite = $null
+            }
+            if ($insideSuite -and $line -match '^\s+([^#\s].*)$') {
+              $listed.Add("$suite.$($Matches[1].Trim())")
+            }
+          }
+          if ($listExit -ne 0) { $problems.Add("GTest listing exited $listExit") }
+          if ($listed.Count -ne 14) { $problems.Add("GTest listed $($listed.Count) Media Foundation cases; expected 14") }
+          if ((@($listed | Sort-Object) -join "`n") -ne (@($expected | Sort-Object) -join "`n")) {
+            $problems.Add('GTest listed IDs do not equal the exact 14 reviewed selectors')
+          }
+          if (@($listed | Group-Object | Where-Object { $_.Count -gt 1 }).Count -gt 0) {
+            $problems.Add('GTest listing contains duplicate IDs')
+          }
+
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+            & $testExecutable "--gtest_filter=$filter" "--gtest_output=xml:$xmlPath" --logLevel info 2>&1 | Tee-Object -FilePath $logPath
+            $nativeExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+
+          $xmlTests = $null
+          $xmlFailures = $null
+          $xmlErrors = $null
+          $xmlDisabled = $null
+          $xmlSkipped = $null
+          $executed = @()
+          $skippedCases = @()
+          try {
+            [xml]$report = Get-Content -Raw -Path $xmlPath
+            $root = $report.DocumentElement
+            $xmlTests = [int]$root.GetAttribute('tests')
+            $xmlFailures = [int]$root.GetAttribute('failures')
+            $xmlErrors = [int]$root.GetAttribute('errors')
+            $xmlDisabled = [int]$root.GetAttribute('disabled')
+            $testCases = @($report.SelectNodes('//testcase'))
+            $executed = @($testCases | ForEach-Object { "$($_.GetAttribute('classname')).$($_.GetAttribute('name'))" })
+            $skippedCases = @($testCases | Where-Object {
+              $_.SelectSingleNode('skipped') -ne $null -or
+              $_.GetAttribute('status') -in @('notrun', 'skipped') -or
+              $_.GetAttribute('result') -in @('suppressed', 'skipped')
+            })
+            $xmlSkipped = [Math]::Max([int]$root.GetAttribute('skipped'), $report.SelectNodes('//skipped').Count)
+          } catch {
+            $problems.Add("Could not read valid GoogleTest XML: $($_.Exception.Message)")
+          }
+          if ($nativeExit -ne 0) { $problems.Add("mixxx-test exited $nativeExit") }
+          if ($xmlTests -ne 14) { $problems.Add("XML tests=$xmlTests; expected 14") }
+          if ($executed.Count -ne 14) { $problems.Add("XML testcase count=$($executed.Count); expected 14") }
+          if ((@($executed | Sort-Object) -join "`n") -ne (@($expected | Sort-Object) -join "`n")) {
+            $problems.Add('XML testcase IDs do not equal the exact 14 reviewed selectors')
+          }
+          if ($xmlFailures -ne 0 -or $xmlErrors -ne 0 -or $xmlDisabled -ne 0 -or $xmlSkipped -ne 0 -or $skippedCases.Count -ne 0) {
+            $problems.Add("XML failure/error/disabled/skipped counts are $xmlFailures/$xmlErrors/$xmlDisabled/$xmlSkipped")
+          }
+
+          $evidence = [ordered]@{
+            filter = $filter
+            expected_count = 14
+            expected_tests = $expected
+            list_exit_status = $listExit
+            listed_count = $listed.Count
+            listed_tests = @($listed)
+            native_exit_status = $nativeExit
+            xml_tests = $xmlTests
+            xml_testcases = $executed.Count
+            executed_tests = $executed
+            failures = $xmlFailures
+            errors = $xmlErrors
+            disabled = $xmlDisabled
+            skipped = $xmlSkipped
+            skipped_testcases = $skippedCases.Count
+            problems = @($problems)
+            status = $(if ($problems.Count -eq 0) { 'pass' } else { 'fail' })
+          }
+          $evidence | ConvertTo-Json -Depth 5 | Set-Content -Path $evidencePath
+          $evidence | ConvertTo-Json -Depth 5 | Write-Host
+          if ($problems.Count -gt 0) { throw ($problems -join '; ') }
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime
+          QT_QPA_PLATFORM_PLUGIN_PATH: ${{ github.workspace }}\build\mf-qt-runtime\platforms
+          QT_DEBUG_PLUGINS: 1
+
+      - name: Upload the native test receipts
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: issue92-seek-target-win-x64-${{ github.run_id }}
+          path: |
+            source-binding.json
+            build/mf-qt-runtime.json
+            build/mf-qt-install.log
+            build/seek-target-gtest-list.txt
+            build/seek-target-gtest-results.xml
+            build/seek-target-mixxx-test.log
+            build/seek-target-test-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
