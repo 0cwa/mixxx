@@ -1235,6 +1235,10 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
         return buffer.m_f001ReaderProcessCallsForTest.loadAcquire();
     }
 
+    static int f001ReaderStatusesConsumed(const EngineBuffer& buffer) {
+        return buffer.m_pReader->m_diagnosticStatusConsumed.loadAcquire();
+    }
+
     static int f001BungeeLayoutGuardReturns(const EngineBuffer& buffer) {
         return buffer.m_f001BungeeLayoutGuardReturnsForTest.loadAcquire();
     }
@@ -2180,15 +2184,31 @@ TEST_F(F001ProbeAlignmentTest, EjectWaitsForAttachedTrackRefresh) {
             f001ProcessCallbacks(*source);
     const int readerProcessCallsBeforeWait =
             f001ReaderProcessCalls(*source);
+    const int readerStatusesConsumedBeforeWait =
+            f001ReaderStatusesConsumed(*source);
     const int layoutGuardReturnsBeforeWait =
             f001BungeeLayoutGuardReturns(*source);
-    const bool readerIdle = progressUntil([&] { return f001ReaderIdle(*source); });
+    std::array<CSAMPLE, kProcessBufferSize> readerDrainOutput{};
+    const auto readerChannelCount = source->getChannelCount();
+    ASSERT_TRUE(readerChannelCount.isValid());
+    ASSERT_EQ(readerDrainOutput.size() % readerChannelCount, 0);
+    const bool readerIdle = progressUntil([&] {
+        // EngineMixer stops scheduling a deck after its one WasActive callback
+        // once eject has made it inactive. Continue the same EngineBuffer owner
+        // callback directly so the worker's bounded status publication can be
+        // consumed without changing the eject race or event route.
+        source->process(readerDrainOutput.data(), readerDrainOutput.size());
+        return f001ReaderIdle(*source);
+    });
     if (!readerIdle) {
         FAIL() << f001ReaderIdleFailureSnapshot(*source,
                 processCallbacksBeforeWait,
                 readerProcessCallsBeforeWait,
                 layoutGuardReturnsBeforeWait);
     }
+    EXPECT_GT(f001ReaderProcessCalls(*source), readerProcessCallsBeforeWait);
+    EXPECT_GT(f001ReaderStatusesConsumed(*source),
+            readerStatusesConsumedBeforeWait);
     QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
 
     forbidOnToken(302, {F001ProbeEventForTest::CueControlQuantizeExplicit});
