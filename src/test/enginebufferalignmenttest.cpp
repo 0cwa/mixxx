@@ -1251,7 +1251,10 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
         const int activeChunk = worker.diagnosticActiveChunk();
         const int publishedStatuses = worker.diagnosticPublishedStatuses();
         const int consumedStatuses = reader.m_diagnosticStatusConsumed.loadAcquire();
-        const int fifoReadable = reader.m_readerStatusUpdateFIFO.readAvailable();
+        // These independent atomic samples can change between reads, so this
+        // clamped estimate is approximate, not a coherent FIFO queue depth.
+        const int pendingStatusesEstimate =
+                std::max(0, publishedStatuses - consumedStatuses);
         const int completedRequests = worker.diagnosticCompletedRequests();
         const int processCallbacks =
                 buffer.m_f001ProcessCallbacksForTest.loadAcquire() -
@@ -1268,8 +1271,8 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
                  << " activeChunk=" << activeChunk
                  << " publishedStatuses=" << publishedStatuses
                  << " consumedStatuses=" << consumedStatuses
-                 << " pendingStatuses=" << publishedStatuses - consumedStatuses
-                 << " fifoReadable=" << fifoReadable
+                 << " pendingStatusesEstimateApproxUnsynchronized="
+                 << pendingStatusesEstimate
                  << " completedRequests=" << completedRequests
                  << " processCallbacks=" << processCallbacks
                  << " readerProcessCalls=" << readerProcessCalls
