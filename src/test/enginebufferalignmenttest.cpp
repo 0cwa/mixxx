@@ -24,11 +24,12 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
-#include <iomanip>
 #include <initializer_list>
+#include <iomanip>
 #include <limits>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -1358,8 +1359,35 @@ class F001ProbeStorage {
             }
             ++nextRequired;
         }
-        EXPECT_EQ(m_requiredCount, nextRequired)
-                << "Ordered F001 route evidence is incomplete";
+        if (nextRequired != m_requiredCount) {
+            // The probe records into a fixed-size buffer without formatting
+            // on the worker thread. Render the bounded route trace here, after
+            // EngineBufferAlignmentTest has joined the reader worker.
+            std::ostringstream trace;
+            trace << "Ordered F001 route evidence is incomplete; token="
+                  << m_routeToken << ", expected=" << m_requiredCount
+                  << ", matched=" << nextRequired
+                  << ". Event/phase/method are numeric F001Probe enums. Trace:";
+            for (std::size_t index = 0; index < m_probe.count(); ++index) {
+                const auto& entry = m_probe.entry(index);
+                if (entry.caseToken != m_routeToken) {
+                    continue;
+                }
+                trace << "\n#" << entry.sequence
+                      << " event=" << static_cast<unsigned>(entry.event)
+                      << " phase=" << static_cast<unsigned>(entry.phase)
+                      << " method=" << static_cast<unsigned>(entry.method)
+                      << " object=0x" << std::hex << entry.objectIdentity
+                      << " related=0x" << entry.relatedIdentity
+                      << " thread=0x" << entry.currentThreadIdentity
+                      << " affinity=0x" << entry.affinityIdentity << std::dec
+                      << " positionA=" << entry.positionA
+                      << " positionB=" << entry.positionB
+                      << " scalarBits=0x" << std::hex << entry.scalarBits
+                      << std::dec << " flags=" << entry.flags;
+            }
+            EXPECT_EQ(m_requiredCount, nextRequired) << trace.str();
+        }
         if (m_expectedCue) {
             EXPECT_GT(directCueSignals, 0U);
             EXPECT_GT(queuedCueSignals, 0U);
@@ -1518,6 +1546,24 @@ class F001ProbeStorage {
                 Qt::QueuedConnection);
     }
 
+    void observeInitialTrackLoad(EngineBuffer* source, const TrackPointer& track) {
+        m_initialTrackLoadConnection = QObject::connect(
+                source,
+                &EngineBuffer::trackLoaded,
+                &m_loadReceiver,
+                [this, track](TrackPointer loaded, TrackPointer) {
+                    if (loaded == track) {
+                        m_initialTrackLoadSignalSeen.store(
+                                true, std::memory_order_release);
+                    }
+                },
+                Qt::QueuedConnection);
+    }
+
+    void disconnectInitialTrackLoadObserver() {
+        QObject::disconnect(m_initialTrackLoadConnection);
+    }
+
     void requireSignalRoute(const Cue* cue,
             const Track* track,
             bool trackDirectOffAffinity) {
@@ -1544,6 +1590,8 @@ class F001ProbeStorage {
     QObject m_directTrackReceiver;
     QObject m_queuedTrackReceiver;
     QObject m_loadReceiver;
+    QMetaObject::Connection m_initialTrackLoadConnection;
+    std::atomic<bool> m_initialTrackLoadSignalSeen{false};
     std::atomic<bool> m_bLoadSignalSeen{false};
     std::array<RequiredEvent, 12> m_required{};
     std::size_t m_requiredCount{0};
@@ -1955,8 +2003,14 @@ TEST_F(F001ProbeAlignmentTest, EjectWaitsForAttachedTrackRefresh) {
             mixxx::audio::FramePos{1500},
             mixxx::audio::kInvalidFramePos);
     auto* const source = m_pChannel1->getEngineBuffer();
+    observeInitialTrackLoad(source, track);
     loadTrack(m_pMixerDeck1.get(), track);
     ASSERT_TRUE(progressUntil([&] { return f001ReaderLoaded(*source); }));
+    ASSERT_TRUE(progressUntil([&] {
+        return m_initialTrackLoadSignalSeen.load(std::memory_order_acquire);
+    })) << "EngineBuffer::trackLoaded did not finish for the initial track "
+        << track.get();
+    disconnectInitialTrackLoadObserver();
     ASSERT_TRUE(f001TrackEnd(*source).isValid());
     source->setF001ProbeForTest(&m_probe);
     track->setF001ProbeForTest(&m_probe);
@@ -2106,8 +2160,14 @@ TEST_F(F001ProbeAlignmentTest, ReplacementSeparatesTrackBounds) {
             mixxx::audio::kStartFramePos,
             mixxx::Bpm{120.0})));
     auto* const source = m_pChannel1->getEngineBuffer();
+    observeInitialTrackLoad(source, trackA);
     loadTrack(m_pMixerDeck1.get(), trackA);
     ASSERT_TRUE(progressUntil([&] { return f001ReaderLoaded(*source); }));
+    ASSERT_TRUE(progressUntil([&] {
+        return m_initialTrackLoadSignalSeen.load(std::memory_order_acquire);
+    })) << "EngineBuffer::trackLoaded did not finish for initial track "
+        << trackA.get();
+    disconnectInitialTrackLoadObserver();
     ASSERT_TRUE(trackA->trySetBeats(mixxx::Beats::fromConstTempo(
             trackA->getSampleRate(),
             mixxx::audio::kStartFramePos,
