@@ -1,6 +1,7 @@
 # F001: Manually dispatched Linux AddressSanitizer diagnostic for the exact
 # 24 GTests encoded in the verifier below. The run is bound to the reviewed
-# source commit and records the selected list, XML results, and native log.
+# source commit and records the selected list, XML results, raw streams, and
+# native exit receipt.
 # This focused cloud run supplements the host allocation, lock, affinity, and
 # calibration gates; it does not close those independent checks.
 #
@@ -56,8 +57,8 @@ jobs:
 
       - name: "Bind the run to the reviewed F001 source"
         env:
-          EXPECTED_SOURCE_COMMIT: f65f99c193893e475188bc09db2da927b9e728ac
-          EXPECTED_SOURCE_TREE: 967c7b0bd2c6a4bc29e21d2388b22a4aa00dc7af
+          EXPECTED_SOURCE_COMMIT: 48b3bd6876b7dac2163c5a3c49f5aaee4ed05c56
+          EXPECTED_SOURCE_TREE: b0ba99b349ca9966b2f1e3b41f71dcada64ede0e
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -182,8 +183,8 @@ jobs:
         working-directory: build
         run: ccache --show-stats | tee ccache-stats.txt
 
-      # Run the exact F001 selector set once and preserve its list, XML, log,
-      # and machine-readable evidence for review.
+      # Run the exact F001 selector set once and persist both native streams and
+      # its exit receipt before validating XML, even when the process aborts.
       - name: "Run exact F001 selectors under ASan"
         working-directory: build
         env:
@@ -195,6 +196,7 @@ jobs:
           """Verify the exact F001 GTest selector list and one ASan XML result."""
 
           import collections
+          import hashlib
           import json
           import re
           import sys
@@ -296,7 +298,9 @@ jobs:
               return max(root_value, suite_sum, element_count)
 
 
-          def validate_results(selection, xml_text, native_exit_status, log_text):
+          def validate_results(
+              selection, xml_text, native_receipt, stdout_data, stderr_data
+          ):
               problems = []
               if selection.get("filter") != EXPECTED_FILTER:
                   problems.append("Recorded filter differs from the exact F001 selector filter")
@@ -308,30 +312,7 @@ jobs:
               if collections.Counter(listed) != collections.Counter(F001_SELECTOR_IDS):
                   problems.append("Pre-run list does not contain the exact 24 IDs")
 
-              try:
-                  root = ET.fromstring(xml_text)
-                  if root.tag not in ("testsuites", "testsuite"):
-                      raise ValueError(f"Unexpected GTest XML root: {root.tag}")
-                  cases = list(root.iter("testcase"))
-                  executed = [
-                      f"{case.get('classname')}.{case.get('name')}"
-                      for case in cases
-                  ]
-                  not_run = [
-                      test_id for test_id, case in zip(executed, cases)
-                      if case.get("status") not in (None, "run")
-                      or case.get("result") not in (None, "completed")
-                      or case.find("skipped") is not None
-                      or case.find("disabled") is not None
-                  ]
-                  xml_tests = int(root.attrib["tests"])
-                  counts = {
-                      "failures": xml_count(root, "failures", "failure"),
-                      "errors": xml_count(root, "errors", "error"),
-                      "skipped": xml_count(root, "skipped", "skipped"),
-                      "disabled": xml_count(root, "disabled", "disabled"),
-                  }
-              except (ET.ParseError, KeyError, ValueError) as error:
+              if xml_text is None:
                   root = None
                   cases, executed, not_run, xml_tests = [], [], [], None
                   counts = {
@@ -340,7 +321,41 @@ jobs:
                       "skipped": None,
                       "disabled": None,
                   }
-                  problems.append(f"Unable to read valid GTest XML: {error}")
+                  problems.append("GTest XML file is missing")
+              else:
+                  try:
+                      root = ET.fromstring(xml_text)
+                      if root.tag not in ("testsuites", "testsuite"):
+                          raise ValueError(f"Unexpected GTest XML root: {root.tag}")
+                      cases = list(root.iter("testcase"))
+                      executed = [
+                          f"{case.get('classname')}.{case.get('name')}"
+                          for case in cases
+                      ]
+                      not_run = [
+                          test_id for test_id, case in zip(executed, cases)
+                          if case.get("status") not in (None, "run")
+                          or case.get("result") not in (None, "completed")
+                          or case.find("skipped") is not None
+                          or case.find("disabled") is not None
+                      ]
+                      xml_tests = int(root.attrib["tests"])
+                      counts = {
+                          "failures": xml_count(root, "failures", "failure"),
+                          "errors": xml_count(root, "errors", "error"),
+                          "skipped": xml_count(root, "skipped", "skipped"),
+                          "disabled": xml_count(root, "disabled", "disabled"),
+                      }
+                  except (ET.ParseError, KeyError, ValueError) as error:
+                      root = None
+                      cases, executed, not_run, xml_tests = [], [], [], None
+                      counts = {
+                          "failures": None,
+                          "errors": None,
+                          "skipped": None,
+                          "disabled": None,
+                      }
+                      problems.append(f"Unable to read valid GTest XML: {error}")
 
               if root is not None:
                   if xml_tests != len(F001_SELECTOR_IDS):
@@ -354,7 +369,24 @@ jobs:
                   if any(value != 0 for value in counts.values()):
                       problems.append(f"XML has nonzero failures/errors/skips/disabled: {counts}")
 
-              diagnostics = asan_diagnostics(log_text)
+              native_exit_status = int(native_receipt["native_exit_status"])
+              if native_receipt.get("native_invocations") != 1:
+                  problems.append("Native receipt does not record exactly one invocation")
+              if native_receipt.get("gtest_filter") != EXPECTED_FILTER:
+                  problems.append(
+                      "Native receipt filter differs from the exact F001 selector filter"
+                  )
+              stdout_hash = hashlib.sha256(stdout_data).hexdigest()
+              stderr_hash = hashlib.sha256(stderr_data).hexdigest()
+              if native_receipt.get("stdout", {}).get("sha256") != stdout_hash:
+                  problems.append("Native stdout does not match its persisted receipt hash")
+              if native_receipt.get("stderr", {}).get("sha256") != stderr_hash:
+                  problems.append("Native stderr does not match its persisted receipt hash")
+              diagnostics = asan_diagnostics(
+                  stdout_data.decode("utf-8", errors="replace")
+                  + "\n"
+                  + stderr_data.decode("utf-8", errors="replace")
+              )
               if diagnostics:
                   problems.append(f"ASan diagnostics appeared in the native test log: {diagnostics}")
               if int(native_exit_status) != 0:
@@ -368,6 +400,8 @@ jobs:
                   "listed_tests": listed,
                   "native_exit_status": int(native_exit_status),
                   "native_invocations": 1,
+                  "native_receipt": native_receipt,
+                  "xml_present": xml_text is not None,
                   "xml_tests": xml_tests,
                   "xml_testcases": len(cases),
                   "executed_tests": executed,
@@ -397,13 +431,28 @@ jobs:
                   if problems:
                       raise SystemExit("\n".join(problems))
                   return 0
-              if len(argv) == 6 and argv[0] == "after":
-                  selection_path, xml_path, native_status, log_path, evidence_path = argv[1:]
+              if len(argv) == 7 and argv[0] == "after":
+                  (
+                      selection_path,
+                      xml_path,
+                      receipt_path,
+                      stdout_path,
+                      stderr_path,
+                      evidence_path,
+                  ) = argv[1:]
                   selection = json.loads(Path(selection_path).read_text(encoding="utf-8"))
-                  xml_text = Path(xml_path).read_text(encoding="utf-8")
-                  log_text = Path(log_path).read_text(encoding="utf-8")
+                  xml_text = (
+                      Path(xml_path).read_text(encoding="utf-8")
+                      if Path(xml_path).is_file()
+                      else None
+                  )
+                  native_receipt = json.loads(
+                      Path(receipt_path).read_text(encoding="utf-8")
+                  )
+                  stdout_data = Path(stdout_path).read_bytes()
+                  stderr_data = Path(stderr_path).read_bytes()
                   evidence, problems = validate_results(
-                      selection, xml_text, int(native_status), log_text
+                      selection, xml_text, native_receipt, stdout_data, stderr_data
                   )
                   write_json(evidence_path, evidence)
                   print(json.dumps(evidence, indent=2))
@@ -412,7 +461,7 @@ jobs:
                   return 0
               raise SystemExit(
                   "usage: verifier.py filter | before GTEST_LIST SELECTION_JSON | "
-                  "after SELECTION_JSON GTEST_XML EXIT_STATUS TEST_LOG EVIDENCE_JSON"
+                  "after SELECTION_JSON GTEST_XML NATIVE_RECEIPT STDOUT STDERR EVIDENCE_JSON"
               )
 
 
@@ -426,11 +475,57 @@ jobs:
 
           echo "Running exactly 24 F001 GTests once: $test_filter"
           set +e
-          ./mixxx-test --gtest_filter="$test_filter" --gtest_output=xml:gtest-results.xml > mixxx-test-asan.log 2>&1
+          ./mixxx-test \
+            --gtest_filter="$test_filter" \
+            --gtest_output=xml:gtest-results.xml \
+            > mixxx-test-asan.stdout.log \
+            2> mixxx-test-asan.stderr.log
           native_exit_status=$?
           set -e
-          cat mixxx-test-asan.log
-          python3 verify_f001_asan_tests.py after gtest-selection.json gtest-results.xml "$native_exit_status" mixxx-test-asan.log gtest-evidence.json
+          python3 - "$native_exit_status" "$test_filter" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          def stream_record(path):
+              content = Path(path).read_bytes()
+              return {
+                  "path": path,
+                  "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest(),
+              }
+
+          receipt = {
+              "native_invocations": 1,
+              "native_exit_status": int(sys.argv[1]),
+              "gtest_filter": sys.argv[2],
+              "command": [
+                  "./mixxx-test",
+                  f"--gtest_filter={sys.argv[2]}",
+                  "--gtest_output=xml:gtest-results.xml",
+              ],
+              "stdout": stream_record("mixxx-test-asan.stdout.log"),
+              "stderr": stream_record("mixxx-test-asan.stderr.log"),
+              "xml_path": "gtest-results.xml",
+              "xml_present_at_native_exit": Path("gtest-results.xml").is_file(),
+          }
+          receipt_path = Path("mixxx-test-native-receipt.json")
+          temporary_path = receipt_path.with_suffix(receipt_path.suffix + ".tmp")
+          temporary_path.write_text(
+              json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
+          )
+          os.replace(temporary_path, receipt_path)
+          print(json.dumps(receipt, indent=2))
+          PY
+          cat mixxx-test-asan.stdout.log
+          cat mixxx-test-asan.stderr.log >&2
+          python3 verify_f001_asan_tests.py after \
+            gtest-selection.json gtest-results.xml \
+            mixxx-test-native-receipt.json \
+            mixxx-test-asan.stdout.log mixxx-test-asan.stderr.log \
+            gtest-evidence.json
 
       - name: "Record ccache outcome and key metadata"
         if: always()
@@ -477,6 +572,8 @@ jobs:
             build/gtest-selection.json
             build/gtest-results.xml
             build/gtest-evidence.json
-            build/mixxx-test-asan.log
+            build/mixxx-test-native-receipt.json
+            build/mixxx-test-asan.stdout.log
+            build/mixxx-test-asan.stderr.log
           if-no-files-found: warn
           retention-days: 7
