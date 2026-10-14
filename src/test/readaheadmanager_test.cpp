@@ -3,9 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QEvent>
+#include <QFile>
 #include <QScopedPointer>
 #include <QSemaphore>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QtDebug>
 #include <algorithm>
@@ -756,8 +759,14 @@ TEST_F(CachingReaderWorkerTest, ReaderFinalDrainSurvivesDatabaseEvictionReload) 
         return false;
     };
     for (bool remove : {false, true}) {
-        auto track = Track::newTemporary(
-                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        // Each variant is inserted into the same test database.
+        QTemporaryDir trackDirectory;
+        ASSERT_TRUE(trackDirectory.isValid());
+        const auto trackPath = QDir(trackDirectory.path()).filePath(
+                QStringLiteral("sine-30.wav"));
+        ASSERT_TRUE(QFile::copy(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")), trackPath));
+        auto track = Track::newTemporary(trackPath);
         track->createAndAddCue(mixxx::CueType::Loop, 2, mixxx::audio::FramePos{10}, mixxx::audio::FramePos{20});
         track->createAndAddCue(mixxx::CueType::Loop, Cue::kNoHotCue, mixxx::audio::FramePos{100}, mixxx::audio::FramePos{200});
         const auto id = internalCollection()->addTrack(track, false);

@@ -1219,6 +1219,12 @@ class EngineBufferAlignmentTest : public BaseSignalPathTest {
                 CachingReader::STATE_IDLE;
     }
 
+    // EngineBuffer publishes FrameInfo before the owner consumes TRACK_LOADED.
+    static bool f001ReaderLoaded(const EngineBuffer& buffer) {
+        return buffer.m_pReader->m_state.loadAcquire() ==
+                CachingReader::STATE_TRACK_LOADED;
+    }
+
     static void SetUpTestSuite() {
         EngineBuffer::setTestReaderFactory(
                 &makeDeterministicReader,
@@ -1950,6 +1956,7 @@ TEST_F(F001ProbeAlignmentTest, EjectWaitsForAttachedTrackRefresh) {
             mixxx::audio::kInvalidFramePos);
     auto* const source = m_pChannel1->getEngineBuffer();
     loadTrack(m_pMixerDeck1.get(), track);
+    ASSERT_TRUE(progressUntil([&] { return f001ReaderLoaded(*source); }));
     ASSERT_TRUE(f001TrackEnd(*source).isValid());
     source->setF001ProbeForTest(&m_probe);
     track->setF001ProbeForTest(&m_probe);
@@ -2100,6 +2107,7 @@ TEST_F(F001ProbeAlignmentTest, ReplacementSeparatesTrackBounds) {
             mixxx::Bpm{120.0})));
     auto* const source = m_pChannel1->getEngineBuffer();
     loadTrack(m_pMixerDeck1.get(), trackA);
+    ASSERT_TRUE(progressUntil([&] { return f001ReaderLoaded(*source); }));
     ASSERT_TRUE(trackA->trySetBeats(mixxx::Beats::fromConstTempo(
             trackA->getSampleRate(),
             mixxx::audio::kStartFramePos,
