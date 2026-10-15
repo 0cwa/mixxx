@@ -253,6 +253,17 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $testExecutable = Join-Path $env:GITHUB_WORKSPACE 'build\mixxx-test.exe'
           $captureDir = Join-Path $env:RUNNER_TEMP 'issue92-producer-capture'
+          $qtRuntimeReceiptPath = Join-Path $env:GITHUB_WORKSPACE 'build\mf-qt-runtime.json'
+          if (-not (Test-Path -LiteralPath $qtRuntimeReceiptPath -PathType Leaf)) { throw 'The Qt offscreen runtime receipt is missing.' }
+          $qtRuntimeReceipt = Get-Content -Raw -Path $qtRuntimeReceiptPath | ConvertFrom-Json
+          $qtRuntimeStatus = [string]$qtRuntimeReceipt.status
+          $qtRuntimePlatform = [string]$qtRuntimeReceipt.qt_qpa_platform
+          $qtOffscreenPluginDeployed = [bool]$qtRuntimeReceipt.offscreen_plugin_deployed
+          if ($qtRuntimeStatus -ne 'ready' -or
+              $qtRuntimePlatform -ne 'offscreen' -or
+              -not $qtOffscreenPluginDeployed) {
+            throw "Qt runtime receipt is not ready for offscreen capture (status=$qtRuntimeStatus, platform=$qtRuntimePlatform, plugin=$qtOffscreenPluginDeployed)."
+          }
           $selector = $env:EXPECTED_SELECTOR
           $expectedFixtureSha = $env:EXPECTED_FIXTURE_SHA256
           $listStdout = Join-Path $captureDir 'gtest-list.stdout.txt'
@@ -430,22 +441,85 @@ jobs:
               -not [int]::TryParse($properties['after_seek_return_event_count'], [ref]$afterSeekCount) -or $afterSeekCount -lt 0) {
             $problems.Add('XML phase event counts are invalid')
           }
-          $prefetchRecords = @()
-          $afterSeekRecords = @()
+          $prefetchRecords = [System.Collections.Generic.List[object]]::new()
+          $afterSeekRecords = [System.Collections.Generic.List[object]]::new()
+          $parsedRawEvents = [System.Collections.Generic.List[object]]::new()
           if ($traceCount -gt 0 -and $rawTrace.Length -gt 0) {
             $records = @($rawTrace.Split(';'))
             foreach ($record in $records) {
-              if ($record -match '^\d+:phase=seek_prefetch,') {
-                $prefetchRecords += $record
-              } elseif ($record -match '^\d+:phase=after_seek_return,') {
-                $afterSeekRecords += $record
-              } else {
+              if ($record -notmatch '^(\d+):phase=(seek_prefetch|after_seek_return),hr=0x([0-9a-fA-F]{1,8}),flags=0x([0-9a-fA-F]{1,8}),timestamp_100ns=(-?\d+),sample=([01])$') {
                 $problems.Add("Raw trace record has an invalid phase or format: $record")
+                continue
               }
+              $rawIndexText = $Matches[1]
+              $rawPhase = $Matches[2]
+              $rawHrText = $Matches[3]
+              $rawFlagsText = $Matches[4]
+              $rawTimestampText = $Matches[5]
+              $rawSampleText = $Matches[6]
+              $rawIndex = -1
+              $rawHr = [uint32]0
+              $rawFlags = [uint32]0
+              $rawTimestamp = [long]0
+              $rawIndexValid = [int]::TryParse($rawIndexText, [ref]$rawIndex)
+              $rawHrValid = [uint32]::TryParse(
+                $rawHrText,
+                [System.Globalization.NumberStyles]::AllowHexSpecifier,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [ref]$rawHr)
+              $rawFlagsValid = [uint32]::TryParse(
+                $rawFlagsText,
+                [System.Globalization.NumberStyles]::AllowHexSpecifier,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [ref]$rawFlags)
+              $rawTimestampValid = [long]::TryParse(
+                $rawTimestampText,
+                [System.Globalization.NumberStyles]::Integer,
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [ref]$rawTimestamp)
+              if (-not ($rawIndexValid -and $rawHrValid -and $rawFlagsValid -and $rawTimestampValid)) {
+                $problems.Add("Raw trace record has an invalid numeric field: $record")
+                continue
+              }
+              $rawEvent = [pscustomobject]@{
+                index = $rawIndex
+                phase = $rawPhase
+                hr = $rawHr
+                flags = $rawFlags
+                timestamp_100ns = $rawTimestamp
+                has_sample = ($rawSampleText -eq '1')
+              }
+              $parsedRawEvents.Add($rawEvent)
+              if ($rawPhase -eq 'seek_prefetch') {
+                $prefetchRecords.Add($rawEvent)
+              } else {
+                $afterSeekRecords.Add($rawEvent)
+              }
+            }
+          }
+          if ($parsedRawEvents.Count -ne $traceCount) {
+            $problems.Add('Raw trace records could not all be parsed as native ReadSample observations')
+          }
+          for ($index = 0; $index -lt $parsedRawEvents.Count; $index++) {
+            if ($parsedRawEvents[$index].index -ne $index) {
+              $problems.Add('Raw trace event indexes are not a contiguous ordered sequence')
+              break
             }
           }
           if ($prefetchRecords.Count -ne $prefetchCount -or $afterSeekRecords.Count -ne $afterSeekCount) {
             $problems.Add('Raw trace phase counts do not match XML properties')
+          }
+          $rawTickSeen = $false
+          $rawAfterSeekTickSeen = $false
+          foreach ($rawEvent in $parsedRawEvents) {
+            if (($rawEvent.flags -band [uint32]0x100) -ne 0) {
+              $rawTickSeen = $true
+              if ($rawEvent.phase -eq 'after_seek_return') { $rawAfterSeekTickSeen = $true }
+            }
+          }
+          if ($properties['raw_streamtick_seen'] -ne $rawTickSeen.ToString().ToLowerInvariant() -or
+              $properties['after_seek_streamtick_seen'] -ne $rawAfterSeekTickSeen.ToString().ToLowerInvariant()) {
+            $problems.Add('XML stream tick booleans do not match the raw event flags and phases')
           }
           if ($properties['after_seek_streamtick_seen'] -eq 'true' -and
               ($afterSeekCount -eq 0 -or $properties['raw_streamtick_seen'] -ne 'true')) {
@@ -543,20 +617,139 @@ jobs:
             $problems.Add('Producer proof is true for a non-observed producer result')
           }
           if ($producerResult -eq 'OBSERVED_TICK_SAMPLE_BRACKETING_TARGET') {
+            if ($properties['trace_truncated'] -ne 'false') {
+              $problems.Add('Positive producer evidence cannot use a truncated raw trace')
+            }
             $tickFrame = 0
             $targetFrame = 0
             $sampleFrame = 0
+            $tickFlags = [uint32]0
+            $sampleFlags = [uint32]0
+            $tickTimestamp = [long]0
+            $sampleTimestamp = [long]0
+            $targetTimestamp = [long]0
+            $tickFlagsValid = [uint32]::TryParse(
+              [string]$properties['streamtick_flags'],
+              [System.Globalization.NumberStyles]::Integer,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [ref]$tickFlags)
+            $sampleFlagsValid = [uint32]::TryParse(
+              [string]$properties['following_sample_flags'],
+              [System.Globalization.NumberStyles]::Integer,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [ref]$sampleFlags)
+            $tickTimestampValid = [long]::TryParse(
+              [string]$properties['streamtick_timestamp_100ns'],
+              [System.Globalization.NumberStyles]::Integer,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [ref]$tickTimestamp)
+            $sampleTimestampValid = [long]::TryParse(
+              [string]$properties['following_sample_timestamp_100ns'],
+              [System.Globalization.NumberStyles]::Integer,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [ref]$sampleTimestamp)
+            $targetTimestampValid = [long]::TryParse(
+              [string]$properties['requested_target_100ns'],
+              [System.Globalization.NumberStyles]::Integer,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [ref]$targetTimestamp)
             if (-not [int]::TryParse($properties['streamtick_frame'], [ref]$tickFrame) -or
                 -not [int]::TryParse($properties['requested_target_frame'], [ref]$targetFrame) -or
-                -not [int]::TryParse($properties['following_sample_frame'], [ref]$sampleFrame)) {
-              $problems.Add('Observed producer result lacks numeric tick/target/sample frames')
-            } elseif (-not ($tickFrame -le $targetFrame -and $targetFrame -lt $sampleFrame)) {
-              $problems.Add('Observed producer frames do not bracket the requested target')
+                -not [int]::TryParse($properties['following_sample_frame'], [ref]$sampleFrame) -or
+                -not ($tickFlagsValid -and $sampleFlagsValid -and $tickTimestampValid -and $sampleTimestampValid -and $targetTimestampValid)) {
+              $problems.Add('Observed producer result lacks numeric tick/target/sample frames, flags, or timestamps')
+            } elseif (-not ($tickFrame -ge 0 -and $tickFrame -le $targetFrame -and $targetFrame -lt $sampleFrame)) {
+              $problems.Add('Observed producer frames do not validly bracket the requested zero-based target')
             }
             if ($properties['streamtick_phase'] -ne 'after_seek_return' -or
                 $properties['following_sample_phase'] -ne 'after_seek_return') {
               $problems.Add('Observed producer evidence did not come from the after-return decode')
             }
+
+            $tickIndexes = [System.Collections.Generic.List[int]]::new()
+            $sampleIndexes = [System.Collections.Generic.List[int]]::new()
+            for ($rawIndex = 0; $rawIndex -lt $parsedRawEvents.Count; $rawIndex++) {
+              $rawEvent = $parsedRawEvents[$rawIndex]
+              if ($rawEvent.phase -ne 'after_seek_return') { continue }
+              if ($rawEvent.flags -eq $tickFlags -and $rawEvent.timestamp_100ns -eq $tickTimestamp) {
+                $tickIndexes.Add($rawIndex)
+              }
+              if ($rawEvent.flags -eq $sampleFlags -and $rawEvent.timestamp_100ns -eq $sampleTimestamp) {
+                $sampleIndexes.Add($rawIndex)
+              }
+            }
+            if ($tickIndexes.Count -ne 1 -or $sampleIndexes.Count -ne 1) {
+              $problems.Add('Positive producer scalar flags and timestamps do not identify exactly one pair of raw after-return events')
+            } else {
+              $rawTick = $parsedRawEvents[$tickIndexes[0]]
+              $rawSample = $parsedRawEvents[$sampleIndexes[0]]
+              $priorityFlags = [uint32]0x23
+              $streamTickFlag = [uint32]0x100
+              if ($sampleIndexes[0] -ne $tickIndexes[0] + 1 -or
+                  $rawTick.phase -ne 'after_seek_return' -or
+                  $rawSample.phase -ne 'after_seek_return') {
+                $problems.Add('Positive producer events are not a consecutive after-return tick/sample pair')
+              }
+              if ($rawTick.hr -ge [uint32]2147483648 -or
+                  ($rawTick.flags -band $priorityFlags) -ne 0 -or
+                  ($rawTick.flags -band $streamTickFlag) -eq 0) {
+                $problems.Add('Raw stream tick did not have a successful HRESULT and production-usable flags')
+              }
+              if ($rawSample.hr -ge [uint32]2147483648 -or
+                  -not $rawSample.has_sample -or
+                  ($rawSample.flags -band $priorityFlags) -ne 0 -or
+                  ($rawSample.flags -band $streamTickFlag) -ne 0) {
+                $problems.Add('Raw following sample did not have a successful HRESULT, a sample, and production-usable flags')
+              }
+            }
+
+            $rateCandidates = [System.Collections.Generic.List[int]]::new()
+            if ($targetFrame -gt 0 -and $targetTimestamp -gt 0) {
+              # The pinned test source opens this fixture with frameIndexMin=0;
+              # its target is floor(3*sampleRate/2), then converted with floor.
+              $targetNumerator = [long]$targetFrame * [long]10000000
+              $minimumRate = [long][Math]::Floor([double]$targetNumerator / ([double]$targetTimestamp + 1.0)) + 1
+              $maximumRate = [long][Math]::Floor([double]$targetNumerator / [double]$targetTimestamp)
+              $minimumRate = [Math]::Max([long]1, $minimumRate)
+              $maximumRate = [Math]::Min([long]384000, $maximumRate)
+              for ($candidateRate = $minimumRate; $candidateRate -le $maximumRate; $candidateRate++) {
+                $candidateTargetFrame = [long][Math]::Floor((3.0 * [double]$candidateRate) / 2.0)
+                $candidateTargetTimestamp = [long][Math]::Floor(([double]$targetFrame * 10000000.0) / [double]$candidateRate)
+                if ($candidateTargetFrame -eq $targetFrame -and $candidateTargetTimestamp -eq $targetTimestamp) {
+                  $rateCandidates.Add([int]$candidateRate)
+                }
+              }
+            }
+            if ($rateCandidates.Count -ne 1) {
+              $problems.Add('Requested target frame/time do not identify one supported integer audio sample rate for the pinned zero-based fixture')
+            } elseif ($tickTimestampValid -and $sampleTimestampValid -and $tickFlagsValid -and $sampleFlagsValid) {
+              $sampleRate = [double]$rateCandidates[0]
+              $derivedTickFrame = [long][Math]Round(
+                [double]$tickTimestamp * ($sampleRate / 10000000.0),
+                0,
+                [MidpointRounding]::AwayFromZero)
+              $derivedSampleFrame = [long][Math]Round(
+                [double]$sampleTimestamp * ($sampleRate / 10000000.0),
+                0,
+                [MidpointRounding]::AwayFromZero)
+              if ($derivedTickFrame -ne $tickFrame -or $derivedSampleFrame -ne $sampleFrame) {
+                $problems.Add('Reported producer frames do not match raw timestamps converted at the uniquely derived sample rate')
+              }
+              if ($targetFrame -ne [long][Math]Floor((3.0 * $sampleRate) / 2.0) -or
+                  [long][Math]Floor(([double]$targetFrame * 10000000.0) / $sampleRate) -ne $targetTimestamp) {
+                $problems.Add('Requested target frame/time do not match the pinned source seek conversion')
+              }
+            }
+          }
+
+          $qtRuntimeReceiptFinal = Get-Content -Raw -Path $qtRuntimeReceiptPath | ConvertFrom-Json
+          $qtRuntimeStatusFinal = [string]$qtRuntimeReceiptFinal.status
+          $qtRuntimePlatformFinal = [string]$qtRuntimeReceiptFinal.qt_qpa_platform
+          $qtOffscreenPluginFinal = [bool]$qtRuntimeReceiptFinal.offscreen_plugin_deployed
+          if ($qtRuntimeStatusFinal -ne 'ready' -or
+              $qtRuntimePlatformFinal -ne 'offscreen' -or
+              -not $qtOffscreenPluginFinal) {
+            $problems.Add('Qt offscreen runtime receipt is not ready at capture verification time')
           }
 
           $verification = [ordered]@{
@@ -575,6 +768,9 @@ jobs:
             test_binary_size_bytes = $testBinaryInfo.Length
             trace_event_count = $traceCount
             trace_truncated = $properties['trace_truncated']
+            qt_runtime_status = $qtRuntimeStatusFinal
+            qt_qpa_platform = $qtRuntimePlatformFinal
+            qt_offscreen_plugin_deployed = $qtOffscreenPluginFinal
             raw_read_sample_trace = $rawTrace
             seek_result = $seekResult
             seek_aligned = $seekAlignedProperty
