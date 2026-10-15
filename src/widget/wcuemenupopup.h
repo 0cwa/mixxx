@@ -56,6 +56,10 @@ class WCueMenuPopup : public QWidget {
         QWidget::show();
     }
 
+    // Optional: allow callers to hide specific buttons without affecting others.
+    void setDeleteCueVisible(bool visible);
+    void setSavedLoopCueVisible(bool visible);
+
   signals:
     void aboutToHide();
     void aboutToShow();

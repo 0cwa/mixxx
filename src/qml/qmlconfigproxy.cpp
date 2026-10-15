@@ -11,6 +11,7 @@
 #include "preferences/colorpalettesettings.h"
 #include "preferences/constants.h"
 #include "util/color/predefinedcolorpalettes.h"
+#include "waveform/renderers/waveformwidgetrenderer.h"
 #include "waveform/waveformwidgetfactory.h"
 
 #define PROPERTY_IMPL_GETTER(GROUP, KEY, TYPE, NAME, DEFAULT) \
@@ -68,6 +69,7 @@ const QString kOverviewStereoKey = QStringLiteral("overview_stereo_mode");
 const QString kOverviewMinuteMarkersKey =
         QStringLiteral("draw_overview_minute_markers");
 const QString kDefaultZoomKey = QStringLiteral("DefaultZoom");
+const QString kMaxZoomOutKey = QStringLiteral("MaxZoomOut");
 const QString kFrameRateKey = QStringLiteral("FrameRate");
 const QString kPlayMarkerPositionKey = QStringLiteral("PlayMarkerPosition");
 const QString kUntilMarkShowBeatsKey = QStringLiteral("UntilMarkShowBeats");
@@ -145,6 +147,19 @@ QmlConfigProxy::QmlConfigProxy(
         : QmlConfigProxyBase(pParent),
           m_pConfig(pConfig) {
     QmlConfigProxyBase::s_pInstance = this;
+    if (WaveformWidgetFactory::isCreated()) {
+        connect(WaveformWidgetFactory::instance(),
+                &WaveformWidgetFactory::maxZoomOutChanged,
+                this,
+                [this](double) { emit waveformMaxZoomOutChanged(); });
+    } else {
+        const double maxZoomOut = waveformMaxZoomOut();
+        WaveformWidgetRenderer::setWaveformMaxZoom(maxZoomOut);
+        const ConfigKey maxZoomOutKey(kWaveformGroup, kMaxZoomOutKey);
+        if (ControlObject::exists(maxZoomOutKey)) {
+            ControlObject::set(maxZoomOutKey, maxZoomOut);
+        }
+    }
 
     const ConfigKey overviewStereoKey(kWaveformGroup, kOverviewStereoKey);
     if (!ControlObject::exists(overviewStereoKey)) {
@@ -178,6 +193,7 @@ void QmlConfigProxy::notifyWaveformSettingsChanged() {
     emit pConfig->waveformOverviewStereoChanged();
     emit pConfig->waveformOverviewMinuteMarkersChanged();
     emit pConfig->waveformDefaultZoomChanged();
+    emit pConfig->waveformMaxZoomOutChanged();
     emit pConfig->waveformPlayMarkerPositionChanged();
     emit pConfig->waveformEnabledChanged();
     emit pConfig->waveformFrameRateChanged();
@@ -297,6 +313,37 @@ void QmlConfigProxy::set_useAcceleration(bool value) {
     emit useAccelerationChanged();
 }
 
+double QmlConfigProxy::waveformMaxZoomOut() const {
+    if (WaveformWidgetFactory::isCreated()) {
+        return WaveformWidgetFactory::instance()->getMaxZoomOut();
+    }
+    bool ok = false;
+    const double configuredValue =
+            m_pConfig->getValueString(ConfigKey(kWaveformGroup, kMaxZoomOutKey))
+                    .toDouble(&ok);
+    return WaveformWidgetRenderer::clampWaveformMaxZoom(
+            ok ? configuredValue : WaveformWidgetRenderer::s_waveformDefaultMaxZoom);
+}
+
+void QmlConfigProxy::set_waveformMaxZoomOut(double value) {
+    if (WaveformWidgetFactory::isCreated()) {
+        WaveformWidgetFactory::instance()->setMaxZoomOut(value);
+        return;
+    }
+
+    const double clampedValue = WaveformWidgetRenderer::clampWaveformMaxZoom(value);
+    WaveformWidgetRenderer::setWaveformMaxZoom(clampedValue);
+    const ConfigKey maxZoomOutKey(kWaveformGroup, kMaxZoomOutKey);
+    if (ControlObject::exists(maxZoomOutKey)) {
+        ControlObject::set(maxZoomOutKey, clampedValue);
+    }
+    setConfigValueAndNotify<double>(
+            kWaveformGroup,
+            kMaxZoomOutKey,
+            clampedValue,
+            WaveformWidgetRenderer::s_waveformDefaultMaxZoom,
+            &QmlConfigProxy::waveformMaxZoomOutChanged);
+}
 PROPERTY_IMPL_GETTER(
         kWaveformGroup, kZoomSynchronizationKey, bool, waveformZoomSynchronization, true);
 void QmlConfigProxy::set_waveformZoomSynchronization(bool value) {

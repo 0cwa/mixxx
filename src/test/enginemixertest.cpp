@@ -1,6 +1,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <QPointer>
+#include <QSemaphore>
 #include <QString>
 #include <QtDebug>
 #include <memory>
@@ -9,6 +11,8 @@
 
 #include "engine/channels/enginechannel.h"
 #include "engine/enginemixer.h"
+#include "engine/engineworker.h"
+#include "engine/engineworkerscheduler.h"
 #include "gtest/gtest.h"
 #include "test/signalpathtest.h"
 #include "util/sample.h"
@@ -44,6 +48,118 @@ class EngineChannelMock : public EngineChannel {
     MOCK_METHOD(void, collectFeatures, (GroupFeatureState * pGroupFeatures), (override, const));
     MOCK_METHOD(void, postProcess, (const std::size_t bufferSize), (override));
 };
+
+struct WorkerShutdownState {
+    bool schedulerAlive = false;
+    bool schedulerRunning = false;
+    bool workerDestroyed = false;
+};
+
+class WorkerShutdownChannel final : public EngineChannelMock {
+  public:
+    WorkerShutdownChannel(EngineMixer* pMixer,
+            EngineWorkerScheduler* pScheduler,
+            WorkerShutdownState* pState)
+            : EngineChannelMock(QStringLiteral("[ShutdownChannel]"),
+                      EngineChannel::CENTER,
+                      pMixer),
+              m_pScheduler(pScheduler),
+              m_pState(pState),
+              m_pWorker(std::make_unique<EngineWorker>()) {
+        m_pWorker->setScheduler(pScheduler);
+    }
+
+    ~WorkerShutdownChannel() override {
+        m_pState->schedulerAlive = !m_pScheduler.isNull();
+        if (m_pScheduler) {
+            m_pState->schedulerRunning = m_pScheduler->isRunning();
+            m_pWorker->workReady();
+            m_pScheduler->stopAndWait();
+        }
+        m_pWorker.reset();
+        m_pState->workerDestroyed = true;
+    }
+
+  private:
+    QPointer<EngineWorkerScheduler> m_pScheduler;
+    WorkerShutdownState* m_pState;
+    std::unique_ptr<EngineWorker> m_pWorker;
+};
+
+class EngineMixerShutdownTest : public MixxxTest {
+};
+
+TEST_F(EngineMixerShutdownTest, StopsSchedulerBeforeDestroyingChannelWorkers) {
+    mixxx::ControlIndicatorTimer indicatorTimer;
+    const auto handles = std::make_shared<ChannelHandleFactory>();
+    EffectsManager effects(config(), handles);
+    auto mixer = std::make_unique<EngineMixer>(
+            config(), QStringLiteral("[Master]"), &effects, handles, false);
+    QPointer<EngineWorkerScheduler> scheduler =
+            mixer->findChild<EngineWorkerScheduler*>();
+    ASSERT_FALSE(scheduler.isNull());
+    ASSERT_TRUE(scheduler->isRunning());
+    WorkerShutdownState state;
+    mixer->addChannel(std::make_unique<WorkerShutdownChannel>(
+            mixer.get(), scheduler.data(), &state));
+
+    mixer.reset();
+
+    EXPECT_TRUE(state.schedulerAlive);
+    EXPECT_FALSE(state.schedulerRunning);
+    EXPECT_TRUE(state.workerDestroyed);
+    EXPECT_TRUE(scheduler.isNull());
+}
+
+class BlockedEngineWorker final : public EngineWorker {
+  public:
+    ~BlockedEngineWorker() override {
+        finishAndWait();
+    }
+
+    void run() override {
+        m_semaRun.acquire();
+        m_entered.release();
+        m_finish.acquire();
+    }
+
+    bool waitForWork() {
+        return m_entered.tryAcquire(1, 5000);
+    }
+
+    void finishAndWait() {
+        m_semaRun.release();
+        m_finish.release();
+        wait();
+    }
+
+  private:
+    QSemaphore m_entered;
+    QSemaphore m_finish;
+};
+
+TEST(EngineWorkerSchedulerTest, StopsWithoutWaitingForWorkerAndAllowsLateNotifications) {
+    EngineWorkerScheduler scheduler;
+    BlockedEngineWorker worker;
+    worker.setScheduler(&scheduler);
+    worker.start();
+    worker.workReady();
+    scheduler.start();
+    const bool entered = worker.waitForWork();
+    EXPECT_TRUE(entered);
+
+    scheduler.stopAndWait();
+
+    EXPECT_FALSE(scheduler.isRunning());
+    if (entered) {
+        EXPECT_TRUE(worker.isRunning());
+    }
+    worker.workReady();
+    scheduler.runWorkers();
+    scheduler.stopAndWait();
+    EXPECT_FALSE(scheduler.isRunning());
+    worker.finishAndWait();
+}
 
 class EngineMixerTest
         : public BaseSignalPathTest,

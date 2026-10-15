@@ -12,11 +12,15 @@ EngineWorkerScheduler::EngineWorkerScheduler(QObject* pParent)
 }
 
 EngineWorkerScheduler::~EngineWorkerScheduler() {
+    stopAndWait();
+}
+
+void EngineWorkerScheduler::stopAndWait() {
     {
         // tell run method to terminate
         const auto lock = lockMutex(&m_mutex);
         m_bQuit = true;
-        m_waitCondition.wakeAll();
+        m_wakeSemaphore.release();
     }
     // wait for thread to terminate
     wait();
@@ -36,15 +40,19 @@ void EngineWorkerScheduler::runWorkers() {
     // Wake the scheduler if we have written a worker-ready message to the
     // scheduler. This is called from the callback thread, so we use an
     // atomic and not a mutex.
-    if (m_bWakeScheduler.exchange(false)) {
-        m_waitCondition.wakeAll();
+    if (m_bWakeScheduler.exchange(false) && !m_wakePending.exchange(true)) {
+        m_wakeSemaphore.release();
     }
 }
 
 void EngineWorkerScheduler::run() {
     static const QString tag("EngineWorkerScheduler");
-    bool quit = false;
-    while (!quit) {
+    while (true) {
+        m_wakeSemaphore.acquire();
+        m_wakePending.store(false);
+        if (m_bQuit.load()) {
+            break;
+        }
         Event::start(tag);
         {
             const auto lock = lockMutex(&m_mutex);
@@ -53,14 +61,5 @@ void EngineWorkerScheduler::run() {
             }
         }
         Event::end(tag);
-        {
-            const auto lock = lockMutex(&m_mutex);
-            if (!m_bQuit) {
-                // Wait for next runWorkers() call
-                m_waitCondition.wait(&m_mutex); // unlock mutex and wait
-            }
-            // copy mutex protected var to local
-            quit = m_bQuit;
-        }
     }
 }

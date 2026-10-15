@@ -2,6 +2,10 @@
 
 #include "sources/audiosource.h"
 
+#ifdef BUILD_TESTING
+class CachingReaderDeferredLoggingTest;
+#endif
+
 // A Chunk is a memory-resident section of audio that has been cached.
 // Each chunk holds a fixed number kFrames of frames with samples for
 // kChannels.
@@ -79,6 +83,10 @@ public:
     void init(SINT index);
 
   private:
+#ifdef BUILD_TESTING
+    friend class CachingReaderDeferredLoggingTest;
+#endif
+
     SINT frameIndexOffset() const noexcept {
         return m_index * kFrames;
     }

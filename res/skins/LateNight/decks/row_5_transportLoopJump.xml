@@ -225,6 +225,77 @@
           </WidgetGroup><!-- / Intro + Outro -->
 
           <WidgetGroup><Size>2f,0min</Size></WidgetGroup><!--  = 2-8px wide -->
+          <WidgetGroup><SizePolicy>i,min</SizePolicy><MaximumSize>8,</MaximumSize></WidgetGroup>
+
+          <WidgetGroup><!-- Memory Cues -->
+            <ObjectName>MemoryCues</ObjectName>
+            <Layout>vertical</Layout>
+            <SizePolicy>me,min</SizePolicy>
+            <MaximumSize>52,52</MaximumSize>
+            <Children>
+              <WidgetGroup>
+                <ObjectName>AlignLeftTop</ObjectName>
+                <SizePolicy>me,min</SizePolicy>
+                <Layout>horizontal</Layout>
+                <Children>
+                  <PushButton>
+                    <ObjectName>Seek30Prev</ObjectName>
+                    <TooltipId>memory_cue_prev</TooltipId>
+                    <Size>26f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,seek_30Prev</ConfigKey>
+                    </Connection>
+                  </PushButton>
+                  <PushButton>
+                    <ObjectName>MemoryCreateAtCurrent</ObjectName>
+                    <TooltipId>memory_cue_create</TooltipId>
+                    <Size>26f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,memory_create_at_current</ConfigKey>
+                      <ButtonState>LeftButton</ButtonState>
+                    </Connection>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,memory_clear_nearest</ConfigKey>
+                      <ButtonState>RightButton</ButtonState>
+                    </Connection>
+                  </PushButton>
+                </Children>
+              </WidgetGroup>
+              <WidgetGroup>
+                <ObjectName>AlignLeftTop</ObjectName>
+                <SizePolicy>me,min</SizePolicy>
+                <Layout>horizontal</Layout>
+                <Children>
+                  <PushButton>
+                    <ObjectName>Seek30</ObjectName>
+                    <TooltipId>memory_cue_next</TooltipId>
+                    <Size>26f,26f</Size>
+                    <NumberStates>1</NumberStates>
+                    <Connection>
+                      <ConfigKey><Variable name="Group"/>,seek_30s</ConfigKey>
+                    </Connection>
+                  </PushButton>
+                  <MemoryCueButton>
+                    <TooltipId>memory_cue_edit</TooltipId>
+                    <ObjectName>MemoryCueEdit</ObjectName>
+                    <MinimumSize>26,26</MinimumSize>
+                    <MaximumSize>26,26</MaximumSize>
+                    <SizePolicy>me,f</SizePolicy>
+                    <Group><Variable name="Group"/></Group>
+                    <NumberStates>1</NumberStates>
+                  </MemoryCueButton>
+                </Children>
+              </WidgetGroup>
+            </Children>
+            <Connection>
+              <ConfigKey>[Skin],show_hotcues</ConfigKey>
+              <BindProperty>visible</BindProperty>
+            </Connection>
+          </WidgetGroup><!-- / Memory Cues -->
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup><!--  = 2-8px wide -->
           <WidgetGroup><SizePolicy>i,min</SizePolicy><MaximumSize>80,</MaximumSize></WidgetGroup>
 
           <WidgetGroup><!-- Loop buttons + beatloop size spinbox -->

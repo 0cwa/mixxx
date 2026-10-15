@@ -1,7 +1,11 @@
 #pragma once
 
+#ifdef BUILD_TESTING
+#include <gtest/gtest_prod.h>
+#endif
+
+#include <array>
 #include <gsl/pointers>
-#include <list>
 
 #include "audio/frame.h"
 #include "engine/cachingreader/cachingreader.h"
@@ -23,6 +27,51 @@ class RateControl;
 /// point.
 class ReadAheadManager {
   public:
+    static constexpr std::size_t kMaxReadAheadLogEntries = 4096;
+
+    struct NextSamplesResult {
+        SINT samplesRead;
+        bool retryPending;
+    };
+
+    // Retry plans contain the complete state needed to repeat one exact
+    // read-ahead request after a cache miss. A grain scaler owns its RetryState
+    // so resetting one scaler cannot cancel a retry that belongs to another
+    // scaler sharing this ReadAheadManager.
+    struct RetryState {
+        bool active{false};
+        bool inReverse{false};
+        bool reachedTrigger{false};
+        double requestPosition{0.0};
+        double target{0.0};
+        double positionAfterTrigger{0.0};
+        double samplesToSeekTrigger{0.0};
+        SINT requestSamples{0};
+        SINT requestedSamples{0};
+        SINT samplesFromReader{0};
+        SINT preseekSamples{0};
+        SINT startSample{0};
+        int seekReadPosition{0};
+        int crossFadeStart{0};
+        int crossFadeSamples{0};
+        int crossFadeReadPosition{0};
+        mixxx::audio::ChannelCount channelCount;
+        mixxx::audio::FramePos loopTriggerPosition;
+        mixxx::audio::FramePos loopTargetPosition;
+        mixxx::audio::FramePos jumpTriggerPosition;
+        mixxx::audio::FramePos jumpTargetPosition;
+        mixxx::audio::FramePos targetPosition;
+
+        bool matches(double position,
+                bool reverse,
+                SINT samples,
+                mixxx::audio::ChannelCount channels) const {
+            return active && requestPosition == position &&
+                    inReverse == reverse && requestSamples == samples &&
+                    channelCount.value() == channels.value();
+        }
+    };
+
     ReadAheadManager(); // Only for testing: ReadAheadManagerMock
     ReadAheadManager(CachingReader* reader,
             LoopingControl* pLoopingControl,
@@ -38,6 +87,31 @@ class ReadAheadManager {
             CSAMPLE* buffer,
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount);
+
+    /// Like getNextSamples(), but leave the read-ahead position unchanged when
+    /// the reader reports a cache miss. This is used by grain-based scalers
+    /// that must retry the exact same input range instead of analysing silence
+    /// as real input.
+    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount);
+
+    /// Retry-aware overload using caller-owned state. This is the overload
+    /// used by concurrently prepared grain scalers.
+    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount,
+            RetryState& retryState);
+
+    /// Discard a retryable read plan that can no longer be completed by the
+    /// caller. The next retryable request will query the loop and cue controls
+    /// again and create a new plan.
+    virtual void cancelPendingRetry();
+
+    /// Cancel only the caller-owned retry plan.
+    virtual void cancelPendingRetry(RetryState& retryState);
 
     /// Used to add a new EngineControls that ReadAheadManager will use to decide
     /// which samples to return.
@@ -69,11 +143,33 @@ class ReadAheadManager {
             mixxx::audio::ChannelCount channelCount);
 
   private:
+    static constexpr std::size_t kMaxReadAheadLogOverflowEntries = 2;
+#ifdef BUILD_TESTING
+    FRIEND_TEST(EngineBufferAlignmentTest, ProcessRecoversAfterReadAheadLogCapacity);
+#endif
+
+    RetryState makeReadPlan(bool inReverse,
+            SINT requestSamples,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount);
+
+    // Internal precondition: requested_samples is nonnegative, whole-frame
+    // interleaved audio of at most MAX_BUFFER_LEN frames and
+    // kMaxEngineChannelInputCount channels (8).
+    NextSamplesResult getNextSamplesInternal(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount,
+            bool retryOnCacheMiss,
+            RetryState* pRetryState);
+
     /// An entry in the read log indicates the virtual playposition the read
     /// began at and the virtual playposition it ended at.
     struct ReadLogEntry {
-        double virtualPlaypositionStart;
-        double virtualPlaypositionEndNonInclusive;
+        double virtualPlaypositionStart{0};
+        double virtualPlaypositionEndNonInclusive{0};
+
+        ReadLogEntry() = default;
 
         ReadLogEntry(double virtualPlaypositionStart,
                      double virtualPlaypositionEndNonInclusive) {
@@ -109,28 +205,44 @@ class ReadAheadManager {
         bool merge(const ReadLogEntry& other) {
             // Allow 0-length ReadLogEntry's to merge regardless of their
             // direction if they have the right start point.
-            if ((other.length() == 0 || direction() == other.direction()) &&
-                virtualPlaypositionEndNonInclusive == other.virtualPlaypositionStart) {
+            if (canMerge(other)) {
                 virtualPlaypositionEndNonInclusive =
                         other.virtualPlaypositionEndNonInclusive;
                 return true;
             }
             return false;
         }
+
+        bool canMerge(const ReadLogEntry& other) const {
+            return (other.length() == 0 || direction() == other.direction()) &&
+                    virtualPlaypositionEndNonInclusive == other.virtualPlaypositionStart;
+        }
     };
 
     /// virtualPlaypositionEnd is the first sample in the direction that was
     /// read that was NOT read as part of this log entry.
-    void addReadLogEntry(double virtualPlaypositionStart,
-                         double virtualPlaypositionEndNonInclusive);
+    bool canAddReadLogEntry(double virtualPlaypositionStart,
+            double virtualPlaypositionEndNonInclusive) const;
+    bool addReadLogEntry(double virtualPlaypositionStart,
+            double virtualPlaypositionEndNonInclusive);
 
     LoopingControl* m_pLoopingControl;
     CueControl* m_pCueControl;
     RateControl* m_pRateControl;
-    std::list<ReadLogEntry> m_readAheadLog;
+    // Read-ahead logging runs on the engine callback. Keep a fixed-size buffer
+    // so direction changes never allocate in the callback. The overflow queue
+    // provides a bounded recovery window after the main log fills; normal
+    // positive output consumption must free entries before the bound is hit.
+    std::array<ReadLogEntry, kMaxReadAheadLogEntries> m_readAheadLog;
+    std::size_t m_readAheadLogStart{0};
+    std::size_t m_readAheadLogSize{0};
+    std::array<ReadLogEntry, kMaxReadAheadLogOverflowEntries>
+            m_readAheadLogOverflow;
+    std::size_t m_readAheadLogOverflowSize{0};
     double m_currentPosition; // In absolute samples
     CachingReader* m_pReader;
     CSAMPLE* m_pCrossFadeBuffer;
     int m_cacheMissCount;
     bool m_cacheMissExpected;
+    RetryState m_pendingRetry;
 };

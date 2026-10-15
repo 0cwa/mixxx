@@ -67,12 +67,12 @@ class allshader::WaveformWidget final : public ::WGLWidget,
         }
         return options;
     }
-
   private:
     void castToQWidget() override;
     void paintEvent(QPaintEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void toggleDownBeatVisibility();
 
     template<class T_Renderer, typename... Args>
     inline std::unique_ptr<T_Renderer> addRendererNode(Args&&... args) {
@@ -99,5 +99,7 @@ class allshader::WaveformWidget final : public ::WGLWidget,
 
     WaveformRendererSignalBase* m_pWaveformRendererSignal;
 
+    rendergraph::OpacityNode* m_pDownBeatOpacityNode;
+    float m_downBeatOpacity = 0.0f;
     DISALLOW_COPY_AND_ASSIGN(WaveformWidget);
 };
