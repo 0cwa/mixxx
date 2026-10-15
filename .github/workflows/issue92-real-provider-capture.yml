@@ -1,0 +1,701 @@
+# One bounded Windows run for the real Media Foundation source-reader capture.
+# The caller is the existing registered .github/workflows/develop.yml workflow.
+
+name: Issue 92 real Media Foundation provider capture
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  real-provider-capture:
+    name: Windows x64 real-provider capture (one selector)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+    env:
+      EXPECTED_SOURCE_COMMIT: 32260929032073cccaec30dc518638e45c723992
+      EXPECTED_SOURCE_TREE: faf481b2b3b7794912f9ed33ee9cd3018ddf2a01
+      SOURCE_REF: refs/heads/codex/issue92-real-provider-capture-observed-20261015
+      EXPECTED_FIXTURE_SHA256: 9ab2af723411f398001677c4244bf92a280b76f4f0985e1fa7cb7a8b73a44e24
+      EXPECTED_SELECTOR: SoundSourceMediaFoundationTest.RecordsRealSourceReaderPostSeekEvents
+
+    steps:
+      - name: Initialize small evidence packet
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'issue92-real-provider-capture'
+          $captureDir = Join-Path $env:RUNNER_TEMP 'issue92-producer-capture'
+          New-Item -ItemType Directory -Force -Path $artifactDir, $captureDir | Out-Null
+          Set-Content -Path (Join-Path $artifactDir 'expected-selector.txt') -Value $env:EXPECTED_SELECTOR -NoNewline
+          $context = [ordered]@{
+            workflow_dispatch_sha = $env:GITHUB_SHA
+            github_workflow_sha = $env:GITHUB_WORKFLOW_SHA
+            source_commit_expected = $env:EXPECTED_SOURCE_COMMIT
+            source_tree_expected = $env:EXPECTED_SOURCE_TREE
+            selector = $env:EXPECTED_SELECTOR
+            fixture_sha256_expected = $env:EXPECTED_FIXTURE_SHA256
+          }
+          $context | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $artifactDir 'dispatch-context.json')
+
+      - name: Check out the exact workflow commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+          lfs: false
+
+      - name: Bind the tested source, workflow, and fixture
+        shell: pwsh
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          $parent = (git rev-parse 'HEAD^').Trim()
+          $sourceTree = (git rev-parse "$($env:EXPECTED_SOURCE_COMMIT)^{tree}").Trim()
+          if ($head -ne $env:GITHUB_SHA) { throw "Checkout HEAD $head differs from dispatch SHA $env:GITHUB_SHA" }
+          if ($parent -ne $env:EXPECTED_SOURCE_COMMIT) { throw "Workflow parent is $parent, expected source $env:EXPECTED_SOURCE_COMMIT" }
+          if ($sourceTree -ne $env:EXPECTED_SOURCE_TREE) { throw "Pinned source tree is $sourceTree, expected $env:EXPECTED_SOURCE_TREE" }
+
+          $expectedPaths = @(
+            '.github/workflows/develop.yml',
+            '.github/workflows/issue92-real-provider-capture.yml'
+          ) | Sort-Object
+          $changedPaths = @(git diff --name-only --no-renames $env:EXPECTED_SOURCE_COMMIT HEAD | Sort-Object)
+          if (($changedPaths -join "`n") -ne ($expectedPaths -join "`n")) {
+            throw "Workflow child changed paths differ. Actual: $($changedPaths -join ', ')"
+          }
+
+          git fetch --no-tags origin $env:SOURCE_REF
+          $sourceFetchHead = (git rev-parse 'FETCH_HEAD^{commit}').Trim()
+          $sourceFetchTree = (git rev-parse "$sourceFetchHead^{tree}").Trim()
+          if ($sourceFetchHead -ne $env:EXPECTED_SOURCE_COMMIT) { throw "Fetched source is $sourceFetchHead, expected $env:EXPECTED_SOURCE_COMMIT" }
+          if ($sourceFetchTree -ne $env:EXPECTED_SOURCE_TREE) { throw "Fetched source tree is $sourceFetchTree, expected $env:EXPECTED_SOURCE_TREE" }
+
+          git checkout --detach $env:EXPECTED_SOURCE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Pinned source checkout failed with $LASTEXITCODE" }
+          git submodule sync --recursive
+          if ($LASTEXITCODE -ne 0) { throw "Submodule sync failed with $LASTEXITCODE" }
+          git submodule update --init --force --recursive
+          if ($LASTEXITCODE -ne 0) { throw "Submodule update failed with $LASTEXITCODE" }
+
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          $checkedOutTree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($sourceCommit -ne $env:EXPECTED_SOURCE_COMMIT) { throw "Checked-out source is $sourceCommit, expected $env:EXPECTED_SOURCE_COMMIT" }
+          if ($checkedOutTree -ne $env:EXPECTED_SOURCE_TREE) { throw "Checked-out tree is $checkedOutTree, expected $env:EXPECTED_SOURCE_TREE" }
+          $sourceStatus = @(git status --porcelain=v1 --untracked-files=all)
+          if ($sourceStatus.Count -ne 0) { throw "Pinned source checkout is not clean: $($sourceStatus -join '; ')" }
+
+          $fixturePath = Join-Path $env:GITHUB_WORKSPACE 'src\test\soundFileFormats\issue92_streamtick_gap.mp4'
+          if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) { throw 'The pinned producer fixture is missing.' }
+          $fixtureInfo = Get-Item -LiteralPath $fixturePath
+          $fixtureSha = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($fixtureInfo.Length -ne 815561) { throw "Fixture size is $($fixtureInfo.Length), expected 815561 bytes" }
+          if ($fixtureSha -ne $env:EXPECTED_FIXTURE_SHA256) { throw "Fixture SHA-256 is $fixtureSha, expected $env:EXPECTED_FIXTURE_SHA256" }
+
+          $record = [ordered]@{
+            source_commit = $sourceCommit
+            source_tree = $checkedOutTree
+            source_ref = $env:SOURCE_REF
+            workflow_dispatch_sha = $env:GITHUB_SHA
+            github_workflow_sha = $env:GITHUB_WORKFLOW_SHA
+            workflow_commit = $head
+            workflow_parent = $parent
+            workflow_tree = (git rev-parse 'HEAD^{tree}').Trim()
+            workflow_blob = (git rev-parse 'HEAD:.github/workflows/issue92-real-provider-capture.yml').Trim()
+            caller_workflow_blob = (git rev-parse 'HEAD:.github/workflows/develop.yml').Trim()
+            changed_paths = $changedPaths
+            fixture_path = 'src/test/soundFileFormats/issue92_streamtick_gap.mp4'
+            fixture_size_bytes = $fixtureInfo.Length
+            fixture_sha256 = $fixtureSha
+            model_download = 'disabled: Git LFS smudging is skipped for the pinned source checkout; capture test does not set MIXXX_STEM_MODEL_FILE'
+            source_binding = 'pass'
+          }
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'issue92-real-provider-capture'
+          $record | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $artifactDir 'source-binding.json')
+          "MIXXX_TEST_SOURCE_SHA=$sourceCommit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MIXXX_TEST_SOURCE_TREE=$checkedOutTree" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2.2
+        with:
+          cmake-version: "3.30.x"
+
+      - name: Set up MSVC x64 developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up Mixxx Windows build environment
+        shell: cmd
+        run: tools\windows_buildenv.bat setup
+        env:
+          BUILDENV_BASEPATH: C:\buildenv
+          BUILDENV_RELEASE: TRUE
+
+      - name: Create build directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Path build | Out-Null
+
+      - name: Configure the Media Foundation test build
+        shell: pwsh
+        working-directory: build
+        run: >-
+          cmake
+          -DBULK=ON
+          -DHSS1394=ON
+          -DLOCALECOMPARE=ON
+          -DMAD=ON
+          -DMEDIAFOUNDATION=ON
+          -DMODPLUG=ON
+          -DQT6=ON
+          -DQML=ON
+          -DWAVPACK=ON
+          -DVCPKG_TARGET_TRIPLET=x64-windows-release
+          -DBUILD_TESTING=ON
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
+          -DWARNINGS_FATAL=ON
+          -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DBATTERY=ON
+          -DBROADCAST=ON
+          -DDOWNLOAD_MANUAL=ON
+          -DHID=ON
+          -DKEYFINDER=ON
+          -DLILV=ON
+          -DOPUS=ON
+          -DQTKEYCHAIN=ON
+          -DVINYLCONTROL=ON
+          -DCMAKE_VERBOSE_MAKEFILE=OFF
+          ${{ env.CMAKE_ARGS_EXTRA }}
+          -L
+          ..
+
+      - name: Build only mixxx-test
+        shell: pwsh
+        working-directory: build
+        run: cmake --build . --config RelWithDebInfo --target mixxx-test
+
+      - name: Prepare the Qt offscreen runtime
+        shell: pwsh
+        working-directory: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $runtimeDir = Join-Path $buildDir 'mf-qt-runtime'
+          $runtimeReportPath = Join-Path $buildDir 'mf-qt-runtime.json'
+          $installLogPath = Join-Path $buildDir 'mf-qt-install.log'
+          $runtimeReport = [ordered]@{
+            status = 'starting'
+            qt6_dir = $null
+            qt_prefix = $null
+            offscreen_plugin_source = $null
+            offscreen_plugin_deployed = $false
+            runtime_dlls = @()
+            qt_qpa_platform = 'offscreen'
+            qt_plugin_path = $runtimeDir
+            qt_qpa_platform_plugin_path = Join-Path $runtimeDir 'platforms'
+          }
+          $runtimeReport | ConvertTo-Json -Depth 4 | Set-Content -Path $runtimeReportPath
+          $qtDirLine = Select-String -Path (Join-Path $buildDir 'CMakeCache.txt') -Pattern '^Qt6_DIR:PATH=(.*)$' | Select-Object -First 1
+          if ($null -eq $qtDirLine) { throw 'Qt6_DIR was not found in CMakeCache.txt.' }
+          $qtDir = $qtDirLine.Matches[0].Groups[1].Value
+          $qtPrefix = [System.IO.Path]::GetFullPath((Join-Path $qtDir '..\..'))
+          $qtRoot = Join-Path $qtPrefix 'Qt6'
+          $qtBin = Join-Path $qtPrefix 'bin'
+          $platformSource = [System.IO.Path]::GetFullPath((Join-Path $qtRoot 'plugins\platforms\qoffscreen.dll'))
+          $platformDir = Join-Path $runtimeDir 'platforms'
+          $platformInstall = Join-Path $platformDir 'qoffscreen.dll'
+          $runtimeReport.qt6_dir = $qtDir
+          $runtimeReport.qt_prefix = $qtPrefix
+          $runtimeReport.offscreen_plugin_source = $platformSource
+          if (-not (Test-Path $platformSource)) { throw 'The configured Qt installation lacks qoffscreen.dll.' }
+          if (-not (Test-Path $qtBin -PathType Container)) { throw 'The configured Qt runtime bin directory is missing.' }
+          cmake --install . --config RelWithDebInfo --component applocal --prefix $runtimeDir --verbose 2>&1 | Tee-Object -FilePath $installLogPath
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -ne 0) { throw "CMake applocal runtime staging failed with exit code $installExitCode." }
+          if (-not (Test-Path $platformInstall)) { throw 'The applocal component did not deploy qoffscreen.dll.' }
+          $runtimeReport.runtime_dlls = @(
+            foreach ($dllName in @('Qt6Core.dll', 'Qt6Gui.dll')) {
+              $locations = @(
+                (Join-Path $buildDir $dllName),
+                (Join-Path $runtimeDir $dllName),
+                (Join-Path $qtBin $dllName)
+              ) | Where-Object { Test-Path $_ }
+              [pscustomobject]@{ name = $dllName; found_at = @($locations) }
+            }
+          )
+          if (@($runtimeReport.runtime_dlls | Where-Object { $_.found_at.Count -eq 0 }).Count -gt 0) {
+            throw 'A Qt DLL needed by the offscreen plugin is missing.'
+          }
+          $runtimeReport.offscreen_plugin_deployed = $true
+          $runtimeReport.status = 'ready'
+          $runtimeReport | ConvertTo-Json -Depth 5 | Set-Content -Path $runtimeReportPath
+          @($runtimeDir, $qtBin) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          @(
+            'QT_QPA_PLATFORM=offscreen'
+            "QT_PLUGIN_PATH=$runtimeDir"
+            "QT_QPA_PLATFORM_PLUGIN_PATH=$platformDir"
+            'QT_DEBUG_PLUGINS=1'
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: List and run exactly one real-provider capture
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_DEBUG_PLUGINS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testExecutable = Join-Path $env:GITHUB_WORKSPACE 'build\mixxx-test.exe'
+          $captureDir = Join-Path $env:RUNNER_TEMP 'issue92-producer-capture'
+          $selector = $env:EXPECTED_SELECTOR
+          $expectedFixtureSha = $env:EXPECTED_FIXTURE_SHA256
+          $listStdout = Join-Path $captureDir 'gtest-list.stdout.txt'
+          $listStderr = Join-Path $captureDir 'gtest-list.stderr.txt'
+          $listReceiptPath = Join-Path $captureDir 'gtest-list-process.json'
+          $listVerificationPath = Join-Path $captureDir 'gtest-list-verification.json'
+          $nativeStdout = Join-Path $captureDir 'native.stdout.txt'
+          $nativeStderr = Join-Path $captureDir 'native.stderr.txt'
+          $nativeXml = Join-Path $captureDir 'gtest-results.xml'
+          $nativeReceiptPath = Join-Path $captureDir 'native-process.json'
+          $verificationPath = Join-Path $captureDir 'capture-verification.json'
+          $rawTracePath = Join-Path $captureDir 'raw-read-sample-trace.txt'
+
+          function Invoke-BoundedProcess {
+            param(
+              [string]$FilePath,
+              [string[]]$ArgumentList,
+              [string]$WorkingDirectory,
+              [string]$StdoutPath,
+              [string]$StderrPath,
+              [string]$ReceiptPath,
+              [int]$TimeoutSeconds
+            )
+            $started = [DateTimeOffset]::UtcNow
+            $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
+            $completed = $process.WaitForExit($TimeoutSeconds * 1000)
+            $timedOut = -not $completed
+            $killConfirmed = $true
+            if ($timedOut) {
+              try { $process.Kill() } catch { }
+              $killConfirmed = $process.WaitForExit(5000)
+            } else {
+              $process.WaitForExit()
+            }
+            $exitCode = if ($timedOut) { 124 } else { $process.ExitCode }
+            $receipt = [ordered]@{
+              executable = $FilePath
+              arguments = $ArgumentList
+              process_id = $process.Id
+              started_at_utc = $started.ToString('o')
+              finished_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+              timeout_seconds = $TimeoutSeconds
+              timed_out = $timedOut
+              forced_termination_confirmed = $killConfirmed
+              process_exit_code = $(if ($timedOut) { $null } else { $process.ExitCode })
+              captured_exit_code = $exitCode
+              stdout_path = [System.IO.Path]::GetFileName($StdoutPath)
+              stderr_path = [System.IO.Path]::GetFileName($StderrPath)
+            }
+            $receipt | ConvertTo-Json -Depth 5 | Set-Content -Path $ReceiptPath
+            return [pscustomobject]$receipt
+          }
+
+          if (-not (Test-Path $testExecutable -PathType Leaf)) { throw 'mixxx-test.exe is missing.' }
+          $testBinaryInfo = Get-Item -LiteralPath $testExecutable
+          $testBinarySha = (Get-FileHash -LiteralPath $testExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+          $testBinaryReceiptPath = Join-Path $captureDir 'test-binary.json'
+          $testBinaryReceipt = [ordered]@{
+            path = 'build/mixxx-test.exe'
+            size_bytes = $testBinaryInfo.Length
+            sha256 = $testBinarySha
+            source_commit = $env:MIXXX_TEST_SOURCE_SHA
+            source_tree = $env:MIXXX_TEST_SOURCE_TREE
+            workflow_dispatch_sha = $env:GITHUB_SHA
+            workflow_commit = $env:GITHUB_WORKFLOW_SHA
+            configuration = 'RelWithDebInfo'
+          }
+          $testBinaryReceipt | ConvertTo-Json -Depth 4 | Set-Content -Path $testBinaryReceiptPath
+          $list = Invoke-BoundedProcess -FilePath $testExecutable -ArgumentList @('--gtest_list_tests', "--gtest_filter=$selector") -WorkingDirectory $env:GITHUB_WORKSPACE -StdoutPath $listStdout -StderrPath $listStderr -ReceiptPath $listReceiptPath -TimeoutSeconds 60
+          $listed = [System.Collections.Generic.List[string]]::new()
+          $suite = $null
+          foreach ($line in Get-Content -Path $listStdout) {
+            if ($line -match '^(SoundSourceMediaFoundationTest(?:/[0-9]+)?)\.$') {
+              $suite = $Matches[1]
+              continue
+            }
+            if ($suite -and $line -match '^\s+([^#\s].*)$') {
+              $listed.Add("$suite.$($Matches[1].Trim())")
+            } elseif ($line -match '^\S') {
+              $suite = $null
+            }
+          }
+          $listProblems = [System.Collections.Generic.List[string]]::new()
+          if ($list.timed_out) { $listProblems.Add('GTest listing exceeded 60 seconds') }
+          if ($list.captured_exit_code -ne 0) { $listProblems.Add("GTest listing exited $($list.captured_exit_code)") }
+          if ($listed.Count -ne 1 -or $listed[0] -ne $selector) { $listProblems.Add("GTest listing did not equal the one exact selector: $($listed -join ', ')") }
+          $listVerification = [ordered]@{
+            expected_selector = $selector
+            listed_selectors = @($listed)
+            selector_count = $listed.Count
+            list_exit_code = $list.captured_exit_code
+            list_timed_out = $list.timed_out
+            problems = @($listProblems)
+            status = $(if ($listProblems.Count -eq 0) { 'pass' } else { 'fail' })
+          }
+          $listVerification | ConvertTo-Json -Depth 5 | Set-Content -Path $listVerificationPath
+          if ($listProblems.Count -gt 0) { throw ($listProblems -join '; ') }
+
+          $native = Invoke-BoundedProcess -FilePath $testExecutable -ArgumentList @("--gtest_filter=$selector", "--gtest_output=xml:$nativeXml", '--gtest_color=no') -WorkingDirectory $env:GITHUB_WORKSPACE -StdoutPath $nativeStdout -StderrPath $nativeStderr -ReceiptPath $nativeReceiptPath -TimeoutSeconds 120
+          $testBinaryShaAfterRun = (Get-FileHash -LiteralPath $testExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+          $problems = [System.Collections.Generic.List[string]]::new()
+          if ($testBinaryShaAfterRun -ne $testBinarySha) { $problems.Add('mixxx-test.exe changed after its pre-run SHA-256 receipt') }
+          $xmlTests = $null
+          $xmlFailures = $null
+          $xmlErrors = $null
+          $xmlDisabled = $null
+          $xmlSkipped = $null
+          $executed = @()
+          $properties = @{}
+          try {
+            [xml]$report = Get-Content -Raw -Path $nativeXml
+            $xmlRoot = $report.DocumentElement
+            $xmlTests = [int]$xmlRoot.GetAttribute('tests')
+            $xmlFailures = [int]$xmlRoot.GetAttribute('failures')
+            $xmlErrors = [int]$xmlRoot.GetAttribute('errors')
+            $xmlDisabled = [int]$xmlRoot.GetAttribute('disabled')
+            $cases = @($report.SelectNodes('//testcase'))
+            $executed = @($cases | ForEach-Object { "$($_.GetAttribute('classname')).$($_.GetAttribute('name'))" })
+            $xmlSkipped = [Math]::Max([int]$xmlRoot.GetAttribute('skipped'), $report.SelectNodes('//testcase/skipped').Count)
+            if ($cases.Count -eq 1) {
+              foreach ($property in $cases[0].SelectNodes('./properties/property')) {
+                $properties[$property.GetAttribute('name')] = $property.GetAttribute('value')
+              }
+            }
+          } catch {
+            $problems.Add("Could not read valid GoogleTest XML: $($_.Exception.Message)")
+          }
+          if ($native.timed_out) { $problems.Add('Native capture exceeded 120 seconds') }
+          if (-not $native.forced_termination_confirmed) { $problems.Add('Native process termination after timeout was not confirmed') }
+          if ($native.captured_exit_code -ne 0) { $problems.Add("mixxx-test exited $($native.captured_exit_code)") }
+          if ($xmlTests -ne 1) { $problems.Add("XML tests=$xmlTests; expected 1") }
+          if ($executed.Count -ne 1 -or $executed[0] -ne $selector) { $problems.Add("XML testcase IDs do not equal the exact selector: $($executed -join ', ')") }
+          if ($xmlFailures -ne 0 -or $xmlErrors -ne 0 -or $xmlDisabled -ne 0 -or $xmlSkipped -ne 0) {
+            $problems.Add("XML failure/error/disabled/skipped counts are $xmlFailures/$xmlErrors/$xmlDisabled/$xmlSkipped")
+          }
+
+          $requiredProperties = @(
+            'source_pin_status', 'source_commit', 'source_tree', 'workflow_dispatch_sha', 'workflow_commit',
+            'fixture_sha256', 'raw_read_sample_trace', 'trace_event_count', 'trace_truncated',
+            'requested_target_frame', 'requested_target_100ns', 'pre_seek_cursor_frame',
+            'post_seek_cursor_frame', 'set_current_position_call_count', 'set_current_position_trace',
+            'set_current_position_trace_truncated', 'set_current_position_succeeded', 'seek_aligned',
+            'seek_result', 'after_seek_read_attempted', 'after_seek_requested_frames',
+            'after_seek_returned_frames', 'seek_prefetch_event_count',
+            'after_seek_return_event_count', 'raw_streamtick_seen',
+            'after_seek_streamtick_seen', 'producer_proof', 'producer_result'
+          )
+          foreach ($name in $requiredProperties) {
+            if (-not $properties.ContainsKey($name)) { $problems.Add("XML property $name is missing") }
+          }
+          if ($properties['source_pin_status'] -ne 'PRESENT_FORMAT_VALID_UNVERIFIED') { $problems.Add('Test source pin status was not format-valid') }
+          if ($properties['source_commit'] -ne $env:MIXXX_TEST_SOURCE_SHA) { $problems.Add('XML source commit differs from the verified source checkout') }
+          if ($properties['source_tree'] -ne $env:MIXXX_TEST_SOURCE_TREE) { $problems.Add('XML source tree differs from the verified source checkout') }
+          if ($properties['workflow_dispatch_sha'] -ne $env:GITHUB_SHA) { $problems.Add('XML dispatch SHA differs from GITHUB_SHA') }
+          if ($properties['workflow_commit'] -ne $env:GITHUB_WORKFLOW_SHA) { $problems.Add('XML workflow commit differs from GITHUB_WORKFLOW_SHA') }
+          if ($properties['fixture_sha256'] -ne $expectedFixtureSha) { $problems.Add('XML fixture hash differs from the pinned fixture') }
+
+          $traceCount = -1
+          if (-not [int]::TryParse($properties['trace_event_count'], [ref]$traceCount) -or $traceCount -lt 0 -or $traceCount -gt 128) {
+            $problems.Add('XML trace event count is missing or outside the fixed 0..128 capture bound')
+          }
+          $rawTrace = [string]$properties['raw_read_sample_trace']
+          [System.IO.File]::WriteAllText($rawTracePath, $rawTrace, [System.Text.UTF8Encoding]::new($false))
+          if ($traceCount -eq 0 -and $rawTrace.Length -ne 0) { $problems.Add('Raw trace is nonempty with zero event count') }
+          if ($traceCount -gt 0 -and @($rawTrace.Split(';')).Count -ne $traceCount) { $problems.Add('Raw trace event count does not match XML property') }
+          if ($properties['trace_truncated'] -notin @('true', 'false')) { $problems.Add('XML trace_truncated property is invalid') }
+          if ($properties['raw_streamtick_seen'] -notin @('true', 'false') -or
+              $properties['after_seek_streamtick_seen'] -notin @('true', 'false')) {
+            $problems.Add('XML stream tick observation booleans are invalid')
+          }
+
+          $prefetchCount = -1
+          $afterSeekCount = -1
+          if (-not [int]::TryParse($properties['seek_prefetch_event_count'], [ref]$prefetchCount) -or $prefetchCount -lt 0 -or
+              -not [int]::TryParse($properties['after_seek_return_event_count'], [ref]$afterSeekCount) -or $afterSeekCount -lt 0) {
+            $problems.Add('XML phase event counts are invalid')
+          }
+          $prefetchRecords = @()
+          $afterSeekRecords = @()
+          if ($traceCount -gt 0 -and $rawTrace.Length -gt 0) {
+            $records = @($rawTrace.Split(';'))
+            foreach ($record in $records) {
+              if ($record -match '^\d+:phase=seek_prefetch,') {
+                $prefetchRecords += $record
+              } elseif ($record -match '^\d+:phase=after_seek_return,') {
+                $afterSeekRecords += $record
+              } else {
+                $problems.Add("Raw trace record has an invalid phase or format: $record")
+              }
+            }
+          }
+          if ($prefetchRecords.Count -ne $prefetchCount -or $afterSeekRecords.Count -ne $afterSeekCount) {
+            $problems.Add('Raw trace phase counts do not match XML properties')
+          }
+          if ($properties['after_seek_streamtick_seen'] -eq 'true' -and
+              ($afterSeekCount -eq 0 -or $properties['raw_streamtick_seen'] -ne 'true')) {
+            $problems.Add('After-return STREAMTICK evidence lacks a corresponding raw event')
+          }
+          if ($afterSeekCount -eq 0 -and $properties['after_seek_streamtick_seen'] -eq 'true') {
+            $problems.Add('After-return STREAMTICK was reported without a captured event')
+          }
+
+          $positionCallCount = -1
+          $preSeekCursor = 0
+          $postSeekCursor = 0
+          $targetFrame = 0
+          $positionTraceTruncated = [string]$properties['set_current_position_trace_truncated']
+          $positionSucceededProperty = [string]$properties['set_current_position_succeeded']
+          $seekAlignedProperty = [string]$properties['seek_aligned']
+          $seekResult = [string]$properties['seek_result']
+          if (-not [int]::TryParse($properties['set_current_position_call_count'], [ref]$positionCallCount) -or $positionCallCount -lt 0 -or
+              -not [int]::TryParse($properties['pre_seek_cursor_frame'], [ref]$preSeekCursor) -or
+              -not [int]::TryParse($properties['post_seek_cursor_frame'], [ref]$postSeekCursor) -or
+              -not [int]::TryParse($properties['requested_target_frame'], [ref]$targetFrame)) {
+            $problems.Add('XML seek cursors, target, or SetCurrentPosition call count are invalid')
+          }
+          if ($positionTraceTruncated -notin @('true', 'false') -or
+              $positionSucceededProperty -notin @('true', 'false') -or
+              $seekAlignedProperty -notin @('true', 'false')) {
+            $problems.Add('XML SetCurrentPosition or seek alignment booleans are invalid')
+          }
+          $actualSeekAligned = ($postSeekCursor -eq $targetFrame)
+          if ($seekAlignedProperty -ne $actualSeekAligned.ToString().ToLowerInvariant()) {
+            $problems.Add('XML seek_aligned does not match the returned cursor and requested target')
+          }
+          $positionHrValid = $false
+          $positionHrSucceeded = $false
+          $positionTrace = [string]$properties['set_current_position_trace']
+          if ($positionCallCount -eq 1 -and $positionTraceTruncated -eq 'false' -and
+              $positionTrace -match '^0:position_100ns=-?\d+,hr=0x([0-9a-fA-F]{8})$') {
+            $positionHr = [uint32]0
+            $positionHrValid = [uint32]::TryParse(
+              $Matches[1],
+              [System.Globalization.NumberStyles]::AllowHexSpecifier,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [ref]$positionHr)
+            if ($positionHrValid) { $positionHrSucceeded = ($positionHr -lt [uint32]2147483648) }
+          }
+          $expectedSetPositionSucceeded = ($positionHrValid -and $positionHrSucceeded)
+          if ($positionSucceededProperty -ne $expectedSetPositionSucceeded.ToString().ToLowerInvariant()) {
+            $problems.Add('XML SetCurrentPosition success does not match its captured HRESULT')
+          }
+          $expectedSeekResult = if ($expectedSetPositionSucceeded -and $actualSeekAligned) { 'ALIGNED' } else { 'UNPROVEN_SEEK_FAILED' }
+          if ($seekResult -ne $expectedSeekResult) { $problems.Add('XML seek_result does not match the captured HRESULT and returned cursor') }
+          $afterSeekAttempted = [string]$properties['after_seek_read_attempted']
+          $afterSeekRequestedFrames = 0
+          $afterSeekReturnedFrames = 0
+          if ($afterSeekAttempted -notin @('true', 'false') -or
+              -not [int]::TryParse($properties['after_seek_requested_frames'], [ref]$afterSeekRequestedFrames) -or
+              -not [int]::TryParse($properties['after_seek_returned_frames'], [ref]$afterSeekReturnedFrames) -or
+              $afterSeekRequestedFrames -lt 0 -or $afterSeekRequestedFrames -gt 65536 -or
+              $afterSeekReturnedFrames -lt 0 -or $afterSeekReturnedFrames -gt $afterSeekRequestedFrames) {
+            $problems.Add('XML post-seek read bounds or result are invalid')
+          }
+          if ($afterSeekAttempted -ne ($seekResult -eq 'ALIGNED').ToString().ToLowerInvariant()) {
+            $problems.Add('Post-seek decode attempt does not match the seek alignment result')
+          }
+          if ($afterSeekAttempted -eq 'false' -and ($afterSeekRequestedFrames -ne 0 -or $afterSeekReturnedFrames -ne 0 -or $afterSeekCount -ne 0)) {
+            $problems.Add('Unaligned seek reported post-return decode evidence')
+          }
+          if ($afterSeekAttempted -eq 'true' -and $afterSeekRequestedFrames -le 0) {
+            $problems.Add('Aligned seek did not report a positive bounded decode request')
+          }
+
+          $allowedProducerResults = @(
+            'OBSERVED_TICK_SAMPLE_BRACKETING_TARGET',
+            'UNPROVEN_TRACE_TRUNCATED',
+            'UNPROVEN_NO_STREAMTICK',
+            'UNPROVEN_NO_USABLE_STREAMTICK',
+            'UNPROVEN_NO_FOLLOWING_SAMPLE',
+            'UNPROVEN_TARGET_NOT_BRACKETED',
+            'UNPROVEN_SEEK_FAILED'
+          )
+          $producerResult = [string]$properties['producer_result']
+          if ($producerResult -notin $allowedProducerResults) { $problems.Add("Unexpected producer result: $producerResult") }
+          $producerProofProperty = [string]$properties['producer_proof']
+          if ($producerProofProperty -notin @('true', 'false')) { $problems.Add('XML producer_proof property is invalid') }
+          $producerProof = ($producerProofProperty -eq 'true')
+          if ($producerResult -eq 'UNPROVEN_SEEK_FAILED' -and ($seekResult -eq 'ALIGNED' -or $producerProof)) {
+            $problems.Add('Failed/unproven seek was incorrectly reported as producer evidence')
+          }
+          if ($producerResult -eq 'OBSERVED_TICK_SAMPLE_BRACKETING_TARGET' -and
+              ($seekResult -ne 'ALIGNED' -or $producerProofProperty -ne 'true' -or
+               $properties['after_seek_streamtick_seen'] -ne 'true')) {
+            $problems.Add('Producer evidence was reported without an aligned seek and positive proof property')
+          }
+          if ($producerResult -ne 'OBSERVED_TICK_SAMPLE_BRACKETING_TARGET' -and $producerProof) {
+            $problems.Add('Producer proof is true for a non-observed producer result')
+          }
+          if ($producerResult -eq 'OBSERVED_TICK_SAMPLE_BRACKETING_TARGET') {
+            $tickFrame = 0
+            $targetFrame = 0
+            $sampleFrame = 0
+            if (-not [int]::TryParse($properties['streamtick_frame'], [ref]$tickFrame) -or
+                -not [int]::TryParse($properties['requested_target_frame'], [ref]$targetFrame) -or
+                -not [int]::TryParse($properties['following_sample_frame'], [ref]$sampleFrame)) {
+              $problems.Add('Observed producer result lacks numeric tick/target/sample frames')
+            } elseif (-not ($tickFrame -le $targetFrame -and $targetFrame -lt $sampleFrame)) {
+              $problems.Add('Observed producer frames do not bracket the requested target')
+            }
+            if ($properties['streamtick_phase'] -ne 'after_seek_return' -or
+                $properties['following_sample_phase'] -ne 'after_seek_return') {
+              $problems.Add('Observed producer evidence did not come from the after-return decode')
+            }
+          }
+
+          $verification = [ordered]@{
+            selector = $selector
+            test_status = $(if ($problems.Count -eq 0) { 'PASS' } else { 'FAIL' })
+            producer_result = $producerResult
+            producer_proof = $producerProof
+            unproven_producer_result_is_allowed = ($producerResult -like 'UNPROVEN_*')
+            fake_read_and_position_providers_unset = ($problems.Count -eq 0)
+            source_commit = $properties['source_commit']
+            source_tree = $properties['source_tree']
+            workflow_dispatch_sha = $properties['workflow_dispatch_sha']
+            workflow_commit = $properties['workflow_commit']
+            fixture_sha256 = $properties['fixture_sha256']
+            test_binary_sha256 = $testBinarySha
+            test_binary_size_bytes = $testBinaryInfo.Length
+            trace_event_count = $traceCount
+            trace_truncated = $properties['trace_truncated']
+            raw_read_sample_trace = $rawTrace
+            seek_result = $seekResult
+            seek_aligned = $seekAlignedProperty
+            pre_seek_cursor_frame = $properties['pre_seek_cursor_frame']
+            post_seek_cursor_frame = $properties['post_seek_cursor_frame']
+            set_current_position_call_count = $properties['set_current_position_call_count']
+            set_current_position_trace = $properties['set_current_position_trace']
+            seek_prefetch_event_count = $prefetchCount
+            after_seek_return_event_count = $afterSeekCount
+            after_seek_streamtick_seen = $properties['after_seek_streamtick_seen']
+            requested_target_frame = $properties['requested_target_frame']
+            streamtick_frame = $properties['streamtick_frame']
+            following_sample_frame = $properties['following_sample_frame']
+            native_exit_code = $native.captured_exit_code
+            native_timed_out = $native.timed_out
+            xml_tests = $xmlTests
+            xml_testcases = $executed
+            failures = $xmlFailures
+            errors = $xmlErrors
+            disabled = $xmlDisabled
+            skipped = $xmlSkipped
+            problems = @($problems)
+          }
+          $verification | ConvertTo-Json -Depth 6 | Set-Content -Path $verificationPath
+          $verification | ConvertTo-Json -Depth 6 | Write-Host
+          if ($problems.Count -gt 0) { throw ($problems -join '; ') }
+
+      - name: Stage exact receipts and enforce the 5 MiB cap
+        id: stage
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = $env:GITHUB_WORKSPACE
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'issue92-real-provider-capture'
+          $captureDir = Join-Path $env:RUNNER_TEMP 'issue92-producer-capture'
+          $copyMap = [ordered]@{
+            'source-binding.json' = Join-Path $artifactDir 'source-binding.json'
+            'dispatch-context.json' = Join-Path $artifactDir 'dispatch-context.json'
+            'expected-selector.txt' = Join-Path $artifactDir 'expected-selector.txt'
+            'test-binary.json' = Join-Path $captureDir 'test-binary.json'
+            'qt-runtime.json' = Join-Path $workspace 'build\mf-qt-runtime.json'
+            'qt-install.log' = Join-Path $workspace 'build\mf-qt-install.log'
+            'gtest-list.stdout.txt' = Join-Path $captureDir 'gtest-list.stdout.txt'
+            'gtest-list.stderr.txt' = Join-Path $captureDir 'gtest-list.stderr.txt'
+            'gtest-list-process.json' = Join-Path $captureDir 'gtest-list-process.json'
+            'gtest-list-verification.json' = Join-Path $captureDir 'gtest-list-verification.json'
+            'native.stdout.txt' = Join-Path $captureDir 'native.stdout.txt'
+            'native.stderr.txt' = Join-Path $captureDir 'native.stderr.txt'
+            'native-process.json' = Join-Path $captureDir 'native-process.json'
+            'gtest-results.xml' = Join-Path $captureDir 'gtest-results.xml'
+            'raw-read-sample-trace.txt' = Join-Path $captureDir 'raw-read-sample-trace.txt'
+            'capture-verification.json' = Join-Path $captureDir 'capture-verification.json'
+          }
+          $missing = [System.Collections.Generic.List[string]]::new()
+          $files = [System.Collections.Generic.List[object]]::new()
+          foreach ($entry in $copyMap.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+              $missing.Add($entry.Key)
+              continue
+            }
+            $target = Join-Path $artifactDir $entry.Key
+            if ([System.IO.Path]::GetFullPath($entry.Value) -ne [System.IO.Path]::GetFullPath($target)) {
+              Copy-Item -LiteralPath $entry.Value -Destination $target -Force
+            }
+            $item = Get-Item -LiteralPath $target
+            $files.Add([ordered]@{
+              path = $entry.Key
+              size_bytes = $item.Length
+              sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+            })
+          }
+          $required = @('source-binding.json', 'dispatch-context.json', 'expected-selector.txt', 'test-binary.json', 'qt-runtime.json', 'qt-install.log', 'gtest-list.stdout.txt', 'gtest-list.stderr.txt', 'gtest-list-process.json', 'gtest-list-verification.json', 'native.stdout.txt', 'native.stderr.txt', 'native-process.json', 'gtest-results.xml', 'raw-read-sample-trace.txt', 'capture-verification.json')
+          foreach ($requiredPath in $required) {
+            if ($missing.Contains($requiredPath)) { continue }
+            if (-not (Test-Path -LiteralPath (Join-Path $artifactDir $requiredPath) -PathType Leaf)) { $missing.Add($requiredPath) }
+          }
+          $testBinaryReceipt = $null
+          $testBinaryShaExpected = $null
+          $testBinarySizeBytes = $null
+          $testBinaryReceiptPath = Join-Path $artifactDir 'test-binary.json'
+          if (Test-Path -LiteralPath $testBinaryReceiptPath -PathType Leaf) {
+            $testBinaryReceipt = Get-Content -Raw -Path $testBinaryReceiptPath | ConvertFrom-Json
+            $testBinaryShaExpected = $testBinaryReceipt.sha256
+            $testBinarySizeBytes = $testBinaryReceipt.size_bytes
+          }
+          $manifest = [ordered]@{
+            schema = 'mixxx-issue92-real-provider-capture-artifact-v1'
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            source_commit_expected = $env:EXPECTED_SOURCE_COMMIT
+            source_tree_expected = $env:EXPECTED_SOURCE_TREE
+            workflow_dispatch_sha = $env:GITHUB_SHA
+            selector = $env:EXPECTED_SELECTOR
+            fixture_sha256_expected = $env:EXPECTED_FIXTURE_SHA256
+            test_binary_sha256 = $testBinaryShaExpected
+            test_binary_size_bytes = $testBinarySizeBytes
+            artifact_limit_bytes = 5242880
+            files = @($files)
+            missing_required_files = @($missing | Sort-Object -Unique)
+          }
+          $manifestPath = Join-Path $artifactDir 'artifact-manifest.json'
+          $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath
+          $sumsPath = Join-Path $artifactDir 'SHA256SUMS.txt'
+          $checksumLines = foreach ($item in Get-ChildItem -LiteralPath $artifactDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name) {
+            $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($item.Name)"
+          }
+          $checksumLines | Set-Content -Path $sumsPath
+          $totalBytes = [long]((Get-ChildItem -LiteralPath $artifactDir -File | Measure-Object -Property Length -Sum).Sum)
+          $withinLimit = $totalBytes -le 5242880
+          "within_limit=$($withinLimit.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Artifact byte count (including manifest): $totalBytes / 5242880"
+          if (-not $withinLimit) { throw 'The complete issue 92 evidence packet exceeds 5 MiB.' }
+          if ($missing.Count -gt 0) { throw "Required evidence files are missing: $($missing -join ', ')" }
+
+      - name: Upload the real-provider capture evidence
+        if: always() && steps.stage.outputs.within_limit == 'true'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: issue92-real-provider-capture-win-x64-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue92-real-provider-capture/
+          if-no-files-found: error
+          retention-days: 14
