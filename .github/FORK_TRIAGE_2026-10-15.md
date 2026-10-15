@@ -46,6 +46,12 @@ A **dated decision ledger** for 0cwa/mixxx, not an up-to-date PR API report. Bef
 - **Unresolved inheritance warning:** older composition and forest branches, including PR #64's integration branch, may **still contain** the removed upstream policy. The closure of #37/#79 and creation of #94 do not amend those branches. Before choosing any integration head for delivery, restore/verify its `AGENTS.md` human-contribution policy and recheck the diff.
 - Verified that PR #57's Flatpak restore diff removes `-DSIGNALSMITH=ON` while PR #69's alternative restore keeps it; do not treat them as identical changes or blindly close the former without confirming intended separation.
 
+## Verified additional PR consolidation and branch check
+
+- [#25](https://github.com/0cwa/mixxx/pull/25) closed without merge after comparing exact heads: [#26](https://github.com/0cwa/mixxx/pull/26) is **2 commits ahead and 0 behind** #25's current recorded head. This proves commit ancestry, not current-head CI readiness. The #25 branch was not deleted.
+- Checked `AGENTS.md` at the actual heads of **#23 and #64**: both omit the original Mixxx AI/human contribution policy. **#47 and #26** retain those sections. Restoring the policy in the chosen integration line remains a gating administrative task; PR #94 does not fix old branch heads.
+- Added coordination-only PR-body notes to #23, #64, #26 and #54, without modifying their code, branch refs or merge status.
+
 ## Active priority gates
 
 1. **CI correctness:** [issue #93](https://github.com/0cwa/mixxx/issues/93) — PR23's current Oct 10 head did not have an exact-head Actions run at audit time. The Oct 8 green revision is not proof of its descendant.
