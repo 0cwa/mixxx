@@ -445,7 +445,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          timeout 60s ./build/mixxx-test --gtest_list_tests --gtest_filter="$NATIVE_TEST_FILTER" \
+          timeout --signal=TERM --kill-after=5s 60s ./build/mixxx-test --gtest_list_tests --gtest_filter="$NATIVE_TEST_FILTER" \
             > "$RESULT_DIR/native/list.stdout" 2> "$RESULT_DIR/native/list.stderr"
           list_exit=$?
           set -e
