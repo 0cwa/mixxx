@@ -30,6 +30,14 @@ A green status from CodeRabbit when it **skipped** its review is not a substanti
 
 Limit active implementation initiatives to **three** unless a human explicitly changes priorities. Other drafts may be retained as archived candidates, with one concrete next action each.
 
+## Small-change and developer handoff conventions
+
+- Work from the smallest focused branch; don't mix formatting-only edits with behavior changes. Apply the existing `.clang-format` and repository pre-commit/pre-push checks where available.
+- Use the project's documented local build environment; if configured, the `mixxx-build` distrobox may be used for build and test runs. Never claim to have executed a build or a real DJ session without actual evidence.
+- Write clear imperative commit subjects and wrap explanatory messages around 72 columns. Identify *why* a change is needed and its exact test result.
+- For UI changes, retain before/after screenshots; for controller, audio and hardware behavior, record the actual device, backend, sample rate, settings and reproducible test performed.
+- Preserve a human-controlled handoff before pushing upstream, responding to review discussions, or converting a draft to ready.
+
 ## Mandatory upstream-first procedure
 
 1. Before developing a proposed fix, inspect `mixxxdj/mixxx` `main` **and the relevant release branch**, e.g. `2.6`.
