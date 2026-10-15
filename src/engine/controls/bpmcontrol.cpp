@@ -285,10 +285,53 @@ BpmControl::BpmControl(const QString& group,
     m_pBeatsUndoPossible = std::make_unique<ControlObject>(
             ConfigKey(group, "beats_undo_possible"));
     m_pBeatsUndoPossible->setReadOnly();
+
+    m_pBeatsForwardDownBeatsMarker = std::make_unique<ControlPushButton>(
+            ConfigKey(group, "beats_forward_down_beats_marker"), false);
+    m_pBeatsForwardDownBeatsMarker->setKbdRepeatable(true);
+    connect(m_pBeatsForwardDownBeatsMarker.get(),
+            &ControlObject::valueChanged,
+            this,
+            &BpmControl::slotForwardDownBeatsMarker,
+            Qt::DirectConnection);
+
+    m_pBeatsBackwardDownBeatsMarker = std::make_unique<ControlPushButton>(
+            ConfigKey(group, "beats_backward_down_beats_marker"), false);
+    m_pBeatsBackwardDownBeatsMarker->setKbdRepeatable(true);
+    connect(m_pBeatsBackwardDownBeatsMarker.get(),
+            &ControlObject::valueChanged,
+            this,
+            &BpmControl::slotBackwardDownBeatsMarker,
+            Qt::DirectConnection);
 }
 
 mixxx::Bpm BpmControl::getBpm() const {
     return mixxx::Bpm(m_pEngineBpm->get());
+}
+
+void BpmControl::slotForwardDownBeatsMarker(double v) {
+    if (v <= 0) {
+        return;
+    }
+    const TrackPointer pTrack = getEngineBuffer()->getLoadedTrack();
+    if (!pTrack)
+        return;
+    int downbeatOffset = pTrack->getDownbeatOffset();
+    downbeatOffset == 15 ? downbeatOffset = 0 : ++downbeatOffset;
+    pTrack->setDownbeatOffset(downbeatOffset);
+}
+
+void BpmControl::slotBackwardDownBeatsMarker(double v) {
+    if (v <= 0) {
+        return;
+    }
+    const TrackPointer pTrack = getEngineBuffer()->getLoadedTrack();
+    if (!pTrack)
+        return;
+    int downbeatOffset = pTrack->getDownbeatOffset();
+    if (downbeatOffset == 0)
+        downbeatOffset = 16;
+    pTrack->setDownbeatOffset(--downbeatOffset);
 }
 
 void BpmControl::adjustBeatsBpm(double deltaBpm) {
@@ -303,7 +346,9 @@ void BpmControl::adjustBeatsBpm(double deltaBpm) {
 
     const mixxx::Bpm bpm = pBeats->getBpmInRange(
             mixxx::audio::kStartFramePos, frameInfo().trackEndPosition);
-    // FIXME: calling bpm.value() without checking bpm.isValid()
+    if (!bpm.isValid()) {
+        return;
+    }
     const auto centerBpm = mixxx::Bpm(math_max(kBpmAdjustMin, bpm.value() + deltaBpm));
     mixxx::Bpm adjustedBpm = BeatUtils::roundBpmWithinRange(
             centerBpm - kBpmAdjustStep / 2, centerBpm, centerBpm + kBpmAdjustStep / 2);

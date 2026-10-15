@@ -3,13 +3,14 @@
 #include <memory>
 
 #include "control/pollingcontrolproxy.h"
+#include "defs_urls.h"
 #include "preferences/constants.h"
 #include "preferences/dialog/dlgpreferencepage.h"
 #include "preferences/dialog/ui_dlgprefsounddlg.h"
 #include "preferences/usersettings.h"
 #include "soundio/sounddevice.h"
+#include "soundio/sounddevicestatus.h"
 #include "soundio/soundmanagerconfig.h"
-#include "soundio/soundmanagerutil.h"
 #include "util/parented_ptr.h"
 
 class ControlObject;
@@ -38,17 +39,11 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
 
   signals:
     void loadPaths(const SoundManagerConfig &config);
-    void writePath(const AudioPath* pPath, SoundManagerConfig* config);
     void writePaths(SoundManagerConfig *config);
     void refreshOutputDevices(const QList<SoundDevicePointer>& devices);
     void refreshInputDevices(const QList<SoundDevicePointer>& devices);
-    void addOutputDevice(SoundDevicePointer pDevice);
-    void addInputDevice(SoundDevicePointer pDevice);
-    void removeOutputDevice(SoundDevicePointer pDevice);
-    void removeInputDevice(SoundDevicePointer pDevice);
     void updatingAPI();
     void updatedAPI();
-    void deviceChannelsUpdated(SoundDevicePointer devices);
 
   public slots:
     void slotUpdate() override; // called on show
@@ -88,11 +83,6 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     void updateKeylockDualThreadingCheckbox();
     void updateKeylockMultithreading(bool enabled);
 #endif
-    void addDevice(SoundDevicePointer pDevice);
-    void removeDevice(SoundDevicePointer pDevice);
-    void updateDeviceChannels(SoundDevicePointer pDevice);
-    void updateSampleRates(const QList<mixxx::audio::SampleRate>& sampleRates);
-    void invalidateConfig();
 
   private:
     void initializePaths();
@@ -110,7 +100,10 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     PollingControlProxy m_pHeadDelay;
     PollingControlProxy m_pBoothDelay;
     PollingControlProxy m_pMicMonitorMode;
-    PollingControlProxy m_pKeylockEngine;
+    PollingControlProxy m_pKeylockEngine1;
+    PollingControlProxy m_pKeylockEngine2;
+    PollingControlProxy m_pKeylockEngine3;
+    PollingControlProxy m_pKeylockEngine4;
 
     parented_ptr<ControlProxy> m_pAudioLatencyOverloadCount;
     parented_ptr<ControlProxy> m_pOutputLatencyMs;
@@ -126,10 +119,4 @@ class DlgPrefSound : public DlgPreferencePage, public Ui::DlgPrefSoundDlg  {
     bool m_bSkipConfigClear;
     bool m_loading;
     bool m_configValid;
-
-#ifdef __PIPEWIRE__
-    parented_ptr<QCheckBox> m_pipewireCheckBox;
-    parented_ptr<QCheckBox> m_pipewirePatchbayCheckBox;
-    parented_ptr<ControlProxy> m_pPipewirePatchbay;
-#endif
 };

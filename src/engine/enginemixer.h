@@ -271,9 +271,6 @@ class EngineMixer : public QObject, public AudioSource {
     // non-owning. lifetime bound to EffectsManager
     EngineEffectsManager* m_pEngineEffectsManager;
 
-    // List of channels added to the engine.
-    QVarLengthArray<std::unique_ptr<ChannelInfo>, kPreallocatedChannels> m_channels;
-
     // The previous gain of each channel for each mixing output (main,
     // headphone, talkover).
     QVarLengthArray<GainCache, kPreallocatedChannels> m_channelMainGainCache;
@@ -299,11 +296,15 @@ class EngineMixer : public QObject, public AudioSource {
     parented_ptr<EngineWorkerScheduler> m_pWorkerScheduler;
     std::unique_ptr<EngineSync> m_pEngineSync;
 
+    // List of channels added to the engine. (depends on m_pEngineSync)
+    QVarLengthArray<std::unique_ptr<ChannelInfo>, kPreallocatedChannels> m_channels;
+
     std::unique_ptr<ControlObject> m_pMainGain;
     std::unique_ptr<ControlObject> m_pBoothGain;
     std::unique_ptr<ControlObject> m_pHeadGain;
     std::unique_ptr<ControlObject> m_pSampleRate;
     std::unique_ptr<ControlObject> m_pOutputLatencyMs;
+    std::unique_ptr<ControlObject> m_pWaveformMaxZoomOut;
     std::unique_ptr<ControlObject> m_pAudioLatencyOverloadCount;
     std::unique_ptr<ControlObject> m_pAudioLatencyUsage;
     std::unique_ptr<ControlObject> m_pAudioLatencyOverload;
@@ -325,6 +326,10 @@ class EngineMixer : public QObject, public AudioSource {
     std::unique_ptr<ControlPushButton> m_pXFaderReverse;
     std::unique_ptr<ControlPushButton> m_pHeadSplitEnabled;
     std::unique_ptr<ControlObject> m_pKeylockEngine;
+    std::unique_ptr<ControlObject> m_pKeylockEngine1;
+    std::unique_ptr<ControlObject> m_pKeylockEngine2;
+    std::unique_ptr<ControlObject> m_pKeylockEngine3;
+    std::unique_ptr<ControlObject> m_pKeylockEngine4;
 
     PflGainCalculator m_headphoneGain;
     TalkoverGainCalculator m_talkoverGain;

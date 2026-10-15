@@ -458,6 +458,9 @@ bool Track::setBeatsWhileLocked(mixxx::BeatsPointer pBeats) {
     }
 
     m_pBeats = std::move(pBeats);
+    if (m_pBeats) {
+        m_downbeat_offset.storeRelease(m_pBeats->getDownbeatsOffset());
+    }
     m_record.refMetadata().refTrackInfo().setBpm(getBeatsPointerBpm(m_pBeats, getDuration()));
     return true;
 }
@@ -519,6 +522,17 @@ void Track::afterBeatsAndBpmUpdated(
 
     markDirtyAndUnlock(pLock);
     emitBeatsAndBpmUpdated();
+}
+
+void Track::setDownbeatOffset(int offset) {
+    auto locked = lockMutex(&m_qMutex);
+    if (!m_pBeats) {
+        return;
+    }
+    const auto newBeats = m_pBeats->trySetDownbeatsOffset(offset);
+    if (newBeats) {
+        trySetBeatsMarkDirtyAndUnlock(&locked, *newBeats, false);
+    }
 }
 
 void Track::emitBeatsAndBpmUpdated() {
@@ -1170,7 +1184,6 @@ void Track::removeCuesOfType(mixxx::CueType type) {
     QMutableListIterator<CuePointer> it(m_cuePoints);
     while (it.hasNext()) {
         CuePointer pCue = it.next();
-        // FIXME: Why does this only work for the Hotcue Type?
         if (pCue->getType() == type) {
             disconnect(pCue.get(), nullptr, this, nullptr);
             it.remove();
@@ -1185,6 +1198,25 @@ void Track::removeCuesOfType(mixxx::CueType type) {
         if (type == mixxx::CueType::Loop) {
             emit loopRemove();
         }
+        markDirtyAndUnlock(&locked);
+        emit cuesUpdated();
+    }
+}
+
+void Track::removeTempLoopCue() {
+    auto locked = lockMutex(&m_qMutex);
+    bool dirty = false;
+    QMutableListIterator<CuePointer> it(m_cuePoints);
+    while (it.hasNext()) {
+        CuePointer pCue = it.next();
+        if (pCue->getType() == mixxx::CueType::Loop && pCue->getHotCue() == Cue::kNoHotCue) {
+            disconnect(pCue.get(), nullptr, this, nullptr);
+            it.remove();
+            dirty = true;
+            break;
+        }
+    }
+    if (dirty) {
         markDirtyAndUnlock(&locked);
         emit cuesUpdated();
     }

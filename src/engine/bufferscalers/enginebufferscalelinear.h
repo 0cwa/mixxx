@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef BUILD_TESTING
+#include <gtest/gtest_prod.h>
+#endif
+
 #include "engine/bufferscalers/enginebufferscale.h"
 #include "util/samplebuffer.h"
 
@@ -47,4 +51,11 @@ class EngineBufferScaleLinear : public EngineBufferScale  {
 
     double m_dCurrentFrame;
     double m_dNextFrame;
+
+#ifdef BUILD_TESTING
+    FRIEND_TEST(EngineBufferScaleLinearTest,
+            ZeroProgressRefillPreservesRebasedPosition);
+    FRIEND_TEST(EngineBufferScaleLinearTest,
+            EmptyRefillNormalizesPartialReadRecovery);
+#endif
 };

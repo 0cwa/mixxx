@@ -97,7 +97,7 @@ SpinBox {
     }
 
     onValueChanged: {
-        root.value = value;
+        root.realValue = root.value / root.decimalFactor;
     }
 
     component Indicator: Item {

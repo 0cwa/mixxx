@@ -6,6 +6,8 @@
 #include <QString>
 #include <QTest>
 #include <QtDebug>
+#include <algorithm>
+#include <array>
 
 #include "control/controlobject.h"
 #include "engine/controls/ratecontrol.h"
@@ -15,6 +17,12 @@
 #include "test/mixxxtest.h"
 #include "test/mockedenginebackendtest.h"
 #include "test/signalpathtest.h"
+#include "util/defs.h"
+
+#ifndef GTEST_FLAG_SET
+// Available in GoogleTest v1.12.0.
+#define GTEST_FLAG_SET(name, value) (void)(::testing::GTEST_FLAG(name) = value)
+#endif
 
 // In case any of the test in this file fail. You can use the audioplot.py tool
 // in the tools folder to visually compare the results of the enginebuffer
@@ -24,9 +32,342 @@ namespace {
 const QString kAppGroup = QStringLiteral("[App]");
 }
 
-class EngineBufferTest : public MockedEngineBackendTest {};
+class EngineBufferTest : public MockedEngineBackendTest {
+#ifdef __STEM__
+  protected:
+    void addStemHandles(EngineDeck* pDeck = nullptr) {
+        if (!pDeck) {
+            pDeck = m_pChannel1;
+        }
+        for (int stemIdx = 0; stemIdx < mixxx::kMaxSupportedStems; ++stemIdx) {
+            const auto stemHandleGroup = m_pEngineMixer->registerChannelGroup(
+                    EngineDeck::getGroupForStem(pDeck->getGroup(), stemIdx));
+            pDeck->addStemHandle(stemHandleGroup);
+        }
+    }
+#endif
+};
 
 class EngineBufferE2ETest : public SignalPathTest {};
+
+#ifdef __STEM__
+namespace {
+TrackPointer createStemTrack(int channelCount) {
+    TrackPointer pTrack = Track::newTemporary();
+    pTrack->setAudioProperties(
+            mixxx::audio::ChannelCount(channelCount),
+            mixxx::audio::SampleRate(44100),
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(1));
+    return pTrack;
+}
+
+void fillStemBuffer(CSAMPLE* pBuffer, int channelCount, std::size_t sampleCount) {
+    const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+    const std::size_t numFrames = sampleCount / channelCount;
+    for (std::size_t frame = 0; frame < numFrames; ++frame) {
+        for (int stemIdx = 0; stemIdx < stemCount; ++stemIdx) {
+            const auto sample = static_cast<CSAMPLE>(stemIdx + 1);
+            const std::size_t offset =
+                    frame * channelCount + stemIdx * mixxx::kEngineChannelOutputCount;
+            pBuffer[offset] = sample;
+            pBuffer[offset + 1] = sample;
+        }
+    }
+}
+
+void fillStemBuffer(
+        mixxx::SampleBuffer* pBuffer,
+        int channelCount,
+        std::size_t outputBufferSize) {
+    const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+    fillStemBuffer(
+            pBuffer->data(), channelCount, outputBufferSize * stemCount);
+}
+
+class StemTestScaler final : public MockScaler {
+  public:
+    void clear() override {
+        m_scaleBufferCalls = 0;
+    }
+
+    void setChannelCount(int channelCount) {
+        m_channelCount = channelCount;
+    }
+
+    double scaleBuffer(CSAMPLE* pOutput, SINT bufferSize) override {
+        ++m_scaleBufferCalls;
+        fillStemBuffer(
+                pOutput, m_channelCount, static_cast<std::size_t>(bufferSize));
+        const int frameCount = bufferSize / m_channelCount;
+        return frameCount;
+    }
+
+    int getScaleBufferCalls() const {
+        return m_scaleBufferCalls;
+    }
+
+  private:
+    int m_channelCount = mixxx::kEngineChannelOutputCount;
+    int m_scaleBufferCalls = 0;
+};
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+class ScopedDebugAssertBreakDisabler final {
+  public:
+    ScopedDebugAssertBreakDisabler()
+            : m_previousMessageHandler(qInstallMessageHandler(nullptr)) {
+    }
+
+    ~ScopedDebugAssertBreakDisabler() {
+        qInstallMessageHandler(m_previousMessageHandler);
+    }
+
+  private:
+    QtMessageHandler m_previousMessageHandler;
+};
+#endif
+} // namespace
+
+TEST_F(EngineBufferTest, StemBufferIsPreallocated) {
+    EXPECT_EQ(m_pChannel1->m_stemBuffer.size(),
+            static_cast<SINT>(kMaxEngineFrames *
+                    mixxx::kMaxEngineChannelInputCount));
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsOddChannelLayout) {
+    TrackPointer pTrack = createStemTrack(3);
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    // Odd multichannel layouts are rejected while loading. processStem() is
+    // only called after this boundary and therefore cannot receive one in a
+    // valid engine callback.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false),
+            "m_channelCount % mixxx::audio::ChannelCount::stereo\\(\\) == 0");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsStemVectorMismatch) {
+    TrackPointer pTrack = createStemTrack(4);
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(pTrack, false);
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    // A stem track requires the corresponding stem handles and controls to be
+    // registered before processStem() is called. This fixture intentionally
+    // omits them to verify the invalid-input boundary.
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->processStem(output.data(), output.size()),
+            "stemCount <= m_stems\\.size\\(\\)");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsStemGainCacheMismatch) {
+    addStemHandles();
+    ASSERT_EQ(m_pChannel1->m_stemsGainCache.size(), mixxx::kMaxSupportedStems);
+    m_pChannel1->m_stemsGainCache.pop_back();
+
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    // The gain cache is maintained alongside the stem handles. This deliberate
+    // truncation verifies that processStem() rejects an inconsistent cache.
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->processStem(output.data(), output.size()),
+            "stemCount <= m_stemsGainCache\\.size\\(\\)");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    m_pChannel1->m_stemBuffer.fill(1.0f);
+
+    std::array<CSAMPLE, kProcessBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+#endif
+}
+
+TEST_F(EngineBufferTest, StemProcessHandlesValidChannelCounts) {
+    constexpr std::size_t kBufferSize = 16;
+    const std::array<EngineDeck*, 3> decks = {
+            m_pChannel1,
+            m_pChannel2,
+            m_pChannel3,
+    };
+    std::array<StemTestScaler, 3> scalers;
+    for (EngineDeck* pDeck : decks) {
+        addStemHandles(pDeck);
+        for (auto& pGain : pDeck->m_stemGain) {
+            pGain->set(1.0);
+        }
+        for (auto& pMute : pDeck->m_stemMute) {
+            pMute->set(0.0);
+        }
+    }
+
+    std::array<CSAMPLE, kBufferSize> output;
+    const std::array<int, 3> channelCounts = {4, 6, 8};
+    for (std::size_t i = 0; i < channelCounts.size(); ++i) {
+        EngineDeck* pDeck = decks[i];
+        StemTestScaler& scaler = scalers[i];
+        const int channelCount = channelCounts[i];
+        const int stemCount = channelCount / mixxx::kEngineChannelOutputCount;
+        pDeck->getEngineBuffer()->setScalerForTest(&scaler, &scaler);
+        pDeck->getEngineBuffer()->loadFakeTrack(
+                createStemTrack(channelCount), true);
+        scaler.setChannelCount(channelCount);
+        scaler.setSignal(mixxx::audio::SampleRate(44100),
+                mixxx::audio::ChannelCount(channelCount));
+        scaler.clear();
+        std::fill(output.begin(), output.end(), 1.0f);
+        pDeck->processStem(output.data(), output.size());
+
+        const auto expectedSample = static_cast<CSAMPLE>(stemCount * (stemCount + 1) / 2);
+        EXPECT_EQ(scaler.getScaleBufferCalls(), 1) << channelCount;
+        EXPECT_THAT(output, ::testing::Each(expectedSample)) << channelCount;
+    }
+    m_pChannel1->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl1, m_pMockScaleKeylock1);
+    m_pChannel2->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl2, m_pMockScaleKeylock2);
+    m_pChannel3->getEngineBuffer()->setScalerForTest(
+            m_pMockScaleVinyl3, m_pMockScaleKeylock3);
+}
+
+TEST_F(EngineBufferTest, StemProcessClearsOddOutputSentinel) {
+    addStemHandles();
+
+    constexpr int kChannelCount = 4;
+    constexpr std::size_t kBufferSize = 17;
+    constexpr std::size_t kAlignedBufferSize = kBufferSize - 1;
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(
+            createStemTrack(kChannelCount), true);
+    m_pMockScaleVinyl1->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount(kChannelCount));
+    fillStemBuffer(
+            &m_pChannel1->m_stemBuffer, kChannelCount, kAlignedBufferSize);
+
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), 1.0f);
+    m_pChannel1->processStem(output.data(), output.size());
+
+    for (std::size_t i = 0; i < kAlignedBufferSize; ++i) {
+        EXPECT_EQ(output[i], 3.0f);
+    }
+    EXPECT_EQ(output.back(), CSAMPLE_ZERO);
+}
+
+TEST_F(EngineBufferTest, StemProcessAcceptsMaximumBufferSize) {
+    addStemHandles();
+    for (auto& pGain : m_pChannel1->m_stemGain) {
+        pGain->set(1.0);
+    }
+    for (auto& pMute : m_pChannel1->m_stemMute) {
+        pMute->set(0.0);
+    }
+
+    constexpr std::size_t kBufferSize = kMaxEngineSamples;
+    constexpr CSAMPLE kSentinel = -7.0f;
+    m_pChannel1->getEngineBuffer()->loadFakeTrack(createStemTrack(8), true);
+    m_pMockScaleVinyl1->setSignal(mixxx::audio::SampleRate(44100),
+            mixxx::audio::ChannelCount(8));
+    fillStemBuffer(&m_pChannel1->m_stemBuffer, 8, kBufferSize);
+
+    std::array<CSAMPLE, kBufferSize + 1> output;
+    std::fill(output.begin(), output.end(), kSentinel);
+    m_pChannel1->processStem(output.data(), kBufferSize);
+
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kBufferSize,
+            [](const CSAMPLE sample) { return sample == 10.0f; }));
+    EXPECT_EQ(output.back(), kSentinel);
+}
+
+TEST_F(EngineBufferTest, StemProcessRejectsOversizedBufferAndClearsSafePrefix) {
+    constexpr std::size_t kBufferSize = kMaxEngineSamples + 1;
+    constexpr CSAMPLE kSentinel = -7.0f;
+    std::array<CSAMPLE, kBufferSize> output;
+    std::fill(output.begin(), output.end(), kSentinel);
+
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+            m_pChannel1->process(output.data(), kBufferSize),
+            "bufferSize <= kMaxEngineSamples");
+#else
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    m_pChannel1->process(output.data(), kBufferSize);
+
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kMaxEngineSamples,
+            [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
+    EXPECT_EQ(output.back(), kSentinel);
+#endif
+}
+
+#if !defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) || !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+TEST_F(EngineBufferTest, ProcessWithChannelLayoutClearsInvalidOutput) {
+#if defined(MIXXX_DEBUG_ASSERTIONS_ENABLED) && !defined(MIXXX_DEBUG_ASSERTIONS_FATAL)
+    ScopedDebugAssertBreakDisabler debugAssertBreakDisabler;
+#endif
+    constexpr std::size_t kValidSampleCount = 16;
+    constexpr std::size_t kNonDivisibleSampleCount = kValidSampleCount + 1;
+    constexpr CSAMPLE kPoison = -7.0f;
+    std::array<CSAMPLE, kNonDivisibleSampleCount> output;
+
+    std::fill(output.begin(), output.end(), kPoison);
+    m_pChannel1->getEngineBuffer()->processWithChannelLayout(
+            output.data(), kValidSampleCount, mixxx::audio::ChannelCount());
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kValidSampleCount,
+            [](const CSAMPLE sample) { return sample == CSAMPLE_ZERO; }));
+
+    std::fill(output.begin(), output.end(), kPoison);
+    m_pChannel1->getEngineBuffer()->processWithChannelLayout(
+            output.data(),
+            kNonDivisibleSampleCount,
+            mixxx::audio::ChannelCount::stereo());
+    EXPECT_THAT(output, ::testing::Each(CSAMPLE_ZERO));
+}
+#endif
+#endif
+
+TEST_F(EngineBufferTest, FractionalPlayposClampsToTrackBounds) {
+    EngineBuffer* pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->m_trackEndPositionOld =
+            mixxx::audio::FramePos::fromEngineSamplePos(200.0);
+
+    EXPECT_DOUBLE_EQ(-0.01, pEngineBuffer->fractionalPlayposFromAbsolute(-1.0));
+    EXPECT_DOUBLE_EQ(0.5, pEngineBuffer->fractionalPlayposFromAbsolute(50.0));
+    EXPECT_DOUBLE_EQ(1.0, pEngineBuffer->fractionalPlayposFromAbsolute(101.0));
+}
 
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,
