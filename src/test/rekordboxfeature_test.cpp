@@ -376,4 +376,74 @@ TEST(RekordboxImportTest, ReimportsHotCueLoopBoundsOverExistingCue) {
     EXPECT_EQ(mixxx::audio::kInvalidFramePos, existingCue->getEndPosition());
 }
 
+TEST(RekordboxImportTest, SkipsZeroHotCueNumberAndStillUpdatesNonzeroCueType) {
+    QTemporaryDir temporaryDirectory;
+    ASSERT_TRUE(temporaryDirectory.isValid());
+
+    const auto sampleRate = mixxx::audio::SampleRate(48000);
+    for (const bool extended : {false, true}) {
+        SCOPED_TRACE(extended ? "extended" : "legacy");
+        TrackPointer track = Track::newTemporary();
+        CuePointer mainCue = track->createAndAddCue(
+                mixxx::CueType::MainCue,
+                Cue::kNoHotCue,
+                mixxx::audio::FramePos(10),
+                mixxx::audio::kInvalidFramePos);
+        mainCue->setLabel(QStringLiteral("main cue"));
+
+        const QString zeroHotCuePath = writeAnlzFixture(
+                temporaryDirectory,
+                extended ? QStringLiteral("zero-hot-cue-extended.dat")
+                         : QStringLiteral("zero-hot-cue-legacy.dat"),
+                mixxx::rekordbox::test::makeAnlzCueFixture(extended, 1, 0, 2));
+        ASSERT_FALSE(zeroHotCuePath.isEmpty());
+
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                track, sampleRate, 0, false, zeroHotCuePath);
+
+        EXPECT_EQ(mixxx::CueType::MainCue, mainCue->getType());
+        EXPECT_EQ(Cue::kNoHotCue, mainCue->getHotCue());
+        EXPECT_EQ(mixxx::audio::FramePos(10), mainCue->getPosition());
+        EXPECT_EQ(mixxx::audio::kInvalidFramePos, mainCue->getEndPosition());
+        EXPECT_EQ(QStringLiteral("main cue"), mainCue->getLabel());
+
+        CuePointer existingHotCue = track->createAndAddCue(
+                mixxx::CueType::HotCue,
+                0,
+                mixxx::audio::FramePos(20),
+                mixxx::audio::kInvalidFramePos);
+        const QString loopPath = writeAnlzFixture(
+                temporaryDirectory,
+                extended ? QStringLiteral("reimport-loop-extended.dat")
+                         : QStringLiteral("reimport-loop-legacy.dat"),
+                mixxx::rekordbox::test::makeAnlzCueFixture(extended, 1, 1, 2));
+        ASSERT_FALSE(loopPath.isEmpty());
+
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                track, sampleRate, 0, false, loopPath);
+
+        EXPECT_EQ(existingHotCue, track->findHotcueByIndex(0));
+        EXPECT_EQ(mixxx::CueType::Loop, existingHotCue->getType());
+        EXPECT_EQ(mixxx::audio::FramePos(48000), existingHotCue->getPosition());
+        EXPECT_EQ(mixxx::audio::FramePos(96000), existingHotCue->getEndPosition());
+
+        const QString hotCuePath = writeAnlzFixture(
+                temporaryDirectory,
+                extended ? QStringLiteral("reimport-hot-cue-extended.dat")
+                         : QStringLiteral("reimport-hot-cue-legacy.dat"),
+                mixxx::rekordbox::test::makeAnlzCueFixture(extended, 1, 1, 1));
+        ASSERT_FALSE(hotCuePath.isEmpty());
+
+        mixxx::rekordbox::test::readAnalyzeForTest(
+                track, sampleRate, 0, false, hotCuePath);
+
+        EXPECT_EQ(existingHotCue, track->findHotcueByIndex(0));
+        EXPECT_EQ(mixxx::CueType::HotCue, existingHotCue->getType());
+        EXPECT_EQ(mixxx::audio::FramePos(48000), existingHotCue->getPosition());
+        EXPECT_EQ(mixxx::audio::kInvalidFramePos, existingHotCue->getEndPosition());
+        EXPECT_EQ(mixxx::CueType::MainCue, mainCue->getType());
+        EXPECT_EQ(mixxx::audio::FramePos(10), mainCue->getPosition());
+    }
+}
+
 } // namespace

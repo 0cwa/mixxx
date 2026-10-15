@@ -1191,6 +1191,10 @@ void readAnalyze(TrackPointer track,
                         }
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
+                        // Zero has no hot-cue slot; subtracting would target Cue::kNoHotCue.
+                        if (cueEntry->hot_cue() == 0) {
+                            continue;
+                        }
                         int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
                         mixxx::audio::FramePos endPosition = mixxx::audio::kInvalidFramePos;
                         if (cueEntry->type() ==
@@ -1269,6 +1273,10 @@ void readAnalyze(TrackPointer track,
                         }
                     } break;
                     case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
+                        // Zero has no hot-cue slot; subtracting would target Cue::kNoHotCue.
+                        if (cueExtendedEntry->hot_cue() == 0) {
+                            continue;
+                        }
                         int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
                         mixxx::audio::FramePos endPosition = mixxx::audio::kInvalidFramePos;
                         if (cueExtendedEntry->type() ==
