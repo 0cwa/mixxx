@@ -1,11 +1,11 @@
 #include "sources/soundsourcemediafoundation.h"
 
-#include <QCryptographicHash>
-#include <QFile>
-
 #include <gtest/gtest.h>
 #include <mfapi.h>
 
+#include <QCryptographicHash>
+#include <QFile>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -111,12 +111,33 @@ struct ReadSampleEvent {
     CSAMPLE firstSampleValue;
 };
 
+enum class ReadSamplePhase {
+    SeekPrefetch,
+    AfterSeekReturn,
+};
+
 struct RawReadSampleObservation {
+    ReadSamplePhase phase;
     HRESULT hr;
     DWORD flags;
     LONGLONG timestamp;
     bool hasSample;
 };
+
+struct SetCurrentPositionObservation {
+    LONGLONG requestedPosition;
+    HRESULT hr;
+};
+
+const char* readSamplePhaseName(ReadSamplePhase phase) {
+    switch (phase) {
+    case ReadSamplePhase::SeekPrefetch:
+        return "seek_prefetch";
+    case ReadSamplePhase::AfterSeekReturn:
+        return "after_seek_return";
+    }
+    return "unknown";
+}
 
 class ReadSampleQueue final {
   public:
@@ -206,6 +227,17 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
         source.m_readSampleObserver = std::forward<Observer>(observer);
     }
 
+    template<typename Observer>
+    void setCurrentPositionObserver(
+            SoundSourceMediaFoundation& source,
+            Observer&& observer) {
+        source.m_setCurrentPositionObserver = std::forward<Observer>(observer);
+    }
+
+    void clearCurrentPositionObserver(SoundSourceMediaFoundation& source) {
+        source.m_setCurrentPositionObserver = {};
+    }
+
     void expectRealReadSamplePath(const SoundSourceMediaFoundation& source) {
         EXPECT_FALSE(source.m_readSampleProvider);
         EXPECT_FALSE(source.m_setCurrentPositionProvider);
@@ -260,6 +292,11 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
 
     SINT readableSampleCount(const SoundSourceMediaFoundation& source) const {
         return source.m_sampleBuffer.readableLength();
+    }
+
+    SINT readableFrameCount(const SoundSourceMediaFoundation& source) const {
+        return source.getSignalInfo().samples2frames(
+                source.m_sampleBuffer.readableLength());
     }
 };
 
@@ -1064,7 +1101,9 @@ TEST_F(SoundSourceMediaFoundationTest, SeekClearsPendingStreamGap) {
 
 TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     constexpr SINT kInitialDecodeFrames = 1024;
-    constexpr std::size_t kMaxCapturedEvents = 64;
+    constexpr SINT kMaxPostSeekDecodeFrames = 65536;
+    constexpr std::size_t kMaxCapturedEvents = 128;
+    constexpr std::size_t kMaxCapturedPositions = 4;
     constexpr DWORD kFlagsHandledBeforeStreamTick =
             MF_SOURCE_READERF_ERROR |
             MF_SOURCE_READERF_ENDOFSTREAM |
@@ -1133,9 +1172,25 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     std::array<RawReadSampleObservation, kMaxCapturedEvents> events{};
     std::size_t eventCount = 0;
     bool traceTruncated = false;
+    std::array<SetCurrentPositionObservation, kMaxCapturedPositions>
+            positionObservations{};
+    std::size_t positionCount = 0;
+    bool positionTraceTruncated = false;
+    ReadSamplePhase phase = ReadSamplePhase::SeekPrefetch;
+    setCurrentPositionObserver(
+            source,
+            [&positionObservations, &positionCount, &positionTraceTruncated](
+                    LONGLONG requestedPosition,
+                    HRESULT hr) {
+                if (positionCount == positionObservations.size()) {
+                    positionTraceTruncated = true;
+                    return;
+                }
+                positionObservations[positionCount++] = {requestedPosition, hr};
+            });
     setReadSampleObserver(
             source,
-            [&events, &eventCount, &traceTruncated](
+            [&events, &eventCount, &traceTruncated, &phase](
                     HRESULT hr,
                     DWORD flags,
                     LONGLONG timestamp,
@@ -1144,99 +1199,172 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
                     traceTruncated = true;
                     return;
                 }
-                events[eventCount++] = {hr, flags, timestamp, hasSample};
+                events[eventCount++] = {phase, hr, flags, timestamp, hasSample};
             });
 
     const SINT requestedTargetFrame = source.frameIndexMin() +
             3 * source.getSignalInfo().getSampleRate() / 2;
     const LONGLONG requestedTarget100ns =
             frameIndexToStreamPositionForTest(source, requestedTargetFrame);
+    const ReadState preSeekState = readState(source);
     seekTo(source, requestedTargetFrame);
+    const ReadState postSeekState = readState(source);
+    clearCurrentPositionObserver(source);
+    const bool onePositionCall =
+            positionCount == 1 && !positionTraceTruncated;
+    const bool nativePositionSucceeded =
+            onePositionCall && SUCCEEDED(positionObservations[0].hr);
+    const bool seekAligned =
+            postSeekState.currentFrameIndex == requestedTargetFrame;
+    const bool seekReady = nativePositionSucceeded && seekAligned;
+
+    bool afterSeekReadAttempted = false;
+    SINT afterSeekRequestedFrames = 0;
+    SINT afterSeekReturnedFrames = 0;
+    if (seekReady) {
+        const SINT gapFrames =
+                postSeekState.streamGapEndFrameIndex > requestedTargetFrame
+                ? postSeekState.streamGapEndFrameIndex - requestedTargetFrame
+                : 0;
+        const SINT bufferedFrames = readableFrameCount(source);
+        const long long desiredFrames = std::max<long long>(
+                kInitialDecodeFrames,
+                static_cast<long long>(gapFrames) + bufferedFrames +
+                        kInitialDecodeFrames);
+        afterSeekRequestedFrames = static_cast<SINT>(std::min<long long>(
+                kMaxPostSeekDecodeFrames,
+                desiredFrames));
+        SampleBuffer afterSeekBuffer(
+                source.getSignalInfo().frames2samples(afterSeekRequestedFrames));
+        const auto afterSeekRange = IndexRange::forward(
+                requestedTargetFrame,
+                afterSeekRequestedFrames);
+        phase = ReadSamplePhase::AfterSeekReturn;
+        const auto afterSeekResult = source.readSampleFrames(
+                WritableSampleFrames(
+                        afterSeekRange,
+                        SampleBuffer::WritableSlice(afterSeekBuffer)));
+        afterSeekReadAttempted = true;
+        afterSeekReturnedFrames = afterSeekResult.frameIndexRange().length();
+    }
 
     std::ostringstream rawTrace;
+    std::size_t seekPrefetchEventCount = 0;
+    std::size_t afterSeekEventCount = 0;
+    bool rawStreamTickSeen = false;
+    bool afterSeekStreamTickSeen = false;
     for (std::size_t index = 0; index < eventCount; ++index) {
         const auto& event = events[index];
         if (index != 0) {
             rawTrace << ';';
         }
-        rawTrace << index << ":hr=0x" << std::hex
+        rawTrace << index << ":phase=" << readSamplePhaseName(event.phase)
+                 << ",hr=0x" << std::hex
                  << static_cast<unsigned long>(event.hr)
                  << ",flags=0x" << static_cast<unsigned long>(event.flags)
                  << std::dec << ",timestamp_100ns=" << event.timestamp
                  << ",sample=" << (event.hasSample ? 1 : 0);
+        if (event.phase == ReadSamplePhase::SeekPrefetch) {
+            ++seekPrefetchEventCount;
+        } else if (event.phase == ReadSamplePhase::AfterSeekReturn) {
+            ++afterSeekEventCount;
+        }
+        rawStreamTickSeen = rawStreamTickSeen ||
+                (event.flags & MF_SOURCE_READERF_STREAMTICK) != 0;
+        if (event.phase == ReadSamplePhase::AfterSeekReturn) {
+            afterSeekStreamTickSeen = afterSeekStreamTickSeen ||
+                    (event.flags & MF_SOURCE_READERF_STREAMTICK) != 0;
+        }
     }
 
-    bool rawStreamTickSeen = false;
+    std::ostringstream positionTrace;
+    for (std::size_t index = 0; index < positionCount; ++index) {
+        const auto& observation = positionObservations[index];
+        if (index != 0) {
+            positionTrace << ';';
+        }
+        positionTrace << index << ":position_100ns="
+                      << observation.requestedPosition << ",hr=0x"
+                      << std::hex << std::setw(8) << std::setfill('0')
+                      << static_cast<unsigned long>(observation.hr)
+                      << std::dec;
+    }
+
     bool usableStreamTickSeen = false;
     bool targetBracketObserved = false;
     SINT pendingTickEventIndex = -1;
     SINT tickEventIndex = -1;
     SINT followingSampleEventIndex = -1;
-    for (std::size_t index = 0; index < eventCount; ++index) {
-        const auto& event = events[index];
-        const SINT eventIndex = static_cast<SINT>(index);
-        const bool hasStreamTick =
-                (event.flags & MF_SOURCE_READERF_STREAMTICK) != 0;
-        rawStreamTickSeen = rawStreamTickSeen || hasStreamTick;
-
-        // Match the production ReadSample branch order: failed reads and
-        // higher-priority flags stop processing before a stream tick is used.
-        if (FAILED(event.hr) ||
-                (event.flags & kFlagsHandledBeforeStreamTick) != 0) {
-            break;
-        }
-
-        if (hasStreamTick) {
-            const SINT tickFrame =
-                    streamPositionToFrameIndexForTest(source, event.timestamp);
-            if (tickFrame != kUnknownFrameIndex &&
-                    source.isValidFrameIndex(tickFrame)) {
-                pendingTickEventIndex = eventIndex;
-                usableStreamTickSeen = true;
-            } else {
-                // Production clears its pending tick on an invalid timestamp.
-                pendingTickEventIndex = -1;
+    if (seekReady) {
+        for (std::size_t index = 0; index < eventCount; ++index) {
+            const auto& event = events[index];
+            if (event.phase != ReadSamplePhase::AfterSeekReturn) {
+                continue;
             }
-            // Production releases a sample returned with STREAMTICK and
-            // continues; that sample cannot be the following decoded sample.
-            continue;
-        }
+            const SINT eventIndex = static_cast<SINT>(index);
+            const bool hasStreamTick =
+                    (event.flags & MF_SOURCE_READERF_STREAMTICK) != 0;
 
-        if (!event.hasSample) {
-            // Production stops when a non-tick result has no sample.
-            break;
-        }
-
-        const SINT sampleFrame =
-                streamPositionToFrameIndexForTest(source, event.timestamp);
-        if (sampleFrame == kUnknownFrameIndex ||
-                !source.isValidFrameIndex(sampleFrame)) {
-            // Production aborts after a sample with an invalid timestamp.
-            break;
-        }
-
-        if (pendingTickEventIndex >= 0) {
-            const auto& tick = events[static_cast<std::size_t>(pendingTickEventIndex)];
-            const SINT tickFrame =
-                    streamPositionToFrameIndexForTest(source, tick.timestamp);
-            if (tickEventIndex < 0) {
-                tickEventIndex = pendingTickEventIndex;
-                followingSampleEventIndex = eventIndex;
-            }
-            if (tickFrame <= requestedTargetFrame &&
-                    requestedTargetFrame < sampleFrame) {
-                tickEventIndex = pendingTickEventIndex;
-                followingSampleEventIndex = eventIndex;
-                targetBracketObserved = true;
+            // Match the production ReadSample branch order: failed reads and
+            // higher-priority flags stop processing before a stream tick is used.
+            if (FAILED(event.hr) ||
+                    (event.flags & kFlagsHandledBeforeStreamTick) != 0) {
                 break;
             }
-        }
 
-        // Production consumes the pending tick when it processes a sample.
-        pendingTickEventIndex = -1;
-    }
-    if (tickEventIndex < 0 && pendingTickEventIndex >= 0) {
-        tickEventIndex = pendingTickEventIndex;
+            if (hasStreamTick) {
+                const SINT tickFrame =
+                        streamPositionToFrameIndexForTest(source, event.timestamp);
+                if (tickFrame != kUnknownFrameIndex &&
+                        source.isValidFrameIndex(tickFrame)) {
+                    pendingTickEventIndex = eventIndex;
+                    usableStreamTickSeen = true;
+                } else {
+                    // Production clears its pending tick on an invalid timestamp.
+                    pendingTickEventIndex = -1;
+                }
+                // Production releases a sample returned with STREAMTICK and
+                // continues; that sample cannot be the following decoded sample.
+                continue;
+            }
+
+            if (!event.hasSample) {
+                // Production stops when a non-tick result has no sample.
+                break;
+            }
+
+            const SINT sampleFrame =
+                    streamPositionToFrameIndexForTest(source, event.timestamp);
+            if (sampleFrame == kUnknownFrameIndex ||
+                    !source.isValidFrameIndex(sampleFrame)) {
+                // Production aborts after a sample with an invalid timestamp.
+                break;
+            }
+
+            if (pendingTickEventIndex >= 0) {
+                const auto& tick = events[static_cast<std::size_t>(pendingTickEventIndex)];
+                const SINT tickFrame = streamPositionToFrameIndexForTest(
+                        source,
+                        tick.timestamp);
+                if (tickEventIndex < 0) {
+                    tickEventIndex = pendingTickEventIndex;
+                    followingSampleEventIndex = eventIndex;
+                }
+                if (tickFrame <= requestedTargetFrame &&
+                        requestedTargetFrame < sampleFrame) {
+                    tickEventIndex = pendingTickEventIndex;
+                    followingSampleEventIndex = eventIndex;
+                    targetBracketObserved = true;
+                    break;
+                }
+            }
+
+            // Production consumes the pending tick when it processes a sample.
+            pendingTickEventIndex = -1;
+        }
+        if (tickEventIndex < 0 && pendingTickEventIndex >= 0) {
+            tickEventIndex = pendingTickEventIndex;
+        }
     }
 
     RecordProperty(
@@ -1249,15 +1377,44 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     RecordProperty("raw_read_sample_trace", rawTrace.str());
     RecordProperty("trace_event_count", std::to_string(eventCount));
     RecordProperty("trace_truncated", traceTruncated ? "true" : "false");
+    RecordProperty("seek_prefetch_event_count", std::to_string(seekPrefetchEventCount));
+    RecordProperty("after_seek_return_event_count", std::to_string(afterSeekEventCount));
+    RecordProperty("pre_seek_cursor_frame", std::to_string(preSeekState.currentFrameIndex));
+    RecordProperty("post_seek_cursor_frame", std::to_string(postSeekState.currentFrameIndex));
     RecordProperty("requested_target_frame", std::to_string(requestedTargetFrame));
     RecordProperty("requested_target_100ns", std::to_string(requestedTarget100ns));
+    RecordProperty("set_current_position_call_count", std::to_string(positionCount));
+    RecordProperty("set_current_position_trace", positionTrace.str());
+    RecordProperty(
+            "set_current_position_trace_truncated",
+            positionTraceTruncated ? "true" : "false");
+    RecordProperty(
+            "set_current_position_succeeded",
+            nativePositionSucceeded ? "true" : "false");
+    RecordProperty("seek_aligned", seekAligned ? "true" : "false");
+    RecordProperty("seek_result", seekReady ? "ALIGNED" : "UNPROVEN_SEEK_FAILED");
+    RecordProperty(
+            "after_seek_read_attempted",
+            afterSeekReadAttempted ? "true" : "false");
+    RecordProperty(
+            "after_seek_requested_frames",
+            std::to_string(afterSeekRequestedFrames));
+    RecordProperty(
+            "after_seek_returned_frames",
+            std::to_string(afterSeekReturnedFrames));
+    RecordProperty("raw_streamtick_seen", rawStreamTickSeen ? "true" : "false");
+    RecordProperty(
+            "after_seek_streamtick_seen",
+            afterSeekStreamTickSeen ? "true" : "false");
 
     std::string producerResult;
-    if (traceTruncated) {
+    if (!seekReady) {
+        producerResult = "UNPROVEN_SEEK_FAILED";
+    } else if (traceTruncated) {
         producerResult = "UNPROVEN_TRACE_TRUNCATED";
     } else if (targetBracketObserved) {
         producerResult = "OBSERVED_TICK_SAMPLE_BRACKETING_TARGET";
-    } else if (!rawStreamTickSeen) {
+    } else if (!afterSeekStreamTickSeen) {
         producerResult = "UNPROVEN_NO_STREAMTICK";
     } else if (!usableStreamTickSeen) {
         producerResult = "UNPROVEN_NO_USABLE_STREAMTICK";
@@ -1269,13 +1426,16 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
 
     if (tickEventIndex >= 0) {
         const auto& tick = events[static_cast<std::size_t>(tickEventIndex)];
-        const SINT tickFrame = streamPositionToFrameIndexForTest(source, tick.timestamp);
+        const SINT tickFrame =
+                streamPositionToFrameIndexForTest(source, tick.timestamp);
         RecordProperty("streamtick_flags", std::to_string(tick.flags));
         RecordProperty("streamtick_timestamp_100ns", std::to_string(tick.timestamp));
         RecordProperty("streamtick_frame", std::to_string(tickFrame));
+        RecordProperty(
+                "streamtick_phase",
+                readSamplePhaseName(tick.phase));
         if (followingSampleEventIndex >= 0) {
-            const auto& sample =
-                    events[static_cast<std::size_t>(followingSampleEventIndex)];
+            const auto& sample = events[static_cast<std::size_t>(followingSampleEventIndex)];
             const SINT sampleFrame =
                     streamPositionToFrameIndexForTest(source, sample.timestamp);
             RecordProperty(
@@ -1285,9 +1445,14 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
                     "following_sample_timestamp_100ns",
                     std::to_string(sample.timestamp));
             RecordProperty("following_sample_frame", std::to_string(sampleFrame));
+            RecordProperty(
+                    "following_sample_phase",
+                    readSamplePhaseName(sample.phase));
         }
     }
+    RecordProperty(
+            "producer_proof",
+            targetBracketObserved && !traceTruncated && seekReady ? "true" : "false");
     RecordProperty("producer_result", producerResult);
 }
-
 } // namespace mixxx

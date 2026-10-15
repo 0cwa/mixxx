@@ -254,6 +254,11 @@ void SoundSourceMediaFoundation::seekSampleFrame(SINT frameIndex) {
                 :
 #endif
                 m_pSourceReader->SetCurrentPosition(GUID_NULL, prop);
+#ifdef BUILD_TESTING
+        if (m_setCurrentPositionObserver) {
+            m_setCurrentPositionObserver(seekPos, hrSetCurrentPosition);
+        }
+#endif
         PropVariantClear(&prop);
         if (SUCCEEDED(hrSetCurrentPosition)) {
             // NOTE(uklotzde): After SetCurrentPosition() the actual position

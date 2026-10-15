@@ -114,8 +114,13 @@ class SoundSourceMediaFoundation : public SoundSource {
             LONGLONG timestamp,
             bool hasSample)>;
 
+    using SetCurrentPositionObserver = std::function<void(
+            LONGLONG requestedPosition,
+            HRESULT hr)>;
+
     ReadSampleProvider m_readSampleProvider;
     ReadSampleObserver m_readSampleObserver;
+    SetCurrentPositionObserver m_setCurrentPositionObserver;
 
     std::function<HRESULT(LONGLONG)> m_setCurrentPositionProvider;
 
