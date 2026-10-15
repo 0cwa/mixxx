@@ -27,6 +27,7 @@ TEST_F(DlgPrefWaveformTest, CueCountdownControlsHaveIndependentDefaultsAndSettin
 
     DlgPrefWaveform dialog(nullptr, config(), nullptr);
 
+    EXPECT_EQ(QStringLiteral("N/A"), dialog.waveformDiskUsage->text());
     EXPECT_EQ(QStringLiteral("Hot Cue markers"), dialog.untilMarkShowHotCuesCheckBox->text());
     EXPECT_EQ(QStringLiteral("Memory Cue markers"),
             dialog.untilMarkShowMemoryCuesCheckBox->text());
