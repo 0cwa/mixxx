@@ -13,10 +13,10 @@ jobs:
     timeout-minutes: 90
 
     env:
-      TRANSPORT_BASE: c19a52afed919afefcfd21e37bdd30b0d0cc3d2f
-      SOURCE_REF: refs/heads/codex/forest-reviewed-fixes-20261015
-      SOURCE_SHA: a536fd35db21563cab550a505dabdc7ec5060a8e
-      SOURCE_TREE: 0990b17890f27e7387c427d05388014a7e446afc
+      TRANSPORT_BASE: 1eccff522949ae080e248af6be2fd47069580c99
+      SOURCE_REF: refs/heads/codex/issue81-worker-phase-telemetry-20261015
+      SOURCE_SHA: fedcf3a3b6dd0fd7c3a5ffea2cdab5e32c58ea59
+      SOURCE_TREE: c73327e685d918559522f35bd106e9613198fdbe
       CC: clang-18
       CXX: clang++-18
       ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
@@ -33,11 +33,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          RESULT_DIR="$RUNNER_TEMP/forest-product-native14-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RESULT_DIR="$RUNNER_TEMP/issue81-phase-telemetry-native14-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           printf 'RESULT_DIR=%s\n' "$RESULT_DIR" >> "$GITHUB_ENV"
           mkdir -p "$RESULT_DIR/metadata" "$RESULT_DIR/logs" "$RESULT_DIR/native"
           {
-            printf 'schema=mixxx-forest-product-native14-run-v1\n'
+            printf 'schema=mixxx-issue81-phase-telemetry-native14-run-v1\n'
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'event=%s\n' "$GITHUB_EVENT_NAME"
@@ -752,7 +752,7 @@ jobs:
           (artifact / "job-log-pointer.txt").write_text(pointer_text, encoding="utf-8")
           qualification = "PASS" if not reasons else "FAIL"
           manifest = {
-          "schema": "mixxx-forest-product-native14-evidence-v1",
+          "schema": "mixxx-issue81-phase-telemetry-native14-evidence-v1",
               "qualification_status": qualification,
               "job_url": job_url,
               "limit_bytes": LIMIT_BYTES,
@@ -811,7 +811,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: forest-product-native14-${{ github.run_id }}
-          path: ${{ runner.temp }}/forest-product-native14-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
+          name: issue81-phase-telemetry-native14-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue81-phase-telemetry-native14-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
           if-no-files-found: error
           retention-days: 14
