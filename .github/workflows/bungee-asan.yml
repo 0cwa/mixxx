@@ -1,16 +1,14 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow
 #
-# BNG-13: AddressSanitizer build that runs the Bungee scaler tests so any future
-# overflow of m_contiguousChannelBuffer is caught at test time rather than in
-# production.
+# BNG-13: AddressSanitizer build for the Bungee scaler and reader retry paths.
 #
 # Scope:
 #   - Linux only (clang sanitizers don't run on Windows MSVC and the Bungee
 #     bug is not platform-specific).
-#   - Builds only the mixxx-test target and runs the *Bungee* gtest filter,
-#     plus the SettingsManager keylock regression test, keeping the workflow
-#     lean compared with the matrix in build.yml.
-#   - Fires on any change that could affect the Bungee integration; ignores
+#   - Builds only the mixxx-test target and runs focused Bungee,
+#     ReadAheadManager, CachingReader, and SettingsManager keylock tests,
+#     keeping the workflow lean compared with the matrix in build.yml.
+#   - Fires on changes to the Bungee integration or reader code/tests; ignores
 #     unrelated PRs.
 #
 # Detect_leaks=0 because mixxx-test has many process-lifetime singletons
@@ -34,11 +32,15 @@ on:
     paths:
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
+      - "src/engine/readaheadmanager.*"
+      - "src/engine/cachingreader/**"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/preferences/settingsmanager.cpp"
       - "src/test/enginebufferscalebungee*"
       - "src/test/enginebufferbungee*"
+      - "src/test/enginebufferalignmenttest.cpp"
+      - "src/test/readaheadmanager_test.cpp"
       - "src/test/settingsmanager_test.cpp"
       - "lib/bungee/**"
       - "CMakeLists.txt"
@@ -47,11 +49,15 @@ on:
     paths:
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
+      - "src/engine/readaheadmanager.*"
+      - "src/engine/cachingreader/**"
       - "src/engine/controls/keycontrol.*"
       - "src/engine/bufferscalers/enginebufferscalebungee.*"
       - "src/preferences/settingsmanager.cpp"
       - "src/test/enginebufferscalebungee*"
       - "src/test/enginebufferbungee*"
+      - "src/test/enginebufferalignmenttest.cpp"
+      - "src/test/readaheadmanager_test.cpp"
       - "src/test/settingsmanager_test.cpp"
       - "lib/bungee/**"
       - "CMakeLists.txt"
@@ -171,22 +177,35 @@ jobs:
       - name: "Print ccache stats"
         run: ccache --show-stats
 
-      # Run the Bungee unit + integration tests under ASan, plus the
-      # SettingsManager regression that preserves explicit Bungee keylock
-      # settings. The full mixxx-test suite under ASan would run for >30
-      # minutes; this targeted run completes quickly and exercises the
-      # instrumented Bungee scaler and integration paths.
-      - name: "Run Bungee tests under ASan"
+      # Run focused Bungee, reader retry, and SettingsManager keylock tests
+      # under ASan. The full mixxx-test suite under ASan would run for >30
+      # minutes; this targeted run covers the instrumented Bungee and reader
+      # paths.
+      - name: "Run Bungee and reader tests under ASan"
         working-directory: build
         env:
           GTEST_COLOR: "1"
         run: |
-          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*'
+          set -euo pipefail
+          count_filter_matches() {
+            ./mixxx-test --gtest_list_tests --gtest_filter="$1" |
+              awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }'
+          }
+          for required_filter in 'ReadAheadManagerTest.*' 'CachingReader*.*'; do
+            family_count="$(count_filter_matches "$required_filter")"
+            if [ "$family_count" -eq 0 ]; then
+              echo "No tests matched required GTest filter: $required_filter" >&2
+              exit 1
+            fi
+            echo "Discovered $family_count tests matching GTest filter: $required_filter"
+          done
+          test_filter='*Bungee*:SettingsManagerTest.*KeylockEngine*:ReadAheadManagerTest.*:CachingReader*.*'
           listed_tests="$(./mixxx-test --gtest_list_tests --gtest_filter="$test_filter")"
           test_count="$(printf '%s\n' "$listed_tests" | awk '/^[[:space:]]+[^[:space:]#]/ { count++ } END { print count + 0 }')"
           if [ "$test_count" -eq 0 ]; then
             echo "No tests matched GTest filter: $test_filter" >&2
             exit 1
           fi
+          printf '%s\n' "$listed_tests"
           echo "Running $test_count tests matching GTest filter: $test_filter"
           ./mixxx-test --gtest_filter="$test_filter"
