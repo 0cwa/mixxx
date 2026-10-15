@@ -13,8 +13,8 @@ jobs:
     timeout-minutes: 90
 
     env:
-      SOURCE_SHA: d6aa06c29b60885ff4010ca1b938bc6b5cb0c9ed
-      SOURCE_TREE: 2538750aa921f2bab348838dd10b64a904da6002
+      SOURCE_SHA: a955b708d30854b79279c90e9109bd6691b0c07a
+      SOURCE_TREE: ea7c6004bdd8e62b7d7672bb2bfd75a5992ec147
       CC: clang-18
       CXX: clang++-18
       ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
@@ -45,7 +45,7 @@ jobs:
             printf 'runner_arch=%s\n' "${{ runner.arch }}"
           } > "$RESULT_DIR/metadata/dispatch.txt"
           cat > "$RESULT_DIR/metadata/scope-limit.txt" <<'EOF'
-          Covered: six direct Seek30WorkerState state-refresh selectors and one queued mailbox/edit/worker-dispatch selector.
+          Covered: seven Seek30WorkerState selectors and one BeatGrid legacy fallback regression.
           Not covered: the full CachingReaderWorker wake/control-pointer event path or composition with the F001 source changes.
           EOF
           sed -i 's/^          //' "$RESULT_DIR/metadata/scope-limit.txt"
@@ -105,9 +105,10 @@ jobs:
           Seek30WorkerStateTest.RefreshesMemoryCueTypeChangeToLoopWithoutTrackReload
           Seek30WorkerStateTest.RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload
           Seek30WorkerStateTest.RefreshesExternalMemoryCueInvalidationWithoutTrackReload
+          BeatGridTest.LegacySerializationIgnoresPartialProtobufDownbeatOffset
           EOF
           filter="$(paste -sd: "$RESULT_DIR/expected-selectors.txt")"
-          printf 'SEEK30_TEST_FILTER=%s\n' "$filter" >> "$GITHUB_ENV"
+          printf 'NATIVE_TEST_FILTER=%s\n' "$filter" >> "$GITHUB_ENV"
           printf '%s\n' "$filter" > "$RESULT_DIR/selector-filter.txt"
 
           cat > "$RESULT_DIR/verify_gtest.py" <<'PY'
@@ -161,8 +162,8 @@ jobs:
                   problems.append(f"missing or invalid list exit receipt: {error}")
               if list_exit != 0:
                   problems.append(f"GTest list command exited {list_exit}")
-              if len(expected) != 7 or len(set(expected)) != 7:
-                  problems.append("expected selector file is not the exact seven unique IDs")
+              if len(expected) != 8 or len(set(expected)) != 8:
+                  problems.append("expected selector file is not the exact eight unique IDs")
               if len(set(listed)) != len(listed):
                   problems.append("GTest listing contains duplicate test IDs")
               if any(is_disabled(identifier) for identifier in listed):
@@ -208,8 +209,8 @@ jobs:
                       actual = [f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}" for case in cases]
                       if collections.Counter(actual) != collections.Counter(expected):
                           problems.append("XML testcase IDs differ from the exact expected selector set")
-                      if len(actual) != 7 or len(set(actual)) != 7:
-                          problems.append("XML does not contain exactly seven unique testcases")
+                      if len(actual) != 8 or len(set(actual)) != 8:
+                          problems.append("XML does not contain exactly eight unique testcases")
                       if any(is_disabled(identifier) for identifier in actual):
                           problems.append("XML includes a disabled test")
                       if any(
@@ -437,7 +438,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          timeout 60s ./build/mixxx-test --gtest_list_tests --gtest_filter="$SEEK30_TEST_FILTER" \
+          timeout 60s ./build/mixxx-test --gtest_list_tests --gtest_filter="$NATIVE_TEST_FILTER" \
             > "$RESULT_DIR/native/list.stdout" 2> "$RESULT_DIR/native/list.stderr"
           list_exit=$?
           set -e
@@ -448,7 +449,7 @@ jobs:
             "$RESULT_DIR/expected-selectors.txt" \
             "$RESULT_DIR/native/list-verification.json"
 
-      - name: Run exactly seven selectors and preserve receipts before XML checks
+      - name: Run exactly eight selectors and preserve receipts before XML checks
         id: native_run
         if: steps.test_list.outcome == 'success'
         shell: bash
@@ -484,7 +485,7 @@ jobs:
           GTEST_COLOR=0 \
           timeout 600s ./build/mixxx-test \
             --gtest_color=no \
-            --gtest_filter="$SEEK30_TEST_FILTER" \
+            --gtest_filter="$NATIVE_TEST_FILTER" \
             --gtest_output="xml:$RESULT_DIR/native/gtest-results.xml" \
             > "$stdout_pipe" \
             2> "$stderr_pipe"
@@ -508,7 +509,7 @@ jobs:
             printf 'finished_at_utc=%s\n' "$finished_at"
             printf 'native_exit_code=%s\n' "$native_exit"
             printf 'timeout_seconds=600\n'
-            printf 'filter=%s\n' "$SEEK30_TEST_FILTER"
+            printf 'filter=%s\n' "$NATIVE_TEST_FILTER"
             printf 'xml_path=%s\n' "$RESULT_DIR/native/gtest-results.xml"
             printf 'source_commit=%s\n' "$SOURCE_SHA"
             printf 'stdout_capture_exit_code=%s\n' "$stdout_capture_exit"
