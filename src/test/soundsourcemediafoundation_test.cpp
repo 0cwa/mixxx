@@ -1077,10 +1077,31 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     // workflow dispatch ref, which can differ from the tested source commit.
     const QByteArray sourceCommitPin = qgetenv("MIXXX_TEST_SOURCE_SHA");
     const QByteArray sourceTreePin = qgetenv("MIXXX_TEST_SOURCE_TREE");
-    ASSERT_EQ(40, sourceCommitPin.size());
-    ASSERT_EQ(sourceCommitPin, QByteArray::fromHex(sourceCommitPin).toHex());
-    ASSERT_EQ(40, sourceTreePin.size());
-    ASSERT_EQ(sourceTreePin, QByteArray::fromHex(sourceTreePin).toHex());
+    const bool sourcePinProvided =
+            !sourceCommitPin.isEmpty() || !sourceTreePin.isEmpty();
+    const bool sourcePinsFormatValid =
+            sourceCommitPin.size() == 40 &&
+            sourceCommitPin == QByteArray::fromHex(sourceCommitPin).toHex() &&
+            sourceTreePin.size() == 40 &&
+            sourceTreePin == QByteArray::fromHex(sourceTreePin).toHex();
+    if (sourcePinProvided && !sourcePinsFormatValid) {
+        RecordProperty("source_pin_status", "INVALID_SUPPLIED");
+        FAIL() << "MIXXX_TEST_SOURCE_SHA and MIXXX_TEST_SOURCE_TREE must be "
+                  "supplied together as lowercase 40-character Git object IDs";
+    }
+
+    // Ordinary Windows CTest runs do not provide the diagnostic source pins.
+    // Leave identity unproven there instead of using GITHUB_SHA, which names
+    // the workflow dispatch ref. Valid supplied pins are format-checked here;
+    // the diagnostic workflow must bind them to its verified source receipt.
+    RecordProperty(
+            "source_pin_status",
+            sourcePinsFormatValid ? "PRESENT_FORMAT_VALID_UNVERIFIED"
+                                  : "UNPROVEN_ABSENT");
+    if (sourcePinsFormatValid) {
+        RecordProperty("source_commit", sourceCommitPin.toStdString());
+        RecordProperty("source_tree", sourceTreePin.toStdString());
+    }
 
     const QUrl fixtureUrl = timelineGapTestUrl();
     QFile fixtureFile(fixtureUrl.toLocalFile());
@@ -1218,8 +1239,6 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
         tickEventIndex = pendingTickEventIndex;
     }
 
-    RecordProperty("source_commit", sourceCommitPin.toStdString());
-    RecordProperty("source_tree", sourceTreePin.toStdString());
     RecordProperty(
             "workflow_dispatch_sha",
             qEnvironmentVariable("GITHUB_SHA").toStdString());
