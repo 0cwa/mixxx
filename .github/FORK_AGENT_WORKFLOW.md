@@ -4,6 +4,15 @@
 
 This applies to the **fork only**. It supplements rather than replaces the human-contribution, review, and AI-assistance rules in [AGENTS.md](../AGENTS.md) and [CONTRIBUTING.md](../CONTRIBUTING.md). It does not authorize autonomous upstream submissions, PR-thread responses, bug reports, commits or merges. The owner must explicitly direct and review repository changes. Actual DJ/audio hardware testing cannot be replaced by simulated CI tests.
 
+## Delivery priorities
+
+1. **P0 — Audio reliability:** investigate [Linux playback silence #81](https://github.com/0cwa/mixxx/issues/81) using real reproduction evidence. Validate [PR #23](https://github.com/0cwa/mixxx/pull/23) at its current exact SHA per [#93](https://github.com/0cwa/mixxx/issues/93).
+2. **P1 — Upstream Bungee:** advance existing [upstream PR #16435](https://github.com/mixxxdj/mixxx/pull/16435) with focused test evidence and human review, not duplicate implementations.
+3. **P2 — Integration hygiene:** retain upstream Flatpak tests, reconcile #54/#57/#69, restore the Mixxx agent policy on integration branches #23/#64, and reduce duplicate Rekordbox/Media Foundation PRs.
+4. **P3 — Existing features:** complete memory cues, Rekordbox and downbeat functionality already being reviewed before starting unrelated new features.
+
+At the end of a task record the changed PR/branch/SHA, tests actually run on that SHA, blockers, and the **single next action**. If the next task is unclear, take the highest-priority unblocked item rather than opening an unrelated PR.
+
 ## What counts as progress
 
 Prioritize **working, independently reviewable and eventually landed outcomes** over number of commits, PRs, reviews or new branches.
