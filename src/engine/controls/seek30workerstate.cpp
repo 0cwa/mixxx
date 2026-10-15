@@ -257,7 +257,15 @@ Seek30SeekTarget Seek30WorkerState::process(
 
     // Cues may be edited outside this worker after the track is loaded. Refresh
     // on the worker thread before each command uses the memory-cue cache.
+    if (m_cueSnapshotDiagnosticHook) {
+        m_cueSnapshotDiagnosticHook(m_cueSnapshotDiagnosticContext, true);
+    }
+    // The elapsed snapshot phase includes list-copy/sort work and possible
+    // waits on the Track and Cue locks.
     rebuildMemoryCueCache();
+    if (m_cueSnapshotDiagnosticHook) {
+        m_cueSnapshotDiagnosticHook(m_cueSnapshotDiagnosticContext, false);
+    }
 
     switch (command.operation) {
     case Seek30Operation::SeekNext:

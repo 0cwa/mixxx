@@ -168,6 +168,8 @@ class CachingReaderWorker : public EngineWorker {
     enum class DiagnosticState {
         Waiting,
         LoadingTrack,
+        ProcessingSeek30,
+        ProcessingSeek30CueSnapshot,
         Decoding,
         PublishingStatus,
     };
@@ -189,6 +191,31 @@ class CachingReaderWorker : public EngineWorker {
     }
     int diagnosticPublishedStatuses() const {
         return m_diagnosticPublishedStatuses.loadAcquire();
+    }
+    std::uint64_t diagnosticSeek30DrainStartNs() const {
+        return m_diagnosticSeek30DrainStartNs.load(std::memory_order_relaxed);
+    }
+    std::uint64_t diagnosticSeek30DrainLastNs() const {
+        return m_diagnosticSeek30DrainLastNs.load(std::memory_order_relaxed);
+    }
+    std::uint64_t diagnosticSeek30DrainMaxNs() const {
+        return m_diagnosticSeek30DrainMaxNs.load(std::memory_order_relaxed);
+    }
+    std::uint64_t diagnosticSeek30CommandsDrained() const {
+        return m_diagnosticSeek30CommandsDrained.load(std::memory_order_relaxed);
+    }
+    bool diagnosticSeek30ReadPendingAtDrainEntry() const {
+        return m_diagnosticSeek30ReadPendingAtDrainEntry.load(
+                       std::memory_order_relaxed) != 0;
+    }
+    std::uint64_t diagnosticSeek30CueSnapshotStartNs() const {
+        return m_diagnosticSeek30CueSnapshotStartNs.load(std::memory_order_relaxed);
+    }
+    std::uint64_t diagnosticSeek30CueSnapshotLastNs() const {
+        return m_diagnosticSeek30CueSnapshotLastNs.load(std::memory_order_relaxed);
+    }
+    std::uint64_t diagnosticSeek30CueSnapshotMaxNs() const {
+        return m_diagnosticSeek30CueSnapshotMaxNs.load(std::memory_order_relaxed);
     }
     int diagnosticStatusCapacity() const;
 
@@ -264,6 +291,7 @@ class CachingReaderWorker : public EngineWorker {
     void updateSeek30Track(TrackPointer pNewTrack);
     void processSeek30Commands();
     void recordSeek30CommandOverflow();
+    static void updateSeek30CueSnapshotDiagnostic(void* context, bool active);
 
     // The current audio source of the track loaded
     mixxx::AudioSourcePointer m_pAudioSource;
@@ -294,4 +322,12 @@ class CachingReaderWorker : public EngineWorker {
     QAtomicInt m_diagnosticCompletedRequests;
     QAtomicInt m_diagnosticDequeuedRequests;
     QAtomicInt m_diagnosticPublishedStatuses;
+    std::atomic<std::uint64_t> m_diagnosticSeek30DrainStartNs{0};
+    std::atomic<std::uint64_t> m_diagnosticSeek30DrainLastNs{0};
+    std::atomic<std::uint64_t> m_diagnosticSeek30DrainMaxNs{0};
+    std::atomic<std::uint64_t> m_diagnosticSeek30CommandsDrained{0};
+    std::atomic<std::uint32_t> m_diagnosticSeek30ReadPendingAtDrainEntry{0};
+    std::atomic<std::uint64_t> m_diagnosticSeek30CueSnapshotStartNs{0};
+    std::atomic<std::uint64_t> m_diagnosticSeek30CueSnapshotLastNs{0};
+    std::atomic<std::uint64_t> m_diagnosticSeek30CueSnapshotMaxNs{0};
 };

@@ -48,6 +48,8 @@ struct Seek30MemoryCueSnapshot {
     mixxx::audio::FramePos startPosition;
 };
 
+class CachingReaderWorker;
+
 QList<Seek30MemoryCueSnapshot> snapshotSeek30MemoryCues(
         const QList<CuePointer>& cuePoints);
 
@@ -91,6 +93,16 @@ class Seek30WorkerState final {
             const Seek30WorkerInputs& inputs);
 
   private:
+    friend class CachingReaderWorker;
+
+    using CueSnapshotDiagnosticHook = void (*)(void* context, bool active);
+    void setCueSnapshotDiagnosticHook(
+            CueSnapshotDiagnosticHook hook,
+            void* context) noexcept {
+        m_cueSnapshotDiagnosticHook = hook;
+        m_cueSnapshotDiagnosticContext = context;
+    }
+
     void rebuildMemoryCueCache();
     void sortCueCache();
     void createMemoryCueAt(const mixxx::audio::FramePos& position);
@@ -104,12 +116,14 @@ class Seek30WorkerState final {
     TrackPointer m_pLoadedTrack;
     QList<Seek30MemoryCueSnapshot> m_memoryCues;
     std::uint64_t m_generation{0};
+    CueSnapshotDiagnosticHook m_cueSnapshotDiagnosticHook{nullptr};
+    void* m_cueSnapshotDiagnosticContext{nullptr};
 };
 
 // Drain queued commands on the reader worker. Inputs are read only after the
 // first command is available, preserving the production command ordering.
 template<typename GetInputs, typename PublishTarget>
-void processSeek30CommandMailbox(
+std::uint64_t processSeek30CommandMailbox(
         Seek30CommandMailbox& mailbox,
         Seek30WorkerState& state,
         std::uint64_t& targetSequence,
@@ -117,11 +131,14 @@ void processSeek30CommandMailbox(
         PublishTarget&& publishTarget) {
     Seek30Command command;
     if (!mailbox.tryPop(&command)) {
-        return;
+        return 0;
     }
 
     auto inputs = getInputs();
+    // Count every popped entry, including commands rejected by generation.
+    std::uint64_t commandsDrained = 0;
     do {
+        ++commandsDrained;
         if (command.generation != state.generation()) {
             continue;
         }
@@ -134,4 +151,5 @@ void processSeek30CommandMailbox(
             publishTarget(publishedTarget);
         }
     } while (mailbox.tryPop(&command));
+    return commandsDrained;
 }

@@ -1,7 +1,8 @@
 #include "engine/cachingreader/cachingreader.h"
 
-#include <QtDebug>
 #include <algorithm>
+#include <chrono>
+#include <QtDebug>
 
 #include "engine/controls/seek30control.h"
 #include "moc_cachingreader.cpp"
@@ -15,6 +16,13 @@
 namespace {
 
 mixxx::Logger kLogger("CachingReader");
+
+std::uint64_t monotonicTimeNanoseconds() {
+    return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+}
 
 // This is the default hint frameCount that is adopted in case of Hint::kFrameCountForward and
 // Hint::kFrameCountBackward count is provided. It matches 23 ms @ 44.1 kHz
@@ -170,6 +178,26 @@ void CachingReader::reportDiagnostics() {
     const int workerProgress = m_worker.diagnosticCompletedRequests();
     const int activeChunk = m_worker.diagnosticActiveChunk();
     const auto workerState = m_worker.diagnosticState();
+    const bool seek30DrainActive =
+            workerState == CachingReaderWorker::DiagnosticState::ProcessingSeek30 ||
+            workerState ==
+                    CachingReaderWorker::DiagnosticState::ProcessingSeek30CueSnapshot;
+    const bool cueSnapshotActive =
+            workerState ==
+            CachingReaderWorker::DiagnosticState::ProcessingSeek30CueSnapshot;
+    const std::uint64_t diagnosticNowNs = monotonicTimeNanoseconds();
+    const std::uint64_t seek30DrainStartNs =
+            m_worker.diagnosticSeek30DrainStartNs();
+    const std::uint64_t seek30DrainElapsedNs =
+            seek30DrainActive && diagnosticNowNs >= seek30DrainStartNs
+            ? diagnosticNowNs - seek30DrainStartNs
+            : 0;
+    const std::uint64_t cueSnapshotStartNs =
+            m_worker.diagnosticSeek30CueSnapshotStartNs();
+    const std::uint64_t cueSnapshotElapsedNs =
+            cueSnapshotActive && diagnosticNowNs >= cueSnapshotStartNs
+            ? diagnosticNowNs - cueSnapshotStartNs
+            : 0;
     const int requestPending = std::max(0,
             submitAttempts - submitFailures -
                     m_worker.diagnosticDequeuedRequests());
@@ -324,7 +352,7 @@ void CachingReader::reportDiagnostics() {
             activeChunk >= 0 && activeChunk == m_lastReportedActiveChunk &&
             workerProgress == m_lastReportedWorkerProgress;
     if (newSubmitFailures == 0 && newCacheMisses == 0 && !deferredWarnings &&
-            !statusBackpressure && !decoderStall) {
+            !statusBackpressure && !decoderStall && !seek30DrainActive) {
         if (m_diagnosticEpisodeActive) {
             kLogger.info() << m_group
                            << "CachingReader diagnostics recovered:"
@@ -346,6 +374,12 @@ void CachingReader::reportDiagnostics() {
     case CachingReaderWorker::DiagnosticState::LoadingTrack:
         stateName = "loading-track";
         break;
+    case CachingReaderWorker::DiagnosticState::ProcessingSeek30:
+        stateName = "processing-seek30";
+        break;
+    case CachingReaderWorker::DiagnosticState::ProcessingSeek30CueSnapshot:
+        stateName = "seek30-cue-snapshot";
+        break;
     case CachingReaderWorker::DiagnosticState::Decoding:
         stateName = "decoding";
         break;
@@ -360,6 +394,10 @@ void CachingReader::reportDiagnostics() {
         classification = "status-backpressure";
     } else if (decoderStall) {
         classification = "decoder-stall-suspected";
+    } else if (cueSnapshotActive) {
+        classification = "seek30-cue-snapshot-active";
+    } else if (seek30DrainActive) {
+        classification = "seek30-command-drain-active";
     } else if (newSubmitFailures > 0) {
         classification = "request-saturation";
     }
@@ -378,6 +416,21 @@ void CachingReader::reportDiagnostics() {
                       << "last completed chunk"
                       << m_worker.diagnosticLastCompletedChunk() << "worker progress"
                       << workerProgress
+                      << "active seek30 drain us" << seek30DrainElapsedNs / 1000
+                      << "last seek30 drain us"
+                      << m_worker.diagnosticSeek30DrainLastNs() / 1000
+                      << "max seek30 drain us"
+                      << m_worker.diagnosticSeek30DrainMaxNs() / 1000
+                      << "last seek30 commands drained"
+                      << m_worker.diagnosticSeek30CommandsDrained()
+                      << "read pending at seek30 drain entry"
+                      << m_worker.diagnosticSeek30ReadPendingAtDrainEntry()
+                      << "cue snapshot active" << cueSnapshotActive
+                      << "active cue snapshot us" << cueSnapshotElapsedNs / 1000
+                      << "last cue snapshot us"
+                      << m_worker.diagnosticSeek30CueSnapshotLastNs() / 1000
+                      << "max cue snapshot us"
+                      << m_worker.diagnosticSeek30CueSnapshotMaxNs() / 1000
                       << "deferred callback warning events in sampled interval"
                       << "partial-gap insertions" << partialGapEvents
                       << "partial-gap frames" << partialGapFrames

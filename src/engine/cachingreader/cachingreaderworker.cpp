@@ -2,12 +2,14 @@
 
 #include <QAtomicInt>
 #include <QtDebug>
+#include <chrono>
+#include <limits>
+#include <utility>
+
 #ifdef BUILD_TESTING
 #include <condition_variable>
 #include <mutex>
 #endif
-#include <limits>
-#include <utility>
 
 #include "analyzer/analyzersilence.h"
 #include "engine/controls/seek30control.h"
@@ -26,6 +28,19 @@ mixxx::Logger kLogger("CachingReaderWorker");
 
 // we need the last silence frame and the first sound frame
 constexpr SINT kNumSoundFrameToVerify = 2;
+
+std::uint64_t monotonicTimeNanoseconds() {
+    return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+}
+
+void updateMaximum(std::atomic<std::uint64_t>& maximum, std::uint64_t value) {
+    if (value > maximum.load(std::memory_order_relaxed)) {
+        maximum.store(value, std::memory_order_relaxed);
+    }
+}
 
 #ifdef BUILD_TESTING
 struct TestTrackLifecycleRegistration {
@@ -90,6 +105,9 @@ CachingReaderWorker::CachingReaderWorker(
           m_diagnosticCompletedRequests(0),
           m_diagnosticDequeuedRequests(0),
           m_diagnosticPublishedStatuses(0) {
+    m_seek30State.setCueSnapshotDiagnosticHook(
+            &CachingReaderWorker::updateSeek30CueSnapshotDiagnostic,
+            this);
 }
 
 #ifdef BUILD_TESTING
@@ -273,7 +291,16 @@ void CachingReaderWorker::processSeek30Commands() {
         return;
     }
 
-    processSeek30CommandMailbox(
+    const int previousState = m_diagnosticState.loadAcquire();
+    const std::uint64_t startNs = monotonicTimeNanoseconds();
+    m_diagnosticSeek30ReadPendingAtDrainEntry.store(
+            m_pChunkReadRequestFIFO->readAvailable() > 0 ? 1 : 0,
+            std::memory_order_relaxed);
+    m_diagnosticSeek30DrainStartNs.store(startNs, std::memory_order_relaxed);
+    m_diagnosticState.storeRelease(
+            static_cast<int>(DiagnosticState::ProcessingSeek30));
+
+    const std::uint64_t commandsDrained = processSeek30CommandMailbox(
             m_seek30CommandMailbox,
             m_seek30State,
             m_seek30TargetSequence,
@@ -281,6 +308,41 @@ void CachingReaderWorker::processSeek30Commands() {
             [pControl](const Seek30SeekTarget& target) {
                 pControl->publishSeekTarget(target);
             });
+
+    const std::uint64_t endNs = monotonicTimeNanoseconds();
+    const std::uint64_t durationNs = endNs >= startNs ? endNs - startNs : 0;
+    m_diagnosticSeek30DrainLastNs.store(durationNs, std::memory_order_relaxed);
+    updateMaximum(m_diagnosticSeek30DrainMaxNs, durationNs);
+    m_diagnosticSeek30CommandsDrained.store(
+            commandsDrained, std::memory_order_relaxed);
+    m_diagnosticState.storeRelease(previousState);
+    m_diagnosticSeek30DrainStartNs.store(0, std::memory_order_relaxed);
+}
+
+void CachingReaderWorker::updateSeek30CueSnapshotDiagnostic(
+        void* context,
+        bool active) {
+    auto* const pWorker = static_cast<CachingReaderWorker*>(context);
+    if (active) {
+        pWorker->m_diagnosticSeek30CueSnapshotStartNs.store(
+                monotonicTimeNanoseconds(), std::memory_order_relaxed);
+        pWorker->m_diagnosticState.storeRelease(
+                static_cast<int>(DiagnosticState::ProcessingSeek30CueSnapshot));
+        return;
+    }
+
+    const std::uint64_t endNs = monotonicTimeNanoseconds();
+    const std::uint64_t startNs =
+            pWorker->m_diagnosticSeek30CueSnapshotStartNs.load(
+                    std::memory_order_relaxed);
+    const std::uint64_t durationNs = endNs >= startNs ? endNs - startNs : 0;
+    pWorker->m_diagnosticSeek30CueSnapshotLastNs.store(
+            durationNs, std::memory_order_relaxed);
+    updateMaximum(pWorker->m_diagnosticSeek30CueSnapshotMaxNs, durationNs);
+    pWorker->m_diagnosticState.storeRelease(
+            static_cast<int>(DiagnosticState::ProcessingSeek30));
+    pWorker->m_diagnosticSeek30CueSnapshotStartNs.store(
+            0, std::memory_order_relaxed);
 }
 
 void CachingReaderWorker::run() {
