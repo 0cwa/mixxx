@@ -42,6 +42,15 @@ struct Seek30SeekTarget {
     std::uint64_t sequence{0};
 };
 
+struct Seek30MemoryCueSnapshot {
+    CuePointer pCue;
+    mixxx::CueType type;
+    mixxx::audio::FramePos startPosition;
+};
+
+QList<Seek30MemoryCueSnapshot> snapshotSeek30MemoryCues(
+        const QList<CuePointer>& cuePoints);
+
 static_assert(std::is_trivially_copyable_v<Seek30Command>);
 static_assert(std::is_trivially_copyable_v<Seek30WorkerInputs>);
 static_assert(std::is_trivially_copyable_v<Seek30SeekTarget>);
@@ -93,6 +102,36 @@ class Seek30WorkerState final {
     Seek30SeekTarget seekPrevious(const Seek30WorkerInputs& inputs);
 
     TrackPointer m_pLoadedTrack;
-    QList<CuePointer> m_memoryCues;
+    QList<Seek30MemoryCueSnapshot> m_memoryCues;
     std::uint64_t m_generation{0};
 };
+
+// Drain queued commands on the reader worker. Inputs are read only after the
+// first command is available, preserving the production command ordering.
+template<typename GetInputs, typename PublishTarget>
+void processSeek30CommandMailbox(
+        Seek30CommandMailbox& mailbox,
+        Seek30WorkerState& state,
+        std::uint64_t& targetSequence,
+        GetInputs&& getInputs,
+        PublishTarget&& publishTarget) {
+    Seek30Command command;
+    if (!mailbox.tryPop(&command)) {
+        return;
+    }
+
+    auto inputs = getInputs();
+    do {
+        if (command.generation != state.generation()) {
+            continue;
+        }
+
+        const auto target = state.process(command, inputs);
+        if (target.position.isValid()) {
+            inputs.currentPosition = target.position;
+            auto publishedTarget = target;
+            publishedTarget.sequence = ++targetSequence;
+            publishTarget(publishedTarget);
+        }
+    } while (mailbox.tryPop(&command));
+}

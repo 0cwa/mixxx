@@ -7,6 +7,41 @@
 
 #include "track/track.h"
 
+namespace {
+
+void sortMemoryCueSnapshots(
+        QList<Seek30MemoryCueSnapshot>& memoryCues) {
+    std::sort(
+            memoryCues.begin(),
+            memoryCues.end(),
+            [](const Seek30MemoryCueSnapshot& left,
+                    const Seek30MemoryCueSnapshot& right) {
+                return left.startPosition < right.startPosition;
+            });
+}
+
+} // namespace
+
+QList<Seek30MemoryCueSnapshot> snapshotSeek30MemoryCues(
+        const QList<CuePointer>& cuePoints) {
+    QList<Seek30MemoryCueSnapshot> memoryCues;
+    memoryCues.reserve(cuePoints.size());
+    for (const auto& pCue : cuePoints) {
+        if (!pCue) {
+            continue;
+        }
+
+        const auto cueSnapshot = pCue->getTypeAndStartPosition();
+        if (cueSnapshot.type == mixxx::CueType::Memory &&
+                cueSnapshot.startPosition.isValid()) {
+            memoryCues.append(
+                    {pCue, cueSnapshot.type, cueSnapshot.startPosition});
+        }
+    }
+    sortMemoryCueSnapshots(memoryCues);
+    return memoryCues;
+}
+
 Seek30CommandMailbox::Seek30CommandMailbox() {
     for (std::size_t index = 0; index < kCapacity; ++index) {
         m_slots[index].sequence.store(index, std::memory_order_relaxed);
@@ -66,7 +101,7 @@ bool Seek30CommandMailbox::tryPop(Seek30Command* pCommand) {
 void Seek30WorkerState::trackLoaded(TrackPointer pNewTrack) {
     m_pLoadedTrack = std::move(pNewTrack);
     ++m_generation;
-    rebuildMemoryCueCache();
+    m_memoryCues.clear();
 }
 
 void Seek30WorkerState::rebuildMemoryCueCache() {
@@ -75,23 +110,11 @@ void Seek30WorkerState::rebuildMemoryCueCache() {
         return;
     }
 
-    const QList<CuePointer> cues = m_pLoadedTrack->getCuePoints();
-    for (const auto& pCue : cues) {
-        if (pCue && pCue->getType() == mixxx::CueType::Memory) {
-            m_memoryCues.append(pCue);
-        }
-    }
-    sortCueCache();
+    m_memoryCues = snapshotSeek30MemoryCues(m_pLoadedTrack->getCuePoints());
 }
 
 void Seek30WorkerState::sortCueCache() {
-    std::sort(
-            m_memoryCues.begin(),
-            m_memoryCues.end(),
-            [](const CuePointer& pLeft, const CuePointer& pRight) {
-                return pLeft->getStartAndEndPosition().startPosition <
-                        pRight->getStartAndEndPosition().startPosition;
-            });
+    sortMemoryCueSnapshots(m_memoryCues);
 }
 
 void Seek30WorkerState::createMemoryCueAt(
@@ -102,14 +125,10 @@ void Seek30WorkerState::createMemoryCueAt(
 
     constexpr double kEpsilon = 0.5;
     const double currentPosition = position.toEngineSamplePos();
-    for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (pCue) {
-            const double cuePosition = pCue->getStartAndEndPosition()
-                                               .startPosition
-                                               .toEngineSamplePos();
-            if (std::abs(currentPosition - cuePosition) < kEpsilon) {
-                return;
-            }
+    for (const auto& cue : std::as_const(m_memoryCues)) {
+        const double cuePosition = cue.startPosition.toEngineSamplePos();
+        if (std::abs(currentPosition - cuePosition) < kEpsilon) {
+            return;
         }
     }
 
@@ -118,7 +137,8 @@ void Seek30WorkerState::createMemoryCueAt(
             Cue::kNoHotCue,
             position,
             position);
-    m_memoryCues.append(pCue);
+    m_memoryCues.append(
+            {pCue, mixxx::CueType::Memory, position});
     sortCueCache();
 }
 
@@ -126,16 +146,13 @@ void Seek30WorkerState::clearCurrent(
         const mixxx::audio::FramePos& currentPosition) {
     constexpr double kEpsilon = 0.5;
     const double current = currentPosition.toEngineSamplePos();
-    for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (pCue) {
-            const double cuePosition = pCue->getStartAndEndPosition()
-                                               .startPosition
-                                               .toEngineSamplePos();
-            if (std::abs(current - cuePosition) < kEpsilon) {
-                m_pLoadedTrack->removeCue(pCue);
-                m_memoryCues.removeOne(pCue);
-                return;
-            }
+    for (int index = 0; index < m_memoryCues.size(); ++index) {
+        const auto& cue = m_memoryCues.at(index);
+        const double cuePosition = cue.startPosition.toEngineSamplePos();
+        if (std::abs(current - cuePosition) < kEpsilon) {
+            m_pLoadedTrack->removeCue(cue.pCue);
+            m_memoryCues.removeAt(index);
+            return;
         }
     }
 }
@@ -145,16 +162,12 @@ void Seek30WorkerState::clearPrevious(
     constexpr double kEpsilon = 0.5;
     const double current = currentPosition.toEngineSamplePos();
     for (int index = m_memoryCues.size() - 1; index >= 0; --index) {
-        const auto pCue = m_memoryCues.at(index);
-        if (pCue) {
-            const double cuePosition = pCue->getStartAndEndPosition()
-                                               .startPosition
-                                               .toEngineSamplePos();
-            if (current - cuePosition > kEpsilon) {
-                m_pLoadedTrack->removeCue(pCue);
-                m_memoryCues.removeOne(pCue);
-                return;
-            }
+        const auto& cue = m_memoryCues.at(index);
+        const double cuePosition = cue.startPosition.toEngineSamplePos();
+        if (current - cuePosition > kEpsilon) {
+            m_pLoadedTrack->removeCue(cue.pCue);
+            m_memoryCues.removeAt(index);
+            return;
         }
     }
 }
@@ -163,16 +176,13 @@ void Seek30WorkerState::clearNext(
         const mixxx::audio::FramePos& currentPosition) {
     constexpr double kEpsilon = 0.5;
     const double current = currentPosition.toEngineSamplePos();
-    for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (pCue) {
-            const double cuePosition = pCue->getStartAndEndPosition()
-                                               .startPosition
-                                               .toEngineSamplePos();
-            if (cuePosition - current > kEpsilon) {
-                m_pLoadedTrack->removeCue(pCue);
-                m_memoryCues.removeOne(pCue);
-                return;
-            }
+    for (int index = 0; index < m_memoryCues.size(); ++index) {
+        const auto& cue = m_memoryCues.at(index);
+        const double cuePosition = cue.startPosition.toEngineSamplePos();
+        if (cuePosition - current > kEpsilon) {
+            m_pLoadedTrack->removeCue(cue.pCue);
+            m_memoryCues.removeAt(index);
+            return;
         }
     }
 }
@@ -184,16 +194,10 @@ void Seek30WorkerState::clearNearest(const Seek30WorkerInputs& inputs) {
 
     const double current = inputs.currentPosition.value();
     const double tolerance = inputs.sampleRate.toDouble();
-    CuePointer pNearestCue;
+    int nearestIndex = -1;
     double nearestDistance = std::numeric_limits<double>::max() / 2.0;
-    for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (!pCue) {
-            continue;
-        }
-
-        const double cuePosition = pCue->getStartAndEndPosition()
-                                           .startPosition
-                                           .value();
+    for (int index = 0; index < m_memoryCues.size(); ++index) {
+        const double cuePosition = m_memoryCues.at(index).startPosition.value();
         const double distance = std::abs(cuePosition - current);
         if (distance >= tolerance) {
             continue;
@@ -202,13 +206,13 @@ void Seek30WorkerState::clearNearest(const Seek30WorkerInputs& inputs) {
                 (std::abs(distance - nearestDistance) <= 1e-9 &&
                         cuePosition <= current)) {
             nearestDistance = distance;
-            pNearestCue = pCue;
+            nearestIndex = index;
         }
     }
 
-    if (pNearestCue) {
-        m_pLoadedTrack->removeCue(pNearestCue);
-        m_memoryCues.removeOne(pNearestCue);
+    if (nearestIndex >= 0) {
+        m_pLoadedTrack->removeCue(m_memoryCues.at(nearestIndex).pCue);
+        m_memoryCues.removeAt(nearestIndex);
     }
 }
 
@@ -216,12 +220,10 @@ Seek30SeekTarget Seek30WorkerState::seekNext(
         const Seek30WorkerInputs& inputs) {
     const double current = inputs.currentPosition.toEngineSamplePos();
     constexpr double kEpsilon = 0.5;
-    for (const auto& pCue : std::as_const(m_memoryCues)) {
-        if (pCue) {
-            const auto cuePosition = pCue->getStartAndEndPosition().startPosition;
-            if (cuePosition.toEngineSamplePos() - current > kEpsilon) {
-                return {cuePosition, m_generation, 0};
-            }
+    for (const auto& cue : std::as_const(m_memoryCues)) {
+        const auto cuePosition = cue.startPosition;
+        if (cuePosition.toEngineSamplePos() - current > kEpsilon) {
+            return {cuePosition, m_generation, 0};
         }
     }
     return {{}, m_generation, 0};
@@ -232,12 +234,7 @@ Seek30SeekTarget Seek30WorkerState::seekPrevious(
     const double current = inputs.currentPosition.value();
     constexpr double kEpsilon = 0.5;
     for (int index = m_memoryCues.size() - 1; index >= 0; --index) {
-        const auto pCue = m_memoryCues.at(index);
-        if (!pCue) {
-            continue;
-        }
-
-        const auto cuePosition = pCue->getStartAndEndPosition().startPosition;
+        const auto cuePosition = m_memoryCues.at(index).startPosition;
         const double distance = current - cuePosition.value();
         if (distance <= kEpsilon) {
             continue;
@@ -257,6 +254,10 @@ Seek30SeekTarget Seek30WorkerState::process(
     if (command.generation != m_generation || !m_pLoadedTrack) {
         return {{}, m_generation, 0};
     }
+
+    // Cues may be edited outside this worker after the track is loaded. Refresh
+    // on the worker thread before each command uses the memory-cue cache.
+    rebuildMemoryCueCache();
 
     switch (command.operation) {
     case Seek30Operation::SeekNext:

@@ -7,6 +7,7 @@ const OnlyActiveDeckEffect = engine.getSetting("OnlyActiveDeckEffect");
 const displayVUFromBothDecks = engine.getSetting("displayVUFromBothDecks");
 const defaultPadMode = engine.getSetting("defaultPadMode");
 const useFadercutsAsStems = engine.getSetting("useFadercutsAsStems");
+const preserveFaderCutLevel = engine.getSetting("preserveFaderCutLevel");
 const useAdditionalHotcues = engine.getSetting("useAdditionalHotcues");
 const exitSlipmodeAfterScratching = engine.getSetting("exitSlipmodeAfterScratching");
 
@@ -416,6 +417,15 @@ NS4FX.init = function(id, debug) {
 };
 
 NS4FX.shutdown = function() {
+    if (NS4FX.decks) {
+        for (let i = 1; i <= 4; i++) {
+            const deck = NS4FX.decks[i];
+            if (deck && typeof deck.stopActiveFaderCuts === "function") {
+                deck.stopActiveFaderCuts();
+            }
+        }
+    }
+
     // note: not all of this appears to be strictly necessary, things work fine
     // with out this, but Serato has been observed sending these led reset
     // messages during shutdown. The last sysex message may be necessary to
@@ -952,6 +962,10 @@ NS4FX.Deck = function(number, midi_chan) {
             }
         }
     });
+    this.faderCutsState = {
+        activePadCount: 0,
+        startingVolume: null,
+    };
     this.autoloop_buttons = new components.ComponentContainer({
         updateLEDs: function(deckGroup) {
             for (const button in deck.autoloop_buttons) { // Iterate directly over autoloop_buttons
@@ -1081,8 +1095,10 @@ NS4FX.Deck = function(number, midi_chan) {
                         const speedMultiplier = this.number; // Button 1 = slow, Button 4 = fast
                         const interval = baseInterval / speedMultiplier; // Adjust speed
                         print(`BPM=${bpm}, Base Interval=${baseInterval}ms, Speed Multiplier=${speedMultiplier}, Final Interval=${interval}ms`);
-                        this.startFaderCuts(deckGroup, interval); // Start cuts with calculated speed
-                        this.output(1); // Activate LED
+                        const started = this.startFaderCuts(deckGroup, interval); // Start cuts with calculated speed
+                        if (!preserveFaderCutLevel || started) {
+                            this.output(1); // Activate LED
+                        }
                     } else {
                         this.stopFaderCuts(deckGroup); // Stop fader cuts
                         this.output(0); // Deactivate LED
@@ -1092,24 +1108,62 @@ NS4FX.Deck = function(number, midi_chan) {
                     midi.sendShortMsg(this.midi[0], this.midi[1], value ? 0x7F : 0x01); // LED on/off
                 },
                 startFaderCuts: function(deckGroup, interval) {
+                    if (this.faderCutInterval) {
+                        return true;
+                    }
+                    if (preserveFaderCutLevel && deck.faderCutsState.activePadCount === 0) {
+                        const startingVolume = engine.getValue(deckGroup, "volume");
+                        if (!Number.isFinite(startingVolume)) {
+                            return false;
+                        }
+                        deck.faderCutsState.startingVolume = Math.max(0, Math.min(1, startingVolume));
+                    }
                     let toggle = false;
 
                     this.faderCutInterval = engine.beginTimer(interval, () => {
                         toggle = !toggle;
-                        const newVolume = toggle ? 1 : 0; // Switch between full volume and silence
+                        const highVolume = preserveFaderCutLevel ? deck.faderCutsState.startingVolume : 1;
+                        const newVolume = toggle ? highVolume : 0; // Switch between the high level and silence
                         print(`Toggle=${toggle}, New Volume=${newVolume}`);
                         engine.setValue(deckGroup, "volume", newVolume);
                     });
                     print(`Timer started with interval ${interval}ms`);
+                    if (preserveFaderCutLevel) {
+                        if (!this.faderCutInterval) {
+                            if (deck.faderCutsState.activePadCount === 0) {
+                                deck.faderCutsState.startingVolume = null;
+                            }
+                            return false;
+                        }
+                        ++deck.faderCutsState.activePadCount;
+                    }
+                    return true;
                 },
                 stopFaderCuts: function(deckGroup) {
-                    if (this.faderCutInterval) {
-                        engine.stopTimer(this.faderCutInterval);
-                        this.faderCutInterval = null;
+                    if (!preserveFaderCutLevel) {
+                        if (this.faderCutInterval) {
+                            engine.stopTimer(this.faderCutInterval);
+                            this.faderCutInterval = null;
+                        }
+
+                        engine.setValue(deckGroup, "volume", 1);
+                        print(`Resetting volume for ${deckGroup} to 1`);
+                        return;
                     }
 
-                    engine.setValue(deckGroup, "volume", 1);
-                    print(`Resetting volume for ${deckGroup} to 1`);
+                    if (!this.faderCutInterval) {
+                        return;
+                    }
+
+                    engine.stopTimer(this.faderCutInterval);
+                    this.faderCutInterval = null;
+                    --deck.faderCutsState.activePadCount;
+                    if (deck.faderCutsState.activePadCount === 0) {
+                        const startingVolume = deck.faderCutsState.startingVolume;
+                        deck.faderCutsState.startingVolume = null;
+                        engine.setValue(deckGroup, "volume", startingVolume);
+                        print(`Restoring volume for ${deckGroup} to ${startingVolume}`);
+                    }
                 },
                 number: i
             });
@@ -1147,8 +1201,20 @@ NS4FX.Deck = function(number, midi_chan) {
         this.hotcue_buttons[k + 4] = this.hotcue_buttons_5_8[k]; // hotcues 5-8
     }
 
+    this.stopActiveFaderCuts = function() {
+        const deckGroup = `[Channel${this.number}]`;
+        this.fadercuts_buttons.forEachComponent(function(button) {
+            if (button instanceof components.Button && button.faderCutInterval) {
+                button.stopFaderCuts(deckGroup);
+            }
+        });
+    };
+
     this.change_padmode = function(padmode) {
         NS4FX.dbg(`Deck ${this.number} change_padmode: from ${this.padmode_str} to ${padmode}`);
+        if (this.padmode_str === "fadercuts" && padmode !== "fadercuts") {
+            this.stopActiveFaderCuts();
+        }
         this.padmode_str = padmode;
         // This is the main pad mode switching logic.
         // It disconnects the old set of pads and connects the new one.

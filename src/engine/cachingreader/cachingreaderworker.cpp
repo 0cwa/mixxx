@@ -273,25 +273,14 @@ void CachingReaderWorker::processSeek30Commands() {
         return;
     }
 
-    Seek30Command command;
-    if (!m_seek30CommandMailbox.tryPop(&command)) {
-        return;
-    }
-
-    auto inputs = pControl->seek30WorkerInputs();
-    do {
-        if (command.generation != m_seek30State.generation()) {
-            continue;
-        }
-
-        const auto target = m_seek30State.process(command, inputs);
-        if (target.position.isValid()) {
-            inputs.currentPosition = target.position;
-            auto publishedTarget = target;
-            publishedTarget.sequence = ++m_seek30TargetSequence;
-            pControl->publishSeekTarget(publishedTarget);
-        }
-    } while (m_seek30CommandMailbox.tryPop(&command));
+    processSeek30CommandMailbox(
+            m_seek30CommandMailbox,
+            m_seek30State,
+            m_seek30TargetSequence,
+            [pControl]() { return pControl->seek30WorkerInputs(); },
+            [pControl](const Seek30SeekTarget& target) {
+                pControl->publishSeekTarget(target);
+            });
 }
 
 void CachingReaderWorker::run() {
