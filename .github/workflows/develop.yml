@@ -10,9 +10,16 @@ on:
   push:
     branches:
       - "*"
+      - "!diagnostic/issue92-real-provider-20261015-r4"
       - "!main"
       - "![0-9].[0-9]"
   workflow_dispatch:
+    inputs:
+      real_provider_capture:
+        description: Run only the real Media Foundation provider capture
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read #  to fetch code (actions/checkout)
@@ -20,6 +27,10 @@ permissions:
 
 jobs:
   stop-build:
+    if: >-
+      inputs.real_provider_capture != true &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r4'
     name: Check if build should be stopped
     runs-on: ubuntu-slim
     outputs:
@@ -50,7 +61,11 @@ jobs:
             }
 
   pre-commit:
-    if: needs.stop-build.outputs.result == 'false'
+    if: >-
+      inputs.real_provider_capture != true &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/pre-commit.yml
@@ -58,17 +73,27 @@ jobs:
       pull_request: ${{ github.event_name == 'pull_request' }}
 
   checks:
-    if: needs.stop-build.outputs.result == 'false'
+    if: >-
+      inputs.real_provider_capture != true &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/checks.yml
 
   git:
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r4'
     uses: ./.github/workflows/git.yml
 
   build:
-    if: needs.stop-build.outputs.result == 'false'
+    if: >-
+      inputs.real_provider_capture != true &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
     uses: ./.github/workflows/build.yml
@@ -76,10 +101,24 @@ jobs:
       branch: ${{ github.head_ref || github.ref_name }}
       ref: ${{ github.ref }}
 
+  issue92-real-provider-capture:
+    name: Windows x64 Issue 92 real-provider capture
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.real_provider_capture == true &&
+      github.ref_name == 'diagnostic/issue92-real-provider-20261015-r4'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/issue92-real-provider-capture.yml
+
   # This task is used as a probe for auto merge
   # In the future, it could also be used to perform a status update (e.g once the whole CI is passing + is ready for review, add a specific label such as `need review`)
   ready:
     name: Ready to merge
+    if: >-
+      inputs.real_provider_capture != true &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r4' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r4'
     needs:
       - pre-commit
       - checks
