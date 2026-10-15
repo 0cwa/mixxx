@@ -1065,8 +1065,22 @@ TEST_F(SoundSourceMediaFoundationTest, SeekClearsPendingStreamGap) {
 TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     constexpr SINT kInitialDecodeFrames = 1024;
     constexpr std::size_t kMaxCapturedEvents = 64;
+    constexpr DWORD kFlagsHandledBeforeStreamTick =
+            MF_SOURCE_READERF_ERROR |
+            MF_SOURCE_READERF_ENDOFSTREAM |
+            MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED;
     constexpr char kExpectedFixtureSha256[] =
             "9ab2af723411f398001677c4244bf92a280b76f4f0985e1fa7cb7a8b73a44e24";
+
+    // The workflow sets these after validating the checked-out source SHA and
+    // tree. GITHUB_SHA is recorded separately because it identifies the
+    // workflow dispatch ref, which can differ from the tested source commit.
+    const QByteArray sourceCommitPin = qgetenv("MIXXX_TEST_SOURCE_SHA");
+    const QByteArray sourceTreePin = qgetenv("MIXXX_TEST_SOURCE_TREE");
+    ASSERT_EQ(40, sourceCommitPin.size());
+    ASSERT_EQ(sourceCommitPin, QByteArray::fromHex(sourceCommitPin).toHex());
+    ASSERT_EQ(40, sourceTreePin.size());
+    ASSERT_EQ(sourceTreePin, QByteArray::fromHex(sourceTreePin).toHex());
 
     const QUrl fixtureUrl = timelineGapTestUrl();
     QFile fixtureFile(fixtureUrl.toLocalFile());
@@ -1131,23 +1145,83 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
                  << ",sample=" << (event.hasSample ? 1 : 0);
     }
 
+    bool rawStreamTickSeen = false;
+    bool usableStreamTickSeen = false;
+    bool targetBracketObserved = false;
+    SINT pendingTickEventIndex = -1;
     SINT tickEventIndex = -1;
     SINT followingSampleEventIndex = -1;
     for (std::size_t index = 0; index < eventCount; ++index) {
-        if (tickEventIndex < 0 &&
-                (events[index].flags & MF_SOURCE_READERF_STREAMTICK) != 0) {
-            tickEventIndex = static_cast<SINT>(index);
-        }
-        if (tickEventIndex >= 0 &&
-                static_cast<SINT>(index) > tickEventIndex &&
-                events[index].hasSample) {
-            followingSampleEventIndex = static_cast<SINT>(index);
+        const auto& event = events[index];
+        const SINT eventIndex = static_cast<SINT>(index);
+        const bool hasStreamTick =
+                (event.flags & MF_SOURCE_READERF_STREAMTICK) != 0;
+        rawStreamTickSeen = rawStreamTickSeen || hasStreamTick;
+
+        // Match the production ReadSample branch order: failed reads and
+        // higher-priority flags stop processing before a stream tick is used.
+        if (FAILED(event.hr) ||
+                (event.flags & kFlagsHandledBeforeStreamTick) != 0) {
             break;
         }
+
+        if (hasStreamTick) {
+            const SINT tickFrame =
+                    streamPositionToFrameIndexForTest(source, event.timestamp);
+            if (tickFrame != kUnknownFrameIndex &&
+                    source.isValidFrameIndex(tickFrame)) {
+                pendingTickEventIndex = eventIndex;
+                usableStreamTickSeen = true;
+            } else {
+                // Production clears its pending tick on an invalid timestamp.
+                pendingTickEventIndex = -1;
+            }
+            // Production releases a sample returned with STREAMTICK and
+            // continues; that sample cannot be the following decoded sample.
+            continue;
+        }
+
+        if (!event.hasSample) {
+            // Production stops when a non-tick result has no sample.
+            break;
+        }
+
+        const SINT sampleFrame =
+                streamPositionToFrameIndexForTest(source, event.timestamp);
+        if (sampleFrame == kUnknownFrameIndex ||
+                !source.isValidFrameIndex(sampleFrame)) {
+            // Production aborts after a sample with an invalid timestamp.
+            break;
+        }
+
+        if (pendingTickEventIndex >= 0) {
+            const auto& tick = events[static_cast<std::size_t>(pendingTickEventIndex)];
+            const SINT tickFrame =
+                    streamPositionToFrameIndexForTest(source, tick.timestamp);
+            if (tickEventIndex < 0) {
+                tickEventIndex = pendingTickEventIndex;
+                followingSampleEventIndex = eventIndex;
+            }
+            if (tickFrame <= requestedTargetFrame &&
+                    requestedTargetFrame < sampleFrame) {
+                tickEventIndex = pendingTickEventIndex;
+                followingSampleEventIndex = eventIndex;
+                targetBracketObserved = true;
+                break;
+            }
+        }
+
+        // Production consumes the pending tick when it processes a sample.
+        pendingTickEventIndex = -1;
+    }
+    if (tickEventIndex < 0 && pendingTickEventIndex >= 0) {
+        tickEventIndex = pendingTickEventIndex;
     }
 
+    RecordProperty("source_commit", sourceCommitPin.toStdString());
+    RecordProperty("source_tree", sourceTreePin.toStdString());
     RecordProperty(
-            "source_commit",
+            "workflow_dispatch_sha",
             qEnvironmentVariable("GITHUB_SHA").toStdString());
     RecordProperty(
             "workflow_commit",
@@ -1159,30 +1233,32 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     RecordProperty("requested_target_frame", std::to_string(requestedTargetFrame));
     RecordProperty("requested_target_100ns", std::to_string(requestedTarget100ns));
 
-    std::string producerResult = "UNPROVEN_NO_STREAMTICK";
+    std::string producerResult;
+    if (traceTruncated) {
+        producerResult = "UNPROVEN_TRACE_TRUNCATED";
+    } else if (targetBracketObserved) {
+        producerResult = "OBSERVED_TICK_SAMPLE_BRACKETING_TARGET";
+    } else if (!rawStreamTickSeen) {
+        producerResult = "UNPROVEN_NO_STREAMTICK";
+    } else if (!usableStreamTickSeen) {
+        producerResult = "UNPROVEN_NO_USABLE_STREAMTICK";
+    } else if (followingSampleEventIndex < 0) {
+        producerResult = "UNPROVEN_NO_FOLLOWING_SAMPLE";
+    } else {
+        producerResult = "UNPROVEN_TARGET_NOT_BRACKETED";
+    }
+
     if (tickEventIndex >= 0) {
         const auto& tick = events[static_cast<std::size_t>(tickEventIndex)];
         const SINT tickFrame = streamPositionToFrameIndexForTest(source, tick.timestamp);
         RecordProperty("streamtick_flags", std::to_string(tick.flags));
         RecordProperty("streamtick_timestamp_100ns", std::to_string(tick.timestamp));
         RecordProperty("streamtick_frame", std::to_string(tickFrame));
-        if (followingSampleEventIndex < 0) {
-            producerResult = "UNPROVEN_NO_FOLLOWING_SAMPLE";
-        } else {
+        if (followingSampleEventIndex >= 0) {
             const auto& sample =
                     events[static_cast<std::size_t>(followingSampleEventIndex)];
             const SINT sampleFrame =
                     streamPositionToFrameIndexForTest(source, sample.timestamp);
-            const bool bracketsTarget =
-                    tickFrame <= requestedTargetFrame &&
-                    requestedTargetFrame < sampleFrame;
-            if (traceTruncated) {
-                producerResult = "UNPROVEN_TRACE_TRUNCATED";
-            } else if (bracketsTarget) {
-                producerResult = "OBSERVED_TICK_SAMPLE_BRACKETING_TARGET";
-            } else {
-                producerResult = "UNPROVEN_TARGET_NOT_BRACKETED";
-            }
             RecordProperty(
                     "following_sample_flags",
                     std::to_string(sample.flags));
