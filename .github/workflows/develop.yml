@@ -1,4 +1,4 @@
-name: Issue 84 queued worker native (FFmpeg + STEM + Bungee)
+name: Forest product native regressions (14 selectors)
 
 on:
   workflow_dispatch:
@@ -7,14 +7,16 @@ permissions:
   contents: read
 
 jobs:
-  seek30-native:
+  forest-product-native14:
     name: Ubuntu 24.04 / Clang 18 / Qt 6.4.2 / FFmpeg + STEM + Bungee / ASan
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     env:
-      SOURCE_SHA: 599ed1ec785a01470eab041ef792413f1c66e35d
-      SOURCE_TREE: b55e49b2b524bb18faa0b65e0b7833fe37eb4649
+      TRANSPORT_BASE: c19a52afed919afefcfd21e37bdd30b0d0cc3d2f
+      SOURCE_REF: refs/heads/codex/forest-reviewed-fixes-20261015
+      SOURCE_SHA: a536fd35db21563cab550a505dabdc7ec5060a8e
+      SOURCE_TREE: 0990b17890f27e7387c427d05388014a7e446afc
       CC: clang-18
       CXX: clang++-18
       ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
@@ -31,11 +33,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          RESULT_DIR="$RUNNER_TEMP/issue84-queued-worker-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RESULT_DIR="$RUNNER_TEMP/forest-product-native14-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           printf 'RESULT_DIR=%s\n' "$RESULT_DIR" >> "$GITHUB_ENV"
           mkdir -p "$RESULT_DIR/metadata" "$RESULT_DIR/logs" "$RESULT_DIR/native"
           {
-            printf 'schema=mixxx-issue84-queued-native-run-v1\n'
+            printf 'schema=mixxx-forest-product-native14-run-v1\n'
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'event=%s\n' "$GITHUB_EVENT_NAME"
@@ -45,13 +47,15 @@ jobs:
             printf 'runner_arch=%s\n' "${{ runner.arch }}"
           } > "$RESULT_DIR/metadata/dispatch.txt"
           cat > "$RESULT_DIR/metadata/scope-limit.txt" <<'EOF'
-          Covered: 10 exact native selectors: seven Seek30WorkerState selectors,
-          one BeatGrid legacy fallback regression, and two temporary actual-worker probes.
-          Probe coverage: unlimited command drain before a real chunk read; capped prototype
-          reads between command batches; empty-read-FIFO backlog drains after one scheduler wake.
-          Not covered: sustained producer load, audio-engine callback integration, Seek30 target
-          or snapshot semantics across batches, incident causality, or final Forest acceptance
-          beyond these selectors.
+          Covered: 14 exact native selectors: seven Seek30WorkerState refresh regressions,
+          the BeatGrid partial-protobuf legacy fallback regression, two Beats equality regressions,
+          and four Rekordbox import regressions for cue ordering/type/loop bounds and color mapping.
+          The Rekordbox selection includes the PCOB/PCO2 zero-hot-cue guard regression.
+          The build includes the #83 provider-gate source for compilation; this selection does not
+          exercise provider runtime. The Linux run does not qualify #82 macOS behavior or #86
+          hardware behavior. It does not test #84 actual-worker wake/mailbox fairness, sustained
+          producer load, audio-engine callback integration, incident causality, or final Forest
+          acceptance beyond these selectors.
           EOF
           sed -i 's/^          //' "$RESULT_DIR/metadata/scope-limit.txt"
 
@@ -70,19 +74,26 @@ jobs:
           workflow_commit="$(git rev-parse HEAD)"
           test "$workflow_commit" = "$GITHUB_SHA"
           workflow_parent="$(git rev-parse "$GITHUB_SHA^1")"
+          test "$workflow_parent" = "$TRANSPORT_BASE"
           workflow_tree="$(git rev-parse "$GITHUB_SHA^{tree}")"
           workflow_blob="$(git rev-parse "$GITHUB_SHA:.github/workflows/develop.yml")"
-          git merge-base --is-ancestor "$SOURCE_SHA" "$GITHUB_SHA"
-          workflow_transport_commits="$(git rev-list --reverse "$SOURCE_SHA..$GITHUB_SHA")"
+          workflow_transport_commits="$(git rev-list --reverse "$TRANSPORT_BASE..$GITHUB_SHA")"
           test -n "$workflow_transport_commits"
+          test "$(wc -l <<< "$workflow_transport_commits")" -eq 1
+          test "$workflow_transport_commits" = "$GITHUB_SHA"
           while IFS= read -r workflow_revision; do
             test -n "$workflow_revision"
             commit_paths="$(git diff-tree --no-commit-id --name-only -r "$workflow_revision")"
             test "$commit_paths" = ".github/workflows/develop.yml"
           done <<< "$workflow_transport_commits"
-          workflow_changed_paths="$(git diff --name-only "$SOURCE_SHA" "$GITHUB_SHA")"
+          workflow_changed_paths="$(git diff --name-only "$TRANSPORT_BASE" "$GITHUB_SHA")"
           test "$workflow_changed_paths" = ".github/workflows/develop.yml"
 
+          git fetch --no-tags origin "$SOURCE_REF"
+          source_fetch_head="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          source_fetch_tree="$(git rev-parse "$source_fetch_head^{tree}")"
+          test "$source_fetch_head" = "$SOURCE_SHA"
+          test "$source_fetch_tree" = "$SOURCE_TREE"
           git checkout --detach "$SOURCE_SHA"
           git submodule sync --recursive
           git submodule update --init --force --recursive
@@ -99,8 +110,12 @@ jobs:
             printf 'workflow_parent=%s\n' "$workflow_parent"
             printf 'workflow_tree=%s\n' "$workflow_tree"
             printf 'workflow_blob=%s\n' "$workflow_blob"
+            printf 'transport_base=%s\n' "$TRANSPORT_BASE"
             printf 'workflow_transport_commits=%s\n' "$(paste -sd, <<< "$workflow_transport_commits")"
             printf 'workflow_changed_paths=%s\n' "$workflow_changed_paths"
+            printf 'source_ref=%s\n' "$SOURCE_REF"
+            printf 'source_fetch_head=%s\n' "$source_fetch_head"
+            printf 'source_fetch_tree=%s\n' "$source_fetch_tree"
             printf 'source_commit=%s\n' "$source_commit"
             printf 'source_tree=%s\n' "$source_tree"
             printf 'runner_image=%s/%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
@@ -119,8 +134,12 @@ jobs:
           Seek30WorkerStateTest.RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload
           Seek30WorkerStateTest.RefreshesExternalMemoryCueInvalidationWithoutTrackReload
           BeatGridTest.LegacySerializationIgnoresPartialProtobufDownbeatOffset
-          CachingReaderWorkerFairnessProbeTest.UnlimitedWorkerDrainsCommandsBeforeReadingChunk
-          CachingReaderWorkerFairnessProbeTest.CappedPrototypeReadsBetweenBatchesAndDrainsWithoutAnotherWake
+          BeatsTest.DifferentSampleRatesAreNotEqual
+          BeatsTest.DifferentDownbeatOffsetsAreNotEqual
+          RekordboxImportTest.UpdatesFirstMatchingHotCueWithoutReordering
+          RekordboxImportTest.ReimportsHotCueLoopBoundsOverExistingCue
+          RekordboxImportTest.ColorIDTwoMapsToHistoricalRed
+          RekordboxImportTest.SkipsZeroHotCueNumberAndStillUpdatesNonzeroCueType
           EOF
           filter="$(paste -sd: "$RESULT_DIR/expected-selectors.txt")"
           printf 'NATIVE_TEST_FILTER=%s\n' "$filter" >> "$GITHUB_ENV"
@@ -177,8 +196,8 @@ jobs:
                   problems.append(f"missing or invalid list exit receipt: {error}")
               if list_exit != 0:
                   problems.append(f"GTest list command exited {list_exit}")
-              if len(expected) != 10 or len(set(expected)) != 10:
-                  problems.append("expected selector file is not the exact ten unique IDs")
+              if len(expected) != 14 or len(set(expected)) != 14:
+                  problems.append("expected selector file is not the exact 14 unique IDs")
               if len(set(listed)) != len(listed):
                   problems.append("GTest listing contains duplicate test IDs")
               if any(is_disabled(identifier) for identifier in listed):
@@ -224,8 +243,8 @@ jobs:
                       actual = [f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}" for case in cases]
                       if collections.Counter(actual) != collections.Counter(expected):
                           problems.append("XML testcase IDs differ from the exact expected selector set")
-                      if len(actual) != 10 or len(set(actual)) != 10:
-                          problems.append("XML does not contain exactly ten unique testcases")
+                      if len(actual) != 14 or len(set(actual)) != 14:
+                          problems.append("XML does not contain exactly 14 unique testcases")
                       if any(is_disabled(identifier) for identifier in actual):
                           problems.append("XML includes a disabled test")
                       if any(
@@ -464,7 +483,7 @@ jobs:
             "$RESULT_DIR/expected-selectors.txt" \
             "$RESULT_DIR/native/list-verification.json"
 
-      - name: Run exactly ten selectors and preserve receipts before XML checks
+      - name: Run exactly 14 selectors and preserve receipts before XML checks
         id: native_run
         if: steps.test_list.outcome == 'success'
         shell: bash
@@ -733,7 +752,7 @@ jobs:
           (artifact / "job-log-pointer.txt").write_text(pointer_text, encoding="utf-8")
           qualification = "PASS" if not reasons else "FAIL"
           manifest = {
-              "schema": "mixxx-issue84-bounded-evidence-v1",
+          "schema": "mixxx-forest-product-native14-evidence-v1",
               "qualification_status": qualification,
               "job_url": job_url,
               "limit_bytes": LIMIT_BYTES,
@@ -792,7 +811,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: issue84-queued-native-${{ github.run_id }}
-          path: ${{ runner.temp }}/issue84-queued-worker-native-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
+          name: forest-product-native14-${{ github.run_id }}
+          path: ${{ runner.temp }}/forest-product-native14-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
           if-no-files-found: error
           retention-days: 14
