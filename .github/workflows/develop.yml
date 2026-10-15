@@ -1,4 +1,4 @@
-name: Forest product native regressions (14 selectors)
+name: Issue 91 Stem conversion preflight native regressions (2 selectors)
 
 on:
   workflow_dispatch:
@@ -7,16 +7,16 @@ permissions:
   contents: read
 
 jobs:
-  forest-product-native14:
-    name: Ubuntu 24.04 / Clang 18 / Qt 6.4.2 / FFmpeg + STEM + Bungee / ASan
+  issue91-stem-native2:
+    name: Ubuntu 24.04 / Clang 18 / Qt 6.4.2 / FFmpeg + STEM conversion / ASan
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     env:
-      TRANSPORT_BASE: 1eccff522949ae080e248af6be2fd47069580c99
-      SOURCE_REF: refs/heads/codex/issue81-worker-phase-telemetry-20261015
-      SOURCE_SHA: fedcf3a3b6dd0fd7c3a5ffea2cdab5e32c58ea59
-      SOURCE_TREE: c73327e685d918559522f35bd106e9613198fdbe
+      TRANSPORT_BASE: 7446d80cd9081709d34b90ff03f1ab29fa84cc67
+      SOURCE_REF: refs/heads/fix/issue91-stem-tool-preflight-20261013
+      SOURCE_SHA: deabc42ef08d9c8d49dae1f86544e51ea0bfa871
+      SOURCE_TREE: 54eb6e9185d6c98325180558baf8d928b62b3a03
       CC: clang-18
       CXX: clang++-18
       ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
@@ -33,11 +33,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          RESULT_DIR="$RUNNER_TEMP/issue81-phase-telemetry-native14-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RESULT_DIR="$RUNNER_TEMP/issue91-stem-native2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           printf 'RESULT_DIR=%s\n' "$RESULT_DIR" >> "$GITHUB_ENV"
           mkdir -p "$RESULT_DIR/metadata" "$RESULT_DIR/logs" "$RESULT_DIR/native"
           {
-            printf 'schema=mixxx-issue81-phase-telemetry-native14-run-v1\n'
+            printf 'schema=mixxx-issue91-stem-native2-run-v1\n'
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'event=%s\n' "$GITHUB_EVENT_NAME"
@@ -47,15 +47,12 @@ jobs:
             printf 'runner_arch=%s\n' "${{ runner.arch }}"
           } > "$RESULT_DIR/metadata/dispatch.txt"
           cat > "$RESULT_DIR/metadata/scope-limit.txt" <<'EOF'
-          Covered: 14 exact native selectors: seven Seek30WorkerState refresh regressions,
-          the BeatGrid partial-protobuf legacy fallback regression, two Beats equality regressions,
-          and four Rekordbox import regressions for cue ordering/type/loop bounds and color mapping.
-          The Rekordbox selection includes the PCOB/PCO2 zero-hot-cue guard regression.
-          The build includes the #83 provider-gate source for compilation; this selection does not
-          exercise provider runtime. The Linux run does not qualify #82 macOS behavior or #86
-          hardware behavior. It does not test #84 actual-worker wake/mailbox fairness, sustained
-          producer load, audio-engine callback integration, incident causality, or final Forest
-          acceptance beyond these selectors.
+          Covered: exactly two StemConverter preflight regressions for missing FFmpeg and MP4Box.
+          They assert Failed state, the expected error, zero progress, and no start/progress signals.
+          The pinned ONNX Runtime dependency enables compilation of STEM_CONVERSION; the tests use
+          missing executable paths and do not perform conversion or model inference. This Linux run
+          does not include the available-tool conversion positive control or establish full Issue 91
+          acceptance beyond these two preflight cases.
           EOF
           sed -i 's/^          //' "$RESULT_DIR/metadata/scope-limit.txt"
 
@@ -126,20 +123,8 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RESULT_DIR/expected-selectors.txt" <<'EOF'
-          Seek30WorkerStateTest.RefreshesExternalMemoryCueAdditionWithoutTrackReload
-          Seek30WorkerStateTest.RefreshesExternalMemoryCueRemovalWithoutTrackReload
-          Seek30WorkerStateTest.RefreshesQueuedCommandAfterExternalCueEdit
-          Seek30WorkerStateTest.RefreshesExternalMemoryCueMoveAndOrdering
-          Seek30WorkerStateTest.RefreshesMemoryCueTypeChangeToLoopWithoutTrackReload
-          Seek30WorkerStateTest.RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload
-          Seek30WorkerStateTest.RefreshesExternalMemoryCueInvalidationWithoutTrackReload
-          BeatGridTest.LegacySerializationIgnoresPartialProtobufDownbeatOffset
-          BeatsTest.DifferentSampleRatesAreNotEqual
-          BeatsTest.DifferentDownbeatOffsetsAreNotEqual
-          RekordboxImportTest.UpdatesFirstMatchingHotCueWithoutReordering
-          RekordboxImportTest.ReimportsHotCueLoopBoundsOverExistingCue
-          RekordboxImportTest.ColorIDTwoMapsToHistoricalRed
-          RekordboxImportTest.SkipsZeroHotCueNumberAndStillUpdatesNonzeroCueType
+          StemConverterTest.MissingFFmpegFailsBeforeProcessing
+          StemConverterTest.MissingMP4BoxFailsBeforeProcessing
           EOF
           filter="$(paste -sd: "$RESULT_DIR/expected-selectors.txt")"
           printf 'NATIVE_TEST_FILTER=%s\n' "$filter" >> "$GITHUB_ENV"
@@ -196,8 +181,8 @@ jobs:
                   problems.append(f"missing or invalid list exit receipt: {error}")
               if list_exit != 0:
                   problems.append(f"GTest list command exited {list_exit}")
-              if len(expected) != 14 or len(set(expected)) != 14:
-                  problems.append("expected selector file is not the exact 14 unique IDs")
+              if len(expected) != 2 or len(set(expected)) != 2:
+                  problems.append("expected selector file is not the exact 2 unique IDs")
               if len(set(listed)) != len(listed):
                   problems.append("GTest listing contains duplicate test IDs")
               if any(is_disabled(identifier) for identifier in listed):
@@ -243,8 +228,8 @@ jobs:
                       actual = [f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}" for case in cases]
                       if collections.Counter(actual) != collections.Counter(expected):
                           problems.append("XML testcase IDs differ from the exact expected selector set")
-                      if len(actual) != 14 or len(set(actual)) != 14:
-                          problems.append("XML does not contain exactly 14 unique testcases")
+                      if len(actual) != 2 or len(set(actual)) != 2:
+                          problems.append("XML does not contain exactly 2 unique testcases")
                       if any(is_disabled(identifier) for identifier in actual):
                           problems.append("XML includes a disabled test")
                       if any(
@@ -295,6 +280,8 @@ jobs:
               "BUNGEE": "ON",
               "FFMPEG": "ON",
               "STEM": "ON",
+              "STEM_CONVERSION": "ON",
+              "MIXXX_STEM_MODEL_FILE": "",
               "SANITIZE_ADDRESS": "ON",
               "BUILD_TESTING": "ON",
               "BUILD_BENCH": "OFF",
@@ -302,7 +289,7 @@ jobs:
           FFMPEG_COMPONENTS = ("AVCODEC", "AVFORMAT", "AVUTIL", "SWRESAMPLE")
 
 
-          def validate(cache_path: str, log_path: str) -> dict:
+          def validate(cache_path: str, log_path: str, runtime_prefix: str) -> dict:
               cache: dict[str, str] = {}
               for line in Path(cache_path).read_text(encoding="utf-8").splitlines():
                   if not line or line.startswith(("#", "//")):
@@ -328,18 +315,29 @@ jobs:
                       problems.append(f"CMake did not report FFmpeg {component} as found")
                   components[component] = library
 
+              if cache.get("CMAKE_PREFIX_PATH") != runtime_prefix:
+                  problems.append(
+                      f"CMakeCache CMAKE_PREFIX_PATH={cache.get('CMAKE_PREFIX_PATH')!r}, "
+                      f"expected staged ONNX Runtime prefix {runtime_prefix!r}"
+                  )
+              runtime_enabled = "Enabling STEM conversion support" in configure_log
+              if not runtime_enabled:
+                  problems.append("CMake did not report STEM conversion enabled from ONNX Runtime")
+
               return {
                   "status": "PASS" if not problems else "FAIL",
                   "expected_cache_values": EXPECTED,
                   "ffmpeg_components": components,
+                  "onnxruntime_prefix": cache.get("CMAKE_PREFIX_PATH"),
+                  "stem_conversion_enabled_by_runtime": runtime_enabled,
                   "problems": problems,
               }
 
 
           if __name__ == "__main__":
-              if len(sys.argv) != 4:
-                  raise SystemExit("usage: verify_build_config.py CMAKE_CACHE CONFIGURE_LOG OUTPUT_JSON")
-              result = validate(sys.argv[1], sys.argv[2])
+              if len(sys.argv) != 5:
+                  raise SystemExit("usage: verify_build_config.py CMAKE_CACHE CONFIGURE_LOG OUTPUT_JSON ONNXRUNTIME_PREFIX")
+              result = validate(sys.argv[1], sys.argv[2], sys.argv[4])
               Path(sys.argv[3]).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
               print(json.dumps(result, indent=2, sort_keys=True))
               raise SystemExit(0 if result["status"] == "PASS" else 1)
@@ -381,13 +379,39 @@ jobs:
             printf 'ccache=%s\n' "$(ccache --version | head -n 1)"
           } | tee "$RESULT_DIR/metadata/toolchain.txt"
 
-      - name: Restore ccache for the FFmpeg STEM Bungee configuration
+      - name: Stage pinned ONNX Runtime
+        id: onnx_stage
+        shell: bash
+        env:
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
+        run: tools/onnxruntime_buildenv.sh stage
+
+      - name: Verify staged ONNX Runtime and record its pin
+        id: onnx_verify
+        shell: bash
+        env:
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
+        run: |
+          set -euo pipefail
+          tools/onnxruntime_buildenv.sh verify
+          onnxruntime_version="$(sed -n 's/^readonly ONNXRUNTIME_VERSION="\([^"]*\)"/\1/p' tools/onnxruntime_buildenv.sh)"
+          onnxruntime_sha256="$(sed -n 's/^readonly ONNXRUNTIME_SHA256="\([^"]*\)"/\1/p' tools/onnxruntime_buildenv.sh)"
+          test "$onnxruntime_version" = "1.26.0"
+          test "$onnxruntime_sha256" = "1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57"
+          {
+            printf 'onnxruntime=%s\n' "$onnxruntime_version"
+            printf 'onnxruntime_sha256=%s\n' "$onnxruntime_sha256"
+            printf 'stem_model_file=disabled-for-preflight-only-run\n'
+          } >> "$RESULT_DIR/metadata/toolchain.txt"
+
+      - name: Restore ccache for the FFmpeg STEM conversion Bungee configuration
         id: cache_restore
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: /home/runner/.cache/ccache
-          key: mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: mixxx-issue91-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-stem-conversion-on-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            mixxx-issue91-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-stem-conversion-on-v1-
             mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-
 
       - name: Configure ccache and persist restore result
@@ -404,8 +428,8 @@ jobs:
           {
             printf 'restore_hit=%s\n' "$CACHE_HIT"
             printf 'matched_key=%s\n' "$CACHE_MATCHED_KEY"
-            printf 'key_prefix=mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-\n'
-            printf 'feature_configuration=FFMPEG=ON,STEM=ON,BUNGEE=ON,Debug,ASan,BUILD_TESTING=ON\n'
+            printf 'key_prefix=mixxx-issue91-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-stem-conversion-on-v1-\n'
+            printf 'feature_configuration=FFMPEG=ON,STEM=ON,STEM_CONVERSION=ON,ONNXRuntime=1.26.0,MIXXX_STEM_MODEL_FILE=empty,BUNGEE=ON,Debug,ASan,BUILD_TESTING=ON\n'
             printf 'branch_scope=%s\n' "$GITHUB_REF"
           } > "$RESULT_DIR/metadata/ccache-restore.txt"
           ccache --show-stats --verbose > "$RESULT_DIR/metadata/ccache-before-build.txt"
@@ -413,6 +437,8 @@ jobs:
       - name: Configure Debug ASan build
         id: configure
         shell: bash
+        env:
+          MIXXX_ONNX_RUNTIME_PREFIX: ${{ runner.temp }}/mixxx-onnxruntime
         run: |
           set -euo pipefail
           cmake -S . -B build \
@@ -420,6 +446,9 @@ jobs:
             -DBUNGEE=ON \
             -DFFMPEG=ON \
             -DSTEM=ON \
+            -DSTEM_CONVERSION=ON \
+            -DCMAKE_PREFIX_PATH="$MIXXX_ONNX_RUNTIME_PREFIX" \
+            -DMIXXX_STEM_MODEL_FILE= \
             -DSANITIZE_ADDRESS=ON \
             -DBUILD_TESTING=ON \
             -DBUILD_BENCH=OFF \
@@ -443,15 +472,19 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             2>&1 | tee "$RESULT_DIR/logs/cmake-configure.log"
+          grep -F "Enabling STEM conversion support" "$RESULT_DIR/logs/cmake-configure.log"
           python3 "$RESULT_DIR/verify_build_config.py" \
             build/CMakeCache.txt \
             "$RESULT_DIR/logs/cmake-configure.log" \
-            "$RESULT_DIR/metadata/cmake-feature-flags.json"
+            "$RESULT_DIR/metadata/cmake-feature-flags.json" \
+            "$MIXXX_ONNX_RUNTIME_PREFIX"
           printf 'configured_source=%s\n' "$SOURCE_SHA" > "$RESULT_DIR/metadata/configure-source.txt"
 
       - name: Build mixxx-test
         id: build
         shell: bash
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
         run: |
           set -euo pipefail
           cmake --build build --target mixxx-test --parallel "$(nproc)" \
@@ -464,11 +497,13 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: /home/runner/.cache/ccache
-          key: mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: mixxx-issue91-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-stem-conversion-on-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Capture the exact GTest listing
         id: test_list
         shell: bash
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
         run: |
           set -euo pipefail
           set +e
@@ -483,10 +518,12 @@ jobs:
             "$RESULT_DIR/expected-selectors.txt" \
             "$RESULT_DIR/native/list-verification.json"
 
-      - name: Run exactly 14 selectors and preserve receipts before XML checks
+      - name: Run exactly 2 selectors and preserve receipts before XML checks
         id: native_run
         if: steps.test_list.outcome == 'success'
         shell: bash
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/mixxx-onnxruntime/lib
         run: |
           set -euo pipefail
           process_root="$RESULT_DIR/native/private-process"
@@ -588,6 +625,8 @@ jobs:
         if: always()
         shell: bash
         env:
+          ONNX_STAGE_OUTCOME: ${{ steps.onnx_stage.outcome }}
+          ONNX_VERIFY_OUTCOME: ${{ steps.onnx_verify.outcome }}
           CONFIGURE_OUTCOME: ${{ steps.configure.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           LIST_OUTCOME: ${{ steps.test_list.outcome }}
@@ -712,6 +751,8 @@ jobs:
           native_exit = read_int(root / "native/native-exit-code.txt")
           ccache_exit = read_int(root / "metadata/ccache-after-build.exit")
           outcomes = {
+              "onnx_stage": os.environ.get("ONNX_STAGE_OUTCOME", "unknown"),
+              "onnx_verify": os.environ.get("ONNX_VERIFY_OUTCOME", "unknown"),
               "configure": os.environ.get("CONFIGURE_OUTCOME", "unknown"),
               "build": os.environ.get("BUILD_OUTCOME", "unknown"),
               "list": os.environ.get("LIST_OUTCOME", "unknown"),
@@ -722,7 +763,7 @@ jobs:
           if missing:
               reasons.append("required evidence files are missing")
           if any(value != "success" for value in outcomes.values()):
-              reasons.append("one or more configure/build/list/native steps did not succeed")
+              reasons.append("one or more ONNX staging/configure/build/list/native steps did not succeed")
           if list_receipt.get("status") != "PASS":
               reasons.append("exact GTest listing did not pass")
           if xml_receipt.get("status") != "PASS":
@@ -752,7 +793,7 @@ jobs:
           (artifact / "job-log-pointer.txt").write_text(pointer_text, encoding="utf-8")
           qualification = "PASS" if not reasons else "FAIL"
           manifest = {
-          "schema": "mixxx-issue81-phase-telemetry-native14-evidence-v1",
+          "schema": "mixxx-issue91-stem-native2-evidence-v1",
               "qualification_status": qualification,
               "job_url": job_url,
               "limit_bytes": LIMIT_BYTES,
@@ -811,7 +852,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: issue81-phase-telemetry-native14-${{ github.run_id }}
-          path: ${{ runner.temp }}/issue81-phase-telemetry-native14-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
+          name: issue91-stem-native2-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue91-stem-native2-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
           if-no-files-found: error
           retention-days: 14
