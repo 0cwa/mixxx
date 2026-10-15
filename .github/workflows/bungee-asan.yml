@@ -1,5 +1,7 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow
 #
+# AI-assistance disclaimer (start): This text was autonomously generated
+# by an AI Agent.
 # BNG-13: AddressSanitizer build for the Bungee scaler and reader retry paths.
 #
 # Scope:
@@ -15,6 +17,8 @@
 # whose leaks would mask the heap-overflow signal we actually care about.
 # halt_on_error=1 + abort_on_error=1 ensures the CI job fails immediately
 # on the first ASan-detected issue with a usable backtrace.
+# AI-assistance disclaimer (end): This text was autonomously generated
+# by an AI Agent.
 
 name: Bungee ASan
 
@@ -177,10 +181,14 @@ jobs:
       - name: "Print ccache stats"
         run: ccache --show-stats
 
+      # AI-assistance disclaimer (start): This text was autonomously generated
+      # by an AI Agent.
       # Run focused Bungee, reader retry, and SettingsManager keylock tests
       # under ASan. The full mixxx-test suite under ASan would run for >30
       # minutes; this targeted run covers the instrumented Bungee and reader
       # paths.
+      # AI-assistance disclaimer (end): This text was autonomously generated
+      # by an AI Agent.
       - name: "Run Bungee and reader tests under ASan"
         working-directory: build
         env:
