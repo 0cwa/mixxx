@@ -91,7 +91,7 @@ jobs:
           source_fetch_tree="$(git rev-parse "$source_fetch_head^{tree}")"
           test "$source_fetch_head" = "$SOURCE_SHA"
           test "$source_fetch_tree" = "$SOURCE_TREE"
-          git checkout --detach "$SOURCE_SHA"
+          GIT_LFS_SKIP_SMUDGE=1 git checkout --detach "$SOURCE_SHA"
           git submodule sync --recursive
           git submodule update --init --force --recursive
 
