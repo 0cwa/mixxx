@@ -10,7 +10,7 @@ on:
   push:
     branches:
       - "*"
-      - "!diagnostic/issue92-real-provider-20261015-r5"
+      - "!diagnostic/issue92-real-provider-20261015-r7"
       - "!main"
       - "![0-9].[0-9]"
   workflow_dispatch:
@@ -29,8 +29,8 @@ jobs:
   stop-build:
     if: >-
       inputs.real_provider_capture != true &&
-      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r5' &&
-      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r5'
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r7' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r7'
     name: Check if build should be stopped
     runs-on: ubuntu-slim
     outputs:
@@ -63,8 +63,8 @@ jobs:
   pre-commit:
     if: >-
       inputs.real_provider_capture != true &&
-      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r5' &&
-      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r5' &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r7' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r7' &&
       needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
@@ -75,8 +75,8 @@ jobs:
   checks:
     if: >-
       inputs.real_provider_capture != true &&
-      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r5' &&
-      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r5' &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r7' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r7' &&
       needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
@@ -85,14 +85,14 @@ jobs:
   git:
     if: >-
       github.event_name == 'pull_request' &&
-      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r5'
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r7'
     uses: ./.github/workflows/git.yml
 
   build:
     if: >-
       inputs.real_provider_capture != true &&
-      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r5' &&
-      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r5' &&
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r7' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r7' &&
       needs.stop-build.outputs.result == 'false'
     needs:
       - stop-build
@@ -106,7 +106,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.real_provider_capture == true &&
-      github.ref_name == 'diagnostic/issue92-real-provider-20261015-r5'
+      github.ref_name == 'diagnostic/issue92-real-provider-20261015-r7'
     permissions:
       contents: read
     uses: ./.github/workflows/issue92-real-provider-capture.yml
@@ -117,8 +117,8 @@ jobs:
     name: Ready to merge
     if: >-
       inputs.real_provider_capture != true &&
-      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r5' &&
-      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r5'
+      github.ref_name != 'diagnostic/issue92-real-provider-20261015-r7' &&
+      github.head_ref != 'diagnostic/issue92-real-provider-20261015-r7'
     needs:
       - pre-commit
       - checks
