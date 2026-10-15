@@ -538,7 +538,10 @@ class FairnessProbeWorker final {
     FairnessProbeWorker(
             UserSettingsPointer pConfig,
             std::size_t maxCommandsPerBatch)
-            : m_control(kGroup, std::move(pConfig)),
+            : m_beatClosestControl(ConfigKey(kGroup, "beat_closest")),
+              m_quantizeControl(ConfigKey(kGroup, "quantize")),
+              m_playControl(ConfigKey(kGroup, "play")),
+              m_control(kGroup, std::move(pConfig)),
               m_worker(
                       kGroup,
                       &m_requestFIFO,
@@ -548,6 +551,9 @@ class FairnessProbeWorker final {
                       CachingReaderChunk::kFrames,
                       mixxx::audio::ChannelCount::stereo())),
               m_chunk(mixxx::SampleBuffer::WritableSlice(m_chunkBuffer)) {
+        m_beatClosestControl.set(0.0);
+        m_quantizeControl.set(0.0);
+        m_playControl.set(0.0);
         m_chunk.init(0);
         m_control.setFrameInfo(
                 mixxx::audio::FramePos(0),
@@ -673,6 +679,11 @@ class FairnessProbeWorker final {
 
     FIFO<CachingReaderChunkReadRequest> m_requestFIFO{2};
     FIFO<ReaderStatusUpdate> m_statusFIFO{4};
+    // Seek30Control reads these deck controls while processing worker commands.
+    // Declare them before the worker-owned control and worker so they outlive both.
+    ControlObject m_beatClosestControl;
+    ControlObject m_quantizeControl;
+    ControlObject m_playControl;
     EngineWorkerScheduler m_scheduler;
     Seek30Control m_control;
     CachingReaderWorker m_worker;
