@@ -1381,6 +1381,9 @@ TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
     RecordProperty("after_seek_return_event_count", std::to_string(afterSeekEventCount));
     RecordProperty("pre_seek_cursor_frame", std::to_string(preSeekState.currentFrameIndex));
     RecordProperty("post_seek_cursor_frame", std::to_string(postSeekState.currentFrameIndex));
+    RecordProperty(
+            "actual_sample_rate",
+            std::to_string(source.getSignalInfo().getSampleRate()));
     RecordProperty("requested_target_frame", std::to_string(requestedTargetFrame));
     RecordProperty("requested_target_100ns", std::to_string(requestedTarget100ns));
     RecordProperty("set_current_position_call_count", std::to_string(positionCount));
