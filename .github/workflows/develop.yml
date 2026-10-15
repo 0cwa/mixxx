@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 90
 
     env:
-      TRANSPORT_BASE: 7446d80cd9081709d34b90ff03f1ab29fa84cc67
+      TRANSPORT_BASE: 0c621ea09106f885fff4dd10678e1adb18c90074
       SOURCE_REF: refs/heads/fix/issue91-stem-tool-preflight-20261013
       SOURCE_SHA: deabc42ef08d9c8d49dae1f86544e51ea0bfa871
       SOURCE_TREE: 54eb6e9185d6c98325180558baf8d928b62b3a03
