@@ -293,12 +293,13 @@ void CachingReaderWorker::processSeek30Commands() {
 
     const int previousState = m_diagnosticState.loadAcquire();
     const std::uint64_t startNs = monotonicTimeNanoseconds();
-    m_diagnosticSeek30ReadPendingAtDrainEntry.store(
-            m_pChunkReadRequestFIFO->readAvailable() > 0 ? 1 : 0,
-            std::memory_order_relaxed);
-    m_diagnosticSeek30DrainStartNs.store(startNs, std::memory_order_relaxed);
+    const bool readPendingAtDrainEntry =
+            m_pChunkReadRequestFIFO->readAvailable() > 0;
+    m_diagnosticSeek30PhaseSequence.fetch_add(1, std::memory_order_seq_cst);
+    m_diagnosticSeek30DrainStartNs.store(startNs, std::memory_order_seq_cst);
     m_diagnosticState.storeRelease(
             static_cast<int>(DiagnosticState::ProcessingSeek30));
+    m_diagnosticSeek30PhaseSequence.fetch_add(1, std::memory_order_seq_cst);
 
     const std::uint64_t commandsDrained = processSeek30CommandMailbox(
             m_seek30CommandMailbox,
@@ -310,13 +311,20 @@ void CachingReaderWorker::processSeek30Commands() {
             });
 
     const std::uint64_t endNs = monotonicTimeNanoseconds();
-    const std::uint64_t durationNs = endNs >= startNs ? endNs - startNs : 0;
-    m_diagnosticSeek30DrainLastNs.store(durationNs, std::memory_order_relaxed);
-    updateMaximum(m_diagnosticSeek30DrainMaxNs, durationNs);
-    m_diagnosticSeek30CommandsDrained.store(
-            commandsDrained, std::memory_order_relaxed);
+    const std::uint64_t durationNs =
+            startNs != 0 && endNs >= startNs ? endNs - startNs : 0;
+    if (commandsDrained > 0) {
+        m_diagnosticSeek30DrainLastNs.store(durationNs, std::memory_order_relaxed);
+        updateMaximum(m_diagnosticSeek30DrainMaxNs, durationNs);
+        m_diagnosticSeek30CommandsDrained.store(
+                commandsDrained, std::memory_order_relaxed);
+        m_diagnosticSeek30ReadPendingAtDrainEntry.store(
+                readPendingAtDrainEntry ? 1 : 0, std::memory_order_relaxed);
+    }
+    m_diagnosticSeek30PhaseSequence.fetch_add(1, std::memory_order_seq_cst);
     m_diagnosticState.storeRelease(previousState);
-    m_diagnosticSeek30DrainStartNs.store(0, std::memory_order_relaxed);
+    m_diagnosticSeek30DrainStartNs.store(0, std::memory_order_seq_cst);
+    m_diagnosticSeek30PhaseSequence.fetch_add(1, std::memory_order_seq_cst);
 }
 
 void CachingReaderWorker::updateSeek30CueSnapshotDiagnostic(
@@ -324,25 +332,34 @@ void CachingReaderWorker::updateSeek30CueSnapshotDiagnostic(
         bool active) {
     auto* const pWorker = static_cast<CachingReaderWorker*>(context);
     if (active) {
+        pWorker->m_diagnosticSeek30PhaseSequence.fetch_add(
+                1, std::memory_order_seq_cst);
         pWorker->m_diagnosticSeek30CueSnapshotStartNs.store(
-                monotonicTimeNanoseconds(), std::memory_order_relaxed);
+                monotonicTimeNanoseconds(), std::memory_order_seq_cst);
         pWorker->m_diagnosticState.storeRelease(
                 static_cast<int>(DiagnosticState::ProcessingSeek30CueSnapshot));
+        pWorker->m_diagnosticSeek30PhaseSequence.fetch_add(
+                1, std::memory_order_seq_cst);
         return;
     }
 
     const std::uint64_t endNs = monotonicTimeNanoseconds();
     const std::uint64_t startNs =
             pWorker->m_diagnosticSeek30CueSnapshotStartNs.load(
-                    std::memory_order_relaxed);
-    const std::uint64_t durationNs = endNs >= startNs ? endNs - startNs : 0;
+                    std::memory_order_seq_cst);
+    const std::uint64_t durationNs =
+            startNs != 0 && endNs >= startNs ? endNs - startNs : 0;
     pWorker->m_diagnosticSeek30CueSnapshotLastNs.store(
             durationNs, std::memory_order_relaxed);
     updateMaximum(pWorker->m_diagnosticSeek30CueSnapshotMaxNs, durationNs);
+    pWorker->m_diagnosticSeek30PhaseSequence.fetch_add(
+            1, std::memory_order_seq_cst);
     pWorker->m_diagnosticState.storeRelease(
             static_cast<int>(DiagnosticState::ProcessingSeek30));
     pWorker->m_diagnosticSeek30CueSnapshotStartNs.store(
-            0, std::memory_order_relaxed);
+            0, std::memory_order_seq_cst);
+    pWorker->m_diagnosticSeek30PhaseSequence.fetch_add(
+            1, std::memory_order_seq_cst);
 }
 
 void CachingReaderWorker::run() {

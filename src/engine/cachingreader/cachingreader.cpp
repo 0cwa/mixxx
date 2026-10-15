@@ -177,23 +177,48 @@ void CachingReader::reportDiagnostics() {
     const int cacheMisses = m_diagnosticCacheMisses.loadAcquire();
     const int workerProgress = m_worker.diagnosticCompletedRequests();
     const int activeChunk = m_worker.diagnosticActiveChunk();
-    const auto workerState = m_worker.diagnosticState();
+    auto workerState = m_worker.diagnosticState();
+    std::uint64_t diagnosticNowNs = 0;
+    std::uint64_t seek30DrainStartNs = 0;
+    std::uint64_t cueSnapshotStartNs = 0;
+    bool seek30PhaseSnapshotStable = false;
+    // Read the phase state and its start ticks as one snapshot. A timer sample
+    // that overlaps a worker transition is discarded instead of pairing an
+    // old active enum with a cleared timestamp.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const std::uint64_t sequenceBefore =
+                m_worker.diagnosticSeek30PhaseSequence();
+        if (sequenceBefore & 1) {
+            continue;
+        }
+        const auto sampledWorkerState = m_worker.diagnosticState();
+        const std::uint64_t sampledDrainStartNs =
+                m_worker.diagnosticSeek30DrainStartNs();
+        const std::uint64_t sampledCueSnapshotStartNs =
+                m_worker.diagnosticSeek30CueSnapshotStartNs();
+        const std::uint64_t sampledNowNs = monotonicTimeNanoseconds();
+        const std::uint64_t sequenceAfter =
+                m_worker.diagnosticSeek30PhaseSequence();
+        if (sequenceBefore == sequenceAfter && !(sequenceAfter & 1)) {
+            workerState = sampledWorkerState;
+            seek30DrainStartNs = sampledDrainStartNs;
+            cueSnapshotStartNs = sampledCueSnapshotStartNs;
+            diagnosticNowNs = sampledNowNs;
+            seek30PhaseSnapshotStable = true;
+            break;
+        }
+    }
+    if (!seek30PhaseSnapshotStable) {
+        workerState = m_worker.diagnosticState();
+    }
     const bool seek30DrainActive =
-            workerState == CachingReaderWorker::DiagnosticState::ProcessingSeek30 ||
-            workerState ==
-                    CachingReaderWorker::DiagnosticState::ProcessingSeek30CueSnapshot;
+            seek30PhaseSnapshotStable && seek30DrainStartNs != 0;
     const bool cueSnapshotActive =
-            workerState ==
-            CachingReaderWorker::DiagnosticState::ProcessingSeek30CueSnapshot;
-    const std::uint64_t diagnosticNowNs = monotonicTimeNanoseconds();
-    const std::uint64_t seek30DrainStartNs =
-            m_worker.diagnosticSeek30DrainStartNs();
+            seek30PhaseSnapshotStable && cueSnapshotStartNs != 0;
     const std::uint64_t seek30DrainElapsedNs =
             seek30DrainActive && diagnosticNowNs >= seek30DrainStartNs
             ? diagnosticNowNs - seek30DrainStartNs
             : 0;
-    const std::uint64_t cueSnapshotStartNs =
-            m_worker.diagnosticSeek30CueSnapshotStartNs();
     const std::uint64_t cueSnapshotElapsedNs =
             cueSnapshotActive && diagnosticNowNs >= cueSnapshotStartNs
             ? diagnosticNowNs - cueSnapshotStartNs
@@ -352,7 +377,8 @@ void CachingReader::reportDiagnostics() {
             activeChunk >= 0 && activeChunk == m_lastReportedActiveChunk &&
             workerProgress == m_lastReportedWorkerProgress;
     if (newSubmitFailures == 0 && newCacheMisses == 0 && !deferredWarnings &&
-            !statusBackpressure && !decoderStall && !seek30DrainActive) {
+            !statusBackpressure && !decoderStall && !seek30DrainActive &&
+            !cueSnapshotActive) {
         if (m_diagnosticEpisodeActive) {
             kLogger.info() << m_group
                            << "CachingReader diagnostics recovered:"
@@ -367,6 +393,9 @@ void CachingReader::reportDiagnostics() {
         return;
     }
 
+    const bool workerStateIsSeek30Phase =
+            workerState == CachingReaderWorker::DiagnosticState::ProcessingSeek30 ||
+            workerState == CachingReaderWorker::DiagnosticState::ProcessingSeek30CueSnapshot;
     const char* stateName = "waiting";
     switch (workerState) {
     case CachingReaderWorker::DiagnosticState::Waiting:
@@ -386,6 +415,9 @@ void CachingReader::reportDiagnostics() {
     case CachingReaderWorker::DiagnosticState::PublishingStatus:
         stateName = "publishing-status";
         break;
+    }
+    if (workerStateIsSeek30Phase && !seek30DrainActive && !cueSnapshotActive) {
+        stateName = "seek30-phase-transition";
     }
 
     const char* classification =
@@ -417,13 +449,13 @@ void CachingReader::reportDiagnostics() {
                       << m_worker.diagnosticLastCompletedChunk() << "worker progress"
                       << workerProgress
                       << "active seek30 drain us" << seek30DrainElapsedNs / 1000
-                      << "last seek30 drain us"
+                      << "last nonempty seek30 drain us"
                       << m_worker.diagnosticSeek30DrainLastNs() / 1000
-                      << "max seek30 drain us"
+                      << "max nonempty seek30 drain us"
                       << m_worker.diagnosticSeek30DrainMaxNs() / 1000
-                      << "last seek30 commands drained"
+                      << "last nonempty seek30 drain commands"
                       << m_worker.diagnosticSeek30CommandsDrained()
-                      << "read pending at seek30 drain entry"
+                      << "read pending at last nonempty seek30 drain entry"
                       << m_worker.diagnosticSeek30ReadPendingAtDrainEntry()
                       << "cue snapshot active" << cueSnapshotActive
                       << "active cue snapshot us" << cueSnapshotElapsedNs / 1000

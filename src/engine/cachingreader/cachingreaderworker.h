@@ -177,6 +177,9 @@ class CachingReaderWorker : public EngineWorker {
     DiagnosticState diagnosticState() const {
         return static_cast<DiagnosticState>(m_diagnosticState.loadAcquire());
     }
+    std::uint64_t diagnosticSeek30PhaseSequence() const {
+        return m_diagnosticSeek30PhaseSequence.load(std::memory_order_seq_cst);
+    }
     int diagnosticActiveChunk() const {
         return m_diagnosticActiveChunk.loadAcquire();
     }
@@ -193,7 +196,7 @@ class CachingReaderWorker : public EngineWorker {
         return m_diagnosticPublishedStatuses.loadAcquire();
     }
     std::uint64_t diagnosticSeek30DrainStartNs() const {
-        return m_diagnosticSeek30DrainStartNs.load(std::memory_order_relaxed);
+        return m_diagnosticSeek30DrainStartNs.load(std::memory_order_seq_cst);
     }
     std::uint64_t diagnosticSeek30DrainLastNs() const {
         return m_diagnosticSeek30DrainLastNs.load(std::memory_order_relaxed);
@@ -209,7 +212,7 @@ class CachingReaderWorker : public EngineWorker {
                        std::memory_order_relaxed) != 0;
     }
     std::uint64_t diagnosticSeek30CueSnapshotStartNs() const {
-        return m_diagnosticSeek30CueSnapshotStartNs.load(std::memory_order_relaxed);
+        return m_diagnosticSeek30CueSnapshotStartNs.load(std::memory_order_seq_cst);
     }
     std::uint64_t diagnosticSeek30CueSnapshotLastNs() const {
         return m_diagnosticSeek30CueSnapshotLastNs.load(std::memory_order_relaxed);
@@ -322,6 +325,9 @@ class CachingReaderWorker : public EngineWorker {
     QAtomicInt m_diagnosticCompletedRequests;
     QAtomicInt m_diagnosticDequeuedRequests;
     QAtomicInt m_diagnosticPublishedStatuses;
+    // Seqlock-style version for coherent timer snapshots of the Seek30 phase
+    // state and start timestamps. Only the reader worker writes this value.
+    std::atomic<std::uint64_t> m_diagnosticSeek30PhaseSequence{0};
     std::atomic<std::uint64_t> m_diagnosticSeek30DrainStartNs{0};
     std::atomic<std::uint64_t> m_diagnosticSeek30DrainLastNs{0};
     std::atomic<std::uint64_t> m_diagnosticSeek30DrainMaxNs{0};
