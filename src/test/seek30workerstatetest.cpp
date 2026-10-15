@@ -2,7 +2,10 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <initializer_list>
+#include <mutex>
 #include <thread>
 
 #include "engine/controls/seek30workerstate.h"
@@ -215,6 +218,114 @@ TEST(Seek30WorkerStateTest, RefreshesExternalMemoryCueRemovalWithoutTrackReload)
             {Seek30Operation::SeekNext, generation}, inputsAt(0.0));
     EXPECT_EQ(generation, state.generation());
     EXPECT_EQ(frameAtSeconds(3.0), target.position);
+}
+
+TEST(Seek30WorkerStateTest, RefreshesQueuedCommandAfterExternalCueEdit) {
+    Seek30CommandMailbox mailbox;
+    Seek30WorkerState state;
+    const auto pTrack = trackWithMemoryCues({1.0, 3.0});
+
+    std::mutex barrierMutex;
+    std::condition_variable barrier;
+    bool statePrimed = false;
+    bool allowDispatch = false;
+    std::uint64_t generation = 0;
+    std::uint64_t generationAfterDispatch = 0;
+    Seek30SeekTarget primingTarget;
+    Seek30SeekTarget publishedTarget;
+    std::uint64_t publishedTargetCount = 0;
+    std::thread::id readerWorkerThread;
+    std::thread::id publishThread;
+
+    // Warm the worker-owned cache, then hold the reader worker before mailbox
+    // drain while an external edit changes the next cue.
+    std::thread readerWorker([&] {
+        state.trackLoaded(pTrack);
+        const auto target = state.process(
+                {Seek30Operation::SeekNext, state.generation()}, inputsAt(0.0));
+        {
+            std::lock_guard lock(barrierMutex);
+            generation = state.generation();
+            primingTarget = target;
+            readerWorkerThread = std::this_thread::get_id();
+            statePrimed = true;
+        }
+        barrier.notify_one();
+
+        {
+            std::unique_lock lock(barrierMutex);
+            barrier.wait(lock, [&] { return allowDispatch; });
+        }
+
+        std::uint64_t targetSequence = 0;
+        processSeek30CommandMailbox(
+                mailbox,
+                state,
+                targetSequence,
+                [] { return inputsAt(0.0); },
+                [&](const Seek30SeekTarget& queuedTarget) {
+                    std::lock_guard lock(barrierMutex);
+                    publishedTarget = queuedTarget;
+                    ++publishedTargetCount;
+                    publishThread = std::this_thread::get_id();
+                });
+
+        generationAfterDispatch = state.generation();
+    });
+
+    bool workerPrimed = false;
+    {
+        std::unique_lock lock(barrierMutex);
+        workerPrimed = barrier.wait_for(
+                lock,
+                std::chrono::seconds(2),
+                [&] { return statePrimed; });
+    }
+
+    bool commandWaitedForEdit = false;
+    bool commandQueued = false;
+    bool cueRemoved = false;
+    if (workerPrimed) {
+        {
+            std::lock_guard lock(barrierMutex);
+            commandWaitedForEdit = !allowDispatch && publishedTargetCount == 0;
+        }
+        if (commandWaitedForEdit) {
+            commandQueued = mailbox.tryPush(
+                    {Seek30Operation::SeekNext, generation});
+        }
+        if (commandQueued) {
+            const auto pRemovedCue = memoryCueAt(pTrack, frameAtSeconds(1.0));
+            if (pRemovedCue) {
+                pTrack->removeCue(pRemovedCue);
+                cueRemoved = true;
+            }
+        }
+    }
+
+    {
+        std::lock_guard lock(barrierMutex);
+        allowDispatch = true;
+    }
+    barrier.notify_one();
+    readerWorker.join();
+
+    EXPECT_TRUE(workerPrimed);
+    EXPECT_TRUE(commandWaitedForEdit);
+    EXPECT_TRUE(commandQueued);
+    EXPECT_TRUE(cueRemoved);
+    EXPECT_EQ(frameAtSeconds(1.0), primingTarget.position);
+    EXPECT_EQ(generation, primingTarget.generation);
+    EXPECT_EQ(generation, generationAfterDispatch);
+    EXPECT_EQ(1, memoryCueCount(pTrack));
+    EXPECT_EQ(1u, publishedTargetCount);
+    EXPECT_EQ(frameAtSeconds(3.0), publishedTarget.position);
+    EXPECT_EQ(generation, publishedTarget.generation);
+    EXPECT_EQ(1u, publishedTarget.sequence);
+    EXPECT_EQ(readerWorkerThread, publishThread);
+
+    Seek30Command leftoverCommand{};
+    EXPECT_FALSE(mailbox.tryPop(&leftoverCommand));
 }
 
 TEST(Seek30WorkerStateTest, RefreshesExternalMemoryCueMoveAndOrdering) {
