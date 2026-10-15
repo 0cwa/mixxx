@@ -13,8 +13,8 @@ jobs:
     timeout-minutes: 90
 
     env:
-      SOURCE_SHA: c47444925579034d8b3d816ac43cdf3f26ecae8e
-      SOURCE_TREE: f44427f90a1a44e289635057330c4c37ea0a0f70
+      SOURCE_SHA: 599ed1ec785a01470eab041ef792413f1c66e35d
+      SOURCE_TREE: b55e49b2b524bb18faa0b65e0b7833fe37eb4649
       CC: clang-18
       CXX: clang++-18
       ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
