@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "audio/types.h"
+#include "proto/beats.pb.h"
 #include "track/beats.h"
 #include "track/track.h"
 
@@ -286,6 +287,42 @@ TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
     pTrack->setDownbeatOffset(3);
     EXPECT_EQ(2, pTrack->getDownbeatOffset());
     EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetRoundTrip) {
+    constexpr int kDownbeatsOffset = 3;
+    const auto pGrid = Beats::fromConstTempo(
+            kSampleRate,
+            mixxx::audio::kStartFramePos,
+            mixxx::Bpm(120.0),
+            QString(),
+            kDownbeatsOffset);
+    ASSERT_TRUE(pGrid);
+    ASSERT_EQ(QString::fromLatin1(BEAT_GRID_2_VERSION), pGrid->getVersion());
+
+    const auto pRoundTrip = Beats::fromByteArray(
+            kSampleRate,
+            pGrid->getVersion(),
+            pGrid->getSubVersion(),
+            pGrid->toByteArray());
+    ASSERT_TRUE(pRoundTrip);
+    EXPECT_EQ(kDownbeatsOffset, pRoundTrip->getDownbeatsOffset());
+    EXPECT_EQ(pGrid->getMarkers(), pRoundTrip->getMarkers());
+    EXPECT_EQ(pGrid->getLastMarkerPosition(), pRoundTrip->getLastMarkerPosition());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetDefaultsForExistingSerialization) {
+    mixxx::track::io::BeatGrid grid;
+    grid.mutable_first_beat()->set_frame_position(0);
+    grid.mutable_bpm()->set_bpm(120.0);
+    ASSERT_FALSE(grid.has_downbeats_offset());
+
+    const auto pBeats = Beats::fromBeatGridByteArray(
+            kSampleRate,
+            QString(),
+            QByteArray::fromStdString(grid.SerializeAsString()));
+    ASSERT_TRUE(pBeats);
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
 }
 
 }  // namespace
