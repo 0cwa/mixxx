@@ -56,3 +56,14 @@ res/          Resources (controllers/ JS/XML, skins/, qml/)
 cmake/        CMake modules
 tools/        Python helper scripts
 ```
+
+<!-- AI-assisted fork note, start. Human review required before merging. -->
+## Fork-specific delivery coordination
+
+When maintaining `0cwa/mixxx`, also read
+[the fork delivery workflow](.github/FORK_AGENT_WORKFLOW.md) and
+[the dated PR triage ledger](.github/FORK_TRIAGE_2026-10-15.md).
+These supplement, **never replace**, the human-contribution, AI-assistance,
+review and submission requirements above. They are for organizing fork work;
+they do not grant permission for autonomous upstream interaction.
+<!-- End of AI-assisted fork note. -->
