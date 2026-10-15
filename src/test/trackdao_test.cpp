@@ -87,6 +87,57 @@ TEST_F(TrackDAOTest, bpmLockPreservedForTrackWithoutBeats) {
     EXPECT_TRUE(pReloaded->isBpmLocked());
 }
 
+TEST_F(TrackDAOTest, duplicateLocationReturnsExistingTrackAndHonorsUnremove) {
+    const mixxx::FileInfo fileInfo(
+            QDir(QDir::tempPath()), QStringLiteral("duplicate-location.mp3"));
+    TrackPointer pOriginalTrack = Track::newTemporary(mixxx::FileAccess(fileInfo));
+    pOriginalTrack->setDuration(135);
+
+    const TrackId originalTrackId = internalCollection()->addTrack(pOriginalTrack, false);
+    ASSERT_TRUE(originalTrackId.isValid());
+
+    QSqlQuery markDeletedQuery(dbConnection());
+    markDeletedQuery.prepare("UPDATE library SET mixxx_deleted=1 WHERE id=:id");
+    markDeletedQuery.bindValue(":id", originalTrackId.toVariant());
+    ASSERT_TRUE(markDeletedQuery.exec());
+
+    // TrackCollection::addTrack calls TrackDAO::addTracksAddTrack directly,
+    // bypassing addTracksAddFile's cache early return. A second temporary
+    // Track at the same location therefore exercises the duplicate fallback.
+    TrackPointer pDuplicateTrack = Track::newTemporary(mixxx::FileAccess(fileInfo));
+    pDuplicateTrack->setDuration(135);
+    // The duplicate branch expects an already-added Track's date to be valid.
+    pDuplicateTrack->setDateAdded(pOriginalTrack->getDateAdded());
+
+    EXPECT_EQ(originalTrackId,
+            internalCollection()->addTrack(pDuplicateTrack, false));
+    EXPECT_EQ(originalTrackId, pDuplicateTrack->getId());
+
+    {
+        QSqlQuery readDeletedQuery(dbConnection());
+        readDeletedQuery.prepare("SELECT mixxx_deleted FROM library WHERE id=:id");
+        readDeletedQuery.bindValue(":id", originalTrackId.toVariant());
+        ASSERT_TRUE(readDeletedQuery.exec());
+        ASSERT_TRUE(readDeletedQuery.next());
+        EXPECT_TRUE(readDeletedQuery.value(0).toBool());
+    }
+
+    pDuplicateTrack = Track::newTemporary(mixxx::FileAccess(fileInfo));
+    pDuplicateTrack->setDuration(135);
+    pDuplicateTrack->setDateAdded(pOriginalTrack->getDateAdded());
+
+    EXPECT_EQ(originalTrackId,
+            internalCollection()->addTrack(pDuplicateTrack, true));
+    EXPECT_EQ(originalTrackId, pDuplicateTrack->getId());
+
+    QSqlQuery readUnremovedQuery(dbConnection());
+    readUnremovedQuery.prepare("SELECT mixxx_deleted FROM library WHERE id=:id");
+    readUnremovedQuery.bindValue(":id", originalTrackId.toVariant());
+    ASSERT_TRUE(readUnremovedQuery.exec());
+    ASSERT_TRUE(readUnremovedQuery.next());
+    EXPECT_FALSE(readUnremovedQuery.value(0).toBool());
+}
+
 TEST_F(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly) {
     // Regression cover for both directions of mixxxdj/mixxx#13533:
     //   1. A track erroneously flagged fs_deleted=1 must be revived when the
