@@ -1,94 +1,778 @@
-name: Pull request or branch build
+name: Issue 84 queued worker native (FFmpeg + STEM + Bungee)
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
-  push:
-    branches:
-      - "*"
-      - "!main"
-      - "![0-9].[0-9]"
   workflow_dispatch:
 
 permissions:
-  contents: read #  to fetch code (actions/checkout)
-  checks: write #  to create new checks (coverallsapp/github-action)
+  contents: read
 
 jobs:
-  stop-build:
-    name: Check if build should be stopped
-    runs-on: ubuntu-slim
-    outputs:
-      result: ${{ github.event_name == 'push' && steps.stop-build.outputs.result || 'false' }}
+  seek30-native:
+    name: Ubuntu 24.04 / Clang 18 / Qt 6.4.2 / FFmpeg + STEM + Bungee / ASan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      SOURCE_SHA: d6aa06c29b60885ff4010ca1b938bc6b5cb0c9ed
+      SOURCE_TREE: 2538750aa921f2bab348838dd10b64a904da6002
+      CC: clang-18
+      CXX: clang++-18
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:print_summary=1
+      LSAN_OPTIONS: exitcode=0
+      CFLAGS: -fsanitize=address -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=address
+      QT_QPA_PLATFORM: offscreen
+      FDK_PACKAGE_VERSION: 2.0.2-3~ubuntu4
+
     steps:
-      - name: Check if there is an open PR for this branch
-        id: stop-build
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/github-script@v9
-        env:
-          ORGANIZATION: mixxxdj
-          REPOSITORY: mixxx
+      - name: Initialize private evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          RESULT_DIR="$RUNNER_TEMP/issue84-queued-worker-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'RESULT_DIR=%s\n' "$RESULT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$RESULT_DIR/metadata" "$RESULT_DIR/logs" "$RESULT_DIR/native"
+          {
+            printf 'schema=mixxx-issue84-queued-native-run-v1\n'
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'ref=%s\n' "$GITHUB_REF"
+            printf 'dispatch_sha=%s\n' "$GITHUB_SHA"
+            printf 'runner_os=%s\n' "${{ runner.os }}"
+            printf 'runner_arch=%s\n' "${{ runner.arch }}"
+          } > "$RESULT_DIR/metadata/dispatch.txt"
+          cat > "$RESULT_DIR/metadata/scope-limit.txt" <<'EOF'
+          Covered: six direct Seek30WorkerState state-refresh selectors and one queued mailbox/edit/worker-dispatch selector.
+          Not covered: the full CachingReaderWorker wake/control-pointer event path or composition with the F001 source changes.
+          EOF
+          sed -i 's/^          //' "$RESULT_DIR/metadata/scope-limit.txt"
+
+      - name: Check out the exact workflow commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          script: |
-            try {
-              const branch = context.ref.replace('refs/heads/', '');
-              const { data: pullRequests } = await github.rest.pulls.list({
-                owner: process.env.ORGANIZATION,
-                repo: process.env.REPOSITORY,
-                head: `${context.repo.owner}:${branch}`,
-                state: 'open'
-              });
-              console.log(`There is ${pullRequests.length} PR open upstream for branch '${context.repo.owner}:${branch}'`);
-              return pullRequests.length != 0;
-            } catch (error) {
-              console.log(`Didn't find a PR for branch '${context.repo.owner}:${branch}' on '${process.env.ORGANIZATION}/${process.env.REPOSITORY}'.`);
-              return false;
-            }
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
 
-  pre-commit:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/pre-commit.yml
-    with:
-      pull_request: ${{ github.event_name == 'pull_request' }}
+      - name: Verify workflow and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow_commit="$(git rev-parse HEAD)"
+          test "$workflow_commit" = "$GITHUB_SHA"
+          workflow_parent="$(git rev-parse "$GITHUB_SHA^1")"
+          test "$workflow_parent" = "$SOURCE_SHA"
+          workflow_tree="$(git rev-parse "$GITHUB_SHA^{tree}")"
+          workflow_blob="$(git rev-parse "$GITHUB_SHA:.github/workflows/develop.yml")"
+          changed_paths="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
+          test "$changed_paths" = ".github/workflows/develop.yml"
 
-  checks:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    uses: ./.github/workflows/checks.yml
+          git checkout --detach "$SOURCE_SHA"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
-  git:
-    if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/git.yml
+          source_commit="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse "HEAD^{tree}")"
+          test "$source_commit" = "$SOURCE_SHA"
+          test "$source_tree" = "$SOURCE_TREE"
+          git status --porcelain=v1 --untracked-files=all > "$RESULT_DIR/metadata/source-status.txt"
+          test ! -s "$RESULT_DIR/metadata/source-status.txt"
 
-  build:
-    if: needs.stop-build.outputs.result == 'false'
-    needs:
-      - stop-build
-    permissions:
-      contents: read #  to fetch code (actions/checkout)
-      actions: write # to delete outdated caches
-    uses: ./.github/workflows/build.yml
-    with:
-      branch: ${{ github.head_ref || github.ref_name }}
-      ref: ${{ github.ref }}
+          {
+            printf 'workflow_commit=%s\n' "$workflow_commit"
+            printf 'workflow_parent=%s\n' "$workflow_parent"
+            printf 'workflow_tree=%s\n' "$workflow_tree"
+            printf 'workflow_blob=%s\n' "$workflow_blob"
+            printf 'workflow_changed_paths=%s\n' "$changed_paths"
+            printf 'source_commit=%s\n' "$source_commit"
+            printf 'source_tree=%s\n' "$source_tree"
+            printf 'runner_image=%s/%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          } > "$RESULT_DIR/metadata/source-workflow.txt"
 
-  # This task is used as a probe for auto merge
-  # In the future, it could also be used to perform a status update (e.g once the whole CI is passing + is ready for review, add a specific label such as `need review`)
-  ready:
-    name: Ready to merge
-    needs:
-      - pre-commit
-      - checks
-      - git
-      - build
-    runs-on: ubuntu-slim
-    steps:
-      - name: Ready to go
-        run: "exit 0"
+      - name: Prepare exact selectors and verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RESULT_DIR/expected-selectors.txt" <<'EOF'
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueAdditionWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueRemovalWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesQueuedCommandAfterExternalCueEdit
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueMoveAndOrdering
+          Seek30WorkerStateTest.RefreshesMemoryCueTypeChangeToLoopWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesLoopCueTypeChangeToMemoryWithoutTrackReload
+          Seek30WorkerStateTest.RefreshesExternalMemoryCueInvalidationWithoutTrackReload
+          EOF
+          filter="$(paste -sd: "$RESULT_DIR/expected-selectors.txt")"
+          printf 'SEEK30_TEST_FILTER=%s\n' "$filter" >> "$GITHUB_ENV"
+          printf '%s\n' "$filter" > "$RESULT_DIR/selector-filter.txt"
+
+          cat > "$RESULT_DIR/verify_gtest.py" <<'PY'
+          from __future__ import annotations
+
+          import collections
+          import json
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+
+          def read_expected(path: str) -> list[str]:
+              return [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+          def list_ids(path: str) -> list[str]:
+              suite = None
+              result: list[str] = []
+              for original in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+                  line = original.split("#", 1)[0].rstrip()
+                  if not line.strip():
+                      continue
+                  if line[0].isspace():
+                      if suite:
+                          result.append(f"{suite}.{line.strip()}")
+                  else:
+                      name = line.strip()
+                      suite = name[:-1] if name.endswith(".") else None
+              return result
+
+
+          def is_disabled(identifier: str) -> bool:
+              return any(part.startswith("DISABLED_") for part in re.split(r"[/.]", identifier))
+
+
+          def save(path: str, value: dict) -> None:
+              Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+              print(json.dumps(value, indent=2, sort_keys=True))
+
+
+          def before(stdout: str, exit_path: str, expected_path: str, output: str) -> int:
+              expected = read_expected(expected_path)
+              listed = list_ids(stdout)
+              problems: list[str] = []
+              try:
+                  list_exit = int(Path(exit_path).read_text(encoding="ascii").strip())
+              except (OSError, ValueError) as error:
+                  list_exit = None
+                  problems.append(f"missing or invalid list exit receipt: {error}")
+              if list_exit != 0:
+                  problems.append(f"GTest list command exited {list_exit}")
+              if len(expected) != 7 or len(set(expected)) != 7:
+                  problems.append("expected selector file is not the exact seven unique IDs")
+              if len(set(listed)) != len(listed):
+                  problems.append("GTest listing contains duplicate test IDs")
+              if any(is_disabled(identifier) for identifier in listed):
+                  problems.append("GTest listing contains a disabled test")
+              if collections.Counter(listed) != collections.Counter(expected):
+                  problems.append("GTest listing differs from the exact expected selector set")
+              result = {
+                  "stage": "list",
+                  "status": "PASS" if not problems else "FAIL",
+                  "expected_ids": expected,
+                  "listed_ids": listed,
+                  "list_exit_code": list_exit,
+                  "problems": problems,
+              }
+              save(output, result)
+              return 0 if not problems else 1
+
+
+          def after(xml_path: str, exit_path: str, expected_path: str, list_receipt: str, output: str) -> int:
+              expected = read_expected(expected_path)
+              problems: list[str] = []
+              try:
+                  native_exit = int(Path(exit_path).read_text(encoding="ascii").strip())
+              except (OSError, ValueError) as error:
+                  native_exit = None
+                  problems.append(f"missing or invalid native exit receipt: {error}")
+              if native_exit != 0:
+                  problems.append(f"native process exited {native_exit}")
+              try:
+                  listing = json.loads(Path(list_receipt).read_text(encoding="utf-8"))
+                  if listing.get("status") != "PASS":
+                      problems.append("exact test listing did not pass")
+              except (OSError, json.JSONDecodeError) as error:
+                  problems.append(f"missing or invalid list-verification receipt: {error}")
+
+              cases = []
+              if not Path(xml_path).is_file() or Path(xml_path).stat().st_size == 0:
+                  problems.append("GTest XML is missing or empty")
+              else:
+                  try:
+                      root = ET.parse(xml_path).getroot()
+                      cases = root.findall(".//testcase")
+                      actual = [f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}" for case in cases]
+                      if collections.Counter(actual) != collections.Counter(expected):
+                          problems.append("XML testcase IDs differ from the exact expected selector set")
+                      if len(actual) != 7 or len(set(actual)) != 7:
+                          problems.append("XML does not contain exactly seven unique testcases")
+                      if any(is_disabled(identifier) for identifier in actual):
+                          problems.append("XML includes a disabled test")
+                      if any(
+                          case.attrib.get("status") == "notrun"
+                          or case.find("failure") is not None
+                          or case.find("error") is not None
+                          or case.find("skipped") is not None
+                          for case in cases
+                      ):
+                          problems.append("XML contains a failed, errored, skipped, or unrun testcase")
+                      for key in ("failures", "errors", "disabled"):
+                          if int(root.attrib.get(key, "0")) != 0:
+                              problems.append(f"XML root reports {key}={root.attrib.get(key)}")
+                  except (ET.ParseError, OSError, ValueError) as error:
+                      problems.append(f"cannot verify GTest XML: {error}")
+              result = {
+                  "stage": "native",
+                  "status": "PASS" if not problems else "FAIL",
+                  "expected_ids": expected,
+                  "xml_ids": [f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}" for case in cases],
+                  "xml_testcase_count": len(cases),
+                  "native_exit_code": native_exit,
+                  "problems": problems,
+              }
+              save(output, result)
+              return 0 if not problems else 1
+
+
+          if __name__ == "__main__":
+              if len(sys.argv) == 6 and sys.argv[1] == "before":
+                  raise SystemExit(before(*sys.argv[2:]))
+              if len(sys.argv) == 7 and sys.argv[1] == "after":
+                  raise SystemExit(after(*sys.argv[2:]))
+              raise SystemExit("usage: verify_gtest.py before STDOUT EXIT EXPECTED JSON | after XML EXIT EXPECTED LIST_JSON JSON")
+          PY
+          python3 -m py_compile "$RESULT_DIR/verify_gtest.py"
+
+          cat > "$RESULT_DIR/verify_build_config.py" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import sys
+          from pathlib import Path
+
+
+          EXPECTED = {
+              "CMAKE_BUILD_TYPE": "Debug",
+              "BUNGEE": "ON",
+              "FFMPEG": "ON",
+              "STEM": "ON",
+              "SANITIZE_ADDRESS": "ON",
+              "BUILD_TESTING": "ON",
+              "BUILD_BENCH": "OFF",
+          }
+          FFMPEG_COMPONENTS = ("AVCODEC", "AVFORMAT", "AVUTIL", "SWRESAMPLE")
+
+
+          def validate(cache_path: str, log_path: str) -> dict:
+              cache: dict[str, str] = {}
+              for line in Path(cache_path).read_text(encoding="utf-8").splitlines():
+                  if not line or line.startswith(("#", "//")):
+                      continue
+                  left, separator, value = line.partition("=")
+                  if separator:
+                      key = left.partition(":")[0]
+                      cache[key] = value
+
+              problems = [
+                  f"CMakeCache {key}={cache.get(key)!r}, expected {value!r}"
+                  for key, value in EXPECTED.items()
+                  if cache.get(key) != value
+              ]
+              configure_log = Path(log_path).read_text(encoding="utf-8", errors="replace")
+              components = {}
+              for component in FFMPEG_COMPONENTS:
+                  library = cache.get(f"FFmpeg_{component}_LIBRARIES", "")
+                  found_line = f"Found FFmpeg {component}:"
+                  if not library or "NOTFOUND" in library:
+                      problems.append(f"FFmpeg {component} library is missing from CMakeCache")
+                  if found_line not in configure_log:
+                      problems.append(f"CMake did not report FFmpeg {component} as found")
+                  components[component] = library
+
+              return {
+                  "status": "PASS" if not problems else "FAIL",
+                  "expected_cache_values": EXPECTED,
+                  "ffmpeg_components": components,
+                  "problems": problems,
+              }
+
+
+          if __name__ == "__main__":
+              if len(sys.argv) != 4:
+                  raise SystemExit("usage: verify_build_config.py CMAKE_CACHE CONFIGURE_LOG OUTPUT_JSON")
+              result = validate(sys.argv[1], sys.argv[2])
+              Path(sys.argv[3]).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+              print(json.dumps(result, indent=2, sort_keys=True))
+              raise SystemExit(0 if result["status"] == "PASS" else 1)
+          PY
+          python3 -m py_compile "$RESULT_DIR/verify_build_config.py"
+
+      - name: Set up Debian build dependencies
+        run: tools/debian_buildenv.sh setup
+        env:
+          BUILDENV_BASEPATH: /home/runner/buildenv
+
+      - name: Install pinned native toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 llvm-18 ccache \
+            libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
+            "libfdk-aac-dev=$FDK_PACKAGE_VERSION"
+          clang_version="$(clang-18 --version | head -n 1)"
+          [[ "$clang_version" == *"clang version 18."* ]]
+          qt_version="$(qmake6 -query QT_VERSION)"
+          test "$qt_version" = "6.4.2"
+          test "$(dpkg-query -W -f='${Version}\n' libfdk-aac-dev)" = "$FDK_PACKAGE_VERSION"
+          test "$(dpkg-query -W -f='${Version}\n' libfdk-aac2)" = "$FDK_PACKAGE_VERSION"
+          for package in libavcodec-dev libavformat-dev libavutil-dev libswresample-dev; do
+            test "$(dpkg-query -W -f='${Status}' "$package")" = "install ok installed"
+          done
+          {
+            printf 'clang=%s\n' "$clang_version"
+            printf 'qt=%s\n' "$qt_version"
+            printf 'libfdk-aac-dev=%s\n' "$(dpkg-query -W -f='${Version}\n' libfdk-aac-dev)"
+            printf 'libfdk-aac2=%s\n' "$(dpkg-query -W -f='${Version}\n' libfdk-aac2)"
+            for package in libavcodec-dev libavformat-dev libavutil-dev libswresample-dev; do
+              printf '%s=%s\n' "$package" "$(dpkg-query -W -f='${Version}' "$package")"
+            done
+            printf 'cmake=%s\n' "$(cmake --version | head -n 1)"
+            printf 'ccache=%s\n' "$(ccache --version | head -n 1)"
+          } | tee "$RESULT_DIR/metadata/toolchain.txt"
+
+      - name: Restore ccache for the FFmpeg STEM Bungee configuration
+        id: cache_restore
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: /home/runner/.cache/ccache
+          key: mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-
+
+      - name: Configure ccache and persist restore result
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache_restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.cache_restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          ccache --zero-stats
+          ccache --max-size=2G
+          test -n "$CACHE_HIT" || CACHE_HIT=unknown
+          test -n "$CACHE_MATCHED_KEY" || CACHE_MATCHED_KEY=unknown
+          {
+            printf 'restore_hit=%s\n' "$CACHE_HIT"
+            printf 'matched_key=%s\n' "$CACHE_MATCHED_KEY"
+            printf 'key_prefix=mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-\n'
+            printf 'feature_configuration=FFMPEG=ON,STEM=ON,BUNGEE=ON,Debug,ASan,BUILD_TESTING=ON\n'
+            printf 'branch_scope=%s\n' "$GITHUB_REF"
+          } > "$RESULT_DIR/metadata/ccache-restore.txt"
+          ccache --show-stats --verbose > "$RESULT_DIR/metadata/ccache-before-build.txt"
+
+      - name: Configure Debug ASan build
+        id: configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUNGEE=ON \
+            -DFFMPEG=ON \
+            -DSTEM=ON \
+            -DSANITIZE_ADDRESS=ON \
+            -DBUILD_TESTING=ON \
+            -DBUILD_BENCH=OFF \
+            -DDEBUG_ASSERTIONS_FATAL=OFF \
+            -DWARNINGS_FATAL=OFF \
+            -DBATTERY=OFF \
+            -DBROADCAST=OFF \
+            -DKEYFINDER=OFF \
+            -DLILV=OFF \
+            -DOPUS=OFF \
+            -DQTKEYCHAIN=OFF \
+            -DVINYLCONTROL=ON \
+            -DHID=OFF \
+            -DBULK=OFF \
+            -DLOCALECOMPARE=OFF \
+            -DMAD=OFF \
+            -DMODPLUG=OFF \
+            -DWAVPACK=OFF \
+            -DDOWNLOAD_MANUAL=OFF \
+            -DINSTALL_USER_UDEV_RULES=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            2>&1 | tee "$RESULT_DIR/logs/cmake-configure.log"
+          python3 "$RESULT_DIR/verify_build_config.py" \
+            build/CMakeCache.txt \
+            "$RESULT_DIR/logs/cmake-configure.log" \
+            "$RESULT_DIR/metadata/cmake-feature-flags.json"
+          printf 'configured_source=%s\n' "$SOURCE_SHA" > "$RESULT_DIR/metadata/configure-source.txt"
+
+      - name: Build mixxx-test
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --target mixxx-test --parallel "$(nproc)" \
+            2>&1 | tee "$RESULT_DIR/logs/build-mixxx-test.log"
+
+      - name: Save ccache after successful build
+        id: cache_save
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: /home/runner/.cache/ccache
+          key: mixxx-issue84-linux-native-ubuntu-24.04-clang-18-qt-6.4-debug-asan-ffmpeg-on-stem-on-bungee-on-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Capture the exact GTest listing
+        id: test_list
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 60s ./build/mixxx-test --gtest_list_tests --gtest_filter="$SEEK30_TEST_FILTER" \
+            > "$RESULT_DIR/native/list.stdout" 2> "$RESULT_DIR/native/list.stderr"
+          list_exit=$?
+          set -e
+          printf '%s\n' "$list_exit" > "$RESULT_DIR/native/list.exit"
+          python3 "$RESULT_DIR/verify_gtest.py" before \
+            "$RESULT_DIR/native/list.stdout" \
+            "$RESULT_DIR/native/list.exit" \
+            "$RESULT_DIR/expected-selectors.txt" \
+            "$RESULT_DIR/native/list-verification.json"
+
+      - name: Run exactly seven selectors and preserve receipts before XML checks
+        id: native_run
+        if: steps.test_list.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          process_root="$RESULT_DIR/native/private-process"
+          mkdir -m 700 -p \
+            "$process_root/home" \
+            "$process_root/xdg-config" \
+            "$process_root/xdg-data" \
+            "$process_root/xdg-cache" \
+            "$process_root/xdg-state" \
+            "$process_root/runtime" \
+            "$process_root/tmp"
+          stdout_pipe="$process_root/native.stdout.pipe"
+          stderr_pipe="$process_root/native.stderr.pipe"
+          mkfifo "$stdout_pipe" "$stderr_pipe"
+          tee --output-error=warn-nopipe "$RESULT_DIR/native/stdout.txt" < "$stdout_pipe" &
+          stdout_tee_pid=$!
+          tee --output-error=warn-nopipe "$RESULT_DIR/native/stderr.txt" < "$stderr_pipe" >&2 &
+          stderr_tee_pid=$!
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf 'started_at_utc=%s\n' "$started_at" > "$RESULT_DIR/native/native-run-receipt.txt"
+          ulimit -c 0
+          set +e
+          HOME="$process_root/home" \
+          XDG_CONFIG_HOME="$process_root/xdg-config" \
+          XDG_DATA_HOME="$process_root/xdg-data" \
+          XDG_CACHE_HOME="$process_root/xdg-cache" \
+          XDG_STATE_HOME="$process_root/xdg-state" \
+          XDG_RUNTIME_DIR="$process_root/runtime" \
+          TMPDIR="$process_root/tmp" \
+          GTEST_COLOR=0 \
+          timeout 600s ./build/mixxx-test \
+            --gtest_color=no \
+            --gtest_filter="$SEEK30_TEST_FILTER" \
+            --gtest_output="xml:$RESULT_DIR/native/gtest-results.xml" \
+            > "$stdout_pipe" \
+            2> "$stderr_pipe"
+          native_exit=$?
+          set -e
+          printf '%s\n' "$native_exit" > "$RESULT_DIR/native/native-exit-code.txt"
+          if wait "$stdout_tee_pid"; then
+            stdout_capture_exit=0
+          else
+            stdout_capture_exit=$?
+          fi
+          if wait "$stderr_tee_pid"; then
+            stderr_capture_exit=0
+          else
+            stderr_capture_exit=$?
+          fi
+          rm -f "$stdout_pipe" "$stderr_pipe"
+          finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            printf 'started_at_utc=%s\n' "$started_at"
+            printf 'finished_at_utc=%s\n' "$finished_at"
+            printf 'native_exit_code=%s\n' "$native_exit"
+            printf 'timeout_seconds=600\n'
+            printf 'filter=%s\n' "$SEEK30_TEST_FILTER"
+            printf 'xml_path=%s\n' "$RESULT_DIR/native/gtest-results.xml"
+            printf 'source_commit=%s\n' "$SOURCE_SHA"
+            printf 'stdout_capture_exit_code=%s\n' "$stdout_capture_exit"
+            printf 'stderr_capture_exit_code=%s\n' "$stderr_capture_exit"
+          } > "$RESULT_DIR/native/native-run-receipt.txt"
+          test "$stdout_capture_exit" -eq 0
+          test "$stderr_capture_exit" -eq 0
+          python3 "$RESULT_DIR/verify_gtest.py" after \
+            "$RESULT_DIR/native/gtest-results.xml" \
+            "$RESULT_DIR/native/native-exit-code.txt" \
+            "$RESULT_DIR/expected-selectors.txt" \
+            "$RESULT_DIR/native/list-verification.json" \
+            "$RESULT_DIR/native/xml-verification.json"
+
+      - name: Capture final ccache stats
+        if: always()
+        shell: bash
+        env:
+          CACHE_SAVE_OUTCOME: ${{ steps.cache_save.outcome }}
+        run: |
+          set -euo pipefail
+          if command -v ccache >/dev/null 2>&1; then
+            if ccache --show-stats --verbose > "$RESULT_DIR/metadata/ccache-after-build.txt" 2>&1; then
+              stats_exit=0
+            else
+              stats_exit=$?
+            fi
+          else
+            printf 'ccache unavailable\n' > "$RESULT_DIR/metadata/ccache-after-build.txt"
+            stats_exit=127
+          fi
+          printf '%s\n' "$stats_exit" > "$RESULT_DIR/metadata/ccache-after-build.exit"
+          printf 'cache_save_outcome=%s\n' "$CACHE_SAVE_OUTCOME" \
+            > "$RESULT_DIR/metadata/ccache-save-outcome.txt"
+
+      - name: Stage whitelisted evidence and enforce the upload limit
+        id: stage_evidence
+        if: always()
+        shell: bash
+        env:
+          CONFIGURE_OUTCOME: ${{ steps.configure.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          LIST_OUTCOME: ${{ steps.test_list.outcome }}
+          NATIVE_OUTCOME: ${{ steps.native_run.outcome }}
+          JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - "$RESULT_DIR" <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+
+
+          LIMIT_BYTES = 5 * 1024 * 1024
+          REQUIRED_FILES = (
+              "metadata/dispatch.txt",
+              "metadata/scope-limit.txt",
+              "metadata/source-status.txt",
+              "metadata/source-workflow.txt",
+              "metadata/toolchain.txt",
+              "metadata/ccache-restore.txt",
+              "metadata/ccache-before-build.txt",
+              "metadata/ccache-after-build.txt",
+              "metadata/ccache-after-build.exit",
+              "metadata/ccache-save-outcome.txt",
+              "metadata/cmake-feature-flags.json",
+              "metadata/configure-source.txt",
+              "expected-selectors.txt",
+              "selector-filter.txt",
+              "native/list.stdout",
+              "native/list.stderr",
+              "native/list.exit",
+              "native/list-verification.json",
+              "native/stdout.txt",
+              "native/stderr.txt",
+              "native/native-exit-code.txt",
+              "native/native-run-receipt.txt",
+              "native/gtest-results.xml",
+              "native/xml-verification.json",
+          )
+          JOB_LOG_STREAMS = (
+              "native/stdout.txt",
+              "native/stderr.txt",
+          )
+
+
+          def read_json(path: Path) -> dict:
+              try:
+                  value = json.loads(path.read_text(encoding="utf-8"))
+                  return value if isinstance(value, dict) else {}
+              except (OSError, json.JSONDecodeError):
+                  return {}
+
+
+          def read_int(path: Path) -> int | None:
+              try:
+                  return int(path.read_text(encoding="ascii").strip())
+              except (OSError, ValueError):
+                  return None
+
+
+          def tree_bytes(directory: Path) -> int:
+              return sum(path.stat().st_size for path in directory.rglob("*") if path.is_file())
+
+
+          def sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+
+          def write_manifest(directory: Path, value: dict) -> int:
+              manifest_path = directory / "artifact-manifest.json"
+              value["artifact_payload_bytes"] = 0
+              for _ in range(8):
+                  manifest_path.write_text(
+                      json.dumps(value, indent=2, sort_keys=True) + "\n",
+                      encoding="utf-8",
+                  )
+                  actual = tree_bytes(directory)
+                  if value["artifact_payload_bytes"] == actual:
+                      return actual
+                  value["artifact_payload_bytes"] = actual
+              raise RuntimeError("artifact byte-count receipt did not converge")
+
+
+          root = Path(sys.argv[1])
+          artifact = root / "artifact"
+          artifact.mkdir(parents=True, exist_ok=True)
+          for child in artifact.iterdir():
+              if child.is_dir():
+                  shutil.rmtree(child)
+              else:
+                  child.unlink()
+
+          present = [rel for rel in REQUIRED_FILES if (root / rel).is_file()]
+          missing = [rel for rel in REQUIRED_FILES if rel not in present]
+          input_bytes = sum((root / rel).stat().st_size for rel in present)
+          oversized = input_bytes + 8192 > LIMIT_BYTES
+          files = []
+          for rel in present:
+              path = root / rel
+              files.append({"path": rel, "bytes": path.stat().st_size, "sha256": sha256(path)})
+
+          list_receipt = read_json(root / "native/list-verification.json")
+          xml_receipt = read_json(root / "native/xml-verification.json")
+          native_receipt = {}
+          try:
+              for line in (root / "native/native-run-receipt.txt").read_text(encoding="utf-8").splitlines():
+                  key, separator, value = line.partition("=")
+                  if separator:
+                      native_receipt[key] = value
+          except OSError:
+              pass
+          native_exit = read_int(root / "native/native-exit-code.txt")
+          ccache_exit = read_int(root / "metadata/ccache-after-build.exit")
+          outcomes = {
+              "configure": os.environ.get("CONFIGURE_OUTCOME", "unknown"),
+              "build": os.environ.get("BUILD_OUTCOME", "unknown"),
+              "list": os.environ.get("LIST_OUTCOME", "unknown"),
+              "native": os.environ.get("NATIVE_OUTCOME", "unknown"),
+          }
+          job_url = os.environ.get("JOB_URL", "unavailable")
+          reasons = []
+          if missing:
+              reasons.append("required evidence files are missing")
+          if any(value != "success" for value in outcomes.values()):
+              reasons.append("one or more configure/build/list/native steps did not succeed")
+          if list_receipt.get("status") != "PASS":
+              reasons.append("exact GTest listing did not pass")
+          if xml_receipt.get("status") != "PASS":
+              reasons.append("exact GTest XML verification did not pass")
+          if native_exit != 0:
+              reasons.append(f"native process exit was {native_exit!r}, expected 0")
+          if native_receipt.get("stdout_capture_exit_code") != "0" or native_receipt.get("stderr_capture_exit_code") != "0":
+              reasons.append("one or both native stream captures failed")
+          if ccache_exit != 0:
+              reasons.append(f"ccache stats exit was {ccache_exit!r}, expected 0")
+          if oversized:
+              reasons.append("whitelisted evidence exceeds the 5 MiB upload limit")
+
+          # Missing evidence cannot be reconstructed from a partial bundle. Keep
+          # its uploaded failure record small and point reviewers to the job log.
+          include_files = not oversized and not missing
+          if include_files:
+              for rel in present:
+                  destination = artifact / rel
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copyfile(root / rel, destination)
+
+          pointer_text = (
+              "Workflow job log (native stdout/stderr are streamed there):\n"
+              f"{job_url}\n"
+          )
+          (artifact / "job-log-pointer.txt").write_text(pointer_text, encoding="utf-8")
+          qualification = "PASS" if not reasons else "FAIL"
+          manifest = {
+              "schema": "mixxx-issue84-bounded-evidence-v1",
+              "qualification_status": qualification,
+              "job_url": job_url,
+              "limit_bytes": LIMIT_BYTES,
+              "input_bytes": input_bytes,
+              "oversized": oversized,
+              "artifact_payload_bytes": 0,
+              "step_outcomes": outcomes,
+              "native_exit_code": native_exit,
+              "ccache_stats_exit_code": ccache_exit,
+              "list_status": list_receipt.get("status"),
+              "xml_status": xml_receipt.get("status"),
+              "missing_required_files": missing,
+              "failure_reasons": reasons,
+              "job_log_streams": list(JOB_LOG_STREAMS),
+              "candidate_files": files,
+              "included_files": present if include_files else [],
+              "excluded_from_artifact": [
+                  "build/",
+                  "/home/runner/.cache/ccache/",
+                  "logs/cmake-configure.log",
+                  "logs/build-mixxx-test.log",
+                  "verify_gtest.py",
+                  "verify_build_config.py",
+              ],
+          }
+          actual = write_manifest(artifact, manifest)
+          if actual > LIMIT_BYTES:
+              for child in list(artifact.iterdir()):
+                  if child.is_dir():
+                      shutil.rmtree(child)
+                  else:
+                      child.unlink()
+              manifest["qualification_status"] = "FAIL"
+              manifest["oversized"] = True
+              manifest["failure_reasons"] = list(dict.fromkeys(reasons + ["final staged artifact exceeds 5 MiB"]))
+              manifest["included_files"] = []
+              (artifact / "job-log-pointer.txt").write_text(pointer_text, encoding="utf-8")
+              actual = write_manifest(artifact, manifest)
+              if actual > LIMIT_BYTES:
+                  raise RuntimeError("failure manifest itself exceeds the 5 MiB upload limit")
+              qualification = "FAIL"
+              oversized = True
+
+          print(json.dumps({
+              "qualification_status": qualification,
+              "artifact_payload_bytes": actual,
+              "limit_bytes": LIMIT_BYTES,
+              "missing_required_files": missing,
+              "oversized": oversized,
+              "job_url": job_url,
+          }, sort_keys=True))
+          raise SystemExit(0 if qualification == "PASS" else 1)
+          PY
+
+      - name: Upload native qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: issue84-queued-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue84-queued-worker-native-${{ github.run_id }}-${{ github.run_attempt }}/artifact/
+          if-no-files-found: error
+          retention-days: 14
