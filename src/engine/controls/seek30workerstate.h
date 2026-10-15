@@ -5,6 +5,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#ifdef BUILD_TESTING
+#include <limits>
+#endif
 #include <type_traits>
 
 #include "audio/frame.h"
@@ -108,6 +111,39 @@ class Seek30WorkerState final {
 
 // Drain queued commands on the reader worker. Inputs are read only after the
 // first command is available, preserving the production command ordering.
+#ifdef BUILD_TESTING
+template<typename GetInputs, typename PublishTarget>
+std::size_t processSeek30CommandMailbox(
+        Seek30CommandMailbox& mailbox,
+        Seek30WorkerState& state,
+        std::uint64_t& targetSequence,
+        GetInputs&& getInputs,
+        PublishTarget&& publishTarget,
+        std::size_t maxCommands = std::numeric_limits<std::size_t>::max()) {
+    Seek30Command command;
+    if (maxCommands == 0 || !mailbox.tryPop(&command)) {
+        return 0;
+    }
+
+    std::size_t processedCommands = 0;
+    auto inputs = getInputs();
+    do {
+        ++processedCommands;
+        if (command.generation != state.generation()) {
+            continue;
+        }
+
+        const auto target = state.process(command, inputs);
+        if (target.position.isValid()) {
+            inputs.currentPosition = target.position;
+            auto publishedTarget = target;
+            publishedTarget.sequence = ++targetSequence;
+            publishTarget(publishedTarget);
+        }
+    } while (processedCommands < maxCommands && mailbox.tryPop(&command));
+    return processedCommands;
+}
+#else
 template<typename GetInputs, typename PublishTarget>
 void processSeek30CommandMailbox(
         Seek30CommandMailbox& mailbox,
@@ -135,3 +171,4 @@ void processSeek30CommandMailbox(
         }
     } while (mailbox.tryPop(&command));
 }
+#endif

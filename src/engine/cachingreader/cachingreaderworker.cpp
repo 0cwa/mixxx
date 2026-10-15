@@ -124,6 +124,13 @@ void CachingReaderWorker::clearTestTrackLifecycleHook(void* context) {
             lock,
             [] { return s_testTrackLifecycleRegistration.callbacksInFlight == 0; });
 }
+
+void CachingReaderWorker::notifyTestRunEvent(
+        TestRunEvent event, std::size_t count) {
+    if (m_testRunHook) {
+        m_testRunHook(event, count, m_testRunHookContext);
+    }
+}
 #endif
 
 int CachingReaderWorker::diagnosticStatusCapacity() const {
@@ -266,13 +273,36 @@ void CachingReaderWorker::recordSeek30CommandOverflow() {
     }
 }
 
+#ifdef BUILD_TESTING
+std::size_t CachingReaderWorker::processSeek30Commands() {
+#else
 void CachingReaderWorker::processSeek30Commands() {
+#endif
     Seek30Control* const pControl =
             m_pSeek30Control.load(std::memory_order_acquire);
     if (!pControl) {
+#ifdef BUILD_TESTING
+        return 0;
+#else
         return;
+#endif
     }
 
+#ifdef BUILD_TESTING
+    auto maxCommands = std::numeric_limits<std::size_t>::max();
+    if (m_testSeek30CommandBatchLimit > 0) {
+        maxCommands = m_testSeek30CommandBatchLimit;
+    }
+    return processSeek30CommandMailbox(
+            m_seek30CommandMailbox,
+            m_seek30State,
+            m_seek30TargetSequence,
+            [pControl]() { return pControl->seek30WorkerInputs(); },
+            [pControl](const Seek30SeekTarget& target) {
+                pControl->publishSeekTarget(target);
+            },
+            maxCommands);
+#else
     processSeek30CommandMailbox(
             m_seek30CommandMailbox,
             m_seek30State,
@@ -281,6 +311,7 @@ void CachingReaderWorker::processSeek30Commands() {
             [pControl](const Seek30SeekTarget& target) {
                 pControl->publishSeekTarget(target);
             });
+#endif
 }
 
 void CachingReaderWorker::run() {
@@ -336,9 +367,21 @@ void CachingReaderWorker::run() {
             }
             processSeek30Commands();
         } else {
+#ifdef BUILD_TESTING
+            const std::size_t processedCommands = processSeek30Commands();
+            if (processedCommands > 0) {
+                notifyTestRunEvent(
+                        TestRunEvent::Seek30CommandBatchProcessed,
+                        processedCommands);
+            }
+#else
             processSeek30Commands();
+#endif
             if (m_pChunkReadRequestFIFO->read(&request, 1) == 1) {
                 m_diagnosticDequeuedRequests.fetchAndAddRelaxed(1);
+#ifdef BUILD_TESTING
+                notifyTestRunEvent(TestRunEvent::ChunkReadDequeued, 1);
+#endif
                 // Read the requested chunk and send the result. Publish only
                 // primitive progress snapshots for off-thread diagnostics.
                 const int chunkIndex = request.chunk->getIndex();
@@ -353,10 +396,21 @@ void CachingReaderWorker::run() {
                     break;
                 }
             } else {
+#ifdef BUILD_TESTING
+                // A capped test batch with remaining mailbox work must start
+                // another loop before sleeping, even when no chunk is queued.
+                if (m_testSeek30CommandBatchLimit > 0 &&
+                        processedCommands == m_testSeek30CommandBatchLimit) {
+                    continue;
+                }
+#endif
                 m_diagnosticActiveChunk.storeRelease(-1);
                 m_diagnosticState.storeRelease(
                         static_cast<int>(DiagnosticState::Waiting));
                 Event::end(m_tag);
+#ifdef BUILD_TESTING
+                notifyTestRunEvent(TestRunEvent::WaitingForWork, 0);
+#endif
                 m_semaRun.acquire();
                 Event::start(m_tag);
             }

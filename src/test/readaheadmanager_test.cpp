@@ -8,8 +8,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "control/controlobject.h"
@@ -21,6 +26,8 @@
 #include "engine/cachingreader/cachingreaderworker.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
+#include "engine/controls/seek30control.h"
+#include "engine/engineworkerscheduler.h"
 #include "sources/audiosourcestereoproxy.h"
 #include "sources/soundsourceproxy.h"
 #include "test/mixxxtest.h"
@@ -471,6 +478,300 @@ TEST_F(CachingReaderWorkerTest,
     ReaderStatusUpdate preservedUpdate;
     ASSERT_EQ(1, statusFIFO.read(&preservedUpdate, 1));
     EXPECT_EQ(TRACK_UNLOADED, preservedUpdate.status);
+}
+
+namespace {
+constexpr double kFairnessProbeSampleRate = 44100.0;
+constexpr std::uint64_t kFairnessProbeGeneration = 17;
+constexpr std::size_t kFairnessProbeBatchLimit = 2;
+constexpr int kFairnessProbeCommandCount = 5;
+
+struct FairnessProbeEvent {
+    CachingReaderWorker::TestRunEvent event;
+    std::size_t count;
+};
+
+class FairnessProbeObserver final {
+  public:
+    FairnessProbeObserver() {
+        m_events.reserve(16);
+    }
+
+    static void record(
+            CachingReaderWorker::TestRunEvent event,
+            std::size_t count,
+            void* context) {
+        auto* const pObserver = static_cast<FairnessProbeObserver*>(context);
+        {
+            const std::lock_guard<std::mutex> lock(pObserver->m_mutex);
+            pObserver->m_events.push_back({event, count});
+        }
+        pObserver->m_changed.notify_all();
+    }
+
+    bool waitForEventCount(std::size_t count) {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        return m_changed.wait_for(
+                lock,
+                std::chrono::seconds(3),
+                [this, count] { return m_events.size() >= count; });
+    }
+
+    std::vector<FairnessProbeEvent> snapshot() const {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_events;
+    }
+
+    void clear() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_events.clear();
+    }
+
+  private:
+    mutable std::mutex m_mutex;
+    std::condition_variable m_changed;
+    std::vector<FairnessProbeEvent> m_events;
+};
+
+class FairnessProbeWorker final {
+  public:
+    FairnessProbeWorker(
+            UserSettingsPointer pConfig,
+            std::size_t maxCommandsPerBatch)
+            : m_control(kGroup, std::move(pConfig)),
+              m_worker(
+                      kGroup,
+                      &m_requestFIFO,
+                      &m_statusFIFO,
+                      mixxx::audio::ChannelCount::stereo()),
+              m_chunkBuffer(CachingReaderChunk::frames2samples(
+                      CachingReaderChunk::kFrames,
+                      mixxx::audio::ChannelCount::stereo())),
+              m_chunk(mixxx::SampleBuffer::WritableSlice(m_chunkBuffer)) {
+        m_chunk.init(0);
+        m_control.setFrameInfo(
+                mixxx::audio::FramePos(0),
+                mixxx::audio::FramePos(kFairnessProbeSampleRate * 30),
+                mixxx::audio::SampleRate::fromDouble(
+                        kFairnessProbeSampleRate));
+        m_control.setWorker(&m_worker);
+        m_worker.setSeek30Control(&m_control);
+        m_worker.setTestSeek30CommandBatchLimit(maxCommandsPerBatch);
+        m_worker.setTestRunHook(FairnessProbeObserver::record, &m_observer);
+        m_worker.setScheduler(&m_scheduler);
+        m_scheduler.start();
+        m_worker.start();
+    }
+
+    ~FairnessProbeWorker() {
+        m_worker.quitWait();
+        m_scheduler.stopAndWait();
+    }
+
+    bool loadTrack(const TrackPointer& pTrack) {
+        if (!m_observer.waitForEventCount(1)) {
+            return false;
+        }
+#ifdef __STEM__
+        m_worker.newTrack(
+                pTrack,
+                mixxx::StemChannelSelection(),
+                kFairnessProbeGeneration);
+#else
+        m_worker.newTrack(pTrack, kFairnessProbeGeneration);
+#endif
+        m_scheduler.runWorkers();
+        if (!waitForStatus(TRACK_LOADED)) {
+            return false;
+        }
+        return m_observer.waitForEventCount(2) &&
+                waitForDiagnosticState(
+                        CachingReaderWorker::DiagnosticState::Waiting);
+    }
+
+    bool queueReadRequest() {
+        CachingReaderChunkReadRequest request{};
+        request.giveToWorker(&m_chunk);
+        return m_requestFIFO.write(&request, 1) == 1;
+    }
+
+    bool enqueueSeekCommands(int count) {
+        for (int index = 0; index < count; ++index) {
+            if (!m_worker.enqueueSeek30Command(Seek30Operation::SeekNext)) {
+                return false;
+            }
+        }
+        // One callback pass coalesces the worker-ready notifications.
+        m_scheduler.runWorkers();
+        return true;
+    }
+
+    bool waitForEvents(std::size_t count) {
+        return m_observer.waitForEventCount(count);
+    }
+
+    std::vector<FairnessProbeEvent> events() const {
+        return m_observer.snapshot();
+    }
+
+    void clearEvents() {
+        m_observer.clear();
+    }
+
+    bool takeReadResult() {
+        ReaderStatusUpdate update;
+        if (!waitForStatus(CHUNK_READ_SUCCESS, &update)) {
+            return false;
+        }
+        return update.takeFromWorker() == &m_chunk &&
+                m_chunk.getState() == CachingReaderChunkForOwner::READY;
+    }
+
+    int dequeuedRequests() const {
+        return m_worker.diagnosticDequeuedRequests();
+    }
+
+    CachingReaderWorker::DiagnosticState diagnosticState() const {
+        return m_worker.diagnosticState();
+    }
+
+  private:
+    bool waitForDiagnosticState(CachingReaderWorker::DiagnosticState state) {
+        const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (m_worker.diagnosticState() == state) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    }
+
+    bool waitForStatus(
+            ReaderStatus expected, ReaderStatusUpdate* pResult = nullptr) {
+        const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (std::chrono::steady_clock::now() < deadline) {
+            ReaderStatusUpdate update;
+            if (m_statusFIFO.read(&update, 1) == 1) {
+                if (update.status != expected) {
+                    update.takeFromWorker();
+                    return false;
+                }
+                if (pResult) {
+                    *pResult = update;
+                } else {
+                    update.takeFromWorker();
+                }
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    }
+
+    FIFO<CachingReaderChunkReadRequest> m_requestFIFO{2};
+    FIFO<ReaderStatusUpdate> m_statusFIFO{4};
+    EngineWorkerScheduler m_scheduler;
+    Seek30Control m_control;
+    CachingReaderWorker m_worker;
+    mixxx::SampleBuffer m_chunkBuffer;
+    CachingReaderChunkForOwner m_chunk;
+    FairnessProbeObserver m_observer;
+};
+
+std::vector<FairnessProbeEvent> expectedFairnessEvents(
+        std::initializer_list<FairnessProbeEvent> events) {
+    return events;
+}
+
+void expectFairnessEvents(
+        const std::vector<FairnessProbeEvent>& actual,
+        const std::vector<FairnessProbeEvent>& expected) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        EXPECT_EQ(expected[index].event, actual[index].event) << "event " << index;
+        EXPECT_EQ(expected[index].count, actual[index].count) << "event " << index;
+    }
+}
+} // namespace
+
+class CachingReaderWorkerFairnessProbeTest : public MixxxTest,
+                                             protected SoundSourceProviderRegistration {
+  protected:
+    TrackPointer makeTrack() const {
+        auto pTrack = Track::newTemporary(
+                getTestDir().filePath(QStringLiteral("sine-30.wav")));
+        for (int second = 1; second <= 10; ++second) {
+            const auto position = mixxx::audio::FramePos(
+                    kFairnessProbeSampleRate * second);
+            pTrack->createAndAddCue(
+                    mixxx::CueType::Memory,
+                    Cue::kNoHotCue,
+                    position,
+                    position);
+        }
+        return pTrack;
+    }
+};
+
+TEST_F(CachingReaderWorkerFairnessProbeTest,
+        UnlimitedWorkerDrainsCommandsBeforeReadingChunk) {
+    FairnessProbeWorker probe(config(), 0);
+    ASSERT_TRUE(probe.loadTrack(makeTrack()));
+    probe.clearEvents();
+    ASSERT_TRUE(probe.queueReadRequest());
+    ASSERT_TRUE(probe.enqueueSeekCommands(kFairnessProbeCommandCount));
+    ASSERT_TRUE(probe.waitForEvents(3));
+    ASSERT_TRUE(probe.takeReadResult());
+
+    expectFairnessEvents(
+            probe.events(),
+            expectedFairnessEvents({
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 5},
+                    {CachingReaderWorker::TestRunEvent::ChunkReadDequeued, 1},
+                    {CachingReaderWorker::TestRunEvent::WaitingForWork, 0},
+            }));
+    EXPECT_EQ(1, probe.dequeuedRequests());
+    EXPECT_EQ(CachingReaderWorker::DiagnosticState::Waiting,
+            probe.diagnosticState());
+}
+
+TEST_F(CachingReaderWorkerFairnessProbeTest,
+        CappedPrototypeReadsBetweenBatchesAndDrainsWithoutAnotherWake) {
+    FairnessProbeWorker probe(config(), kFairnessProbeBatchLimit);
+    ASSERT_TRUE(probe.loadTrack(makeTrack()));
+    probe.clearEvents();
+    ASSERT_TRUE(probe.queueReadRequest());
+    ASSERT_TRUE(probe.enqueueSeekCommands(kFairnessProbeCommandCount));
+    ASSERT_TRUE(probe.waitForEvents(5));
+    ASSERT_TRUE(probe.takeReadResult());
+    expectFairnessEvents(
+            probe.events(),
+            expectedFairnessEvents({
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 2},
+                    {CachingReaderWorker::TestRunEvent::ChunkReadDequeued, 1},
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 2},
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 1},
+                    {CachingReaderWorker::TestRunEvent::WaitingForWork, 0},
+            }));
+    EXPECT_EQ(1, probe.dequeuedRequests());
+
+    probe.clearEvents();
+    ASSERT_TRUE(probe.enqueueSeekCommands(kFairnessProbeCommandCount));
+    ASSERT_TRUE(probe.waitForEvents(4));
+    expectFairnessEvents(
+            probe.events(),
+            expectedFairnessEvents({
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 2},
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 2},
+                    {CachingReaderWorker::TestRunEvent::Seek30CommandBatchProcessed, 1},
+                    {CachingReaderWorker::TestRunEvent::WaitingForWork, 0},
+            }));
+    EXPECT_EQ(1, probe.dequeuedRequests());
+    EXPECT_EQ(CachingReaderWorker::DiagnosticState::Waiting,
+            probe.diagnosticState());
 }
 
 TEST(CachingReaderRetryTest,

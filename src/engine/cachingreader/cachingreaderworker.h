@@ -7,6 +7,7 @@
 #include <QMutex>
 #include <QString>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include "audio/frame.h"
@@ -116,6 +117,25 @@ class CachingReaderWorker : public EngineWorker {
             TestTrackLifecycleEvent event,
             quint64 generation,
             void* context);
+
+    enum class TestRunEvent {
+        Seek30CommandBatchProcessed,
+        ChunkReadDequeued,
+        WaitingForWork,
+    };
+    using TestRunHook = void (*)(
+            TestRunEvent event, std::size_t count, void* context);
+
+    // Test-only prototype for observing a finite batch policy. This does not
+    // select a production fairness policy. A zero cap keeps the real worker's
+    // unlimited command drain.
+    void setTestSeek30CommandBatchLimit(std::size_t maxCommands) {
+        m_testSeek30CommandBatchLimit = maxCommands;
+    }
+    void setTestRunHook(TestRunHook hook, void* context) {
+        m_testRunHook = hook;
+        m_testRunHookContext = context;
+    }
 
     // One headless test may observe a named reader worker's scheduling
     // boundaries. clearTestTrackLifecycleHook() waits for callbacks to leave.
@@ -254,6 +274,10 @@ class CachingReaderWorker : public EngineWorker {
     bool loadTrack(const TrackPointer& pTrack, quint64 generation = 0);
 #endif
 
+#ifdef BUILD_TESTING
+    void notifyTestRunEvent(TestRunEvent event, std::size_t count);
+#endif
+
     ReaderStatusUpdate processReadRequest(
             const CachingReaderChunkReadRequest& request);
 
@@ -262,7 +286,11 @@ class CachingReaderWorker : public EngineWorker {
 
     // Track and cue ownership is updated only from run()'s worker thread.
     void updateSeek30Track(TrackPointer pNewTrack);
+#ifdef BUILD_TESTING
+    std::size_t processSeek30Commands();
+#else
     void processSeek30Commands();
+#endif
     void recordSeek30CommandOverflow();
 
     // The current audio source of the track loaded
@@ -282,6 +310,11 @@ class CachingReaderWorker : public EngineWorker {
     std::atomic<Seek30Control*> m_pSeek30Control{nullptr};
     Seek30CommandMailbox m_seek30CommandMailbox;
     Seek30WorkerState m_seek30State;
+#ifdef BUILD_TESTING
+    std::size_t m_testSeek30CommandBatchLimit{0};
+    TestRunHook m_testRunHook{nullptr};
+    void* m_testRunHookContext{nullptr};
+#endif
     std::atomic<std::uint64_t> m_seek30Generation{0};
     std::atomic<std::uint64_t> m_seek30CommandOverflowCount{0};
     std::uint64_t m_seek30TargetSequence{0};
