@@ -447,6 +447,15 @@ ReadableSampleFrames SoundSourceMediaFoundation::readSampleFramesClampedInternal
                         &dwFlags,     // [out] DWORD *pdwStreamFlags,
                         &streamPos,   // [out] LONGLONG *pllTimestamp,
                         &pSample);    // [out] IMFSample **ppSample
+#ifdef BUILD_TESTING
+        if (m_readSampleObserver) {
+            m_readSampleObserver(
+                    hrReadSample,
+                    dwFlags,
+                    streamPos,
+                    pSample != nullptr);
+        }
+#endif
         if (FAILED(hrReadSample)) {
             kLogger.warning()
                     << "IMFSourceReader::ReadSample() failed"

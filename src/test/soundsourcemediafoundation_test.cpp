@@ -1,11 +1,18 @@
 #include "sources/soundsourcemediafoundation.h"
 
+#include <QCryptographicHash>
+#include <QFile>
+
 #include <gtest/gtest.h>
 #include <mfapi.h>
 
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <deque>
 #include <iomanip>
+#include <sstream>
+#include <string>
 #include <utility>
 
 #include "test/mixxxtest.h"
@@ -104,6 +111,13 @@ struct ReadSampleEvent {
     CSAMPLE firstSampleValue;
 };
 
+struct RawReadSampleObservation {
+    HRESULT hr;
+    DWORD flags;
+    LONGLONG timestamp;
+    bool hasSample;
+};
+
 class ReadSampleQueue final {
   public:
     ReadSampleQueue(
@@ -173,11 +187,28 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
         return QUrl::fromLocalFile(getTestDir().filePath(QStringLiteral("sine-30.wav")));
     }
 
+    QUrl timelineGapTestUrl() const {
+        return QUrl::fromLocalFile(getTestDir().filePath(
+                QStringLiteral("soundFileFormats/issue92_streamtick_gap.mp4")));
+    }
+
     template<typename Provider>
     void setReadSampleProvider(
             SoundSourceMediaFoundation& source,
             Provider&& provider) {
         source.m_readSampleProvider = std::forward<Provider>(provider);
+    }
+
+    template<typename Observer>
+    void setReadSampleObserver(
+            SoundSourceMediaFoundation& source,
+            Observer&& observer) {
+        source.m_readSampleObserver = std::forward<Observer>(observer);
+    }
+
+    void expectRealReadSamplePath(const SoundSourceMediaFoundation& source) {
+        EXPECT_FALSE(source.m_readSampleProvider);
+        EXPECT_FALSE(source.m_setCurrentPositionProvider);
     }
 
     template<typename Provider>
@@ -219,6 +250,12 @@ class SoundSourceMediaFoundationTest : public ::MixxxTest {
             const SoundSourceMediaFoundation& source,
             LONGLONG streamPosition) const {
         return source.m_streamUnitConverter.toFrameIndex(streamPosition);
+    }
+
+    LONGLONG frameIndexToStreamPositionForTest(
+            const SoundSourceMediaFoundation& source,
+            SINT frameIndex) const {
+        return source.m_streamUnitConverter.fromFrameIndex(frameIndex);
     }
 
     SINT readableSampleCount(const SoundSourceMediaFoundation& source) const {
@@ -1023,6 +1060,139 @@ TEST_F(SoundSourceMediaFoundationTest, SeekClearsPendingStreamGap) {
     EXPECT_EQ(kUnknownFrameIndex, state.streamTickFrameIndex);
     EXPECT_EQ(kUnknownFrameIndex, state.streamGapEndFrameIndex);
     EXPECT_EQ(1, readSamples.callCount());
+}
+
+TEST_F(SoundSourceMediaFoundationTest, RecordsRealSourceReaderPostSeekEvents) {
+    constexpr SINT kInitialDecodeFrames = 1024;
+    constexpr std::size_t kMaxCapturedEvents = 64;
+    constexpr char kExpectedFixtureSha256[] =
+            "9ab2af723411f398001677c4244bf92a280b76f4f0985e1fa7cb7a8b73a44e24";
+
+    const QUrl fixtureUrl = timelineGapTestUrl();
+    QFile fixtureFile(fixtureUrl.toLocalFile());
+    ASSERT_TRUE(fixtureFile.open(QIODevice::ReadOnly));
+    const QByteArray fixtureBytes = fixtureFile.readAll();
+    ASSERT_EQ(
+            QByteArray(kExpectedFixtureSha256),
+            QCryptographicHash::hash(fixtureBytes, QCryptographicHash::Sha256).toHex());
+
+    TestSoundSourceMediaFoundation source(fixtureUrl);
+    ASSERT_EQ(
+            AudioSource::OpenResult::Succeeded,
+            source.open(AudioSource::OpenMode::Strict));
+    expectRealReadSamplePath(source);
+
+    // Confirm the actual reader can decode this fixture normally before the
+    // optional producer observation. A missing STREAMTICK must not fail this
+    // test or be reported as a producer success.
+    SampleBuffer initialBuffer(
+            source.getSignalInfo().frames2samples(kInitialDecodeFrames));
+    const auto initialRange = IndexRange::forward(
+            source.frameIndexMin(), kInitialDecodeFrames);
+    const auto initialResult = source.readSampleFrames(
+            WritableSampleFrames(
+                    initialRange,
+                    SampleBuffer::WritableSlice(initialBuffer)));
+    ASSERT_EQ(initialRange, initialResult.frameIndexRange());
+
+    std::array<RawReadSampleObservation, kMaxCapturedEvents> events{};
+    std::size_t eventCount = 0;
+    bool traceTruncated = false;
+    setReadSampleObserver(
+            source,
+            [&events, &eventCount, &traceTruncated](
+                    HRESULT hr,
+                    DWORD flags,
+                    LONGLONG timestamp,
+                    bool hasSample) {
+                if (eventCount == events.size()) {
+                    traceTruncated = true;
+                    return;
+                }
+                events[eventCount++] = {hr, flags, timestamp, hasSample};
+            });
+
+    const SINT requestedTargetFrame = source.frameIndexMin() +
+            3 * source.getSignalInfo().getSampleRate() / 2;
+    const LONGLONG requestedTarget100ns =
+            frameIndexToStreamPositionForTest(source, requestedTargetFrame);
+    seekTo(source, requestedTargetFrame);
+
+    std::ostringstream rawTrace;
+    for (std::size_t index = 0; index < eventCount; ++index) {
+        const auto& event = events[index];
+        if (index != 0) {
+            rawTrace << ';';
+        }
+        rawTrace << index << ":hr=0x" << std::hex
+                 << static_cast<unsigned long>(event.hr)
+                 << ",flags=0x" << static_cast<unsigned long>(event.flags)
+                 << std::dec << ",timestamp_100ns=" << event.timestamp
+                 << ",sample=" << (event.hasSample ? 1 : 0);
+    }
+
+    SINT tickEventIndex = -1;
+    SINT followingSampleEventIndex = -1;
+    for (std::size_t index = 0; index < eventCount; ++index) {
+        if (tickEventIndex < 0 &&
+                (events[index].flags & MF_SOURCE_READERF_STREAMTICK) != 0) {
+            tickEventIndex = static_cast<SINT>(index);
+        }
+        if (tickEventIndex >= 0 &&
+                static_cast<SINT>(index) > tickEventIndex &&
+                events[index].hasSample) {
+            followingSampleEventIndex = static_cast<SINT>(index);
+            break;
+        }
+    }
+
+    RecordProperty(
+            "source_commit",
+            qEnvironmentVariable("GITHUB_SHA").toStdString());
+    RecordProperty(
+            "workflow_commit",
+            qEnvironmentVariable("GITHUB_WORKFLOW_SHA").toStdString());
+    RecordProperty("fixture_sha256", kExpectedFixtureSha256);
+    RecordProperty("raw_read_sample_trace", rawTrace.str());
+    RecordProperty("trace_event_count", std::to_string(eventCount));
+    RecordProperty("trace_truncated", traceTruncated ? "true" : "false");
+    RecordProperty("requested_target_frame", std::to_string(requestedTargetFrame));
+    RecordProperty("requested_target_100ns", std::to_string(requestedTarget100ns));
+
+    std::string producerResult = "UNPROVEN_NO_STREAMTICK";
+    if (tickEventIndex >= 0) {
+        const auto& tick = events[static_cast<std::size_t>(tickEventIndex)];
+        const SINT tickFrame = streamPositionToFrameIndexForTest(source, tick.timestamp);
+        RecordProperty("streamtick_flags", std::to_string(tick.flags));
+        RecordProperty("streamtick_timestamp_100ns", std::to_string(tick.timestamp));
+        RecordProperty("streamtick_frame", std::to_string(tickFrame));
+        if (followingSampleEventIndex < 0) {
+            producerResult = "UNPROVEN_NO_FOLLOWING_SAMPLE";
+        } else {
+            const auto& sample =
+                    events[static_cast<std::size_t>(followingSampleEventIndex)];
+            const SINT sampleFrame =
+                    streamPositionToFrameIndexForTest(source, sample.timestamp);
+            const bool bracketsTarget =
+                    tickFrame <= requestedTargetFrame &&
+                    requestedTargetFrame < sampleFrame;
+            if (traceTruncated) {
+                producerResult = "UNPROVEN_TRACE_TRUNCATED";
+            } else if (bracketsTarget) {
+                producerResult = "OBSERVED_TICK_SAMPLE_BRACKETING_TARGET";
+            } else {
+                producerResult = "UNPROVEN_TARGET_NOT_BRACKETED";
+            }
+            RecordProperty(
+                    "following_sample_flags",
+                    std::to_string(sample.flags));
+            RecordProperty(
+                    "following_sample_timestamp_100ns",
+                    std::to_string(sample.timestamp));
+            RecordProperty("following_sample_frame", std::to_string(sampleFrame));
+        }
+    }
+    RecordProperty("producer_result", producerResult);
 }
 
 } // namespace mixxx
