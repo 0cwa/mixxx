@@ -1109,6 +1109,7 @@ void importHotCue(TrackPointer track,
             : mixxx::CueType::HotCue;
 
     if (pCue) {
+        pCue->setType(type);
         pCue->setStartAndEndPosition(startPosition, endPosition);
     } else {
         pCue = track->createAndAddCue(
