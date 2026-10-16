@@ -158,6 +158,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
+          name: pr23-arm64-dependency-byte-probe
           path: ${{ runner.temp }}/pr23-arm64-deps-probe/diagnostic.json
           archive: false
           if-no-files-found: error
