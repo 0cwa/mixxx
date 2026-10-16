@@ -93,6 +93,10 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+          sparse-checkout: |
+            tools/windows_buildenv.bat
+            tools/ci/pr23_arm64_dependency_remote_probe.cmake
+          sparse-checkout-cone-mode: false
 
       - name: Set up the same ARM64 CMake used by the failed job
         shell: pwsh
