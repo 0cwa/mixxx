@@ -71,7 +71,7 @@ while(NOT "${_remaining_log}" STREQUAL "")
   string(STRIP "${_line}" _line)
   # CMake 3.30's curl debug callback stores HTTP headers verbatim. Accept the
   # customary curl verbose prefix as well, without retaining any raw log text.
-  string(REGEX REPLACE "^< +" "" _line "${_line}")
+  string(REGEX REPLACE "^[<>] +" "" _line "${_line}")
 
   if(_line MATCHES "^CONNECT [^ ]+ HTTP/[0-9.]+")
     set(_pending_connect TRUE)
@@ -145,12 +145,14 @@ if(EXISTS "${_archive_path}")
     elseif(_normalized_prefix MATCHES "^504b0708")
       set(_zip_magic_kind "zip_data_descriptor")
       set(_body_classification "zip")
-    elseif(_normalized_prefix MATCHES "^(efbbbf)?3c21646f6374797065"
-           OR _normalized_prefix MATCHES "^(efbbbf)?3c68746d6c")
+    elseif(_normalized_prefix MATCHES
+           "^(efbbbf)?(3c21646f6374797065|3c21444f4354595045)"
+           OR _normalized_prefix MATCHES
+           "^(efbbbf)?(3c68746d6c|3c48544d4c)")
       set(_body_classification "html")
-    elseif(_normalized_prefix MATCHES "^(efbbbf)?3c3f786d6c")
+    elseif(_normalized_prefix MATCHES "^(efbbbf)?(3c3f786d6c|3c3f584d4c)")
       set(_body_classification "xml")
-    elseif(_normalized_prefix MATCHES "^(7b|5b)")
+    elseif(_normalized_prefix MATCHES "^(efbbbf)?(7b|5b)")
       set(_body_classification "json_like")
     else()
       set(_body_classification "other_non_zip")
@@ -166,6 +168,7 @@ function(_json_quote _input _output)
   string(REPLACE "\"" "\\\"" _value "${_value}")
   string(REPLACE "\r" "\\r" _value "${_value}")
   string(REPLACE "\n" "\\n" _value "${_value}")
+  string(REPLACE "\t" "\\t" _value "${_value}")
   set(${_output} "\"${_value}\"" PARENT_SCOPE)
 endfunction()
 
