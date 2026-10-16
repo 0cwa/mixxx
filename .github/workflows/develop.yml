@@ -148,7 +148,9 @@ jobs:
             }
           }
           $result['cmake_script_exit_code'] = $scriptExitCode
-          $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resultPath -Encoding utf8NoBOM
+          $resultJson = ConvertTo-Json -InputObject $result -Depth 8
+          $resultJson | Set-Content -LiteralPath $resultPath -Encoding utf8NoBOM
+          Write-Output ('PROBE_RESULT_JSON=' + (ConvertTo-Json -InputObject $result -Depth 8 -Compress))
 
           if ($scriptExitCode -ne 0 -or -not $result['diagnostic_completed'] -or -not $result['source_pin_precondition_ok']) {
             Write-Error 'The dependency byte diagnostic did not reach its completed state; see diagnostic.json.'
@@ -158,7 +160,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: pr23-arm64-dependency-byte-probe
           path: ${{ runner.temp }}/pr23-arm64-deps-probe/diagnostic.json
           archive: false
           if-no-files-found: error
