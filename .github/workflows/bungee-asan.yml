@@ -33,6 +33,7 @@ on:
       - "2.6"
       - feature/bungee
       - bungee-engine-full
+      - "diagnostic/issue87-reader-trigger-20261016"
     paths:
       - "cmake/modules/FindBungee.cmake"
       - "src/engine/enginebuffer.*"
