@@ -376,7 +376,7 @@ class EngineBufferTest : public MockedEngineBackendTest {
         bool observerEntered = false;
         bool requestReturned = false;
         QObject observer;
-        ASSERT_TRUE(observedControl.connectValueChanged(
+        const bool connected = observedControl.connectValueChanged(
                 &observer,
                 [this,
                         pBuffer,
@@ -417,7 +417,8 @@ class EngineBufferTest : public MockedEngineBackendTest {
                     requestReturned = true;
                     qInfo() << "zero-readiness replacement request returned";
                 },
-                Qt::DirectConnection));
+                Qt::DirectConnection);
+        ASSERT_TRUE(connected);
 
         pBuffer->ejectTrack();
         ASSERT_TRUE(observerEntered);

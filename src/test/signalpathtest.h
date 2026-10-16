@@ -167,8 +167,10 @@ class BaseSignalPathTest : public MixxxTest, SoundSourceProviderRegistration {
         DEBUG_ASSERT(!pEngineDeck->getEngineBuffer()->isTrackLoaded());
 
         bool trackCompletionReceived = false;
+        QObject trackCompletionContext;
         const auto connection = QObject::connect(pDeck,
                 &BaseTrackPlayer::newTrackLoaded,
+                &trackCompletionContext,
                 [&trackCompletionReceived, pTrack](TrackPointer pLoadedTrack) {
                     trackCompletionReceived = pLoadedTrack == pTrack;
                 });

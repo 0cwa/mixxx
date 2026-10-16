@@ -55,11 +55,11 @@ QString trackPointerAddress(const TrackPointer& pTrack) {
 std::string describeSafeLoadEpochState(Deck* pDeck, const TrackPointer& pExpectedTrack) {
     EngineBuffer* pBuffer = pDeck->getEngineDeck()->getEngineBuffer();
     return QStringLiteral("expected=%1 loading=%2 generation=%3")
-            .arg(trackPointerAddress(pExpectedTrack))
-            .arg(pBuffer->isTrackLoadingForTest()
+            .arg(trackPointerAddress(pExpectedTrack),
+                    pBuffer->isTrackLoadingForTest()
                             ? QStringLiteral("true")
-                            : QStringLiteral("false"))
-            .arg(pBuffer->currentTrackLoadGenerationForTest())
+                            : QStringLiteral("false"),
+                    QString::number(pBuffer->currentTrackLoadGenerationForTest()))
             .toStdString();
 }
 
@@ -480,12 +480,14 @@ class StemFirstLoadControlFixture : public BaseSignalPathTest,
             *diagnostics = QStringLiteral(
                     "loadedSignalMatches=%1 engineBufferLoaded=%2 stemCountMatches=%3; %4")
                                    .arg(loadedSignalMatches ? QStringLiteral("true")
-                                                            : QStringLiteral("false"))
-                                   .arg(predicateResult(
-                                           engineBufferLoadedChecked,
-                                           engineBufferLoaded))
-                                   .arg(predicateResult(stemCountChecked, stemCountMatches))
-                                   .arg(QString::fromStdString(playerLifecycleDiagnostics()));
+                                                            : QStringLiteral("false"),
+                                           predicateResult(
+                                                   engineBufferLoadedChecked,
+                                                   engineBufferLoaded),
+                                           predicateResult(
+                                                   stemCountChecked, stemCountMatches),
+                                           QString::fromStdString(
+                                                   playerLifecycleDiagnostics()));
         }
         return ready;
     }
