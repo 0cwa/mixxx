@@ -691,7 +691,7 @@ CachingReader::ReadResult CachingReader::readWithRetry(SINT startSample,
 
     if (retryResult.retryPending ||
             retryResult.result == ReadResult::UNAVAILABLE) {
-        return ReadResult::UNAVAILABLE;
+        return retryResult.result;
     }
     SampleUtil::copy(buffer, m_retryReadBuffer.data(), numSamples);
     return retryResult.result;
