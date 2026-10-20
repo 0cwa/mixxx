@@ -16,8 +16,6 @@ jobs:
     env:
       SOURCE_SHA: f036586bbb6a877ceff5526f0b6c80667b0617c7
       SOURCE_TREE: d18540c49a21df564463578d2f6037716d1e975c
-      BUILD_DIR: ${{ runner.temp }}/clazy-build
-      EVIDENCE_DIR: ${{ runner.temp }}/clazy-evidence
       CC: /usr/bin/clang-21
       CXX: /usr/bin/clang++-21
       CLANGXX: /usr/bin/clang++-21
@@ -36,6 +34,9 @@ jobs:
       - name: Verify immutable source
         run: |
           set -euo pipefail
+          BUILD_DIR="$RUNNER_TEMP/clazy-build"
+          EVIDENCE_DIR="$RUNNER_TEMP/clazy-evidence"
+          printf 'BUILD_DIR=%s\nEVIDENCE_DIR=%s\n' "$BUILD_DIR" "$EVIDENCE_DIR" >> "$GITHUB_ENV"
           mkdir -p "$EVIDENCE_DIR"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
