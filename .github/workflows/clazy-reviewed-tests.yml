@@ -1,0 +1,207 @@
+# AI-generated validation workflow begins.
+name: Clazy reviewed test sources
+
+on:
+  push:
+    branches: [validation/clazy-f036-20261020]
+
+permissions:
+  contents: read
+
+jobs:
+  clazy:
+    if: github.repository == '0cwa/mixxx'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: f036586bbb6a877ceff5526f0b6c80667b0617c7
+      SOURCE_TREE: d18540c49a21df564463578d2f6037716d1e975c
+      BUILD_DIR: ${{ runner.temp }}/clazy-build
+      EVIDENCE_DIR: ${{ runner.temp }}/clazy-evidence
+      CC: /usr/bin/clang-21
+      CXX: /usr/bin/clang++-21
+      CLANGXX: /usr/bin/clang++-21
+      CLAZY_HEADER_FILTER: .*
+      CLAZY_IGNORE_DIRS: lib/.*
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: f036586bbb6a877ceff5526f0b6c80667b0617c7
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable source
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          test "$(git hash-object src/test/signalpathtest.h)" = 71e1ae806efc9e41b35f6fe42b5ac44b335b93b5
+          test "$(git hash-object src/test/stemcontrolobjecttest.cpp)" = 0a4e965e01d9cb65facebfeed26b65dd7a0dcbca
+          git diff --exit-code
+          printf '%s\n' "workflow_sha=$GITHUB_SHA" "source_sha=$SOURCE_SHA" \
+            "source_tree=$SOURCE_TREE" > "$EVIDENCE_DIR/source.txt"
+          sha256sum src/test/signalpathtest.h src/test/stemcontrolobjecttest.cpp \
+            > "$EVIDENCE_DIR/source-sha256.txt"
+
+      - name: Install selected official Ubuntu dependencies
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
+          assert release['VERSION_ID'].strip('"') == '26.04'
+          sources = Path('/etc/apt/sources.list.d/ubuntu.sources').read_text()
+          stanzas = []
+          for block in sources.strip().split('\n\n'):
+              fields = {}
+              for line in block.splitlines():
+                  if not line.strip() or line.startswith('#'):
+                      continue
+                  if line[0].isspace():
+                      fields[key] += ' ' + line.strip()
+                  else:
+                      key, value = line.split(':', 1)
+                      fields[key] = value.strip()
+              if fields:
+                  stanzas.append(fields)
+          assert stanzas
+          assert {'main', 'universe'} <= {component for fields in stanzas for component in fields['Components'].split()}
+          for fields in stanzas:
+              assert fields['Types'].split() == ['deb']
+              assert fields['Signed-By'] == '/usr/share/keyrings/ubuntu-archive-keyring.gpg'
+              assert set(fields['Suites'].split()) <= {'resolute', 'resolute-updates', 'resolute-security', 'resolute-backports'}
+              assert fields['URIs'].split()
+              assert all(urlsplit(uri).scheme in {'http', 'https'} and urlsplit(uri).hostname in {'archive.ubuntu.com', 'azure.archive.ubuntu.com', 'security.ubuntu.com'} for uri in fields['URIs'].split())
+          PY
+          apt_options=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          packages=(
+            clazy clang-21 cmake ninja-build pkg-config g++
+            libavformat-dev libswresample-dev libchromaprint-dev libebur128-dev
+            libflac-dev libmp3lame-dev libogg-dev libvorbis-dev portaudio19-dev
+            libgmock-dev libprotobuf-dev protobuf-compiler libsndfile1-dev
+            libsoundtouch-dev libtag-dev libsqlite3-dev libmsgsl-dev libgl-dev
+            qt6-base-dev qt6-base-private-dev qt6-declarative-dev
+            qt6-shadertools-dev qt6-svg-dev qt6-5compat-dev
+          )
+          timeout --kill-after=15s 5m sudo apt-get "${apt_options[@]}" update \
+            2>&1 | tee "$EVIDENCE_DIR/apt-update.log"
+          apt-cache "${apt_options[@]}" policy "${packages[@]}" \
+            > "$EVIDENCE_DIR/package-policy.txt"
+          timeout --kill-after=15s 15m sudo env DEBIAN_FRONTEND=noninteractive \
+            apt-get "${apt_options[@]}" install -y --no-install-recommends "${packages[@]}" \
+            2>&1 | tee "$EVIDENCE_DIR/dependencies.log"
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' clazy)" ge 1.17
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' clazy)" lt 1.18
+          dpkg-query -W "${packages[@]}" > "$EVIDENCE_DIR/package-versions.txt"
+          /usr/bin/clang++-21 --version | tee "$EVIDENCE_DIR/clang-version.txt"
+          /usr/bin/clazy --version 2>&1 | tee "$EVIDENCE_DIR/clazy-version.txt"
+          /usr/bin/clazy-standalone --version 2>&1 | tee "$EVIDENCE_DIR/standalone-version.txt"
+
+      - name: Configure fresh analysis database
+        run: |
+          set -euo pipefail
+          test ! -e "$BUILD_DIR"
+          timeout --kill-after=15s 8m /usr/bin/cmake -S . -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DOPTIMIZE=off -DWARNINGS_FATAL=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DCCACHE_SUPPORT=OFF \
+            -DQT6=ON -DQML=OFF -DBUILD_TESTING=ON -DBUILD_BENCH=OFF \
+            -DSTEM=ON -DFFMPEG=ON -DFAAD=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_FdkAac=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_MP4=ON -DCMAKE_DISABLE_FIND_PACKAGE_MP4v2=ON \
+            -DCOREAUDIO=OFF -DMEDIAFOUNDATION=OFF -DBUNGEE=OFF -DSIGNALSMITH=OFF \
+            -DENGINEPRIME=OFF -DKEYFINDER=OFF -DBATTERY=OFF -DBROADCAST=OFF \
+            -DBULK=OFF -DHID=OFF -DLILV=OFF -DOPUS=OFF -DQTKEYCHAIN=OFF \
+            -DVINYLCONTROL=OFF -DMAD=OFF -DMODPLUG=OFF -DWAVPACK=OFF \
+            -DPIPEWIRE=OFF -DPORTMIDI=OFF -DRUBBERBAND=OFF \
+            -DLOCALECOMPARE=OFF -DDOWNLOAD_MANUAL=OFF -DINSTALL_USER_UDEV_RULES=OFF \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          if grep -F 'Manually-specified variables were not used by the project:' "$EVIDENCE_DIR/configure.log"; then
+            exit 1
+          fi
+
+      - name: Generate headers only and select the actual translation unit
+        run: |
+          set -euo pipefail
+          timeout --kill-after=5s 1m /usr/bin/cmake --build "$BUILD_DIR" \
+            --target mixxx-gitinfo --parallel 1
+          mkdir -p "$BUILD_DIR/src/proto" "$BUILD_DIR/focused"
+          timeout --kill-after=5s 1m /usr/bin/protoc --proto_path=src/proto \
+            --cpp_out="$BUILD_DIR/src/proto" \
+            src/proto/{beats,headers,keys,skin,waveform}.proto
+          python3 - <<'PY'
+          import json, os, re, shlex
+          from pathlib import Path
+          build = Path(os.environ['BUILD_DIR'])
+          source = Path.cwd()
+          cache = {}
+          for line in (build / 'CMakeCache.txt').read_text().splitlines():
+              if line and not line.startswith(('#', '//')) and '=' in line:
+                  key, value = line.split('=', 1)
+                  cache[key.split(':')[0]] = value
+          for key in ('STEM', 'FFMPEG', 'BUILD_TESTING', 'WARNINGS_FATAL', 'CMAKE_DISABLE_PRECOMPILE_HEADERS',
+                      'CMAKE_DISABLE_FIND_PACKAGE_FdkAac', 'CMAKE_DISABLE_FIND_PACKAGE_MP4', 'CMAKE_DISABLE_FIND_PACKAGE_MP4v2'):
+              assert cache[key] == 'ON', (key, cache.get(key))
+          for key in ('FAAD', 'COREAUDIO', 'MEDIAFOUNDATION', 'CCACHE_SUPPORT', 'QML',
+                      'PIPEWIRE', 'PORTMIDI', 'RUBBERBAND'):
+              assert cache[key] == 'OFF', (key, cache.get(key))
+          assert cache['CMAKE_CXX_COMPILER'] == '/usr/bin/clang++-21'
+          assert cache['CMAKE_MAKE_PROGRAM'] == '/usr/bin/ninja'
+          assert cache['CMAKE_HOME_DIRECTORY'] == str(source)
+          database = json.loads((build / 'compile_commands.json').read_text())
+          unit = source / 'src/test/stemcontrolobjecttest.cpp'
+          entries = [entry for entry in database if Path(entry['file']).resolve() == unit]
+          assert len(entries) == 1, len(entries)
+          argv = entries[0].get('arguments') or shlex.split(entries[0]['command'])
+          assert {'-DBUILD_TESTING', '-D__STEM__', '-D__FFMPEG__'} <= set(argv)
+          for forbidden in ('-D__FAAD__', '-D__AU_EFFECTS__', '-D__COREAUDIO__', '-D__MEDIAFOUNDATION__'):
+              assert not any(arg == forbidden or arg.startswith(forbidden + '=') for arg in argv)
+          assert '-include' not in argv and '-include-pch' not in argv
+          assert '#include "test/signalpathtest.h"' in unit.read_text()
+          (build / 'focused/compile_commands.json').write_text(json.dumps(entries, indent=2))
+          checks = re.findall(r'^\s+CLAZY_CHECKS: (.+)$', Path('.github/workflows/checks.yml').read_text(), re.M)
+          assert len(checks) == 1 and checks[0].startswith('level2,')
+          with open(os.environ['GITHUB_ENV'], 'a') as environment:
+              environment.write('CLAZY_CHECKS=' + checks[0] + '\n')
+          evidence = Path(os.environ['EVIDENCE_DIR'])
+          (evidence / 'analysis-command.json').write_text(json.dumps(entries, indent=2))
+          (evidence / 'clazy-checks.txt').write_text(checks[0] + '\n')
+          PY
+
+      - name: Analyze the source and its included header with Clazy
+        run: |
+          set -euo pipefail
+          unset CLAZY_NO_WERROR CLAZY_EXPORT_FIXES
+          /usr/bin/clazy-standalone --list-checks --checks="$CLAZY_CHECKS" \
+            2>&1 | tee "$EVIDENCE_DIR/enabled-checks.txt"
+          grep -F connect-3arg-lambda "$EVIDENCE_DIR/enabled-checks.txt"
+          grep -F qstring-arg "$EVIDENCE_DIR/enabled-checks.txt"
+          ulimit -c 0
+          ulimit -t 240
+          ulimit -v 4194304
+          ulimit -f 32768
+          timeout --signal=TERM --kill-after=10s 5m /usr/bin/clazy-standalone \
+            --checks="$CLAZY_CHECKS" --header-filter='.*' \
+            -p "$BUILD_DIR/focused" --extra-arg=-Werror --extra-arg=-H \
+            "$PWD/src/test/stemcontrolobjecttest.cpp" \
+            2>&1 | tee "$EVIDENCE_DIR/clazy.log"
+          grep -F "$PWD/src/test/signalpathtest.h" "$EVIDENCE_DIR/clazy.log"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code
+          sha256sum -c "$EVIDENCE_DIR/source-sha256.txt"
+
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clazy-f036-evidence
+          path: ${{ runner.temp }}/clazy-evidence/
+          if-no-files-found: error
+          retention-days: 7
+# AI-generated validation workflow ends.
