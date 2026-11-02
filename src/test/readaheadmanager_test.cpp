@@ -4,6 +4,9 @@
 
 #include <QScopedPointer>
 #include <QtDebug>
+#include <algorithm>
+#include <memory>
+#include <vector>
 
 #include "control/controlobject.h"
 #include "engine/cachingreader/cachingreader.h"
@@ -20,8 +23,9 @@ const QString kGroup = "[test]";
 
 class StubReader : public CachingReader {
   public:
-    StubReader()
-            : CachingReader(kGroup, UserSettingsPointer(), mixxx::audio::ChannelCount::stereo()) {
+    explicit StubReader(mixxx::audio::ChannelCount channelCount =
+                                mixxx::audio::ChannelCount::stereo())
+            : CachingReader(kGroup, UserSettingsPointer(), channelCount) {
     }
 
     CachingReader::ReadResult read(SINT startSample,
@@ -48,6 +52,11 @@ class StubLoopControl : public LoopingControl {
                 mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(trigger));
         m_targetReturnValues.push_back(
                 mixxx::audio::FramePos::fromEngineSamplePosMaybeInvalid(target));
+    }
+
+    void pushFrameValues(mixxx::audio::FramePos trigger, mixxx::audio::FramePos target) {
+        m_triggerReturnValues.push_back(trigger);
+        m_targetReturnValues.push_back(target);
     }
 
     mixxx::audio::FramePos nextTrigger(bool reverse,
@@ -116,6 +125,10 @@ class ReadAheadManagerTest : public MixxxTest {
               m_pBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)) {
     }
 
+    ~ReadAheadManagerTest() override {
+        SampleUtil::free(m_pBuffer);
+    }
+
   protected:
     void SetUp() override {
         SampleUtil::clear(m_pBuffer, MAX_BUFFER_LEN);
@@ -147,6 +160,45 @@ class ReadAheadManagerTest : public MixxxTest {
     QScopedPointer<StubCueControl> m_pCueControl;
     QScopedPointer<ReadAheadManager> m_pReadAheadManager;
 };
+
+TEST_F(ReadAheadManagerTest, CrossfadeHandlesHighRateStemLoop) {
+    constexpr auto kChannelCount = mixxx::audio::ChannelCount::stem();
+    constexpr SINT kCurrentFrame = 75000;
+    constexpr SINT kLoopEndFrame = 100000;
+    constexpr SINT kLoopStartFrame = 50000;
+    constexpr SINT kOutputFrames = 8192;
+    constexpr SINT kRate = 4;
+    constexpr SINT kRequestSamples = kOutputFrames * kRate * kChannelCount;
+    constexpr SINT kReadSamples = (kLoopEndFrame - kCurrentFrame) * kChannelCount;
+    constexpr CSAMPLE kSentinel = -1.0f;
+    std::vector<CSAMPLE> output(kRequestSamples, kSentinel);
+
+    auto reader = std::make_unique<StubReader>(kChannelCount);
+    auto readAhead = std::make_unique<ReadAheadManager>(reader.get(),
+            m_pLoopControl.data(),
+            m_pCueControl.data());
+    m_pLoopControl->setFrameInfo(mixxx::audio::kStartFramePos,
+            mixxx::audio::FramePos::fromSamplePos(200000 * kChannelCount, kChannelCount),
+            mixxx::audio::SampleRate(48000));
+    readAhead->notifySeek(kCurrentFrame * kChannelCount);
+    m_pLoopControl->pushFrameValues(
+            mixxx::audio::FramePos::fromSamplePos(
+                    kLoopEndFrame * kChannelCount, kChannelCount),
+            mixxx::audio::FramePos::fromSamplePos(
+                    kLoopStartFrame * kChannelCount, kChannelCount));
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    EXPECT_EQ(kReadSamples,
+            readAhead->getNextSamples(
+                    kRate, output.data(), kRequestSamples, kChannelCount));
+    EXPECT_EQ(kLoopStartFrame * kChannelCount, readAhead->getPlaypos());
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kReadSamples,
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+    EXPECT_TRUE(std::all_of(output.begin() + kReadSamples,
+            output.end(),
+            [](CSAMPLE sample) { return sample == kSentinel; }));
+}
 
 TEST_F(ReadAheadManagerTest, SavedJump) {
     m_pReadAheadManager->notifySeek(0.5);

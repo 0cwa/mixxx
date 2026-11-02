@@ -5,8 +5,14 @@
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
 #include "engine/controls/ratecontrol.h"
+#include "engine/engine.h"
 #include "util/defs.h"
 #include "util/sample.h"
+
+namespace {
+constexpr SINT kMaxCrossFadeSamples =
+        static_cast<SINT>(MAX_BUFFER_LEN) * mixxx::kMaxEngineChannelInputCount;
+} // namespace
 
 ReadAheadManager::ReadAheadManager()
         : m_pLoopingControl(nullptr),
@@ -14,7 +20,7 @@ ReadAheadManager::ReadAheadManager()
           m_pRateControl(nullptr),
           m_currentPosition(0),
           m_pReader(nullptr),
-          m_pCrossFadeBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)),
+          m_pCrossFadeBuffer(SampleUtil::alloc(kMaxCrossFadeSamples)),
           m_cacheMissCount(0),
           m_cacheMissExpected(false) {
     // For testing only: ReadAheadManagerMock
@@ -28,7 +34,7 @@ ReadAheadManager::ReadAheadManager(CachingReader* pReader,
           m_pRateControl(nullptr),
           m_currentPosition(0),
           m_pReader(pReader),
-          m_pCrossFadeBuffer(SampleUtil::alloc(MAX_BUFFER_LEN)),
+          m_pCrossFadeBuffer(SampleUtil::alloc(kMaxCrossFadeSamples)),
           m_cacheMissCount(0),
           m_cacheMissExpected(false) {
     DEBUG_ASSERT(m_pLoopingControl != nullptr);
