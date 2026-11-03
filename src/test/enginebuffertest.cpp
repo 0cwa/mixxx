@@ -10,6 +10,7 @@
 #include "control/controlobject.h"
 #include "engine/controls/ratecontrol.h"
 #include "engine/defs_keylock.h"
+#include "engine/enginebuffer.h"
 #include "mixer/basetrackplayer.h"
 #include "preferences/usersettings.h"
 #include "test/mixxxtest.h"
@@ -27,6 +28,22 @@ const QString kAppGroup = QStringLiteral("[App]");
 class EngineBufferTest : public MockedEngineBackendTest {};
 
 class EngineBufferE2ETest : public SignalPathTest {};
+
+TEST_F(EngineBufferTest, FractionalPlayposPreservesNegativePositionAndClampsTrackEnd) {
+    EngineBuffer* pEngineBuffer = m_pChannel1->getEngineBuffer();
+    pEngineBuffer->m_trackEndPositionOld =
+            mixxx::audio::FramePos::fromEngineSamplePos(100.0);
+
+    EXPECT_DOUBLE_EQ(-0.01,
+            pEngineBuffer->fractionalPlayposFromAbsolute(
+                    mixxx::audio::FramePos::fromEngineSamplePos(-1.0)));
+    EXPECT_DOUBLE_EQ(0.5,
+            pEngineBuffer->fractionalPlayposFromAbsolute(
+                    mixxx::audio::FramePos::fromEngineSamplePos(50.0)));
+    EXPECT_DOUBLE_EQ(1.0,
+            pEngineBuffer->fractionalPlayposFromAbsolute(
+                    mixxx::audio::FramePos::fromEngineSamplePos(101.0)));
+}
 
 TEST_F(EngineBufferTest, DisableKeylockResetsPitch) {
     // To prevent one-slider users from getting stuck on a key,
