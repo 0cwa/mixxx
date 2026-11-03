@@ -14,6 +14,7 @@
 #include "engine/cachingreader/cachingreaderchunk.h"
 #include "engine/controls/cuecontrol.h"
 #include "engine/controls/loopingcontrol.h"
+#include "engine/engine.h"
 #include "test/mixxxtest.h"
 #include "util/assert.h"
 #include "util/defs.h"
@@ -164,6 +165,27 @@ class ReadAheadManagerTest : public MixxxTest {
                 m_pCueControl.data()));
     }
 
+    void expectRequestRejected(SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount) {
+        constexpr CSAMPLE kSentinel = -1.0f;
+        const auto outputSize = static_cast<std::size_t>(
+                std::max<SINT>(2, requestedSamples));
+        std::vector<CSAMPLE> output(outputSize, kSentinel);
+        m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+        m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+        const auto result = m_pReadAheadManager->getNextSamplesWithRetry(
+                1.0, output.data(), requestedSamples, channelCount);
+
+        EXPECT_EQ(0, result.samplesRead);
+        EXPECT_FALSE(result.retryPending);
+        EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+        EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+            return sample == kSentinel;
+        }));
+        EXPECT_TRUE(m_pReader->readStarts().empty());
+    }
+
     ControlObject m_beatClosestCO;
     ControlObject m_beatNextCO;
     ControlObject m_beatPrevCO;
@@ -222,6 +244,125 @@ TEST_F(ReadAheadManagerTest, CrossfadeHandlesHighRateStemLoop) {
     EXPECT_TRUE(std::all_of(output.begin() + kReadSamples,
             output.end(),
             [](CSAMPLE sample) { return sample == kSentinel; }));
+}
+
+TEST_F(ReadAheadManagerTest, CrossfadeHandlesMaximumStemRequest) {
+    constexpr auto kChannels = mixxx::audio::ChannelCount::stem();
+    constexpr SINT kRequestFrames = MAX_BUFFER_LEN;
+    constexpr SINT kRequestSamples = kRequestFrames * kChannels;
+    constexpr CSAMPLE kSentinel = -1.0f;
+    std::vector<CSAMPLE> output(kRequestSamples + kChannels, kSentinel);
+
+    auto reader = std::make_unique<StubReader>(kChannels);
+    auto readAhead = std::make_unique<ReadAheadManager>(reader.get(),
+            m_pLoopControl.data(),
+            m_pCueControl.data());
+    m_pLoopControl->setFrameInfo(mixxx::audio::kStartFramePos,
+            mixxx::audio::FramePos::fromSamplePos(
+                    3 * kRequestSamples, kChannels),
+            mixxx::audio::SampleRate(48000));
+    readAhead->notifySeek(0.0);
+    m_pLoopControl->pushFrameValues(
+            mixxx::audio::FramePos::fromSamplePos(kRequestSamples, kChannels),
+            mixxx::audio::FramePos::fromSamplePos(2 * kRequestSamples, kChannels));
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    const auto result = readAhead->getNextSamplesWithRetry(
+            1.0, output.data(), kRequestSamples, kChannels);
+
+    EXPECT_EQ(kRequestSamples, result.samplesRead);
+    EXPECT_FALSE(result.retryPending);
+    ASSERT_EQ(2, reader->readStarts().size());
+    EXPECT_EQ(0, reader->readStarts()[0]);
+    EXPECT_EQ(kRequestSamples, reader->readStarts()[1]);
+    EXPECT_EQ(kRequestSamples, reader->readSizes()[0]);
+    EXPECT_EQ(kRequestSamples, reader->readSizes()[1]);
+    EXPECT_TRUE(std::all_of(output.begin(),
+            output.begin() + kRequestSamples,
+            [](CSAMPLE sample) { return sample == 0.0f; }));
+    EXPECT_TRUE(std::all_of(output.begin() + kRequestSamples,
+            output.end(),
+            [](CSAMPLE sample) { return sample == kSentinel; }));
+}
+
+TEST_F(ReadAheadManagerTest, RejectsInvalidChannelCounts) {
+    constexpr SINT kRequestSamples = 8;
+    const auto unsupportedChannelCount = mixxx::audio::ChannelCount::fromInt(
+            static_cast<int>(mixxx::kMaxEngineChannelInputCount.value()) + 1);
+
+    expectRequestRejected(kRequestSamples, mixxx::audio::ChannelCount{});
+    expectRequestRejected(
+            static_cast<SINT>(unsupportedChannelCount.value()), unsupportedChannelCount);
+}
+
+TEST_F(ReadAheadManagerTest, RejectsInvalidSampleRequests) {
+    constexpr auto kChannels = mixxx::audio::ChannelCount::stereo();
+    constexpr SINT kMaxRequestSamples =
+            static_cast<SINT>(MAX_BUFFER_LEN) * static_cast<SINT>(kChannels.value());
+
+    expectRequestRejected(-1, kChannels);
+    expectRequestRejected(3, kChannels);
+    expectRequestRejected(
+            kMaxRequestSamples + static_cast<SINT>(kChannels.value()), kChannels);
+}
+
+TEST_F(ReadAheadManagerTest, RejectsNullDestination) {
+    constexpr auto kChannels = mixxx::audio::ChannelCount::stereo();
+    m_pLoopControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+
+    const auto result = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, nullptr, 16, kChannels);
+
+    EXPECT_EQ(0, result.samplesRead);
+    EXPECT_FALSE(result.retryPending);
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_TRUE(m_pReader->readStarts().empty());
+}
+
+TEST_F(ReadAheadManagerTest, RejectionCancelsPendingRetryAndHint) {
+    constexpr auto kChannels = mixxx::audio::ChannelCount::stereo();
+    std::vector<CSAMPLE> output(16, -1.0f);
+    m_pReadAheadManager->notifySeek(0);
+    m_pLoopControl->pushValues(8, 4);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    m_pReader->pushReadResults({CachingReader::ReadResult::PARTIALLY_UNAVAILABLE,
+            CachingReader::ReadResult::AVAILABLE});
+
+    const auto missed = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), output.size(), kChannels);
+    ASSERT_TRUE(missed.retryPending);
+    HintVector pendingHints;
+    m_pReadAheadManager->hintReader(1.0, &pendingHints, kChannels);
+    ASSERT_GE(pendingHints.size(), 2);
+    EXPECT_EQ(4, pendingHints[0].frameCount);
+
+    std::fill(output.begin(), output.end(), 0.75f);
+    const auto rejected = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), 3, kChannels);
+    EXPECT_EQ(0, rejected.samplesRead);
+    EXPECT_FALSE(rejected.retryPending);
+    EXPECT_DOUBLE_EQ(0.0, m_pReadAheadManager->getPlaypos());
+    EXPECT_TRUE(std::all_of(output.begin(), output.end(), [](CSAMPLE sample) {
+        return sample == 0.75f;
+    }));
+
+    HintVector hintsAfterRejection;
+    m_pReadAheadManager->hintReader(1.0, &hintsAfterRejection, kChannels);
+    ASSERT_EQ(1, hintsAfterRejection.size());
+    EXPECT_EQ(2 * CachingReaderChunk::kFrames,
+            hintsAfterRejection[0].frameCount);
+
+    m_pLoopControl->pushValues(4, 2);
+    m_pCueControl->pushValues(kNoTrigger, kNoTrigger);
+    const auto retried = m_pReadAheadManager->getNextSamplesWithRetry(
+            1.0, output.data(), output.size(), kChannels);
+    EXPECT_EQ(4, retried.samplesRead);
+    EXPECT_FALSE(retried.retryPending);
+    EXPECT_DOUBLE_EQ(2.0, m_pReadAheadManager->getPlaypos());
+    ASSERT_EQ(2, m_pReader->readSizes().size());
+    EXPECT_EQ(8, m_pReader->readSizes()[0]);
+    EXPECT_EQ(4, m_pReader->readSizes()[1]);
 }
 
 TEST_F(ReadAheadManagerTest, RetryReadPreservesDestinationOnPartialCacheMiss) {

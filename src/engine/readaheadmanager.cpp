@@ -194,12 +194,31 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
         SINT requestedSamples,
         mixxx::audio::ChannelCount channelCount,
         bool retryOnCacheMiss) {
-    const SINT requestSamples = requestedSamples;
-    const SINT remainder = requestedSamples % channelCount;
-    if (remainder != 0) {
-        qDebug() << "ERROR: Non-aligned requested_samples to ReadAheadManager::getNextSamples";
-        requestedSamples -= remainder;
+    const auto rejectRequest = [this] {
+        cancelPendingRetry();
+        return NextSamplesResult{0, false};
+    };
+
+    // Validate the interleaved-buffer contract before using channelCount or
+    // touching either the reader staging buffer or crossfade storage.
+    if (pOutput == nullptr) {
+        return rejectRequest();
     }
+    if (!channelCount.isValid() ||
+            channelCount.value() > mixxx::kMaxEngineChannelInputCount.value()) {
+        return rejectRequest();
+    }
+    const SINT maxRequestSamples = static_cast<SINT>(MAX_BUFFER_LEN) *
+            static_cast<SINT>(channelCount.value());
+    if (requestedSamples < 0 || requestedSamples > maxRequestSamples ||
+            requestedSamples > kMaxCrossFadeSamples) {
+        return rejectRequest();
+    }
+    if (requestedSamples % channelCount.value() != 0) {
+        return rejectRequest();
+    }
+
+    const SINT requestSamples = requestedSamples;
     const bool inReverse = dRate < 0;
     const bool reusePending = retryOnCacheMiss &&
             m_pendingRetry.matches(m_currentPosition,
@@ -211,11 +230,32 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
     }
     ReadPlan plan = reusePending
             ? m_pendingRetry
-            : makeReadPlan(inReverse, requestSamples, requestedSamples, channelCount);
+            : makeReadPlan(inReverse, requestSamples, requestSamples, channelCount);
 
-    VERIFY_OR_DEBUG_ASSERT(plan.samplesFromReader >= 0) {
+    VERIFY_OR_DEBUG_ASSERT(plan.samplesFromReader >= 0 &&
+            plan.samplesFromReader <= maxRequestSamples &&
+            plan.samplesFromReader <= kMaxCrossFadeSamples) {
         qDebug() << "Need negative samples in ReadAheadManager::getNextSamples. Ignoring read";
-        return {0, false};
+        return rejectRequest();
+    }
+    VERIFY_OR_DEBUG_ASSERT(plan.crossFadeStart >= 0 &&
+            plan.crossFadeStart <= plan.samplesFromReader &&
+            plan.crossFadeSamples >= 0 &&
+            plan.crossFadeSamples <= kMaxCrossFadeSamples &&
+            plan.crossFadeSamples <=
+                    plan.samplesFromReader - plan.crossFadeStart) {
+        return rejectRequest();
+    }
+    SINT crossFadeOutputOffset = 0;
+    if (plan.crossFadeSamples > 0) {
+        crossFadeOutputOffset = SampleUtil::ceilPlayPosToFrameStart(
+                plan.crossFadeStart, channelCount);
+        VERIFY_OR_DEBUG_ASSERT(crossFadeOutputOffset >= 0 &&
+                crossFadeOutputOffset <= plan.samplesFromReader &&
+                plan.crossFadeSamples <=
+                        plan.samplesFromReader - crossFadeOutputOffset) {
+            return rejectRequest();
+        }
     }
 
     if (retryOnCacheMiss && !reusePending) {
@@ -296,7 +336,7 @@ ReadAheadManager::NextSamplesResult ReadAheadManager::getNextSamplesInternal(
             ++m_cacheMissCount;
         }
         SampleUtil::linearCrossfadeBuffersOut(
-                pOutput + SampleUtil::ceilPlayPosToFrameStart(plan.crossFadeStart, channelCount),
+                pOutput + crossFadeOutputOffset,
                 m_pCrossFadeBuffer,
                 plan.crossFadeSamples,
                 channelCount);

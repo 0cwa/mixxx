@@ -38,7 +38,10 @@ class ReadAheadManager {
     /// lookahead buffer. Provide rate as dRate so that the manager knows the
     /// direction the audio is progressing in. Returns the total number of
     /// samples read into buffer. Note that it is very common that the total
-    /// samples read is less than the requested number of samples.
+    /// samples read is less than the requested number of samples. Requests
+    /// must use a supported channel count, be frame-aligned, and fit the fixed
+    /// reader and crossfade buffers. Invalid requests return zero without
+    /// modifying the destination buffer.
     virtual SINT getNextSamples(double dRate,
             CSAMPLE* buffer,
             SINT requested_samples,
