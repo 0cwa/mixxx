@@ -93,15 +93,28 @@ class CachingReader : public QObject {
         UNAVAILABLE,
         // Some samples are missing and corresponding range in buffer has been cleared with silence
         PARTIALLY_AVAILABLE,
+        // A cache miss occurred after some samples were read; the remaining
+        // range was cleared with silence.
+        PARTIALLY_UNAVAILABLE,
         // All requested samples are available and have been read into buffer
         AVAILABLE,
     };
 
     // Read numSamples from the SoundSource starting with sample into
-    // buffer. It always writes numSamples to the buffer and otherwise
-    // returns ReadResult::UNAVAILABLE.
+    // buffer. It always writes numSamples unless it returns UNAVAILABLE. A
+    // partial cache miss is reported as PARTIALLY_UNAVAILABLE; other missing
+    // audio such as preroll or EOF is PARTIALLY_AVAILABLE.
     // It support reading stereo samples in reverse (backward) order.
     virtual ReadResult read(SINT startSample,
+            SINT numSamples,
+            bool reverse,
+            CSAMPLE* buffer,
+            mixxx::audio::ChannelCount channelCount);
+
+    // Like read(), but retries the entire range on a cache miss. On
+    // ReadResult::UNAVAILABLE, buffer is untouched. Silence used for
+    // preroll, EOF, or other intentionally unavailable audio is still copied.
+    virtual ReadResult readWithRetry(SINT startSample,
             SINT numSamples,
             bool reverse,
             CSAMPLE* buffer,
@@ -193,6 +206,9 @@ class CachingReader : public QObject {
 
     // The raw memory buffer which is divided up into chunks.
     mixxx::SampleBuffer m_sampleBuffer;
+
+    // Staging storage for all-or-nothing reads requested by stretch scalers.
+    mixxx::SampleBuffer m_retryReadBuffer;
 
     // The readable frame index range as reported by the worker.
     mixxx::IndexRange m_readableFrameIndexRange;

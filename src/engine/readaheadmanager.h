@@ -23,6 +23,11 @@ class RateControl;
 /// point.
 class ReadAheadManager {
   public:
+    struct NextSamplesResult {
+        SINT samplesRead;
+        bool retryPending;
+    };
+
     ReadAheadManager(); // Only for testing: ReadAheadManagerMock
     ReadAheadManager(CachingReader* reader,
             LoopingControl* pLoopingControl,
@@ -38,6 +43,17 @@ class ReadAheadManager {
             CSAMPLE* buffer,
             SINT requested_samples,
             mixxx::audio::ChannelCount channelCount);
+
+    // Read input for a stretcher without advancing past a cache miss. A
+    // derived test manager that only overrides getNextSamples() keeps its
+    // existing behavior through this default implementation.
+    virtual NextSamplesResult getNextSamplesWithRetry(double dRate,
+            CSAMPLE* buffer,
+            SINT requested_samples,
+            mixxx::audio::ChannelCount channelCount);
+
+    // Discard a retry plan when its scaler is reset or seeks elsewhere.
+    virtual void cancelPendingRetry();
 
     /// Used to add a new EngineControls that ReadAheadManager will use to decide
     /// which samples to return.
@@ -69,6 +85,48 @@ class ReadAheadManager {
             mixxx::audio::ChannelCount channelCount);
 
   private:
+    struct ReadPlan {
+        bool active{false};
+        bool inReverse{false};
+        bool reachedTrigger{false};
+        double requestPosition{0.0};
+        double target{0.0};
+        double positionAfterTrigger{0.0};
+        double samplesToSeekTrigger{0.0};
+        SINT requestSamples{0};
+        SINT samplesFromReader{0};
+        SINT preseekSamples{0};
+        SINT startSample{0};
+        SINT crossFadeStart{0};
+        SINT crossFadeSamples{0};
+        SINT crossFadeReadPosition{0};
+        mixxx::audio::ChannelCount channelCount;
+        mixxx::audio::FramePos loopTriggerPosition;
+        mixxx::audio::FramePos loopTargetPosition;
+        mixxx::audio::FramePos jumpTriggerPosition;
+        mixxx::audio::FramePos jumpTargetPosition;
+        mixxx::audio::FramePos targetPosition;
+
+        bool matches(double position,
+                bool reverse,
+                SINT samples,
+                mixxx::audio::ChannelCount channels) const {
+            return active && requestPosition == position &&
+                    inReverse == reverse && requestSamples == samples &&
+                    channelCount.value() == channels.value();
+        }
+    };
+
+    ReadPlan makeReadPlan(bool inReverse,
+            SINT requestSamples,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount);
+    NextSamplesResult getNextSamplesInternal(double dRate,
+            CSAMPLE* buffer,
+            SINT requestedSamples,
+            mixxx::audio::ChannelCount channelCount,
+            bool retryOnCacheMiss);
+
     /// An entry in the read log indicates the virtual playposition the read
     /// began at and the virtual playposition it ended at.
     struct ReadLogEntry {
@@ -76,7 +134,7 @@ class ReadAheadManager {
         double virtualPlaypositionEndNonInclusive;
 
         ReadLogEntry(double virtualPlaypositionStart,
-                     double virtualPlaypositionEndNonInclusive) {
+                double virtualPlaypositionEndNonInclusive) {
             this->virtualPlaypositionStart = virtualPlaypositionStart;
             this->virtualPlaypositionEndNonInclusive =
                     virtualPlaypositionEndNonInclusive;
@@ -92,7 +150,7 @@ class ReadAheadManager {
 
         double length() const {
             return fabs(virtualPlaypositionEndNonInclusive -
-                       virtualPlaypositionStart);
+                    virtualPlaypositionStart);
         }
 
         /// Moves the start position forward or backward (depending on
@@ -110,7 +168,7 @@ class ReadAheadManager {
             // Allow 0-length ReadLogEntry's to merge regardless of their
             // direction if they have the right start point.
             if ((other.length() == 0 || direction() == other.direction()) &&
-                virtualPlaypositionEndNonInclusive == other.virtualPlaypositionStart) {
+                    virtualPlaypositionEndNonInclusive == other.virtualPlaypositionStart) {
                 virtualPlaypositionEndNonInclusive =
                         other.virtualPlaypositionEndNonInclusive;
                 return true;
@@ -122,7 +180,7 @@ class ReadAheadManager {
     /// virtualPlaypositionEnd is the first sample in the direction that was
     /// read that was NOT read as part of this log entry.
     void addReadLogEntry(double virtualPlaypositionStart,
-                         double virtualPlaypositionEndNonInclusive);
+            double virtualPlaypositionEndNonInclusive);
 
     LoopingControl* m_pLoopingControl;
     CueControl* m_pCueControl;
@@ -133,4 +191,7 @@ class ReadAheadManager {
     CSAMPLE* m_pCrossFadeBuffer;
     int m_cacheMissCount;
     bool m_cacheMissExpected;
+    ReadPlan m_pendingRetry;
+    Hint m_pendingReadHint{};
+    bool m_hasPendingReadHint{false};
 };
