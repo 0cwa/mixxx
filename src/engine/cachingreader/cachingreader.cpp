@@ -5,6 +5,7 @@
 #include "moc_cachingreader.cpp"
 #include "util/assert.h"
 #include "util/counter.h"
+#include "util/defs.h"
 #include "util/logger.h"
 #include "util/sample.h"
 
@@ -59,6 +60,7 @@ CachingReader::CachingReader(const QString& group,
           m_lruCachingReaderChunk(nullptr),
           m_sampleBuffer(CachingReaderChunk::kFrames * maxSupportedChannel *
                   kNumberOfCachedChunksInMemory),
+          m_retryReadBuffer(MAX_BUFFER_LEN * maxSupportedChannel),
           m_worker(group,
                   &m_chunkReadRequestFIFO,
                   &m_readerStatusUpdateFIFO,
@@ -79,14 +81,20 @@ CachingReader::CachingReader(const QString& group,
     }
 
     // Forward signals from worker
-    connect(&m_worker, &CachingReaderWorker::trackLoading,
-            this, &CachingReader::trackLoading,
+    connect(&m_worker,
+            &CachingReaderWorker::trackLoading,
+            this,
+            &CachingReader::trackLoading,
             Qt::DirectConnection);
-    connect(&m_worker, &CachingReaderWorker::trackLoaded,
-            this, &CachingReader::trackLoaded,
+    connect(&m_worker,
+            &CachingReaderWorker::trackLoaded,
+            this,
+            &CachingReader::trackLoaded,
             Qt::DirectConnection);
-    connect(&m_worker, &CachingReaderWorker::trackLoadFailed,
-            this, &CachingReader::trackLoadFailed,
+    connect(&m_worker,
+            &CachingReaderWorker::trackLoadFailed,
+            this,
+            &CachingReader::trackLoadFailed,
             Qt::DirectConnection);
 
     m_worker.start(QThread::HighPriority);
@@ -299,6 +307,26 @@ void CachingReader::process() {
     }
 }
 
+CachingReader::ReadResult CachingReader::readWithRetry(SINT startSample,
+        SINT numSamples,
+        bool reverse,
+        CSAMPLE* buffer,
+        mixxx::audio::ChannelCount channelCount) {
+    VERIFY_OR_DEBUG_ASSERT(buffer && numSamples >= 0 &&
+            numSamples <= m_retryReadBuffer.size()) {
+        return ReadResult::UNAVAILABLE;
+    }
+
+    const auto result = read(
+            startSample, numSamples, reverse, m_retryReadBuffer.data(), channelCount);
+    if (result == ReadResult::UNAVAILABLE ||
+            result == ReadResult::PARTIALLY_UNAVAILABLE) {
+        return ReadResult::UNAVAILABLE;
+    }
+    SampleUtil::copy(buffer, m_retryReadBuffer.data(), numSamples);
+    return result;
+}
+
 CachingReader::ReadResult CachingReader::read(SINT startSample,
         SINT numSamples,
         bool reverse,
@@ -365,6 +393,7 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
     DEBUG_ASSERT(!remainingFrameIndexRange.empty());
 
     auto result = ReadResult::AVAILABLE;
+    bool cacheMiss = false;
     if (!intersect(remainingFrameIndexRange, m_readableFrameIndexRange).empty()) {
         // Fill the buffer up to the first readable sample with
         // silence. This may happen when the engine is in preroll,
@@ -417,7 +446,6 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
             for (SINT chunkIndex = firstChunkIndex;
                     chunkIndex <= lastChunkIndex;
                     ++chunkIndex) {
-
                 // Process new messages from the reader thread before looking up
                 // the next chunk
                 process();
@@ -468,6 +496,7 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
                     // pending.
                     DEBUG_ASSERT(!pChunk ||
                             (pChunk->getState() == CachingReaderChunkForOwner::READ_PENDING));
+                    cacheMiss = true;
                     Counter("CachingReader::read(): Failed to read chunk on cache miss")++;
                     if (kLogger.traceEnabled()) {
                         kLogger.trace()
@@ -530,7 +559,8 @@ CachingReader::ReadResult CachingReader::read(SINT startSample,
     DEBUG_ASSERT(samplesRemaining >= 0);
     if (samplesRemaining > 0) {
         SampleUtil::clear(buffer, samplesRemaining);
-        result = ReadResult::PARTIALLY_AVAILABLE;
+        result = cacheMiss ? ReadResult::PARTIALLY_UNAVAILABLE
+                           : ReadResult::PARTIALLY_AVAILABLE;
     }
     return result;
 }
@@ -545,18 +575,18 @@ void CachingReader::hintAndMaybeWake(const HintVector& hintList) {
     // any are not, then wake.
     bool shouldWake = false;
 
-    for (const auto& hint: hintList) {
+    for (const auto& hint : hintList) {
         SINT hintFrame = hint.frame;
         SINT hintFrameCount = hint.frameCount;
 
         // Handle some special length values
         if (hintFrameCount == Hint::kFrameCountForward) {
-        	hintFrameCount = kDefaultHintFrames;
+            hintFrameCount = kDefaultHintFrames;
         } else if (hintFrameCount == Hint::kFrameCountBackward) {
-        	hintFrame -= kDefaultHintFrames;
-        	hintFrameCount = kDefaultHintFrames;
+            hintFrame -= kDefaultHintFrames;
+            hintFrameCount = kDefaultHintFrames;
             if (hintFrame < 0) {
-            	hintFrameCount += hintFrame;
+                hintFrameCount += hintFrame;
                 if (hintFrameCount <= 0) {
                     continue;
                 }
