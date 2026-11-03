@@ -56,6 +56,7 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
     double m_frameFractionalLeftover;
     SINT m_expectedFrameLatency;
     SINT m_currentFrameOffset;
+    bool m_parametersValid{true};
     // Holds the playback direction
     bool m_bBackwards;
     Preset m_currentPreset;
