@@ -1,10 +1,15 @@
 #include "engine/bufferscalers/enginebufferscalesignalsmith.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 #include "engine/engine.h"
 #include "engine/readaheadmanager.h"
 #include "moc_enginebufferscalesignalsmith.cpp"
 #include "util/assert.h"
 #include "util/defs.h"
+#include "util/fpclassify.h"
 #include "util/sample.h"
 #include "util/timer.h"
 
@@ -25,13 +30,39 @@ EngineBufferScaleSignalSmith::EngineBufferScaleSignalSmith(
 
 void EngineBufferScaleSignalSmith::setScaleParameters(
         double base_rate, double* pTempoRatio, double* pPitchRatio) {
+    const double requestedTempoRatio = *pTempoRatio;
+    const double requestedPitchRatio = *pPitchRatio;
+    bool parametersValid = util_isfinite(base_rate) && base_rate > 0 &&
+            util_isfinite(requestedTempoRatio) &&
+            util_isfinite(requestedPitchRatio);
+    if (parametersValid) {
+        const double rate = std::min(
+                base_rate * std::fabs(requestedTempoRatio), MAX_SEEK_SPEED);
+        const double transpose = std::clamp(
+                base_rate * requestedPitchRatio,
+                1.0 / MAX_SEEK_SPEED,
+                MAX_SEEK_SPEED);
+        *pTempoRatio = std::copysign(rate / base_rate, requestedTempoRatio);
+        *pPitchRatio = transpose / base_rate;
+        parametersValid = util_isfinite(*pTempoRatio) &&
+                util_isfinite(*pPitchRatio);
+    }
+    if (!parametersValid) {
+        *pTempoRatio = 0;
+        *pPitchRatio = 1;
+        m_parametersValid = false;
+        return;
+    }
+
+    m_parametersValid = true;
     m_dBaseRate = base_rate;
     m_bBackwards = *pTempoRatio < 0;
     m_dTempoRatio = std::fabs(*pTempoRatio);
     m_dPitchRatio = *pPitchRatio;
     m_effectiveRate = m_dBaseRate * m_dTempoRatio;
 
-    m_stretch.setTransposeFactor(static_cast<float>(m_dBaseRate * m_dPitchRatio));
+    m_stretch.setTransposeFactor(static_cast<float>(
+            m_dBaseRate * m_dPitchRatio));
     m_stretch.setFormantFactor(1.0);
 
     // The following value is calculated from the block and interval samples
@@ -40,10 +71,15 @@ void EngineBufferScaleSignalSmith::setScaleParameters(
     // As documented in
     // https://signalsmith-audio.co.uk/code/stretch/#how-to-use-latency-starting-and-ending,
     // stretch factor should be used when computing total latency
-    m_expectedFrameLatency =
-            static_cast<SINT>(m_stretch.inputLatency()) +
-            static_cast<SINT>(std::round(m_effectiveRate *
-                    static_cast<double>(m_stretch.outputLatency())));
+    const double latency = static_cast<double>(m_stretch.inputLatency()) +
+            std::round(m_effectiveRate *
+                    static_cast<double>(m_stretch.outputLatency()));
+    if (!util_isfinite(latency) || latency < 0 ||
+            latency >= static_cast<double>(std::numeric_limits<SINT>::max())) {
+        m_parametersValid = false;
+        return;
+    }
+    m_expectedFrameLatency = static_cast<SINT>(latency);
 }
 
 void EngineBufferScaleSignalSmith::onSignalChanged() {
@@ -51,7 +87,10 @@ void EngineBufferScaleSignalSmith::onSignalChanged() {
         return;
     }
 
-    uint8_t channelCount = getOutputSignal().getChannelCount();
+    const auto channelCount = getOutputSignal().getChannelCount();
+    if (channelCount.value() > mixxx::audio::ChannelCount::stem().value()) {
+        return;
+    }
     if (m_buffers.size() != channelCount) {
         m_buffers.resize(channelCount);
     }
@@ -147,6 +186,19 @@ SINT EngineBufferScaleSignalSmith::fetchAndDeinterleave(SINT sampleToRead, SINT 
 double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iOutputBufferSize) {
     ScopedTimer t(QStringLiteral("EngineBufferScaleSignalsmith::scaleBuffer"));
 
+    if (pOutputBuffer == nullptr || iOutputBufferSize <= 0) {
+        return 0;
+    }
+    const auto channels = getOutputSignal().getChannelCount();
+    if (!getOutputSignal().isValid() || !channels.isValid() ||
+            channels.value() > mixxx::audio::ChannelCount::stem().value() ||
+            iOutputBufferSize % channels != 0 ||
+            iOutputBufferSize / channels > MAX_BUFFER_LEN ||
+            !m_parametersValid) {
+        SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
+        return 0;
+    }
+
     // Unlike RubberBand, SignalSmith Stretch always output as much audio as it
     // was given. However, it does introduce latency (documented at
     // https://signalsmith-audio.co.uk/code/stretch/#how-to-use-latency) which
@@ -184,6 +236,12 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
                 static_cast<double>(m_expectedFrameLatency - m_currentFrameOffset));
         dFrameRequired += frameOffset;
         m_currentFrameOffset += static_cast<SINT>(frameOffset);
+    }
+
+    if (!util_isfinite(dFrameRequired) || dFrameRequired < 0 ||
+            dFrameRequired >= MAX_BUFFER_LEN + 1.0) {
+        SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
+        return 0.0;
     }
 
     const SINT frameRequired = static_cast<SINT>(dFrameRequired);
