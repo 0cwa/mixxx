@@ -67,15 +67,15 @@ void EngineBufferScaleSignalSmith::applyScaleParameters(
     m_dTempoRatio = std::fabs(parameters.tempoRatio);
     m_dPitchRatio = parameters.pitchRatio;
     m_effectiveRate = m_dBaseRate * m_dTempoRatio;
-    m_stretch.setTransposeFactor(static_cast<float>(m_dBaseRate * m_dPitchRatio));
-    m_stretch.setFormantFactor(1.0);
+    m_pStretch->setTransposeFactor(static_cast<float>(m_dBaseRate * m_dPitchRatio));
+    m_pStretch->setFormantFactor(1.0);
     updateLatency();
 }
 
 void EngineBufferScaleSignalSmith::updateLatency() {
-    const double latency = static_cast<double>(m_stretch.inputLatency()) +
+    const double latency = static_cast<double>(m_pStretch->inputLatency()) +
             std::round(m_effectiveRate *
-                    static_cast<double>(m_stretch.outputLatency()));
+                    static_cast<double>(m_pStretch->outputLatency()));
     if (!util_isfinite(latency) || latency < 0 ||
             latency >= static_cast<double>(std::numeric_limits<SINT>::max())) {
         m_parametersValid = false;
@@ -100,24 +100,30 @@ void EngineBufferScaleSignalSmith::onSignalChanged() {
         }
         m_bufferPtrs[channel] = m_buffers[channel].data();
     }
-    switch (m_currentPreset) {
-    case Preset::Cheaper:
-        m_stretch.presetCheaper(channelCount, getOutputSignal().getSampleRate());
-        break;
-    default:
-        qWarning() << "Unsupported preset" << m_currentPreset << " so defaulting to default.";
-        [[fallthrough]];
-    case Preset::Default:
-        m_stretch.presetDefault(channelCount, getOutputSignal().getSampleRate());
-        break;
-    }
+    m_stretchDefault.presetDefault(channelCount, getOutputSignal().getSampleRate());
+    m_stretchCheaper.presetCheaper(channelCount, getOutputSignal().getSampleRate());
+    applyPreset();
     clear();
+}
+
+void EngineBufferScaleSignalSmith::applyPreset() {
+    m_currentPreset = m_requestedPreset.load(std::memory_order_relaxed);
+    m_pStretch = m_currentPreset == Preset::Cheaper ? &m_stretchCheaper : &m_stretchDefault;
+    m_pStretch->setTransposeFactor(static_cast<float>(m_dBaseRate * m_dPitchRatio));
+    m_pStretch->setFormantFactor(1.0);
+    updateLatency();
 }
 
 void EngineBufferScaleSignalSmith::clear() {
     m_pReadAheadManager->cancelPendingRetry();
     m_pendingScale = {};
-    m_stretch.reset();
+    if (getOutputSignal().isValid() &&
+            getOutputSignal().getChannelCount().value() <=
+                    mixxx::audio::ChannelCount::stem().value() &&
+            isPresetChangePending()) {
+        applyPreset();
+    }
+    m_pStretch->reset();
     m_currentFrameOffset = 0;
     m_frameFractionalLeftover = 0;
     if (m_hasDeferredScaleParameters) {
@@ -268,7 +274,7 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
             SampleUtil::clear(pOutputBuffer, iOutputBufferSize);
             return 0;
         }
-        m_stretch.outputSeek(m_bufferPtrs.data(), pending.prerollFrames);
+        m_pStretch->outputSeek(m_bufferPtrs.data(), pending.prerollFrames);
         pending.prerollApplied = true;
         // outputSeek changes the stretcher immediately. Retain the corrected
         // latency offset if the following input read needs to be retried.
@@ -287,7 +293,7 @@ double EngineBufferScaleSignalSmith::scaleBuffer(CSAMPLE* pOutputBuffer, SINT iO
     }
     {
         ScopedTimer t(QStringLiteral("Signalsmith::process"));
-        m_stretch.process(m_bufferPtrs.data(),
+        m_pStretch->process(m_bufferPtrs.data(),
                 completed.inputFrames,
                 outputBufferPtrs.data(),
                 completed.outputFrames);
