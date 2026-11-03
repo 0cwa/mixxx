@@ -6,10 +6,13 @@
 #include <QString>
 #include <QTest>
 #include <QtDebug>
+#include <initializer_list>
 
 #include "control/controlobject.h"
 #include "engine/controls/ratecontrol.h"
 #include "engine/defs_keylock.h"
+#include "engine/enginebuffer.h"
+#include "engine/readaheadmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "preferences/usersettings.h"
 #include "test/mixxxtest.h"
@@ -261,6 +264,34 @@ TEST_F(EngineBufferTest, ResetPitchAdjustUsesLinear) {
     ProcessBuffer();
     EXPECT_EQ(m_pMockScaleVinyl1, m_pChannel1->getEngineBuffer()->m_pScale);
 }
+
+#ifdef __SIGNALSMITH__
+TEST_F(EngineBufferE2ETest, SignalSmithPresetSwitchUsesEngineBoundary) {
+    auto* buffer = m_pChannel1->getEngineBuffer();
+    ControlObject::set(ConfigKey(kAppGroup, QStringLiteral("keylock_engine")),
+            static_cast<double>(EngineBuffer::KeylockEngine::SignalSmithDefault));
+    ControlObject::set(ConfigKey(m_sGroup1, "keylock"), 1.0);
+    ControlObject::set(ConfigKey(m_sGroup1, "play"), 1.0);
+    ProcessBuffer();
+    ASSERT_EQ(buffer->m_pScale, buffer->m_pScaleSignalSmith);
+    for (auto engine : {EngineBuffer::KeylockEngine::SignalSmithCheaper,
+                 EngineBuffer::KeylockEngine::SignalSmithDefault}) {
+        ControlObject::set(ConfigKey(kAppGroup, QStringLiteral("keylock_engine")),
+                static_cast<double>(engine));
+        EXPECT_TRUE(buffer->m_pScaleSignalSmith->isPresetChangePending());
+        ProcessBuffer();
+        EXPECT_FALSE(buffer->m_pScaleSignalSmith->isPresetChangePending());
+        EXPECT_EQ(buffer->m_pScale, buffer->m_pScaleSignalSmith);
+    }
+    ControlObject::set(ConfigKey(m_sGroup1, "play"), 0.0);
+    ProcessBuffer();
+    const double position = buffer->m_playPos.toSamplePos(buffer->m_channelCount);
+    ControlObject::set(ConfigKey(kAppGroup, QStringLiteral("keylock_engine")),
+            static_cast<double>(EngineBuffer::KeylockEngine::SignalSmithCheaper));
+    ProcessBuffer();
+    EXPECT_DOUBLE_EQ(buffer->m_pReadAheadManager->getPlaypos(), position);
+}
+#endif
 
 TEST_F(EngineBufferE2ETest, SoundTouchCrashTest) {
     // Soundtouch has a bug where a pitch value of zero causes an infinite loop

@@ -2,6 +2,8 @@
 
 #include <qtmetamacros.h>
 
+#include <atomic>
+
 #include "engine/bufferscalers/enginebufferscale.h"
 #include "signalsmith-stretch.h"
 #include "util/samplebuffer.h"
@@ -16,13 +18,18 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
         Cheaper
     };
     Q_ENUM(Preset);
+    static_assert(std::atomic<Preset>::is_always_lock_free);
+
     explicit EngineBufferScaleSignalSmith(ReadAheadManager* pReadAheadManager);
     ~EngineBufferScaleSignalSmith() override = default;
 
     void setScaleParameters(double base_rate, double* pTempoRatio, double* pPitchRatio) override;
     void setPreset(Preset preset) {
-        m_currentPreset = preset;
-        onSignalChanged();
+        m_requestedPreset.store(preset == Preset::Cheaper ? Preset::Cheaper : Preset::Default,
+                std::memory_order_relaxed);
+    }
+    bool isPresetChangePending() const {
+        return m_requestedPreset.load(std::memory_order_relaxed) != m_currentPreset;
     }
     void clear() override;
     double scaleBuffer(CSAMPLE* pOutputBuffer, SINT iOutputBufferSize) override;
@@ -54,13 +61,16 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
     };
 
     void onSignalChanged() override;
+    void applyPreset();
     void updateLatency();
     void applyScaleParameters(const ScaleParameters& parameters);
     bool readFrames(SINT frames, SINT& framesRead);
     FrameReadResult fetchAndDeinterleave(SINT samples, SINT offset = 0);
 
     ReadAheadManager* m_pReadAheadManager;
-    signalsmith::stretch::SignalsmithStretch<float> m_stretch;
+    signalsmith::stretch::SignalsmithStretch<float> m_stretchDefault;
+    signalsmith::stretch::SignalsmithStretch<float> m_stretchCheaper;
+    signalsmith::stretch::SignalsmithStretch<float>* m_pStretch{&m_stretchDefault};
 
     std::vector<mixxx::SampleBuffer> m_buffers;
     std::vector<float*> m_bufferPtrs;
@@ -74,4 +84,5 @@ class EngineBufferScaleSignalSmith final : public EngineBufferScale {
     bool m_bBackwards{false};
     bool m_parametersValid{true};
     Preset m_currentPreset{Preset::Default};
+    std::atomic<Preset> m_requestedPreset{Preset::Default};
 };

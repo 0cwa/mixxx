@@ -496,6 +496,7 @@ class EngineBuffer : public EngineObject {
 #endif
 #ifdef __SIGNALSMITH__
     EngineBufferScaleSignalSmith* m_pScaleSignalSmith;
+    FRIEND_TEST(EngineBufferE2ETest, SignalSmithPresetSwitchUsesEngineBoundary);
 #endif
 
     // Indicates whether the scaler has changed since the last process()

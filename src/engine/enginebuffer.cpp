@@ -392,12 +392,22 @@ void EngineBuffer::enableIndependentPitchTempoScaling(bool bEnable,
     EngineBufferScale* keylock_scale = m_pScaleKeylock;
     EngineBufferScale* vinyl_scale = m_pScaleVinyl;
 
-    if (bEnable && m_pScale != keylock_scale) {
+    bool keylockScalerChanged = m_pScale != keylock_scale;
+#ifdef __SIGNALSMITH__
+    const bool presetChanged = keylock_scale == m_pScaleSignalSmith &&
+            m_pScaleSignalSmith->isPresetChangePending();
+    keylockScalerChanged |= presetChanged;
+#endif
+    if (bEnable && keylockScalerChanged) {
         if (m_speed_old != 0.0) {
             // Crossfade if we are not paused.
             // If we start from zero a ramping gain is
             // applied later
             readToCrossfadeBuffer(bufferSize);
+#ifdef __SIGNALSMITH__
+        } else if (presetChanged) {
+            m_pReadAheadManager->notifySeek(m_playPos.toSamplePos(m_channelCount));
+#endif
         }
         m_pScale = keylock_scale;
         m_pScale->clear();

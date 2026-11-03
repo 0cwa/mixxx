@@ -523,4 +523,29 @@ TEST_F(EngineBufferScaleSignalSmithSafetyTest,
             [](CSAMPLE sample) { return sample == 0; }));
 }
 
+TEST_F(EngineBufferScaleSignalSmithTest, CheaperPresetSwitchesAtClearLikeFreshScaler) {
+    ScriptedReader switchedReader;
+    ScriptedReader freshReader;
+    fillTone(&switchedReader, 2);
+    fillTone(&freshReader, 2);
+    EngineBufferScaleSignalSmith switched(&switchedReader);
+    EngineBufferScaleSignalSmith fresh(&freshReader);
+    initialize(&switched);
+    std::vector<CSAMPLE> discard(1024);
+    switched.scaleBuffer(discard.data(), discard.size());
+    const SINT consumedBeforeSwitch = switchedReader.consumed;
+    switched.setPreset(EngineBufferScaleSignalSmith::Preset::Cheaper);
+    switched.clear();
+    switched.setSignal(mixxx::audio::SampleRate(44100), mixxx::audio::ChannelCount::stereo());
+    switchedReader.position = 0;
+    fresh.setPreset(EngineBufferScaleSignalSmith::Preset::Cheaper);
+    initialize(&fresh);
+    std::vector<CSAMPLE> actual(1024);
+    std::vector<CSAMPLE> expected(1024);
+    switched.scaleBuffer(actual.data(), actual.size());
+    fresh.scaleBuffer(expected.data(), expected.size());
+    compare(actual, expected);
+    EXPECT_EQ(switchedReader.consumed - consumedBeforeSwitch, freshReader.consumed);
+}
+
 } // namespace
