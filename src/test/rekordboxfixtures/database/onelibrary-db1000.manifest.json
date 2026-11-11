@@ -1,0 +1,62 @@
+{
+  "disclosure": "Prepared by ChatGPT for human review.",
+  "manifest_version": 1,
+  "fixture": "onelibrary-db1000.sql",
+  "sha256": "d2b54416c620994820f4229b2c51e149d223026d264abb115c4ec909451c61b9",
+  "kind": "synthetic-sql-profile-fixture",
+  "format": "rekordbox-onelibrary",
+  "schema_profile": "onelibrary-v1-db1000",
+  "producer_application": null,
+  "producer_application_version": null,
+  "provenance": "Original synthetic values and schema-profile test created for this change. This is not a rekordbox export or a player capture.",
+  "distribution_rights": "Original fixture contributed under the repository's licensing terms. No audio, artwork, vendor database, private collection, or real encryption key is distributed.",
+  "schema_references": [
+    {
+      "repository": "https://github.com/xsco/libdjinterop",
+      "commit": "d61727c5a3369f79d11b70afba6c925ddeb7f54c",
+      "path": "testdata/ref/onelibrary/v1/exportLibrary.db.sql"
+    },
+    {
+      "repository": "https://github.com/dylanljones/pyrekordbox",
+      "commit": "02a208837434e4c05c0a222e8fe6583e6ac0547f",
+      "path": "pyrekordbox/onelibrary/models.py"
+    }
+  ],
+  "expected_semantics": {
+    "track_ids": ["7", "42"],
+    "title_7": "Höfn / 東京",
+    "artist_7": "Artist Æ",
+    "key_7": "8A",
+    "bpm_7": 128.5,
+    "duration_ms_7": 161000,
+    "track_number_7": 4,
+    "disc_number_7": 2,
+    "color_index_7": 1,
+    "rating_stars_7": 5,
+    "comment_7": null,
+    "comment_42": "",
+    "title_42": "",
+    "artist_42": "",
+    "root_playlist_order": ["102", "100"],
+    "folder_100_children": ["101"],
+    "playlist_101_ordered_track_ids": ["7", "42", "7"],
+    "playlist_102_ordered_track_ids": [],
+    "analysis_path_7": "/PIONEER/USBANLZ/ABC/ANLZ0000.DAT",
+    "artwork_path_7": "/PIONEER/Artwork/cover.jpg",
+    "opaque_cue_id": "9",
+    "opaque_cue_in_usec": 250000,
+    "database_identity": null,
+    "source_identity": "Explicit registry binding; masterDbId=99 is provenance, not a USB identity."
+  },
+  "independent_observations": [
+    "Expected track order, repeated playlist membership and timing values are explicitly stated here and asserted by C++ tests independently of dependency-generated output.",
+    "The maintained reader corroborates track identifiers, tempo/duration and ordered playlist membership. Raw SQLite reads preserve fields omitted or normalized by its public API."
+  ],
+  "qualification_limits": [
+    "The test runner creates asset placeholders only; these are not valid media, ANLZ or artwork files.",
+    "Synthetic mutation tests establish defensive reader behavior, not application interoperability.",
+    "No named rekordbox application version, real USB, player firmware or operating-system support is certified by this fixture.",
+    "Shared ANLZ decoding, native cue precedence and canonical application remain separate acceptance gates."
+  ],
+  "end_disclosure": "End of fixture manifest prepared by ChatGPT for human review and submission."
+}

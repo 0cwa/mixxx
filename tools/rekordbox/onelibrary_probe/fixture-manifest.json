@@ -1,0 +1,40 @@
+{
+  "disclosure": "Prepared by ChatGPT for human review.",
+  "manifest_version": 1,
+  "profile": "onelibrary-v1-dbversion-1000",
+  "producer_application": null,
+  "producer_version": null,
+  "fixture_type": "synthetic dependency qualification; not a certified rekordbox export",
+  "schema_source": {
+    "repository": "https://github.com/xsco/libdjinterop",
+    "revision": "d61727c5a3369f79d11b70afba6c925ddeb7f54c",
+    "path": "testdata/ref/onelibrary/v1/exportLibrary.db.sql",
+    "sha256": "1c83da22d9cd6575b2012186fec8fd03571a40ae04785de308fbabc658f25f7f",
+    "license": "LGPL-3.0-or-later",
+    "distribution": "Read from the separately obtained dependency; not duplicated in this repository"
+  },
+  "generator": "main.cpp::populatedStatements and writeScript",
+  "database_checksums": "Runtime databases are encrypted using ephemeral random keys and salts, and removed after the probe. Non-WAL source manifests compare complete file bytes and directory entries before/after reading.",
+  "expected": {
+    "track_ids": [10, 20, 30],
+    "title_10": "Árbol",
+    "bpm_x100_10": 12450,
+    "duration_seconds_10": 161,
+    "raw_key_10": "8A",
+    "color_id_10": 8,
+    "root_playlist_ids": [100, 101],
+    "children_of_100": [102],
+    "playlist_102_track_ids": [10, 20, 10],
+    "analysis_path_10": "/PIONEER/USBANLZ/A/ANLZ0000.DAT",
+    "originating_master_db_id": "7654321"
+  },
+  "limitations": [
+    "Generator and reader share libdjinterop; real application read-back is not established",
+    "The dependency collapses empty metadata text to absent",
+    "The dependency accepts unqualified nonempty dbVersion values",
+    "masterDbId is not a USB source identity",
+    "No ANLZ data or media assets are included",
+    "No native format, physical player, or application-version coverage follows from these fixtures"
+  ],
+  "closing_disclosure": "Prepared by ChatGPT for human review."
+}

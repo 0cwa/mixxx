@@ -1,0 +1,25 @@
+# Prepared by ChatGPT for human review; unregistered standalone probe only.
+name: libdjinterop-onelibrary-probe-private
+buildsystem: cmake-ninja
+config-opts:
+  - -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  - -DCMAKE_INSTALL_PREFIX=/app/libexec/mixxx-onelibrary-probe
+  - -DEXPERIMENTAL_ENABLE_SQLCIPHER=ON
+  - -DSYSTEM_SQLITE=OFF
+  - -DBUILD_SHARED_LIBS=ON
+  - -DBUILD_EXAMPLES=OFF
+  - -DBUILD_TESTING=OFF
+  - -DBUILD_DOC=OFF
+sources:
+  - type: git
+    url: https://github.com/xsco/libdjinterop.git
+    commit: d61727c5a3369f79d11b70afba6c925ddeb7f54c
+  - type: patch
+    path: patches/libdjinterop-private-snapshot.patch
+post-install:
+  - install -Dm644 -t /app/libexec/mixxx-onelibrary-probe/share/licenses/libdjinterop LICENSE
+# Configure only the standalone dependency probe with this private prefix.
+# Do not add this prefix to the Mixxx application build or its library path.
+# Production qualification uses database_readers' private static archives
+# inside the reader shared module; this recipe is not that integration.
+# End of ChatGPT-prepared standalone probe qualification proposal.
