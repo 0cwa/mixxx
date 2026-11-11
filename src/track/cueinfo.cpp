@@ -49,14 +49,16 @@ CueInfo::CueInfo(
         const std::optional<int>& hotCueIndex,
         QString label,
         const mixxx::RgbColor::optional_t& color,
-        CueFlags flags)
+        CueFlags flags,
+        std::optional<bool> activeLoopIntent)
         : m_type(type),
           m_startPositionMillis(startPositionMillis),
           m_endPositionMillis(endPositionMillis),
           m_hotCueIndex(hotCueIndex),
           m_label(std::move(label)),
           m_color(color),
-          m_flags(flags) {
+          m_flags(flags),
+          m_activeLoopIntent(activeLoopIntent) {
     assertEndPosition(type, endPositionMillis);
 }
 
@@ -117,7 +119,8 @@ bool operator==(
             lhs.getEndPositionMillis() == rhs.getEndPositionMillis() &&
             lhs.getHotCueIndex() == rhs.getHotCueIndex() &&
             lhs.getLabel() == rhs.getLabel() &&
-            lhs.getColor() == rhs.getColor();
+            lhs.getColor() == rhs.getColor() &&
+            lhs.getActiveLoopIntent() == rhs.getActiveLoopIntent();
 }
 
 QDebug operator<<(QDebug debug, const CueType& cueType) {
@@ -166,6 +169,7 @@ QDebug operator<<(QDebug debug, const CueInfo& cueInfo) {
             << ", label=" << cueInfo.getLabel()
             << ", color=" << cueInfo.getColor()
             << ", flags=" << cueInfo.flags()
+            << ", activeLoopIntent=" << cueInfo.getActiveLoopIntent()
             << "]";
     return debug;
 }

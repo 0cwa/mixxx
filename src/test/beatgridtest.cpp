@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <QThread>
 #include <QtDebug>
+#include <bit>
 #include <memory>
 
 #include "audio/types.h"
+#include "proto/beats.pb.h"
 #include "track/beats.h"
 #include "track/track.h"
 
@@ -263,6 +266,138 @@ TEST(BeatGridTest, BpmLockRejectsBeatsForTrackWithoutBeats) {
     EXPECT_FALSE(pTrack->trySetBeats(pBeats));
     EXPECT_FALSE(pTrack->getBeats());
     EXPECT_TRUE(pTrack->isBpmLocked());
+}
+
+TEST(BeatGridTest, DownbeatOffsetRequiresAcceptedBeatGridUpdate) {
+    TrackPointer pTrack = newTrack(kSampleRate);
+    pTrack->markClean();
+    int beatsUpdated = 0;
+    int bpmChanged = 0;
+    QObject::connect(pTrack.get(), &Track::beatsUpdated, [&beatsUpdated]() {
+        ++beatsUpdated;
+    });
+    QObject::connect(pTrack.get(), &Track::bpmChanged, [&bpmChanged]() {
+        ++bpmChanged;
+    });
+
+    pTrack->setDownbeatOffset(1);
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+    EXPECT_FALSE(pTrack->isDirty());
+    EXPECT_EQ(0, beatsUpdated);
+    EXPECT_EQ(0, bpmChanged);
+
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate, audio::kStartFramePos, Bpm(120.0));
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+    pTrack->markClean();
+    beatsUpdated = 0;
+    bpmChanged = 0;
+
+    pTrack->setDownbeatOffset(2);
+    ASSERT_TRUE(pTrack->getBeats());
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_EQ(2, pTrack->getBeats()->getDownbeatsOffset());
+    EXPECT_TRUE(pTrack->isDirty());
+    EXPECT_EQ(1, beatsUpdated);
+    EXPECT_EQ(1, bpmChanged);
+
+    pTrack->markClean();
+    const auto pUpdatedBeats = pTrack->getBeats();
+    pTrack->setDownbeatOffset(2);
+    EXPECT_EQ(pUpdatedBeats, pTrack->getBeats());
+    EXPECT_FALSE(pTrack->isDirty());
+    EXPECT_EQ(1, beatsUpdated);
+    EXPECT_EQ(1, bpmChanged);
+
+    pTrack->setBpmLocked(true);
+    pTrack->markClean();
+    pTrack->setDownbeatOffset(3);
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_EQ(pUpdatedBeats, pTrack->getBeats());
+    EXPECT_FALSE(pTrack->isDirty());
+    EXPECT_EQ(1, beatsUpdated);
+    EXPECT_EQ(1, bpmChanged);
+}
+
+TEST(BeatGridTest, ClearingBeatsClearsDownbeatOffset) {
+    const auto pTrack = newTrack(kSampleRate);
+    ASSERT_TRUE(pTrack->trySetBeats(Beats::fromConstTempo(
+            kSampleRate, audio::kStartFramePos, Bpm(120.0), QString(), 3)));
+    ASSERT_EQ(3, pTrack->getDownbeatOffset());
+
+    ASSERT_TRUE(pTrack->trySetBeats(nullptr));
+    EXPECT_FALSE(pTrack->getBeats());
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+    pTrack->markClean();
+    pTrack->setDownbeatOffset(1);
+    EXPECT_FALSE(pTrack->isDirty());
+    EXPECT_EQ(0, pTrack->getDownbeatOffset());
+}
+
+TEST(BeatGridTest, DownbeatUndoSurvivesLockedAttempt) {
+    const auto pTrack = newTrack(kSampleRate);
+    const auto pBeats = Beats::fromConstTempo(
+            kSampleRate, audio::kStartFramePos, Bpm(120.0), QString(), 1);
+    ASSERT_TRUE(pTrack->trySetBeats(pBeats));
+    QThread::msleep(850);
+    pTrack->setDownbeatOffset(2);
+    ASSERT_TRUE(pTrack->canUndoBeatsChange());
+
+    pTrack->setBpmLocked(true);
+    pTrack->markClean();
+    pTrack->undoBeatsChange();
+    EXPECT_EQ(2, pTrack->getDownbeatOffset());
+    EXPECT_TRUE(pTrack->canUndoBeatsChange());
+    EXPECT_FALSE(pTrack->isDirty());
+
+    pTrack->setBpmLocked(false);
+    pTrack->markClean();
+    pTrack->undoBeatsChange();
+    EXPECT_EQ(pBeats, pTrack->getBeats());
+    EXPECT_EQ(1, pTrack->getDownbeatOffset());
+    EXPECT_FALSE(pTrack->canUndoBeatsChange());
+    EXPECT_TRUE(pTrack->isDirty());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetRoundTrip) {
+    const auto pGrid = Beats::fromConstTempo(
+            kSampleRate, audio::kStartFramePos, Bpm(120.0), QString(), 3);
+    ASSERT_TRUE(pGrid);
+    ASSERT_EQ(QString::fromLatin1(BEAT_GRID_2_VERSION), pGrid->getVersion());
+    const auto pRoundTrip = Beats::fromByteArray(kSampleRate,
+            pGrid->getVersion(),
+            pGrid->getSubVersion(),
+            pGrid->toByteArray());
+    ASSERT_TRUE(pRoundTrip);
+    EXPECT_EQ(*pGrid, *pRoundTrip);
+    EXPECT_EQ(3, pRoundTrip->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, DownbeatsOffsetDefaultsForExistingSerialization) {
+    track::io::BeatGrid grid;
+    grid.mutable_first_beat()->set_frame_position(0);
+    grid.mutable_bpm()->set_bpm(120.0);
+    ASSERT_FALSE(grid.has_downbeats_offset());
+    const auto pBeats = Beats::fromBeatGridByteArray(
+            kSampleRate, QString(), QByteArray::fromStdString(grid.SerializeAsString()));
+    ASSERT_TRUE(pBeats);
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
+}
+
+TEST(BeatGridTest, LegacySerializationIgnoresPartialProtobufDownbeatOffset) {
+    if constexpr (std::endian::native != std::endian::little) {
+        GTEST_SKIP() << "Legacy raw-double fixture uses little-endian byte order";
+    }
+    const QByteArray legacyBytes =
+            QByteArray::fromHex("1803000000005e400000000000000000");
+    const auto pBeats = Beats::fromByteArray(kSampleRate,
+            QString::fromLatin1(BEAT_GRID_1_VERSION),
+            QString(),
+            legacyBytes);
+    ASSERT_TRUE(pBeats);
+    EXPECT_DOUBLE_EQ(120.00000000001125, pBeats->getLastMarkerBpm().value());
+    EXPECT_EQ(audio::kStartFramePos, pBeats->getLastMarkerPosition());
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
 }
 
 }  // namespace

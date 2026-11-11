@@ -88,13 +88,16 @@ bool WaveformRenderDownBeat::preprocessInner() {
 
     const int numVerticesPerLine = 6; // 2 triangles
 
-    int downbeatOffset = trackInfo->getDownbeatOffset();
+    const int downbeatOffset = trackBeats->getDownbeatsOffset();
+    const auto firstBeat = trackBeats->iteratorFrom(startPosition);
+    const int firstBeatIndex = firstBeat - trackBeats->cfirstmarker();
 
     int numDownbeatsInRange = 0;
-    for (auto it = trackBeats->iteratorFrom(startPosition);
+    int beatIndex = firstBeatIndex;
+    for (auto it = firstBeat;
             it != trackBeats->cend() && *it <= endPosition;
-            ++it) {
-        if ((it.beatOffset() - downbeatOffset) % 4 != 0) {
+            ++it, ++beatIndex) {
+        if ((beatIndex - downbeatOffset) % 4 != 0) {
             continue;
         }
         numDownbeatsInRange++;
@@ -105,10 +108,11 @@ bool WaveformRenderDownBeat::preprocessInner() {
 
     VertexUpdater vertexUpdater{geometry().vertexDataAs<Geometry::Point2D>()};
 
-    for (auto it = trackBeats->iteratorFrom(startPosition);
+    beatIndex = firstBeatIndex;
+    for (auto it = firstBeat;
             it != trackBeats->cend() && *it <= endPosition;
-            ++it) {
-        if ((it.beatOffset() - downbeatOffset) % 4 != 0) {
+            ++it, ++beatIndex) {
+        if ((beatIndex - downbeatOffset) % 4 != 0) {
             continue;
         }
         double beatPosition = it->toEngineSamplePos();
@@ -123,7 +127,7 @@ bool WaveformRenderDownBeat::preprocessInner() {
 
         vertexUpdater.addRectangle({x1, 0.f},
                 {x2, m_isSlipRenderer ? rendererBreadth / 2 : rendererBreadth});
-        if ((it.beatOffset() - downbeatOffset) % 8 == 0) {
+        if ((beatIndex - downbeatOffset) % 8 == 0) {
             vertexUpdater.addTriangle({x1 - 4.f, 0.f}, {x2 + 4.f, 0.f}, {x1, 6.f});
         } else {
             vertexUpdater.addTriangle({0.f, 0.f}, {0.f, 0.f}, {0.f, 0.f});

@@ -46,7 +46,8 @@ class Cue : public QObject {
             mixxx::audio::FrameDiff_t length,
             int hotCue,
             const QString& label,
-            mixxx::RgbColor color);
+            mixxx::RgbColor color,
+            std::optional<bool> activeLoopIntent = std::nullopt);
 
     /// Initialize new cue points
     Cue(
@@ -83,6 +84,9 @@ class Cue : public QObject {
     mixxx::RgbColor getColor() const;
     void setColor(mixxx::RgbColor color);
 
+    std::optional<bool> getActiveLoopIntent() const;
+    void setActiveLoopIntent(std::optional<bool> activeLoopIntent);
+
     mixxx::audio::FramePos getEndPosition() const;
 
     StartAndEndPositions getStartAndEndPosition() const;
@@ -108,6 +112,7 @@ class Cue : public QObject {
     int m_iHotCue;
     QString m_label;
     mixxx::RgbColor m_color;
+    std::optional<bool> m_activeLoopIntent;
 
     friend class Track;
     friend class CueDAO;

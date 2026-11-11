@@ -2,6 +2,9 @@
 
 #include <gtest/gtest_prod.h>
 
+#include <QTimer>
+#include <atomic>
+
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
 #include "control/pollingcontrolproxy.h"
@@ -118,6 +121,7 @@ class BpmControl : public EngineControl {
     void slotBeatsUndoAdjustment(double value);
     void slotForwardDownBeatsMarker(double);
     void slotBackwardDownBeatsMarker(double);
+    void processPendingDownbeatDelta();
 
   private:
     SyncMode getSyncMode() const {
@@ -129,6 +133,8 @@ class BpmControl : public EngineControl {
     double calcSyncAdjustment(bool userTweakingSync);
     void adjustBeatsBpm(double deltaBpm);
     void slotScaleBpm(mixxx::Beats::BpmScale bpmScale);
+    void requestDownbeatDelta(uint32_t delta);
+    void applyDownbeatDelta(uint32_t delta);
 
     friend class SyncControl;
 
@@ -202,6 +208,18 @@ class BpmControl : public EngineControl {
 
     // m_pBeats is written from an engine worker thread
     mixxx::BeatsPointer m_pBeats;
+
+    // ChatGPT-generated: Marker presses combine modulo 16 in fixed-size atomic
+    // storage; only this QObject's thread accesses the snapshot or edits Track.
+    // End of ChatGPT-generated comment.
+    static_assert(std::atomic<uint64_t>::is_always_lock_free);
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    std::atomic<uint64_t> m_pendingDownbeatDelta{0};
+    std::atomic<uint32_t> m_downbeatTrackGeneration{0};
+    uint32_t m_downbeatLoadedGeneration{0};
+    const Qt::HANDLE m_downbeatOwnerThreadId;
+    QTimer m_downbeatTimer;
+    TrackPointer m_pDownbeatTrack;
 
     FRIEND_TEST(EngineSyncTest, UserTweakPreservedInSeek);
     FRIEND_TEST(EngineSyncTest, FollowerUserTweakPreservedInLeaderChange);

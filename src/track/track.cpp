@@ -1,6 +1,7 @@
 #include "track/track.h"
 
 #include <QDebug>
+#include <QSignalBlocker>
 #include <atomic>
 #include <cmath>
 
@@ -458,9 +459,7 @@ bool Track::setBeatsWhileLocked(mixxx::BeatsPointer pBeats) {
     }
 
     m_pBeats = std::move(pBeats);
-    if (m_pBeats) {
-        m_downbeat_offset = m_pBeats->getDownbeatsOffset();
-    }
+    m_downbeat_offset.storeRelease(m_pBeats ? m_pBeats->getDownbeatsOffset() : 0);
     m_record.refMetadata().refTrackInfo().setBpm(getBeatsPointerBpm(m_pBeats, getDuration()));
     return true;
 }
@@ -505,15 +504,18 @@ mixxx::BeatsPointer Track::getBeats() const {
 }
 
 void Track::undoBeatsChange() {
-    if (!canUndoBeatsChange()) {
+    auto locked = lockMutex(&m_qMutex);
+    if (m_record.getBpmLocked() || m_pBeatsUndoStack.isEmpty()) {
         return;
     }
 
-    auto locked = lockMutex(&m_qMutex);
     m_undoingBeatsChange = true;
-    const auto pPrevBeats = m_pBeatsUndoStack.pop();
-    trySetBeats(pPrevBeats);
+    const bool updated = trySetBeatsWhileLocked(m_pBeatsUndoStack.top());
     m_undoingBeatsChange = false;
+    if (updated) {
+        m_pBeatsUndoStack.pop();
+        afterBeatsAndBpmUpdated(&locked);
+    }
 }
 
 void Track::afterBeatsAndBpmUpdated(
@@ -525,10 +527,14 @@ void Track::afterBeatsAndBpmUpdated(
 }
 
 void Track::setDownbeatOffset(int offset) {
-    m_downbeat_offset = offset;
+    auto locked = lockMutex(&m_qMutex);
+    if (!m_pBeats || m_record.getBpmLocked() ||
+            m_pBeats->getDownbeatsOffset() == offset) {
+        return;
+    }
     const auto newBeats = m_pBeats->trySetDownbeatsOffset(offset);
     if (newBeats) {
-        trySetBeats(*newBeats);
+        trySetBeatsMarkDirtyAndUnlock(&locked, *newBeats, false);
     }
 }
 
@@ -1065,6 +1071,7 @@ void Track::setHotcueIndicesSortedByPosition(HotcueSortMode sortMode) {
             continue;
         }
         int newIndex = posIndexHash.take(pCue->getPosition());
+        const QSignalBlocker signalBlocker(pCue.get());
         pCue->setHotCue(newIndex);
     }
 
@@ -1217,11 +1224,14 @@ void Track::swapHotcues(int a, int b) {
         return;
     }
     if (pCueA) {
+        const QSignalBlocker signalBlocker(pCueA.get());
         pCueA->setHotCue(b);
     }
     if (pCueB) {
+        const QSignalBlocker signalBlocker(pCueB.get());
         pCueB->setHotCue(a);
     }
+    markDirtyAndUnlock(&locked);
     emit cuesUpdated();
 }
 

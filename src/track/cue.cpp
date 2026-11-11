@@ -50,14 +50,16 @@ Cue::Cue(
         mixxx::audio::FrameDiff_t length,
         int hotCue,
         const QString& label,
-        mixxx::RgbColor color)
+        mixxx::RgbColor color,
+        std::optional<bool> activeLoopIntent)
         : m_bDirty(false), // clear flag after loading from database
           m_dbId(id),
           m_type(type),
           m_startPosition(position),
           m_iHotCue(hotCue),
           m_label(label),
-          m_color(color) {
+          m_color(color),
+          m_activeLoopIntent(activeLoopIntent) {
     DEBUG_ASSERT(m_dbId.isValid());
     if (length != 0) {
         if (position.isValid()) {
@@ -84,7 +86,8 @@ Cue::Cue(
                           sampleRate)),
           m_iHotCue(cueInfo.getHotCueIndex().value_or(kNoHotCue)),
           m_label(cueInfo.getLabel()),
-          m_color(cueInfo.getColor().value_or(mixxx::PredefinedColorPalettes::kDefaultCueColor)) {
+          m_color(cueInfo.getColor().value_or(mixxx::PredefinedColorPalettes::kDefaultCueColor)),
+          m_activeLoopIntent(cueInfo.getActiveLoopIntent()) {
     DEBUG_ASSERT(!m_dbId.isValid());
 }
 
@@ -115,7 +118,9 @@ mixxx::CueInfo Cue::getCueInfo(
             positionFramesToMillis(m_endPosition, sampleRate),
             m_iHotCue == kNoHotCue ? std::nullopt : std::make_optional(m_iHotCue),
             m_label,
-            m_color);
+            m_color,
+            mixxx::CueFlag::None,
+            m_activeLoopIntent);
 }
 
 DbId Cue::getId() const {
@@ -225,11 +230,14 @@ void Cue::setHotCue(int n) {
     VERIFY_OR_DEBUG_ASSERT(n >= mixxx::kFirstHotCueIndex) {
         return;
     }
-    const auto lock = lockMutex(&m_mutex);
+    auto lock = lockMutex(&m_mutex);
     if (m_iHotCue == n) {
         return;
     }
     m_iHotCue = n;
+    m_bDirty = true;
+    lock.unlock();
+    emit updated();
 }
 
 int Cue::getHotCue() const {
@@ -264,6 +272,22 @@ void Cue::setColor(mixxx::RgbColor color) {
         return;
     }
     m_color = color;
+    m_bDirty = true;
+    lock.unlock();
+    emit updated();
+}
+
+std::optional<bool> Cue::getActiveLoopIntent() const {
+    const auto lock = lockMutex(&m_mutex);
+    return m_activeLoopIntent;
+}
+
+void Cue::setActiveLoopIntent(std::optional<bool> activeLoopIntent) {
+    auto lock = lockMutex(&m_mutex);
+    if (m_activeLoopIntent == activeLoopIntent) {
+        return;
+    }
+    m_activeLoopIntent = activeLoopIntent;
     m_bDirty = true;
     lock.unlock();
     emit updated();
