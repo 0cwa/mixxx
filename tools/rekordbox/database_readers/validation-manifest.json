@@ -1,0 +1,285 @@
+{
+  "disclosure": "Prepared by ChatGPT for human review and submission.",
+  "manifest_version": 1,
+  "scope": "Standalone C database reader/snapshot/module qualification on the published A/B base. No full Mixxx, canonical application, player or M2 acceptance claim.",
+  "identity": {
+    "base_repository": "https://github.com/0cwa/mixxx",
+    "base_branch": "work/rekordbox-import-integration-20261111",
+    "base_commit": "68293f35393af00a2615afca9df44b7a34e51ce4",
+    "base_pr": 101,
+    "inherited_pr26_commit": "78f561f9858cc20c0f36bc5fd6a3468b616f84db",
+    "record_contract_version": 1,
+    "final_commit_binding": "The submitting PR records the final head commit and results of a clean committed-head rerun. The source hashes below identify executable inputs without a circular self-hash."
+  },
+  "dependency": {
+    "repository": "https://github.com/xsco/libdjinterop",
+    "commit": "d61727c5a3369f79d11b70afba6c925ddeb7f54c",
+    "declared_version": "0.28.0",
+    "release_status": "Unreleased source pin; latest observed tag 0.27.1 lacks this reader.",
+    "patch": "../onelibrary_probe/patches/libdjinterop-private-snapshot.patch",
+    "patch_sha256": "5cb112963f8c30025eef8ae416f129211deb2d6db96cf8281785e242cb72fa65",
+    "sqlcipher_version": "4.16.0",
+    "sqlcipher_sqlite_version": "3.53.1",
+    "feature_off_sqlite_version": "3.53.4",
+    "shared_module_layout": "Private static PIC archives, hidden C/C++ symbols, one exported readDatabaseSource entry point; no dynamic DjInterop or SQLite dependency.",
+    "application_engine_dependency": "Existing exact 0.27.1 registration unchanged."
+  },
+  "environment": {
+    "platform": "Linux x86_64, Debian",
+    "compiler": "GCC 14.2.0",
+    "cmake": "4.4.4",
+    "openssl": "3.5.7",
+    "zlib": "1.3.1",
+    "release_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-std=gnu++20",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "private_module_flags": [
+      "-fPIC",
+      "-fvisibility=hidden",
+      "-fvisibility-inlines-hidden",
+      "--exclude-libs,ALL",
+      "strict ELF export map"
+    ],
+    "sanitizer_flags": [
+      "-g",
+      "-fsanitize=address,undefined",
+      "-fno-omit-frame-pointer"
+    ],
+    "sanitizer_scope": "Reader and test code; vendored dependency and system Qt are not instrumented."
+  },
+  "runs": [
+    {
+      "id": "linux-qt6-encrypted-on",
+      "configuration": "Release",
+      "qt": "6.8.2",
+      "sqlcipher": true,
+      "qt_sqlite_handle_isolation": true,
+      "ctest_passed": 6,
+      "ctest_failed": 0,
+      "cases": {
+        "snapshot": 24,
+        "native": 45,
+        "source_pipeline": 14,
+        "shared_consumer": 9,
+        "onelibrary": 34,
+        "live_wal": 4
+      },
+      "cases_passed": 130,
+      "cases_failed": 0,
+      "reproduce": "README.md: build and test with SQLCipher and Qt isolation ON."
+    },
+    {
+      "id": "linux-qt6-encrypted-off",
+      "configuration": "Release",
+      "qt": "6.8.2",
+      "sqlcipher": false,
+      "qt_sqlite_handle_isolation": true,
+      "ctest_passed": 5,
+      "ctest_failed": 0,
+      "cases": {
+        "snapshot": 19,
+        "native": 45,
+        "source_pipeline": 8,
+        "shared_consumer": 8,
+        "live_wal": 4
+      },
+      "cases_passed": 84,
+      "cases_failed": 0,
+      "limits": "Explicit encrypted-profile/OneLibrary refusal. OpenSSL remains required for SHA-256 hashing; not a missing-crypto-runtime test."
+    },
+    {
+      "id": "linux-qt5-asan-ubsan-encrypted-on",
+      "configuration": "Debug",
+      "qt": "5.15.15",
+      "sqlcipher": true,
+      "qt_sqlite_handle_isolation": true,
+      "ctest_passed": 6,
+      "ctest_failed": 0,
+      "cases": {
+        "snapshot": 24,
+        "native": 45,
+        "source_pipeline": 14,
+        "shared_consumer": 9,
+        "onelibrary": 34,
+        "live_wal": 4
+      },
+      "cases_passed": 130,
+      "cases_failed": 0,
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      },
+      "leak_detection": "Excluded after actual default run failed all six CTests at teardown: LeakSanitizer cannot operate under the sandbox tracing restriction.",
+      "vendor_instrumentation": false
+    }
+  ],
+  "dependency_probe": {
+    "shared_crypto_on": {
+      "passed_checks": 35,
+      "failed_checks": 0
+    },
+    "shared_crypto_off": {
+      "passed_checks": 13,
+      "failed_checks": 0
+    },
+    "static_qt_only": {
+      "passed_checks": 29,
+      "failed_checks": 0,
+      "qualification": "Insufficient isolation; direct ordinary SQLite check disabled in this experiment."
+    },
+    "engine_regression": "Create, populate, playlist order and reload exercised by the dependency probe.",
+    "upstream_unit_suite": "Not run: Boost.Filesystem and Boost.System development packages unavailable.",
+    "provenance": "../onelibrary_probe/README.md and fixture-manifest.json"
+  },
+  "observed_failures_resolved_in_candidate": [
+    {
+      "experiment": "Unmodified libdjinterop private plaintext open",
+      "result": "SQLITE_MISUSE on empty key",
+      "resolution": "Narrow pinned downstream patch skips sqlite3_key only for the explicit empty private-snapshot passphrase."
+    },
+    {
+      "experiment": "SQLite backup of encrypted SQLCipher database",
+      "result": "SQLCipher rejects encrypted backup API",
+      "resolution": "sqlcipher_export into private storage inside a pinned source read transaction; plaintext still uses backup."
+    },
+    {
+      "experiment": "Normal libdjinterop direct WAL source open",
+      "result": "Creates source WAL/SHM sidecars",
+      "resolution": "Never pass source database to dependency; protected snapshots only."
+    },
+    {
+      "experiment": "Direct static SQLCipher application linkage",
+      "result": "Ordinary SQLite C API isolation failed",
+      "resolution": "Private shared module hides both SQLite/SQLCipher and DjInterop symbols; real Qt-owned-handle calls pass."
+    }
+  ],
+  "source_integrity": {
+    "snapshot_suite": "Manifest comparisons cover source bytes, metadata and directory entries for supported quiescent cases, including encrypted, WAL, missing-sidecar, read-only, cancellation and wrong-key cases.",
+    "live_writer": {
+      "separate_processes": true,
+      "passed_cases": 4,
+      "committed_wal_only_rows": 2048,
+      "concurrent_commit": "Pinned read remains generation 1 with 2048 rows while writer commits generation 2 with 2049 rows; next read observes generation 2.",
+      "uncommitted_changes": "Generation 3 remains invisible; committed generation 2 retained.",
+      "source_manifest_fields": [
+        "relative path",
+        "inode",
+        "size",
+        "permissions",
+        "mtime",
+        "SHA-256"
+      ],
+      "source_changes": "Only the explicitly coordinated writer phase changes source files. All writer-paused phases unchanged; includes root directory and DB/WAL/SHM.",
+      "quiescent_fallback_used": false,
+      "private_cleanup": "Passed",
+      "syscall_trace": "Unavailable: strace attempted, sandbox rejected PTRACE_TRACEME with Operation not permitted. No trace evidence claimed."
+    }
+  },
+  "capability_gates": {
+    "onelibrary_structural_profile": "onelibrary-v1-db1000",
+    "native_structural_profile": "native-dbversion-6000-v1",
+    "native_producer_version": null,
+    "canonical_application": false,
+    "qualified_performance_data": false,
+    "M2_complete": false,
+    "not_run_or_blocked": [
+      "Full Mixxx build, source sidebar and canonical transactional integration of this new reader.",
+      "Application save/reload, idempotent reimport, local edits and failure atomicity for modern/native records.",
+      "Genuine OneLibrary exports and named-version native7/native5 fixtures.",
+      "Attributable equivalent XML/PDB/OneLibrary/native collection and independent cue/loop/grid/phase observations.",
+      "Native database/ANLZ precedence through A/B canonical persistence.",
+      "Windows ACL implementation: snapshot entry explicitly returns Unsupported.",
+      "macOS permission/token runtime, Windows/macOS/Flatpak builds, actual shipped-package crypto and Qt plugin behavior.",
+      "Physical playback, player/firmware, real DJ and hardware review.",
+      "A serialized central CMake/CI registration and human code review.",
+      "LeakSanitizer and syscall tracing: attempted but unavailable under sandbox tracing restrictions."
+    ]
+  },
+  "next_action": "A/B review and accept the versioned record/module boundary, then connect canonical import using attributable modern/native cue, loop and grid fixtures. Keep M1 independent and M2 open.",
+  "source_sha256": {
+    "src/library/rekordbox/rekordboxanlzdecoder.cpp": "1797b0d6330b8661104037fbf5593608b4a5830c18be40336293b063533e772b",
+    "src/library/rekordbox/rekordboxanlzdecoder.h": "18313281cb607f38dae3c1d190846ca1e5ba014ba3f6871a40e68cb66673ffb7",
+    "src/library/rekordbox/rekordboxdatabaserecords.h": "fd8f655dcc52eab5cd0fcd49748bc2b05019577b589c08d659161cf4755c9668",
+    "src/library/rekordbox/rekordboxdatabasesnapshot.cpp": "26845592e0b64d49c15b7473b41d294c09b1332a0cb63c9322013ff95ee7c5fd",
+    "src/library/rekordbox/rekordboxdatabasesnapshot.h": "169b8c7b08c2b5be343d1ca22a2ea6092fc2b9ec18b206fa625b17c3101829d2",
+    "src/library/rekordbox/rekordboxdatabasesource.cpp": "08cc092ee82dd23df765429dcf149873dc83b724118057abd604bbdb7ad00714",
+    "src/library/rekordbox/rekordboxdatabasesource.h": "2ca30ac5b58afea66e02b9780bc80e62bd1dbe2653df98917f6c886a750dad5e",
+    "src/library/rekordbox/rekordboxnativereader.cpp": "9d12d73edc1fc8ec46516b231c7a395fe8013ff4c687fe4c3bd12b5e8aa16bbf",
+    "src/library/rekordbox/rekordboxnativereader.h": "1d216b106e6bddea99c58f4846906e706108bdc703b570cb569c7d8e9cf50f2d",
+    "src/library/rekordbox/rekordboxonelibraryreader.cpp": "0cb40a910c4961fd6ad50fc0b3c43ab98abc13865b14f378d05c9d5ffbf00db3",
+    "src/library/rekordbox/rekordboxonelibraryreader.h": "59f81616458f5ef2857cf3941ba53cb128bbbed51f353791e338ba6d24a5ae3e",
+    "src/test/rekordbox_native_reader_test.cpp": "634e4f94edabb5a160d853f93fd61dca2555a8d178220fb7636075e9e6b4663d",
+    "src/test/rekordboxdatabasesnapshot_standalone_test.cpp": "84a11a7f5c875a205ca1a5434f6e14fa74ce71711d4077236610b998f520b66e",
+    "src/test/rekordboxdatabasesource_standalone_test.cpp": "f51e21e9850fd75cd9dddd24fee4871455ff695fdc32cf3635ea5cd19769c077",
+    "src/test/rekordboxfixtures/anlz-synthetic/ANLZ0000.DAT": "b593419609fd66568bb931ade14a824dcea871e7ff17a5fee2fa5406ed831fb4",
+    "src/test/rekordboxfixtures/anlz-synthetic/ANLZ0000.EXT": "8fcfff41c98ea301a97969270ce30dfe27d524a4c8bc9c73844a38bc777ab375",
+    "src/test/rekordboxfixtures/database/onelibrary-db1000.sql": "d2b54416c620994820f4229b2c51e149d223026d264abb115c4ec909451c61b9",
+    "src/test/rekordboxfixtures/native-db6000/schema.sql": "6801348148131636de26dca1a250957dde8445220578b4c7a6960f34581ae6b8",
+    "src/test/rekordboxonelibraryreader_standalone_test.cpp": "6fa60ba2312fc25b7088fb1d1124123781433fb60b59edf1f0705f1865629431",
+    "tools/rekordbox/database_readers/CMakeLists.txt": "8e4451a874c4f53c81659cc8718711c158bff38ac83be7b2b43d4111dea2c49e",
+    "tools/rekordbox/database_readers/live_wal_driver.cpp": "02acc61f7e4ed2f97eac9ce4c84f237d996cd94b369f05ec467cb03cc3eda626",
+    "tools/rekordbox/database_readers/live_wal_test.py": "1eb73c12443a2225643a6b59591b2fe8cd02a5ff4dd4213bcc4d9e658153eedb",
+    "tools/rekordbox/native_fixture_probe.cpp": "b2f10d50b5864b7023ff6f5c8dd58ae0bed3611a7a0101db2a2510155f042a9b",
+    "tools/rekordbox/onelibrary_probe/CMakeLists.txt": "a27cf246f2524a0195f043b83a4b2fedde91c212ea0a867989b737ba2bd6aa65",
+    "tools/rekordbox/onelibrary_probe/main.cpp": "4b034bd9587d0c713f413fff07c8225ed120d2772f5b1fe5c1937839dc8d5825",
+    "tools/rekordbox/onelibrary_probe/patches/libdjinterop-private-snapshot.patch": "5cb112963f8c30025eef8ae416f129211deb2d6db96cf8281785e242cb72fa65"
+  },
+  "input_digest_sha256": "094247d24eeb3c7e956f8a7e12faa6d8fb8d74fea16ce3ee046236c549f01dfd",
+  "input_digest_rule": "SHA-256 of sorted repository-relative path, NUL, hex file SHA-256, newline, repeated for source_sha256 entries.",
+  "independent_native_fixture": {
+    "reference_repository": "https://github.com/dylanljones/pyrekordbox",
+    "reference_commit": "02a208837434e4c05c0a222e8fe6583e6ac0547f",
+    "producer_version": null,
+    "structural_profile": "DBVersion6000",
+    "mapper": {
+      "synthetic_passed": 45,
+      "independent_plaintext_passed": 1,
+      "failed": 0,
+      "note": "The 45 synthetic cases also appear in the CTest native suite; do not add them as unique coverage."
+    },
+    "encrypted_probe": {
+      "passed": 4,
+      "failed": 0,
+      "tracks": 6,
+      "playlist_records": 2,
+      "cue_records": 0,
+      "wrong_key_refused": true,
+      "private_cleanup": true,
+      "unchanged_source_tree_entries": 45,
+      "manifest_includes_root_permissions": true
+    },
+    "key_handling": "Supplied through stdin only from an ephemeral independent-reference extraction; no key stored, logged or placed in arguments/environment.",
+    "ciphertext_sha256": "d388444b6e86ab537613d03297a57e1c0d99ccfb7c8fbd2955a66b34947d4ac2",
+    "plaintext_sha256": "0140d859ed73685ab08c459d1ccd7f497a8e31cc966749dc53201a259e6c432d",
+    "input_hashes_stable_before_after": true,
+    "provenance": "../../../src/test/rekordboxfixtures/native-db6000/provenance.json",
+    "limits": "Producer version not attested; no cue/loop/history/populated-playlist or native7/hardware evidence."
+  },
+  "focused_lint": {
+    "files": 32,
+    "result": "Passed",
+    "tools": {
+      "clang-format": "19.1.3 through repository two-pass helper",
+      "codespell": "2.4.3",
+      "markdownlint-cli2": "0.23.2",
+      "black": "26.5.1",
+      "flake8": "7.3.0",
+      "prettier": "3.1.0",
+      "gersemi": "0.17.1",
+      "cmakelint": "1.4.3"
+    },
+    "additional_checks": [
+      "JSON/YAML parse",
+      "BOM/EOF/line endings",
+      "whitespace/merge markers",
+      "filename case conflicts",
+      "git diff --check"
+    ]
+  },
+  "end_disclosure": "End of validation manifest prepared by ChatGPT for human review and submission."
+}

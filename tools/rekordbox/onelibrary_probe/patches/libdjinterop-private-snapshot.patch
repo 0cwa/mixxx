@@ -1,0 +1,30 @@
+diff --git a/src/djinterop/util/sqlcipher.cpp b/src/djinterop/util/sqlcipher.cpp
+index a290856..697e06c 100644
+--- a/src/djinterop/util/sqlcipher.cpp
++++ b/src/djinterop/util/sqlcipher.cpp
+@@ -43,12 +43,19 @@ sqlite::database open(
+     try
+     {
+         sqlite::database db{path, config};
+-        if (const auto rc = sqlite3_key(
+-                db.connection().get(), passphrase.data(),
+-                static_cast<int>(passphrase.size()));
+-            rc != SQLITE_OK)
+-            sqlite::errors::throw_sqlite_error(rc);
+-
++        // Prepared by ChatGPT for human review: an empty passphrase is used
++        // only for an already-private, decrypted Mixxx snapshot. SQLCipher
++        // rejects a zero-length sqlite3_key call; leaving the connection
++        // unkeyed permits ordinary SQLite data. Nonempty keys are unchanged.
++        // End of ChatGPT-prepared explanation.
++        if (!passphrase.empty())
++        {
++            if (const auto rc = sqlite3_key(
++                    db.connection().get(), passphrase.data(),
++                    static_cast<int>(passphrase.size()));
++                rc != SQLITE_OK)
++                sqlite::errors::throw_sqlite_error(rc);
++        }
+         return db;
+     }
+     catch (const sqlite::sqlite_exception& e)

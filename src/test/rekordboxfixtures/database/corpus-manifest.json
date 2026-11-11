@@ -1,0 +1,90 @@
+{
+  "disclosure": "Prepared by ChatGPT for human review.",
+  "manifest_version": 1,
+  "base_sha": "68293f35393af00a2615afca9df44b7a34e51ce4",
+  "fixtures": [
+    {
+      "id": "kRekordbox586Xml",
+      "format": "rekordbox-xml-v1",
+      "source": "../xmlfixtures.h#kRekordbox586Xml",
+      "sha256": "d3f7c9b649ce40b7606de8bd49346f91450c5acafeadeec99b832da6b46ba2f1",
+      "producer_label": {
+        "application": "rekordbox",
+        "version": "5.8.6"
+      },
+      "producer_capture_attested": false,
+      "provenance_manifest": "../README.md",
+      "rights": "External MIT-licensed fixture, license retained in ../LICENSE.pyrekordbox",
+      "qualified_here": false,
+      "observations": "Existing baseline fixture bytes checked only; baseline application tests are not reattributed to this change."
+    },
+    {
+      "id": "kRekordbox662Xml",
+      "format": "rekordbox-xml-v1",
+      "source": "../xmlfixtures.h#kRekordbox662Xml",
+      "sha256": "fed8bf4f63759b03c9627170289e79d140008fe681c783651f36547553368101",
+      "producer_label": {
+        "application": "rekordbox",
+        "version": "6.6.2"
+      },
+      "producer_capture_attested": false,
+      "provenance_manifest": "../README.md",
+      "rights": "External MIT-licensed fixture, license retained in ../LICENSE.pyrekordbox",
+      "qualified_here": false,
+      "observations": "Existing baseline fixture bytes checked only; baseline application tests are not reattributed to this change."
+    },
+    {
+      "id": "legacy-empty-pdb",
+      "format": "rekordbox-export-pdb",
+      "source": "src/test/rekordboxplaylistmodel_test.cpp emptyPdb generator",
+      "sha256": "2796597a551dd3a85717be5f85a5941f7502a35d053b95684f258314c77e604f",
+      "bytes": 4096,
+      "producer_label": null,
+      "producer_capture_attested": false,
+      "rights": "Original synthetic fixture in baseline repository tests",
+      "observations": "Valid empty PDB; populated track DTO is injected by existing test. No populated legacy PDB interoperability claim."
+    },
+    {
+      "id": "shared-anlz-synthetic",
+      "format": "rekordbox-anlz",
+      "provenance_manifest": "src/test/rekordboxfixtures/anlz-synthetic/provenance.json",
+      "manifest_sha256": "986d86cce0f08b5c11e0601dc3e4166f1ad2df9836c2c940440a0bc26904c1c4"
+    },
+    {
+      "id": "onelibrary-db1000-synthetic",
+      "format": "rekordbox-onelibrary",
+      "provenance_manifest": "src/test/rekordboxfixtures/database/onelibrary-db1000.manifest.json",
+      "manifest_sha256": "7397ce53bc065079b57d5a46f3551fa6463755817b1f239878a90145a237673c"
+    },
+    {
+      "id": "native-db6000-synthetic-and-independent",
+      "format": "rekordbox-native",
+      "provenance_manifest": "src/test/rekordboxfixtures/native-db6000/provenance.json",
+      "manifest_sha256": "239c2d6202899d5301d7751afe99f30356f08ab6004a6c97ef902a036b2f50f9"
+    }
+  ],
+  "equivalent_collection_groups": [],
+  "equivalence_gate": "Open: no attributable synchronized XML/PDB/OneLibrary/native capture is available. The external native DB and neighboring XML have different IDs and analysis references.",
+  "shared_edge_cases": [
+    "Empty collections",
+    "Unicode and relocated roots",
+    "Overlapping source IDs and explicit independent bindings",
+    "Repeated playlist membership",
+    "Absent versus explicit-empty metadata",
+    "Hot/memory cue points and loops",
+    "Loop endpoints, labels, indexed colors and active-loop intent",
+    "Explicit native milliseconds and 1/150-second fields",
+    "Shared ANLZ variable beat timing and phase",
+    "Committed WAL and concurrent source changes",
+    "Read-only files, missing sidecars, wrong keys, cancellation, source replacement and cleanup",
+    "Advanced concepts retained without canonical application"
+  ],
+  "application_observations": [],
+  "player_observations": [],
+  "qualification_limits": [
+    "Synthetic fixtures are not genuine application exports.",
+    "Native independent fixture has metadata but no cue/history/populated-playlist records.",
+    "No native7/native5, canonical persistence, physical playback or hardware acceptance is implied."
+  ],
+  "end_disclosure": "End of corpus manifest prepared by ChatGPT for human review and submission."
+}
