@@ -1,5 +1,6 @@
 #include "library/dao/cuedao.h"
 
+#include <QSet>
 #include <QThread>
 #include <QVariant>
 #include <QtDebug>
@@ -8,7 +9,9 @@
 #include "library/queryutil.h"
 #include "util/assert.h"
 #include "util/color/rgbcolor.h"
+#include "util/compatibility/qmutex.h"
 #include "util/db/fwdsqlquery.h"
+#include "util/db/sqltransaction.h"
 #include "util/logger.h"
 
 namespace {
@@ -53,13 +56,6 @@ CuePointer cueFromRow(const QSqlRecord& row) {
     if (type == mixxx::CueType::Loop && lengthFrames == 0.0) {
         // These entries are likely added via issue #11283
         qWarning() << "Discard loop cue" << hotcue << "found in database with length of 0";
-        return CuePointer();
-    }
-    if (type == mixxx::CueType::HotCue &&
-            position == mixxx::audio::FramePos(0) &&
-            *color == mixxx::RgbColor(0)) {
-        // These entries are likely added via issue #11283
-        qWarning() << "Discard black hot cue" << hotcue << "found in database at position 0";
         return CuePointer();
     }
     CuePointer pCue(new Cue(id,
@@ -148,100 +144,171 @@ bool CueDAO::deleteCuesForTracks(const QList<TrackId>& trackIds) const {
     return false;
 }
 
-bool CueDAO::saveCue(TrackId trackId, Cue* cue) const {
-    //qDebug() << "CueDAO::saveCue" << QThread::currentThread() << m_database.connectionName();
-    VERIFY_OR_DEBUG_ASSERT(cue) {
+// Prepared by ChatGPT for human review.
+CueDAO::CueSnapshot CueDAO::snapshotCue(const Cue& cue) {
+    const auto lock = lockMutex(&cue.m_mutex);
+    return {cue.m_dbId,
+            cue.m_type,
+            cue.m_startPosition,
+            cue.m_endPosition,
+            cue.m_iHotCue,
+            cue.m_label,
+            cue.m_color,
+            cue.m_bDirty};
+}
+
+bool CueDAO::finalizeCue(const PendingSave::SavedCue& saved) {
+    const auto lock = lockMutex(&saved.cue->m_mutex);
+    auto& cue = *saved.cue;
+    const auto& snapshot = saved.snapshot;
+    if (cue.m_dbId != snapshot.id && cue.m_dbId != saved.savedId) {
+        cue.m_bDirty = true;
         return false;
     }
+    cue.m_dbId = saved.savedId;
+    const bool unchanged = cue.m_type == snapshot.type &&
+            cue.m_startPosition == snapshot.start && cue.m_endPosition == snapshot.end &&
+            cue.m_iHotCue == snapshot.hotCue && cue.m_label == snapshot.label &&
+            cue.m_color == snapshot.color;
+    cue.m_bDirty = !unchanged;
+    return unchanged;
+}
 
-    // Prepare query
-    QSqlQuery query(m_database);
-    if (cue->getId().isValid()) {
-        // Update cue
-        query.prepare(QStringLiteral("UPDATE " CUE_TABLE " SET "
-                        "track_id=:track_id,"
-                        "type=:type,"
-                        "position=:position,"
-                        "length=:length,"
-                        "hotcue=:hotcue,"
-                        "label=:label,"
-                        "color=:color"
-                        " WHERE id=:id"));
-        query.bindValue(":id", cue->getId().toVariant());
-    } else {
-        // New cue
-        query.prepare(
-                QStringLiteral("INSERT INTO " CUE_TABLE
-                               " (track_id, type, position, length, hotcue, "
-                               "label, color) VALUES (:track_id, :type, "
-                               ":position, :length, :hotcue, :label, :color)"));
+bool CueDAO::PendingSave::finalize() {
+    bool unchanged = true;
+    for (const auto& saved : m_savedCues) {
+        unchanged = CueDAO::finalizeCue(saved) && unchanged;
     }
+    m_savedCues.clear();
+    return unchanged;
+}
 
-    // Bind values and execute query
+std::optional<DbId> CueDAO::writeCue(TrackId trackId, const Cue& cue) const {
+    return writeCueSnapshot(trackId, snapshotCue(cue));
+}
+
+std::optional<DbId> CueDAO::writeCueSnapshot(
+        TrackId trackId, const CueSnapshot& snapshot) const {
+    if (!trackId.isValid()) {
+        return std::nullopt;
+    }
+    QSqlQuery query(m_database);
+    if (snapshot.id.isValid()) {
+        query.prepare(QStringLiteral(
+                "UPDATE " CUE_TABLE
+                " SET "
+                "type=:type,position=:position,length=:length,hotcue=:hotcue,"
+                "label=:label,color=:color WHERE id=:id AND "
+                "track_id=:track_id"));
+        query.bindValue(":id", snapshot.id.toVariant());
+    } else {
+        query.prepare(QStringLiteral("INSERT INTO " CUE_TABLE
+                                     " (track_id,type,position,length,hotcue,label,color) VALUES "
+                                     "(:track_id,:type,:position,:length,:hotcue,:label,:color)"));
+    }
+    const auto length = snapshot.end.isValid()
+            ? (snapshot.start.isValid() ? snapshot.end - snapshot.start : snapshot.end.value())
+            : 0;
     query.bindValue(":track_id", trackId.toVariant());
-    query.bindValue(":type", static_cast<int>(cue->getType()));
-    query.bindValue(":position", cue->getPosition().toEngineSamplePosMaybeInvalid());
-    query.bindValue(":length", cue->getLengthFrames() * mixxx::kEngineChannelOutputCount);
-    query.bindValue(":hotcue", cue->getHotCue());
-    query.bindValue(":label", labelToQVariant(cue->getLabel()));
-    query.bindValue(":color", mixxx::RgbColor::toQVariant(cue->getColor()));
+    query.bindValue(":type", static_cast<int>(snapshot.type));
+    query.bindValue(":position", snapshot.start.toEngineSamplePosMaybeInvalid());
+    query.bindValue(":length", length * mixxx::kEngineChannelOutputCount);
+    query.bindValue(":hotcue", snapshot.hotCue);
+    query.bindValue(":label", labelToQVariant(snapshot.label));
+    query.bindValue(":color", mixxx::RgbColor::toQVariant(snapshot.color));
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
+        return std::nullopt;
+    }
+    if (query.numRowsAffected() != 1) {
+        kLogger.warning() << "Cue write did not affect exactly one row for track" << trackId;
+        return std::nullopt;
+    }
+    const auto savedId = snapshot.id.isValid() ? snapshot.id : DbId(query.lastInsertId());
+    if (!savedId.isValid()) {
+        return std::nullopt;
+    }
+    return savedId;
+}
+
+std::optional<CueDAO::PendingSave> CueDAO::snapshotCues(
+        const QList<CuePointer>& cueList) {
+    PendingSave pending;
+    pending.m_savedCues.reserve(cueList.size());
+    QSet<const Cue*> pointers;
+    QSet<DbId> existingIds;
+    for (const auto& cue : cueList) {
+        if (!cue || pointers.contains(cue.get())) {
+            return std::nullopt;
+        }
+        pointers.insert(cue.get());
+        auto snapshot = snapshotCue(*cue);
+        if (snapshot.id.isValid() && existingIds.contains(snapshot.id)) {
+            return std::nullopt;
+        }
+        existingIds.insert(snapshot.id);
+        pending.m_savedCues.push_back({cue, std::move(snapshot), DbId()});
+    }
+    return pending;
+}
+
+bool CueDAO::writeTrackCues(TrackId trackId, PendingSave* pending) const {
+    if (!trackId.isValid() || !pending) {
         return false;
     }
-
-    if (!cue->getId().isValid()) {
-        // New cue
-        const auto newId = DbId(query.lastInsertId());
-        DEBUG_ASSERT(newId.isValid());
-        cue->setId(newId);
+    QStringList cueIds;
+    cueIds.reserve(pending->m_savedCues.size());
+    for (auto& saved : pending->m_savedCues) {
+        if (saved.snapshot.dirty || !saved.snapshot.id.isValid()) {
+            const auto id = writeCueSnapshot(trackId, saved.snapshot);
+            if (!id) {
+                return false;
+            }
+            saved.savedId = *id;
+        } else {
+            QSqlQuery query(m_database);
+            query.prepare(QStringLiteral("SELECT id FROM " CUE_TABLE
+                                         " WHERE id=:id AND track_id=:track_id"));
+            query.bindValue(":id", saved.snapshot.id.toVariant());
+            query.bindValue(":track_id", trackId.toVariant());
+            if (!query.exec() || !query.next()) {
+                kLogger.warning() << "Clean cue is missing from track" << trackId;
+                return false;
+            }
+            saved.savedId = saved.snapshot.id;
+        }
+        cueIds.append(saved.savedId.toString());
     }
-    DEBUG_ASSERT(cue->getId().isValid());
-    cue->setDirty(false);
+    FwdSqlQuery query(m_database,
+            QStringLiteral("DELETE FROM " CUE_TABLE " WHERE track_id=:track_id AND id NOT IN (%1)")
+                    .arg(cueIds.join(QChar(','))));
+    query.bindValue(":track_id", trackId);
+    if (!query.isPrepared() || query.hasError() || !query.execPrepared()) {
+        kLogger.warning() << "Failed to delete orphaned cues of track" << trackId;
+        return false;
+    }
     return true;
 }
 
-void CueDAO::saveTrackCues(
-        TrackId trackId,
-        const QList<CuePointer>& cueList) const {
-    DEBUG_ASSERT(trackId.isValid());
-    QStringList cueIds;
-    cueIds.reserve(cueList.size());
-    for (const auto& pCue : cueList) {
-        // New cues (without an id) must always be marked as dirty
-        DEBUG_ASSERT(pCue->getId().isValid() || pCue->isDirty());
-        // Update or save cue
-        if (pCue->isDirty()) {
-            saveCue(trackId, pCue.get());
-        }
-        // After saving each cue must have a valid id
-        VERIFY_OR_DEBUG_ASSERT(pCue->getId().isValid()) {
-            continue;
-        }
-        cueIds.append(pCue->getId().toString());
+std::optional<CueDAO::PendingSave> CueDAO::prepareTrackCues(
+        TrackId trackId, const QList<CuePointer>& cueList) const {
+    auto pending = snapshotCues(cueList);
+    if (!pending || !writeTrackCues(trackId, &*pending)) {
+        return std::nullopt;
     }
-
-    // Delete orphaned cues
-    FwdSqlQuery query(
-            m_database,
-            QStringLiteral("DELETE FROM " CUE_TABLE " WHERE track_id=:track_id AND id NOT IN (%1)")
-                    .arg(cueIds.join(QChar(','))));
-    DEBUG_ASSERT(
-            query.isPrepared() &&
-            !query.hasError());
-    query.bindValue(":track_id", trackId);
-    if (!query.execPrepared()) {
-        kLogger.warning()
-                << "Failed to delete orphaned cues of track"
-                << trackId;
-        DEBUG_ASSERT(!"failed query");
-        return;
-    }
-    if (query.numRowsAffected() > 0) {
-        kLogger.debug()
-                << "Deleted"
-                << query.numRowsAffected()
-                << "orphaned cue(s) of track"
-                << trackId;
-    }
+    return pending;
 }
+
+bool CueDAO::saveTrackCues(TrackId trackId, const QList<CuePointer>& cueList) const {
+    SqlTransaction transaction(m_database);
+    if (!transaction) {
+        return false;
+    }
+    auto pending = prepareTrackCues(trackId, cueList);
+    if (!pending || !transaction.commit()) {
+        return false;
+    }
+    pending->finalize();
+    return true;
+}
+// End of ChatGPT-prepared code for human review.

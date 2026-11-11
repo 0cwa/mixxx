@@ -39,6 +39,7 @@
 #include "library/baseexternalplaylistmodel.h"
 #include "library/baseexternaltrackmodel.h"
 #include "library/memorycuepromotionconfig.h"
+#include "library/rekordbox/rekordboxsource.h"
 #include "library/rekordbox/rekordboxxmlparser.h"
 #include "library/treeitemmodel.h"
 #include "util/color/rgbcolor.h"
@@ -88,6 +89,7 @@ void applyXmlTrackAnnotations(
 
 class TrackCollectionManager;
 class BaseExternalPlaylistModel;
+class WLibraryTextBrowser;
 
 class RekordboxPlaylistModel : public BaseExternalPlaylistModel {
     Q_OBJECT
@@ -95,7 +97,9 @@ class RekordboxPlaylistModel : public BaseExternalPlaylistModel {
     RekordboxPlaylistModel(QObject* parent,
             TrackCollectionManager* pTrackCollectionManager,
             QSharedPointer<BaseTrackCache> trackSource,
-            UserSettingsPointer pConfig);
+            UserSettingsPointer pConfig,
+            std::shared_ptr<mixxx::rekordbox::SourceSessions> sources = {},
+            std::shared_ptr<mixxx::rekordbox::ImportSourceRegistry> registry = {});
     TrackPointer getTrack(const QModelIndex& index) const override;
     bool isColumnHiddenByDefault(int column) override;
     bool isColumnInternal(int column) override;
@@ -104,8 +108,12 @@ class RekordboxPlaylistModel : public BaseExternalPlaylistModel {
     void initSortColumnMapping() override;
 
   private:
+    TrackPointer getSourceTrack(const QModelIndex& index,
+            const std::shared_ptr<const mixxx::rekordbox::SourceSnapshot>& snapshot) const;
     UserSettingsPointer m_pConfig;
-    mutable QSet<QString> m_importedAnalyzeSources;
+    std::shared_ptr<mixxx::rekordbox::SourceSessions> m_sources;
+    std::shared_ptr<mixxx::rekordbox::ImportSourceRegistry> m_registry;
+    mutable bool m_importInProgress = false;
 };
 
 class RekordboxFeature : public BaseExternalLibraryFeature {
@@ -126,24 +134,34 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
     void activateChild(const QModelIndex& index) override;
     void refreshLibraryModels();
     void onRekordboxDevicesFound();
-    void onTracksFound();
 
   private slots:
     void htmlLinkClicked(const QUrl& link);
 
   private:
     QString formatRootViewHtml() const;
+    void startSource(const QString& sourceId);
+    void sourceFinished(const mixxx::rekordbox::SourceResult& result);
+    void rebuildSidebar();
+    void updateLoadingState();
+    void persistSources();
+    QString addSource(mixxx::rekordbox::SourceKind kind,
+            const QString& locator,
+            const QString& displayName,
+            const QString& volumeIdentity = {});
     std::unique_ptr<BaseSqlTableModel> createPlaylistModelForPlaylist(
             const QVariant& data) override;
 
     parented_ptr<TreeItemModel> m_pSidebarModel;
     parented_ptr<RekordboxPlaylistModel> m_pRekordboxPlaylistModel;
 
-    QFutureWatcher<QList<TreeItem*>> m_devicesFutureWatcher;
-    QFuture<QList<TreeItem*>> m_devicesFuture;
-    QFutureWatcher<QString> m_tracksFutureWatcher;
-    QFuture<QString> m_tracksFuture;
+    QFutureWatcher<QVector<mixxx::rekordbox::SourceDescriptor>> m_devicesFutureWatcher;
+    QFuture<QVector<mixxx::rekordbox::SourceDescriptor>> m_devicesFuture;
+    QList<QFutureWatcher<mixxx::rekordbox::SourceResult>*> m_sourceJobs;
+    std::shared_ptr<mixxx::rekordbox::SourceSessions> m_sources;
+    std::shared_ptr<mixxx::rekordbox::ImportSourceRegistry> m_registry;
     QString m_title;
+    QPointer<WLibraryTextBrowser> m_homeView;
 
     QSharedPointer<BaseTrackCache> m_trackSource;
 };

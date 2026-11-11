@@ -8,6 +8,7 @@
 #include <QString>
 #include <QtSql/QSqlQuery>
 #include <memory>
+#include <vector>
 
 #include "library/dao/dao.h"
 #include "library/relocatedtrack.h"
@@ -131,6 +132,10 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
   public slots:
     // Slots to inform the TrackDAO about changes that
     // have been applied directly to the database.
+    // Prepared by ChatGPT for human review.
+    // Call only after commit and after releasing any global track cache lease.
+    void slotDatabaseTracksAdded(const QSet<TrackId>& addedTrackIds);
+    // End of ChatGPT-prepared documentation for human review.
     void slotDatabaseTracksChanged(
             const QSet<TrackId>& changedTrackIds);
     void slotDatabaseTracksRelocated(
@@ -141,6 +146,9 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     friend class TrackCollection;
     friend class TrackAnalysisScheduler;
     FRIEND_TEST(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly);
+    FRIEND_TEST(TrackDAOTest, BatchRollbackDiscardsEarlierSuccessfulTrack);
+    FRIEND_TEST(TrackDAOTest, SuccessfulBatchPublishesAfterCommit);
+    FRIEND_TEST(TrackDAOTest, CachedTrackIdIsPublishedOnlyAfterSuccessfulBatchCommit);
 
     QString findLastTimeAddedToHistory(TrackId trackId) const;
 
@@ -162,16 +170,16 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
             const TrackRef& trackRef,
             bool* pAlreadyInLibrary = nullptr);
 
-    void addTracksPrepare();
+    bool addTracksPrepare();
     TrackId addTracksAddTrack(
             const TrackPointer& pTrack,
             bool unremove);
     TrackPointer addTracksAddFile(
             const QString& filePath,
             bool unremove);
-    void addTracksFinish(bool rollback = false);
+    bool addTracksFinish(bool rollback = false, QList<TrackPointer>* addedTracks = nullptr);
 
-    bool updateTrack(const Track& track) const;
+    bool updateTrack(Track& track) const;
 
     void hideAllTracks(const QDir& rootDir) const;
 
@@ -224,6 +232,13 @@ class TrackDAO : public QObject, public virtual DAO, public virtual GlobalTrackC
     int m_queryLibraryMixxxDeletedColumn;
 
     QSet<TrackId> m_tracksAddedSet;
+
+    // Prepared by ChatGPT for human review.
+    // Keep tracks and cue save snapshots private until the batch commits.
+    struct PendingTrackAdd;
+    std::vector<std::unique_ptr<PendingTrackAdd>> m_pendingTrackAdds;
+    bool m_addTracksFailed = false;
+    // End of ChatGPT-prepared documentation for human review.
 
     DISALLOW_COPY_AND_ASSIGN(TrackDAO);
     mutable QSqlQuery m_lastAddedToHistoryQuery;

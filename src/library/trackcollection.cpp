@@ -601,8 +601,12 @@ TrackId TrackCollection::addTrack(
         bool unremove) {
     DEBUG_ASSERT_QOBJECT_THREAD_AFFINITY(this);
 
-    m_trackDao.addTracksPrepare();
+    if (!m_trackDao.addTracksPrepare()) {
+        return {};
+    }
     const auto trackId = m_trackDao.addTracksAddTrack(pTrack, unremove);
-    m_trackDao.addTracksFinish(!trackId.isValid());
+    if (!m_trackDao.addTracksFinish(!trackId.isValid())) {
+        return {};
+    }
     return trackId;
 }

@@ -1,0 +1,67 @@
+{
+  "authorship": "Prepared by ChatGPT for human review.",
+  "provenance": "Synthetic schema-authored test fixture; no exporter or hardware qualification.",
+  "files": {
+    "ANLZ0000.DAT": {
+      "bytes": 364,
+      "sha256": "b593419609fd66568bb931ade14a824dcea871e7ff17a5fee2fa5406ed831fb4"
+    },
+    "ANLZ0000.EXT": {
+      "bytes": 344,
+      "sha256": "8fcfff41c98ea301a97969270ce30dfe27d524a4c8bc9c73844a38bc777ab375"
+    }
+  },
+  "expectations": {
+    "sample_rate_for_pcm_examples": 48000,
+    "correction_ms": 26,
+    "memory_cues": [
+      {
+        "pcm_start": 0,
+        "label": "Å 🎵",
+        "rgb": 16711680
+      },
+      {
+        "pcm_start": 0,
+        "label": "Same position",
+        "rgb": 255
+      }
+    ],
+    "hot_cues": [
+      {
+        "zero_based_slot": 0,
+        "pcm_start": 0,
+        "rgb": 0
+      },
+      {
+        "zero_based_slot": 7,
+        "pcm_start": 48000,
+        "pcm_end": 105600,
+        "rgb": 0
+      }
+    ],
+    "pqtz_source_ms": [
+      26,
+      526,
+      1026,
+      1626,
+      2226
+    ],
+    "pqtz_pcm_after_correction": [
+      0,
+      24000,
+      48000,
+      76800,
+      105600
+    ],
+    "beat_in_bar": [
+      3,
+      4,
+      1,
+      2,
+      3
+    ],
+    "last_tempo_bpm": 90,
+    "meter": null
+  },
+  "authorship_end": "End of ChatGPT-prepared fixture provenance for human review."
+}
