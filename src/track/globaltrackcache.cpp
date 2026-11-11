@@ -124,6 +124,18 @@ void GlobalTrackCacheLocker::purgeTrackId(const TrackId& trackId) {
     m_pInstance->purgeTrackId(trackId);
 }
 
+// Prepared by ChatGPT for human review.
+bool GlobalTrackCacheLocker::canPublishTrackId(const TrackPointer& track, TrackId trackId) const {
+    DEBUG_ASSERT(m_pInstance);
+    return m_pInstance->canPublishTrackId(track, trackId);
+}
+
+bool GlobalTrackCacheLocker::publishTrackId(const TrackPointer& track, TrackId trackId) {
+    DEBUG_ASSERT(m_pInstance);
+    return m_pInstance->publishTrackId(track, trackId);
+}
+// End of ChatGPT-prepared code for human review.
+
 void GlobalTrackCacheLocker::deactivateCache() const {
     DEBUG_ASSERT(m_pInstance);
     m_pInstance->deactivate();
@@ -808,6 +820,35 @@ void GlobalTrackCache::purgeTrackId(TrackId trackId) {
         m_tracksById.erase(trackById);
     }
 }
+
+// Prepared by ChatGPT for human review.
+bool GlobalTrackCache::canPublishTrackId(const TrackPointer& track, TrackId trackId) const {
+    if (!track || !trackId.isValid()) {
+        return false;
+    }
+    auto* deleter = std::get_deleter<EvictAndSaveFunctor>(track);
+    if (!deleter || (track->getId().isValid() && track->getId() != trackId)) {
+        return false;
+    }
+    const auto entry = deleter->getCacheEntryPointer();
+    const auto existing = m_tracksById.find(trackId);
+    if (existing != m_tracksById.end() && existing->second != entry) {
+        kLogger.warning() << "Cannot publish a conflicting committed track ID" << trackId;
+        return false;
+    }
+    return true;
+}
+
+bool GlobalTrackCache::publishTrackId(const TrackPointer& track, TrackId trackId) {
+    if (!canPublishTrackId(track, trackId)) {
+        return false;
+    }
+    const auto* deleter = std::get_deleter<EvictAndSaveFunctor>(track);
+    m_tracksById.emplace(trackId, deleter->getCacheEntryPointer());
+    track->initId(trackId);
+    return true;
+}
+// End of ChatGPT-prepared code for human review.
 
 void GlobalTrackCache::slotEvictAndSave(
         GlobalTrackCacheEntryPointer cacheEntryPtr) {

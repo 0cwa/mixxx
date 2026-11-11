@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <QtDebug>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 
 #include "audio/types.h"
+#include "proto/beats.pb.h"
 #include "track/beats.h"
 #include "track/beatutils.h"
 #include "track/bpm.h"
@@ -638,3 +641,198 @@ TEST(BeatsTest, IteratorFromFloorUndershoot) {
 }
 
 } // namespace
+
+// Prepared by ChatGPT for human review.
+namespace {
+using mixxx::audio::FramePos;
+TEST(BeatsPersistence, FixedGridOffsetRoundTrip) {
+    const auto source = Beats::fromConstTempo(kSampleRate, FramePos(24000), Bpm(120), {}, 2);
+    ASSERT_TRUE(source);
+    const auto restored = Beats::fromByteArray(kSampleRate,
+            source->getVersion(),
+            source->getSubVersion(),
+            source->toByteArray());
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(2, restored->getDownbeatsOffset());
+    EXPECT_EQ(FramePos(24000), restored->getLastMarkerPosition());
+    EXPECT_DOUBLE_EQ(120, restored->getLastMarkerBpm().value());
+}
+
+TEST(BeatsPersistence, VariableMapOffsetRoundTrip) {
+    const QVector<FramePos> positions{FramePos(24000),
+            FramePos(48000),
+            FramePos(72000),
+            FramePos(91200),
+            FramePos(110400)};
+    const auto source = Beats::fromBeatPositions(kSampleRate, positions, {}, 2);
+    ASSERT_TRUE(source);
+    ASSERT_EQ(QString::fromLatin1(BEAT_MAP_VERSION), source->getVersion());
+    const auto restored = Beats::fromByteArray(kSampleRate,
+            source->getVersion(),
+            source->getSubVersion(),
+            source->toByteArray());
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(2, restored->getDownbeatsOffset());
+    auto beat = restored->cfirstmarker();
+    for (const auto position : positions) {
+        EXPECT_EQ(position, *beat++);
+    }
+}
+
+TEST(BeatsPersistence, ExistingGridDefaultsOffsetToZero) {
+    mixxx::track::io::BeatGrid grid;
+    grid.mutable_first_beat()->set_frame_position(24000);
+    grid.mutable_bpm()->set_bpm(120);
+    const auto restored = Beats::fromBeatGridByteArray(kSampleRate,
+            {},
+            QByteArray::fromStdString(grid.SerializeAsString()));
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(0, restored->getDownbeatsOffset());
+}
+
+TEST(BeatsPersistence, ExistingMapDefaultsOffsetToZero) {
+    mixxx::track::io::BeatMap map;
+    for (const int position : {24000, 48000, 72000, 91200}) {
+        map.add_beat()->set_frame_position(position);
+    }
+    const auto restored = Beats::fromBeatMapByteArray(kSampleRate,
+            {},
+            QByteArray::fromStdString(map.SerializeAsString()));
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(0, restored->getDownbeatsOffset());
+}
+
+TEST(BeatsPersistence, LegacyGridRejectsPartialProtobufOffset) {
+    if constexpr (std::endian::native != std::endian::little) {
+        GTEST_SKIP() << "Pinned legacy double witness has little-endian byte order";
+    }
+    const auto restored = Beats::fromByteArray(kSampleRate,
+            QString::fromLatin1(BEAT_GRID_1_VERSION),
+            {},
+            QByteArray::fromHex("1803000000005e400000000000000000"));
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(0, restored->getDownbeatsOffset());
+    EXPECT_DOUBLE_EQ(120.00000000001125, restored->getLastMarkerBpm().value());
+    EXPECT_EQ(mixxx::audio::kStartFramePos, restored->getLastMarkerPosition());
+}
+
+TEST(BeatsTempoAnchors, RetainsSixtyBeatsBeforeFinalTempo) {
+    const auto beats = Beats::fromBeatMarkers(kSampleRate,
+            {BeatMarker(FramePos(24000), 60)},
+            FramePos(1464000),
+            Bpm(150),
+            {},
+            2);
+    ASSERT_TRUE(beats);
+    EXPECT_EQ(FramePos(1440000), *(beats->cfirstmarker() + 59));
+    EXPECT_EQ(FramePos(1464000), *(beats->cfirstmarker() + 60));
+    EXPECT_EQ(FramePos(1483200), *(beats->cfirstmarker() + 61));
+    EXPECT_EQ(60, beats->clastmarker() - beats->cfirstmarker());
+}
+
+TEST(BeatsPersistence, FinalTempoAnchorSurvivesMapRoundTrip) {
+    const auto source = Beats::fromBeatMarkers(kSampleRate,
+            {BeatMarker(FramePos(24000), 60)},
+            FramePos(1464000),
+            Bpm(150),
+            {},
+            2);
+    ASSERT_TRUE(source);
+    const auto restored = Beats::fromByteArray(kSampleRate,
+            source->getVersion(),
+            source->getSubVersion(),
+            source->toByteArray());
+    ASSERT_TRUE(restored);
+    EXPECT_DOUBLE_EQ(150, restored->getLastMarkerBpm().value());
+    EXPECT_EQ(FramePos(1483200), *(restored->cfirstmarker() + 61));
+}
+
+mixxx::BeatsPointer makeUnalignedTempoAnchors() {
+    return Beats::fromBeatMarkers(kSampleRate,
+            {BeatMarker(FramePos(24000), 3), BeatMarker(FramePos(96000), 2)},
+            FramePos(134400),
+            Bpm(100),
+            {},
+            2);
+}
+
+TEST(BeatsGlobalPhase, PhaseDoesNotRestartAtTempoAnchor) {
+    const auto beats = makeUnalignedTempoAnchors();
+    ASSERT_TRUE(beats);
+    auto it = beats->cfirstmarker() - 2;
+    for (int ordinal = -2; ordinal <= 22; ++ordinal, ++it) {
+        EXPECT_EQ(ordinal, it.beatOffset());
+        EXPECT_EQ((ordinal - 2) % 4 == 0,
+                (it.beatOffset() - beats->getDownbeatsOffset()) % 4 == 0);
+        EXPECT_EQ((ordinal - 2) % 16 == 0,
+                (it.beatOffset() - beats->getDownbeatsOffset()) % 16 == 0);
+    }
+}
+
+TEST(BeatsGlobalPhase, DirectLookupAndReverseTraversalHaveSameGlobalPhase) {
+    const auto beats = makeUnalignedTempoAnchors();
+    ASSERT_TRUE(beats);
+    EXPECT_EQ(3, beats->iteratorFrom(FramePos(96000)).beatOffset());
+    EXPECT_EQ(5, beats->clastmarker().beatOffset());
+    auto it = beats->clastmarker() + 4;
+    for (int ordinal = 9; ordinal >= -2; --ordinal, --it) {
+        EXPECT_EQ(ordinal, it.beatOffset());
+    }
+}
+
+TEST(BeatsGlobalPhase, OrdinalRemainsWideAfterLargeTempoSections) {
+    constexpr auto kBeatsPerSection = std::numeric_limits<int>::max();
+    const auto beats = Beats::fromBeatMarkers(kSampleRate,
+            {BeatMarker(FramePos(0), kBeatsPerSection),
+                    BeatMarker(FramePos(kBeatsPerSection), kBeatsPerSection)},
+            FramePos(2.0 * kBeatsPerSection),
+            Bpm(100),
+            {},
+            2);
+    ASSERT_TRUE(beats);
+    EXPECT_EQ(2LL * kBeatsPerSection, beats->clastmarker().beatOffset());
+    EXPECT_EQ(3LL * kBeatsPerSection, beats->cend().beatOffset());
+    EXPECT_EQ(std::numeric_limits<int>::min(), beats->cbegin().beatOffset());
+}
+
+TEST(BeatsPersistence, InvalidPresentFinalTempoDoesNotFallBackSilently) {
+    mixxx::track::io::BeatMap map;
+    map.add_beat()->set_frame_position(24000);
+    map.add_beat()->set_frame_position(48000);
+    const auto bytesWithoutTempo = QByteArray::fromStdString(map.SerializeAsString());
+    for (const double value : {0.0,
+                 -1.0,
+                 std::numeric_limits<double>::infinity(),
+                 std::numeric_limits<double>::quiet_NaN()}) {
+        auto bytes = bytesWithoutTempo;
+        bytes.append(char(0x19));
+        const auto bits = std::bit_cast<std::uint64_t>(value);
+        for (int i = 0; i < 8; ++i) {
+            bytes.append(char((bits >> (8 * i)) & 0xff));
+        }
+        EXPECT_FALSE(Beats::fromBeatMapByteArray(kSampleRate, {}, bytes));
+    }
+}
+
+TEST(BeatsPersistence, UnknownFutureFieldDoesNotRejectValidGrid) {
+    const auto source = Beats::fromBeatMarkers(kSampleRate,
+            {BeatMarker(FramePos(24000), 3)},
+            FramePos(96000),
+            Bpm(150),
+            {},
+            2);
+    ASSERT_TRUE(source);
+    auto bytes = source->toByteArray();
+    bytes.append(QByteArray::fromHex("f80763"));
+    const auto restored = Beats::fromByteArray(kSampleRate,
+            source->getVersion(),
+            source->getSubVersion(),
+            bytes);
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(2, restored->getDownbeatsOffset());
+    EXPECT_DOUBLE_EQ(150, restored->getLastMarkerBpm().value());
+    EXPECT_EQ(FramePos(115200), *(restored->clastmarker() + 1));
+}
+
+} // namespace
+// End of ChatGPT-prepared tests for human review.

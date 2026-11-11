@@ -52,4 +52,43 @@ TEST(CueTest, ConvertCueInfoToCueRoundtrip) {
     EXPECT_EQ(cueInfo1, cueInfo2);
 }
 
+// Prepared by ChatGPT for human review.
+TEST(CueTest, ChangingLoadedHotCueIndexMarksDirtyAndEmits) {
+    Cue cue(DbId(QVariant(7)),
+            CueType::HotCue,
+            audio::FramePos(48000),
+            0,
+            0,
+            QString(),
+            RgbColor(0xabcdef));
+    int updates = 0;
+    QObject::connect(&cue, &Cue::updated, [&updates] { ++updates; });
+    ASSERT_FALSE(cue.isDirty());
+
+    cue.setHotCue(3);
+
+    EXPECT_EQ(3, cue.getHotCue());
+    EXPECT_TRUE(cue.isDirty());
+    EXPECT_EQ(1, updates);
+}
+
+TEST(CueTest, UnchangedLoadedHotCueIndexStaysClean) {
+    Cue cue(DbId(QVariant(7)),
+            CueType::HotCue,
+            audio::FramePos(48000),
+            0,
+            0,
+            QString(),
+            RgbColor(0xabcdef));
+    int updates = 0;
+    QObject::connect(&cue, &Cue::updated, [&updates] { ++updates; });
+    ASSERT_FALSE(cue.isDirty());
+
+    cue.setHotCue(0);
+
+    EXPECT_FALSE(cue.isDirty());
+    EXPECT_EQ(0, updates);
+}
+// End of ChatGPT-prepared tests for human review.
+
 } // namespace mixxx

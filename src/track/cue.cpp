@@ -225,11 +225,14 @@ void Cue::setHotCue(int n) {
     VERIFY_OR_DEBUG_ASSERT(n >= mixxx::kFirstHotCueIndex) {
         return;
     }
-    const auto lock = lockMutex(&m_mutex);
+    auto lock = lockMutex(&m_mutex);
     if (m_iHotCue == n) {
         return;
     }
     m_iHotCue = n;
+    m_bDirty = true;
+    lock.unlock();
+    emit updated();
 }
 
 int Cue::getHotCue() const {

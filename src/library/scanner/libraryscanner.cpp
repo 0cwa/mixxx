@@ -238,6 +238,16 @@ void LibraryScanner::slotStartScan() {
 
     emit scanStarted();
 
+    // Prepared by ChatGPT for human review.
+    // Begin before changing scanner rows so a failed transaction cannot publish
+    // new track IDs or leave the scanner's preliminary changes committed.
+    if (!m_trackDao.addTracksPrepare()) {
+        m_scannerGlobal->clearScanFinishedCleanly();
+        slotFinishUnhashedScan();
+        return;
+    }
+    // End of ChatGPT-prepared documentation for human review.
+
     // First, we're going to mark all the directories that we've previously
     // hashed as needing verification. As we search through the directory tree
     // when we rescan, we'll mark any directory that does still exist as
@@ -255,10 +265,6 @@ void LibraryScanner::slotStartScan() {
     m_trackDao.invalidateTrackLocationsInLibrary();
 
     kLogger.debug() << "Recursively scanning library.";
-
-    // Start scanning the library. This prepares insertion queries in TrackDAO
-    // (must be called before calling addTracksAdd) and begins a transaction.
-    m_trackDao.addTracksPrepare();
 
     // First Scan all known directories we have a hash for.
     // In a second stage, we scan all new directories. This guarantees,
@@ -440,8 +446,20 @@ void LibraryScanner::slotFinishUnhashedScan() {
 
     // Finish adding the tracks -- rollback the transaction if the scan did not
     // finish cleanly and the user did not cancel the transaction.
-    m_trackDao.addTracksFinish(!m_scannerGlobal->shouldCancel() &&
-                               !bScanFinishedCleanly);
+    // Prepared by ChatGPT for human review.
+    QList<TrackPointer> addedTracks;
+    const bool committed = m_trackDao.addTracksFinish(
+            !m_scannerGlobal->shouldCancel() && !bScanFinishedCleanly, &addedTracks);
+    if (!committed) {
+        bScanFinishedCleanly = false;
+        m_scannerGlobal->clearScanFinishedCleanly();
+        kLogger.warning() << "Scanner transaction failed; no added tracks were published";
+    }
+    for (const auto& track : addedTracks) {
+        m_scannerGlobal->trackAdded(track->getLocation());
+        emit trackAdded(track);
+    }
+    // End of ChatGPT-prepared code for human review.
 
     if (!m_scannerGlobal->shouldCancel() && bScanFinishedCleanly) {
         cleanUpScan();
@@ -704,17 +722,9 @@ void LibraryScanner::slotAddNewTrack(const QString& trackPath) {
         return;
     }
 
-    DEBUG_ASSERT(!pTrack->isDirty());
     // The track's actual location might differ from the
     // given trackPath
     const QString trackLocation = pTrack->getLocation();
-    // Acknowledge successful track addition
-    if (m_scannerGlobal) {
-        m_scannerGlobal->trackAdded(trackLocation);
-    }
-    // Signal the main instance of TrackDAO, that there is
-    // a new track in the database.
-    emit trackAdded(pTrack);
     emit progressLoading(trackLocation);
 }
 

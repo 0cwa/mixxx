@@ -4,6 +4,7 @@
 #include <QList>
 #include <QString>
 #include <QVector>
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -143,7 +144,10 @@ class Beats : private std::enable_shared_from_this<Beats> {
             return !(lhs == rhs);
         }
 
-        int beatOffset() const;
+        // Prepared by ChatGPT for human review.
+        // The ordinal is relative to the first marker across all tempo sections.
+        std::int64_t beatOffset() const;
+        // End of ChatGPT-prepared documentation for human review.
 
       private:
         void updateValue();
@@ -162,6 +166,7 @@ class Beats : private std::enable_shared_from_this<Beats> {
             const QString& subVersion,
             const int downbeatsOffset)
             : m_markers(std::move(markers)),
+              m_markerBeatOffsets(makeMarkerBeatOffsets(m_markers)),
               m_lastMarkerPosition(lastMarkerPosition),
               m_lastMarkerBpm(lastMarkerBpm),
               m_sampleRate(sampleRate),
@@ -451,7 +456,11 @@ class Beats : private std::enable_shared_from_this<Beats> {
     mixxx::audio::FrameDiff_t firstBeatLengthFrames() const;
     mixxx::audio::FrameDiff_t lastBeatLengthFrames() const;
 
+    static std::vector<std::int64_t> makeMarkerBeatOffsets(
+            const std::vector<BeatMarker>& markers);
+
     std::vector<BeatMarker> m_markers;
+    const std::vector<std::int64_t> m_markerBeatOffsets;
     mixxx::audio::FramePos m_lastMarkerPosition;
     mixxx::Bpm m_lastMarkerBpm;
     mixxx::audio::SampleRate m_sampleRate;

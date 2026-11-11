@@ -88,6 +88,20 @@ QSet<QString> collectTrackLocations(FwdSqlQuery& query) {
 
 } // anonymous namespace
 
+// Prepared by ChatGPT for human review.
+struct TrackDAO::PendingTrackAdd {
+    TrackPointer track;
+    TrackId id;
+    QDateTime dateAdded;
+    mixxx::TrackRecord record;
+    mixxx::BeatsPointer beats;
+    QList<CuePointer> cues;
+    std::optional<CueDAO::PendingSave> cueSave;
+    bool inserted = false;
+    bool publishCacheId = false;
+};
+// End of ChatGPT-prepared code for human review.
+
 TrackDAO::TrackDAO(CueDAO& cueDao,
                    PlaylistDAO& playlistDao,
                    AnalysisDao& analysisDao,
@@ -231,7 +245,10 @@ QList<TrackId> TrackDAO::resolveTrackIds(
     if (flags & ResolveTrackIdFlag::AddMissing) {
         // Prepare to add tracks to the database.
         // This also begins an SQL transaction.
-        addTracksPrepare();
+        if (!addTracksPrepare()) {
+            query.exec(QStringLiteral("DROP TABLE playlist_import"));
+            return {};
+        }
 
         // Any tracks not already in the database need to be added.
         query.prepare("SELECT location FROM playlist_import "
@@ -248,7 +265,10 @@ QList<TrackId> TrackDAO::resolveTrackIds(
         }
 
         // Finish adding tracks to the database.
-        addTracksFinish();
+        if (!addTracksFinish()) {
+            query.exec(QStringLiteral("DROP TABLE playlist_import"));
+            return {};
+        }
     }
 
     query.prepare(
@@ -372,11 +392,18 @@ bool TrackDAO::saveTrack(Track* pTrack) const {
     // track has already been disconnected and TrackDAO does
     // not receive any signals that are usually forwarded to
     // BaseTrackCache.
-    pTrack->markClean();
     emit mixxx::thisAsNonConst(this)->trackClean(trackId);
 
     return true;
 }
+
+// Prepared by ChatGPT for human review.
+void TrackDAO::slotDatabaseTracksAdded(const QSet<TrackId>& addedTrackIds) {
+    if (!addedTrackIds.isEmpty()) {
+        emit tracksAdded(addedTrackIds);
+    }
+}
+// End of ChatGPT-prepared code for human review.
 
 void TrackDAO::slotDatabaseTracksChanged(const QSet<TrackId>& changedTrackIds) {
     if (!changedTrackIds.isEmpty()) {
@@ -408,7 +435,7 @@ void TrackDAO::slotDatabaseTracksRelocated(const QList<RelocatedTrack>& relocate
     }
 }
 
-void TrackDAO::addTracksPrepare() {
+bool TrackDAO::addTracksPrepare() {
     if (m_pQueryLibraryInsert || m_pQueryTrackLocationInsert ||
             m_pQueryLibrarySelect || m_pQueryTrackLocationSelect ||
             m_pTransaction) {
@@ -419,6 +446,10 @@ void TrackDAO::addTracksPrepare() {
     }
     // Start the transaction
     m_pTransaction = std::make_unique<SqlTransaction>(m_database);
+    m_addTracksFailed = !*m_pTransaction;
+    if (m_addTracksFailed) {
+        return false;
+    }
 
     m_pQueryTrackLocationInsert = std::make_unique<QSqlQuery>(m_database);
     m_pQueryTrackLocationSelect = std::make_unique<QSqlQuery>(m_database);
@@ -540,28 +571,97 @@ void TrackDAO::addTracksPrepare() {
     m_pQueryLibraryUpdate->prepare("UPDATE library SET mixxx_deleted = 0 "
             "WHERE id=:id");
 
-    m_pQueryLibrarySelect->prepare("SELECT location, id, mixxx_deleted from library "
+    m_pQueryLibrarySelect->prepare(
+            "SELECT location, id, mixxx_deleted, datetime_added from library "
             "WHERE location=:location");
+    return true;
 }
 
-void TrackDAO::addTracksFinish(bool rollback) {
-    if (m_pTransaction) {
-        if (rollback) {
-            m_pTransaction->rollback();
-            m_tracksAddedSet.clear();
-        } else {
-            m_pTransaction->commit();
+// Prepared by ChatGPT for human review.
+bool TrackDAO::addTracksFinish(bool rollback, QList<TrackPointer>* addedTracks) {
+    if (addedTracks) {
+        addedTracks->clear();
+    }
+    bool committed = false;
+    std::optional<GlobalTrackCacheLocker> cacheLocker;
+    if (m_pTransaction && *m_pTransaction && !rollback && !m_addTracksFailed) {
+        for (const auto& pending : m_pendingTrackAdds) {
+            if (!pending->publishCacheId) {
+                continue;
+            }
+            if (!cacheLocker) {
+                cacheLocker.emplace();
+            }
+            if (!cacheLocker->canPublishTrackId(pending->track, pending->id)) {
+                m_addTracksFailed = true;
+                break;
+            }
         }
+        committed = !m_addTracksFailed && m_pTransaction->commit();
+    }
+    if (!committed && m_pTransaction && *m_pTransaction) {
+        m_pTransaction->rollback();
+    }
+    if (committed) {
+        for (const auto& pending : m_pendingTrackAdds) {
+            if (pending->publishCacheId) {
+                const bool published = cacheLocker->publishTrackId(pending->track, pending->id);
+                DEBUG_ASSERT(published);
+                Q_UNUSED(published);
+            } else {
+                pending->track->initId(pending->id);
+            }
+            pending->track->setDateAdded(pending->dateAdded);
+            if (pending->inserted) {
+                pending->cueSave->finalize();
+            }
+        }
+    } else {
+        m_tracksAddedSet.clear();
+    }
+    if (cacheLocker) {
+        cacheLocker->unlockCache();
     }
     m_pQueryTrackLocationInsert.reset();
     m_pQueryTrackLocationSelect.reset();
     m_pQueryLibraryInsert.reset();
+    m_pQueryLibraryUpdate.reset();
     m_pQueryLibrarySelect.reset();
     m_pTransaction.reset();
-
-    emit tracksAdded(m_tracksAddedSet);
+    auto pendingAdds = std::move(m_pendingTrackAdds);
+    m_pendingTrackAdds.clear();
+    const auto addedTrackIds = m_tracksAddedSet;
     m_tracksAddedSet.clear();
+    m_addTracksFailed = false;
+
+    if (committed) {
+        for (const auto& pending : pendingAdds) {
+            if (!pending->inserted) {
+                continue;
+            }
+            auto expected = pending->record;
+            expected.setId(pending->id);
+            expected.setDateAdded(pending->dateAdded);
+            auto locked = lockMutex(&pending->track->m_qMutex);
+            bool unchanged = pending->track->m_record == expected &&
+                    pending->track->m_pBeats == pending->beats &&
+                    pending->track->m_cuePoints == pending->cues;
+            for (const auto& cue : pending->track->m_cuePoints) {
+                unchanged = !cue->isDirty() && unchanged;
+            }
+            pending->track->setDirtyAndUnlock(&locked, !unchanged);
+            m_analysisDao.saveTrackAnalyses(pending->id,
+                    pending->track->getWaveform(),
+                    pending->track->getWaveformSummary());
+            if (addedTracks) {
+                addedTracks->append(pending->track);
+            }
+        }
+        emit tracksAdded(addedTrackIds);
+    }
+    return committed;
 }
+// End of ChatGPT-prepared code for human review.
 
 namespace {
 
@@ -723,7 +823,6 @@ bool insertTrackLibrary(
         LOG_FAILED_QUERY(*pTrackLibraryInsert)
                 << "Failed to insert new track into library:"
                 << fileInfo;
-        DEBUG_ASSERT(!"Failed query");
         return false;
     }
     return true;
@@ -731,148 +830,121 @@ bool insertTrackLibrary(
 
 } // anonymous namespace
 
+// Prepared by ChatGPT for human review.
 TrackId TrackDAO::addTracksAddTrack(const TrackPointer& pTrack, bool unremove) {
-    DEBUG_ASSERT(pTrack);
-    const mixxx::FileInfo fileInfo = pTrack->getFileInfo();
-
-    if (!(m_pQueryLibraryInsert || m_pQueryTrackLocationInsert ||
-                m_pQueryLibrarySelect || m_pQueryTrackLocationSelect)) {
-        kLogger.debug() << "addTracksAddTrack: needed SqlQuerys have not "
-                           "been prepared. Skipping track"
-                        << fileInfo.location();
-        DEBUG_ASSERT("Failed query");
+    if (!pTrack || !m_pTransaction || !*m_pTransaction || m_addTracksFailed) {
         return TrackId();
     }
-
-    kLogger.debug() << "Adding track"
-                    << fileInfo.location();
-
-    TrackId trackId;
-
-    // Insert the track location into the corresponding table. This will fail
-    // silently if the location is already in the table because it has a UNIQUE
-    // constraint.
+    for (const auto& pending : m_pendingTrackAdds) {
+        if (pending->track == pTrack) {
+            return pending->id;
+        }
+    }
+    auto fail = [this]() {
+        m_addTracksFailed = true;
+        return TrackId();
+    };
+    if (!m_pQueryLibraryInsert || !m_pQueryTrackLocationInsert ||
+            !m_pQueryLibrarySelect || !m_pQueryTrackLocationSelect) {
+        return fail();
+    }
+    auto pending = std::make_unique<PendingTrackAdd>();
+    pending->track = pTrack;
+    {
+        const auto locked = lockMutex(&pTrack->m_qMutex);
+        pending->record = pTrack->m_record;
+        pending->beats = pTrack->m_pBeats;
+        pending->cues = pTrack->m_cuePoints;
+        pending->cueSave = CueDAO::snapshotCues(pending->cues);
+    }
+    if (!pending->cueSave) {
+        return fail();
+    }
+    const auto fileInfo = pTrack->getFileInfo();
     if (!insertTrackLocation(m_pQueryTrackLocationInsert.get(), fileInfo)) {
-        DEBUG_ASSERT(pTrack->getDateAdded().isValid());
-        // Inserting into track_locations failed, so the file already
-        // exists. Query for its trackLocationId.
         m_pQueryTrackLocationSelect->bindValue(":location", fileInfo.location());
-        if (!m_pQueryTrackLocationSelect->exec()) {
-            // We can't even select this, something is wrong.
-            LOG_FAILED_QUERY(*m_pQueryTrackLocationSelect)
-                        << "Can't find track location ID after failing to insert. Something is wrong.";
-            return TrackId();
+        if (!m_pQueryTrackLocationSelect->exec() || !m_pQueryTrackLocationSelect->next()) {
+            LOG_FAILED_QUERY(*m_pQueryTrackLocationSelect);
+            return fail();
         }
         if (m_trackLocationIdColumn == UndefinedRecordIndex) {
             m_trackLocationIdColumn =
                     m_pQueryTrackLocationSelect->record().indexOf(
-                            LIBRARYTABLE_MIXXXDELETED);
+                            LIBRARYTABLE_ID);
         }
-        DbId trackLocationId;
-        while (m_pQueryTrackLocationSelect->next()) {
-            // This loop body is executed at most once
-            DEBUG_ASSERT(!trackLocationId.isValid());
-            trackLocationId = DbId(
-                    m_pQueryTrackLocationSelect->value(m_trackLocationIdColumn));
-            DEBUG_ASSERT(trackLocationId.isValid());
+        const DbId locationId(m_pQueryTrackLocationSelect->value(m_trackLocationIdColumn));
+        m_pQueryTrackLocationSelect->finish();
+        if (!locationId.isValid()) {
+            return fail();
         }
-
-        m_pQueryLibrarySelect->bindValue(":location", trackLocationId.toVariant());
-        if (!m_pQueryLibrarySelect->exec()) {
-            LOG_FAILED_QUERY(*m_pQueryLibrarySelect)
-                    << "Failed to query existing track: "
-                    << fileInfo.location();
-            return TrackId();
+        m_pQueryLibrarySelect->bindValue(":location", locationId.toVariant());
+        if (!m_pQueryLibrarySelect->exec() || !m_pQueryLibrarySelect->next()) {
+            LOG_FAILED_QUERY(*m_pQueryLibrarySelect);
+            return fail();
         }
+        const auto record = m_pQueryLibrarySelect->record();
         if (m_queryLibraryIdColumn == UndefinedRecordIndex) {
-            QSqlRecord queryLibraryRecord = m_pQueryLibrarySelect->record();
-            m_queryLibraryIdColumn = queryLibraryRecord.indexOf(LIBRARYTABLE_ID);
-            m_queryLibraryMixxxDeletedColumn =
-                    queryLibraryRecord.indexOf(LIBRARYTABLE_MIXXXDELETED);
+            m_queryLibraryIdColumn = record.indexOf(LIBRARYTABLE_ID);
+            m_queryLibraryMixxxDeletedColumn = record.indexOf(LIBRARYTABLE_MIXXXDELETED);
         }
-        while (m_pQueryLibrarySelect->next()) {
-            // This loop body is executed at most once
-            DEBUG_ASSERT(!trackId.isValid());
-            trackId = TrackId(m_pQueryLibrarySelect->value(m_queryLibraryIdColumn));
-            DEBUG_ASSERT(trackId.isValid());
+        pending->id = TrackId(m_pQueryLibrarySelect->value(m_queryLibraryIdColumn));
+        pending->dateAdded =
+                m_pQueryLibrarySelect
+                        ->value(record.indexOf(LIBRARYTABLE_DATETIMEADDED))
+                        .toDateTime();
+        const bool deleted =
+                m_pQueryLibrarySelect->value(m_queryLibraryMixxxDeletedColumn)
+                        .toBool();
+        m_pQueryLibrarySelect->finish();
+        if (!pending->id.isValid()) {
+            return fail();
         }
-        VERIFY_OR_DEBUG_ASSERT(trackId.isValid()) {
-            return TrackId();
-        }
-        pTrack->initId(trackId);
-        // Track already included in library, but maybe marked as deleted
-        bool mixxx_deleted = m_pQueryLibrarySelect->value(m_queryLibraryMixxxDeletedColumn).toBool();
-        if (unremove && mixxx_deleted) {
-            // Set mixxx_deleted back to 0
-            m_pQueryLibraryUpdate->bindValue(":id", trackId.toVariant());
-            if (!m_pQueryLibraryUpdate->exec()) {
-                LOG_FAILED_QUERY(*m_pQueryLibraryUpdate)
-                        << "Failed to unremove existing track: "
-                        << fileInfo.location();
-                return TrackId();
+        if (unremove && deleted) {
+            m_pQueryLibraryUpdate->bindValue(":id", pending->id.toVariant());
+            if (!m_pQueryLibraryUpdate->exec() || m_pQueryLibraryUpdate->numRowsAffected() != 1) {
+                LOG_FAILED_QUERY(*m_pQueryLibraryUpdate);
+                return fail();
             }
         }
-        // Regardless of whether we unremoved this track or not -- it's
-        // already in the library and so we need to skip it instead of
-        // adding it to m_tracksAddedSet.
-        //
-        // TODO(XXX) this is a little weird because the track has whatever
-        // metadata the caller supplied and that metadata may differ from
-        // what is already in the database. I'm ignoring this corner case.
-        // rryan 10/2011
-        // NOTE(uklotzde, 01/2016): It doesn't matter if the track metadata
-        // has been modified (dirty=true) or not (dirty=false). By not adding
-        // the track to m_tracksAddedSet we ensure that the track is not
-        // marked as clean (see below). The library will be updated when
-        // the last reference to the track is dropped.
     } else {
-        // Inserting succeeded, so just get the last rowid.
-        const DbId trackLocationId(m_pQueryTrackLocationInsert->lastInsertId());
-        // Failure of this assert indicates that we were unable to insert the
-        // track location into the table AND we could not retrieve the id of
-        // that track location from the same table. "It shouldn't
-        // happen"... unless I screwed up - Albert :)
-        VERIFY_OR_DEBUG_ASSERT(trackLocationId.isValid()) {
-            return TrackId();
+        const DbId locationId(m_pQueryTrackLocationInsert->lastInsertId());
+        if (!locationId.isValid()) {
+            return fail();
         }
-
-        // Time stamps are stored with timezone UTC in the database
-        const auto trackDateAdded = QDateTime::currentDateTimeUtc();
-        const auto trackRecord = pTrack->getRecord();
-        if (!insertTrackLibrary(
-                    m_pQueryLibraryInsert.get(),
-                    trackRecord,
-                    pTrack->getBeats(),
-                    trackLocationId,
+        pending->dateAdded = QDateTime::currentDateTimeUtc();
+        if (!insertTrackLibrary(m_pQueryLibraryInsert.get(),
+                    pending->record,
+                    pending->beats,
+                    locationId,
                     fileInfo,
-                    trackDateAdded)) {
-            return TrackId();
+                    pending->dateAdded)) {
+            return fail();
         }
-        trackId = TrackId(m_pQueryLibraryInsert->lastInsertId());
-        VERIFY_OR_DEBUG_ASSERT(trackId.isValid()) {
-            return TrackId();
+        pending->id = TrackId(m_pQueryLibraryInsert->lastInsertId());
+        if (!pending->id.isValid() ||
+                !m_cueDao.writeTrackCues(pending->id, &*pending->cueSave)) {
+            return fail();
         }
-        pTrack->initId(trackId);
-        pTrack->setDateAdded(trackDateAdded);
-
-        m_analysisDao.saveTrackAnalyses(
-                trackId,
-                pTrack->getWaveform(),
-                pTrack->getWaveformSummary());
-        m_cueDao.saveTrackCues(
-                trackId,
-                pTrack->getCuePoints());
-
-        DEBUG_ASSERT(!m_tracksAddedSet.contains(trackId));
-        m_tracksAddedSet.insert(trackId);
+        pending->inserted = true;
+        m_tracksAddedSet.insert(pending->id);
     }
-
-    return trackId;
+    const auto id = pending->id;
+    m_pendingTrackAdds.push_back(std::move(pending));
+    return id;
 }
+// End of ChatGPT-prepared code for human review.
 
 TrackPointer TrackDAO::addTracksAddFile(
         const QString& filePath,
         bool unremove) {
+    if (!m_pTransaction || !*m_pTransaction || m_addTracksFailed) {
+        return {};
+    }
+    for (const auto& pending : m_pendingTrackAdds) {
+        if (pending->track->getLocation() == filePath) {
+            return pending->track;
+        }
+    }
     const auto fileAccess = mixxx::FileAccess(mixxx::FileInfo(filePath));
     // Check that track is a supported extension.
     // TODO(uklotzde): The following check can be skipped if
@@ -933,8 +1005,6 @@ TrackPointer TrackDAO::addTracksAddFile(
         DEBUG_ASSERT(!"unreachable");
         return {};
     }
-    // Keep the GlobalTrackCache locked until the id of the Track
-    // object is known and has been updated in the cache.
 
     // Initially (re-)import the metadata for the newly created track
     // from the file.
@@ -957,18 +1027,16 @@ TrackPointer TrackDAO::addTracksAddFile(
         // GlobalTrackCache will be unlocked implicitly
         return {};
     }
-    // The track object has already been initialized with the
-    // database id, but the cache is not aware of this yet.
-    // Re-initializing the track object with the same id again
-    // from within the cache scope is allowed.
-    DEBUG_ASSERT(pTrack->getId() == newTrackId);
-    cacheResolver.initTrackIdAndUnlockCache(newTrackId);
-    // Only newly inserted tracks must be marked as clean!
-    // Existing or unremoved tracks have not been added to
-    // m_tracksAddedSet and will keep their dirty flag unchanged.
-    if (m_tracksAddedSet.contains(newTrackId)) {
-        pTrack->markClean();
+    // Prepared by ChatGPT for human review.
+    // Retain the temporary track by location. Its database ID and clean state
+    // are published only after the complete add batch commits successfully.
+    for (const auto& pending : m_pendingTrackAdds) {
+        if (pending->track == pTrack) {
+            pending->publishCacheId = true;
+            break;
+        }
     }
+    // End of ChatGPT-prepared documentation for human review.
     return pTrack;
 }
 
@@ -1678,8 +1746,24 @@ TrackPointer TrackDAO::getTrackByRef(
 }
 
 // Saves a track's info back to the database
-bool TrackDAO::updateTrack(const Track& track) const {
-    const TrackId trackId = track.getId();
+bool TrackDAO::updateTrack(Track& track) const {
+    // Prepared by ChatGPT for human review.
+    mixxx::TrackRecord trackRecord;
+    mixxx::BeatsPointer beats;
+    QList<CuePointer> cues;
+    std::optional<CueDAO::PendingSave> pending;
+    {
+        const auto locked = lockMutex(&track.m_qMutex);
+        trackRecord = track.m_record;
+        beats = track.m_pBeats;
+        cues = track.m_cuePoints;
+        pending = CueDAO::snapshotCues(cues);
+    }
+    if (!pending) {
+        return false;
+    }
+    const TrackId trackId = trackRecord.getId();
+    // End of ChatGPT-prepared code for human review.
     DEBUG_ASSERT(trackId.isValid());
 
     kLogger.debug() << "Updating track in database"
@@ -1687,6 +1771,9 @@ bool TrackDAO::updateTrack(const Track& track) const {
                     << track.getLocation();
 
     SqlTransaction transaction(m_database);
+    if (!transaction) {
+        return false;
+    }
     // PerformanceTimer time;
     // time.start();
 
@@ -1744,15 +1831,13 @@ bool TrackDAO::updateTrack(const Track& track) const {
 
     query.bindValue(":track_id", trackId.toVariant());
 
-    const auto trackRecord = track.getRecord();
     bindTrackLibraryValues(
             &query,
             trackRecord,
-            track.getBeats());
+            beats);
 
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
-        DEBUG_ASSERT(!"Failed query");
         return false;
     }
 
@@ -1764,13 +1849,24 @@ bool TrackDAO::updateTrack(const Track& track) const {
     // kLogger.debug() << "Update track took : " <<
     // time.elapsed().formatMillisWithUnit() << "Now updating cues";
     // time.start();
-    m_analysisDao.saveTrackAnalyses(
-            trackId,
-            track.getWaveform(),
-            track.getWaveformSummary());
-    m_cueDao.saveTrackCues(
-            trackId, track.getCuePoints());
-    transaction.commit();
+    // Prepared by ChatGPT for human review.
+    if (!m_cueDao.writeTrackCues(trackId, &*pending) || !transaction.commit()) {
+        return false;
+    }
+    pending->finalize();
+    auto locked = lockMutex(&track.m_qMutex);
+    bool unchanged = track.m_record == trackRecord && track.m_pBeats == beats &&
+            track.m_cuePoints == cues;
+    for (const auto& cue : track.m_cuePoints) {
+        unchanged = !cue->isDirty() && unchanged;
+    }
+    track.setDirtyAndUnlock(&locked, !unchanged);
+    m_analysisDao.saveTrackAnalyses(trackId, track.getWaveform(), track.getWaveformSummary());
+    if (!unchanged) {
+        kLogger.warning() << "Track changed while saving; retain dirty state for retry" << trackId;
+        return false;
+    }
+    // End of ChatGPT-prepared code for human review.
 
     // kLogger.debug() << "Update track in database took: " <<
     // time.elapsed().formatMillisWithUnit(); time.start();
@@ -2319,13 +2415,14 @@ TrackPointer TrackDAO::getOrAddTrack(
         }
     }
 
-    addTracksPrepare();
+    if (!addTracksPrepare()) {
+        return {};
+    }
     bool unremove = true;
     const TrackPointer pAddedTrack = addTracksAddFile(trackRef.getLocation(), unremove);
-    bool rollback = !pAddedTrack;
-    addTracksFinish(rollback);
-    if (!pAddedTrack) {
-        return pAddedTrack;
+    const bool rollback = !pAddedTrack;
+    if (!addTracksFinish(rollback)) {
+        return {};
     }
     if (pAlreadyInLibrary) {
         *pAlreadyInLibrary = false;

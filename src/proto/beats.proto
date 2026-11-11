@@ -23,6 +23,11 @@ message Bpm {
 
 message BeatMap {
   repeated Beat beat = 1;
+  optional int32 downbeats_offset = 2;
+  // Prepared by ChatGPT for human review.
+  // Tempo starting at the final stored beat; absent in existing BeatMap data.
+  optional double last_marker_bpm = 3;
+  // End of ChatGPT-prepared schema documentation for human review.
 }
 
 message BeatGrid {

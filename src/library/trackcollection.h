@@ -22,7 +22,7 @@ class QDir;
 
 // Manages the internal database.
 class TrackCollection : public QObject,
-    public virtual /*implements*/ SqlStorage {
+                        public virtual /*implements*/ SqlStorage {
     Q_OBJECT
 
   public:
@@ -153,6 +153,11 @@ class TrackCollection : public QObject,
     FRIEND_TEST(TrackDAOTest, detectMovedTracks);
     FRIEND_TEST(TrackDAOTest, bpmLockPreservedForTrackWithoutBeats);
     FRIEND_TEST(TrackDAOTest, markTrackLocationsAsVerifiedRecoversPresentFilesOnly);
+    FRIEND_TEST(TrackDAOTest, UpdateCueFailureRollsBackTrackMetadata);
+    FRIEND_TEST(TrackDAOTest, CommitFailureKeepsNewCueUnassigned);
+    FRIEND_TEST(TrackDAOTest, AddCueFailureDoesNotPublishIds);
+    FRIEND_TEST(TrackDAOTest, AddCommitFailureDoesNotPublishIds);
+    FRIEND_TEST(TrackDAOTest, EditDuringSqlWriteRemainsDirtyAndRetries);
     TrackId addTrack(
             const TrackPointer& pTrack,
             bool unremove);

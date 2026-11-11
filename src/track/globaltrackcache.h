@@ -101,6 +101,13 @@ public:
 
     void purgeTrackId(const TrackId& trackId);
 
+    // Prepared by ChatGPT for human review.
+    // Register a retained cached track only after its database transaction has
+    // committed. The caller keeps this cache lock from preflight through commit.
+    bool canPublishTrackId(const TrackPointer& track, TrackId trackId) const;
+    bool publishTrackId(const TrackPointer& track, TrackId trackId);
+    // End of ChatGPT-prepared documentation for human review.
+
     // Enforces the eviction of all cached tracks including invocation
     // of the callback and disables the cache permanently.
     void deactivateCache() const;
@@ -262,6 +269,9 @@ class GlobalTrackCache : public QObject {
     void discardIncompleteTrack();
 
     void purgeTrackId(TrackId trackId);
+
+    bool canPublishTrackId(const TrackPointer& track, TrackId trackId) const;
+    bool publishTrackId(const TrackPointer& track, TrackId trackId);
 
     bool tryEvict(Track* plainPtr);
     bool isCached(Track* plainPtr) const;

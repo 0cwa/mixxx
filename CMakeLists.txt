@@ -1459,7 +1459,13 @@ add_library(
   src/library/recording/dlgrecording.cpp
   src/library/recording/dlgrecording.ui
   src/library/recording/recordingfeature.cpp
+  src/library/rekordbox/rekordboxanlzdecoder.cpp
+  src/library/rekordbox/rekordboxanlzimporter.cpp
   src/library/rekordbox/rekordboxfeature.cpp
+  src/library/rekordbox/rekordboximportregistry.cpp
+  src/library/rekordbox/rekordboxsource.cpp
+  src/library/rekordbox/rekordboxsourceparser.cpp
+  src/library/rekordbox/rekordboxxmlimporter.cpp
   src/library/rekordbox/rekordboxxmlparser.cpp
   src/library/memorycuepromotionpolicy.cpp
   src/library/rhythmbox/rhythmboxfeature.cpp
@@ -2916,6 +2922,7 @@ if(BUILD_TESTING)
     src/test/coverartutils_test.cpp
     src/test/cratestorage_test.cpp
     src/test/cue_test.cpp
+    src/test/cuedao_test.cpp
     src/test/cuecontrol_test.cpp
     src/test/dbconnectionpool_test.cpp
     src/test/dbidtest.cpp
@@ -2945,6 +2952,11 @@ if(BUILD_TESTING)
     src/test/itunesxmlimportertest.cpp
     src/test/memorycuepromotionpolicy_test.cpp
     src/test/rekordboxfeature_test.cpp
+    src/test/rekordboxanlzimporter_test.cpp
+    src/test/rekordboximportregistry_test.cpp
+    src/test/rekordboxplaylistmodel_test.cpp
+    src/test/rekordboxsource_test.cpp
+    src/test/rekordboxxmlimporter_test.cpp
     src/test/rekordboxxmlparser_test.cpp
     src/test/keyfactorytest.cpp
     src/test/keyutilstest.cpp
@@ -3730,6 +3742,23 @@ target_include_directories(Kaitai SYSTEM PUBLIC lib/kaitai)
 target_compile_definitions(Kaitai PRIVATE KS_STR_ENCODING_NONE)
 target_link_libraries(rekordbox_metadata PRIVATE Kaitai)
 target_link_libraries(mixxx-lib PRIVATE Kaitai)
+
+# Prepared by ChatGPT for human review.
+if(BUILD_TESTING)
+  # The decoder runner owns its main() and stays separate from mixxx-test.
+  add_executable(
+    rekordbox-anlz-decoder-test
+    src/test/rekordboxanlzdecoder_standalone_test.cpp
+    src/library/rekordbox/rekordboxanlzdecoder.cpp
+  )
+  target_include_directories(rekordbox-anlz-decoder-test PRIVATE src)
+  target_link_libraries(
+    rekordbox-anlz-decoder-test
+    PRIVATE rekordbox_metadata Kaitai
+  )
+  add_test(NAME rekordbox-anlz-decoder COMMAND rekordbox-anlz-decoder-test)
+endif()
+# End of code prepared by ChatGPT for human review and submission.
 
 # For determining MP3 timing offset cases in Rekordbox library feature
 add_library(

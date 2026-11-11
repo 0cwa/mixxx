@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iterator>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -38,9 +39,35 @@ mixxx::audio::FrameDiff_t Beats::ConstIterator::beatLengthFrames() const {
     return (nextMarkerPosition - m_it->position()) / m_it->beatsTillNextMarker();
 }
 
-int Beats::ConstIterator::beatOffset() const {
-    return m_beatOffset;
+// Prepared by ChatGPT for human review.
+std::vector<std::int64_t> Beats::makeMarkerBeatOffsets(
+        const std::vector<BeatMarker>& markers) {
+    if (markers.empty()) {
+        return {};
+    }
+    std::vector<std::int64_t> offsets;
+    offsets.reserve(markers.size() + 1);
+    offsets.push_back(0);
+    constexpr auto kMaximumMarkerOffset = std::numeric_limits<std::int64_t>::max() -
+            std::numeric_limits<int>::max();
+    for (const auto& marker : markers) {
+        const auto count = marker.beatsTillNextMarker();
+        if (count <= 0 || offsets.back() > kMaximumMarkerOffset - count) {
+            throw std::overflow_error("Beat marker ordinals exceed their supported range");
+        }
+        offsets.push_back(offsets.back() + count);
+    }
+    return offsets;
 }
+
+std::int64_t Beats::ConstIterator::beatOffset() const {
+    if (m_beats->m_markers.empty()) {
+        return m_beatOffset;
+    }
+    const auto index = m_it - m_beats->m_markers.cbegin();
+    return m_beats->m_markerBeatOffsets[index] + m_beatOffset;
+}
+// End of ChatGPT-prepared code for human review.
 
 Beats::ConstIterator Beats::ConstIterator::operator+=(Beats::ConstIterator::difference_type n) {
     if (n == 0) {
@@ -305,17 +332,17 @@ mixxx::BeatsPointer Beats::fromBeatGridByteArray(
     track::io::BeatGrid grid;
     audio::FramePos position;
     Bpm bpm;
+    int downbeatsOffset = 0;
     if (grid.ParseFromArray(byteArray.constData(), byteArray.size())) {
         position = audio::FramePos(grid.first_beat().frame_position());
         bpm = Bpm(grid.bpm().bpm());
+        downbeatsOffset = grid.has_downbeats_offset() ? grid.downbeats_offset() : 0;
     } else if (byteArray.size() == sizeof(BeatGridV1Data)) {
         // Legacy fallback for BeatGrid-1.0
         const auto* pBlob = reinterpret_cast<const BeatGridV1Data*>(byteArray.constData());
         position = mixxx::audio::FramePos(pBlob->firstBeat);
         bpm = mixxx::Bpm(pBlob->bpm);
     }
-
-    int downbeatsOffset = grid.has_downbeats_offset() ? grid.downbeats_offset() : 0;
 
     if (position.isValid() && bpm.isValid()) {
         return fromConstTempo(sampleRate, position, bpm, subVersion, downbeatsOffset);
@@ -351,7 +378,30 @@ BeatsPointer Beats::fromBeatMapByteArray(
         return nullptr;
     }
 
-    return fromBeatPositions(sampleRate, beatPositions, subVersion);
+    const int downbeatsOffset = map.has_downbeats_offset()
+            ? map.downbeats_offset()
+            : 0;
+    // Prepared by ChatGPT for human review.
+    const auto decoded = fromBeatPositions(sampleRate, beatPositions, subVersion, downbeatsOffset);
+    if (!decoded || !map.has_last_marker_bpm()) {
+        return decoded;
+    }
+    const Bpm lastMarkerBpm(map.last_marker_bpm());
+    if (!lastMarkerBpm.isValid()) {
+        qWarning() << "Failed to deserialize Beats: BeatMap has invalid final tempo";
+        return nullptr;
+    }
+    auto markers = decoded->getMarkers();
+    if (decoded->hasConstantTempo()) {
+        markers.emplace_back(beatPositions.front(), map.beat_size() - 1);
+    }
+    return fromBeatMarkers(sampleRate,
+            markers,
+            beatPositions.back(),
+            lastMarkerBpm,
+            subVersion,
+            downbeatsOffset);
+    // End of ChatGPT-prepared code for human review.
 }
 
 QByteArray Beats::toByteArray() const {
@@ -384,6 +434,8 @@ QByteArray Beats::toBeatMapByteArray() const {
         beat.set_frame_position(static_cast<google::protobuf::int32>(position.value()));
         map.add_beat()->CopyFrom(beat);
     }
+    map.set_downbeats_offset(m_downbeatsOffset);
+    map.set_last_marker_bpm(m_lastMarkerBpm.value());
 
     std::string output;
     map.SerializeToString(&output);
