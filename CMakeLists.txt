@@ -1460,6 +1460,9 @@ add_library(
   src/library/recording/dlgrecording.ui
   src/library/recording/recordingfeature.cpp
   src/library/rekordbox/rekordboxfeature.cpp
+  src/library/rekordbox/rekordboxanlzdecoder.cpp
+  src/library/rekordbox/rekordboxanlzimporter.cpp
+  src/library/rekordbox/rekordboxpdbdecoder.cpp
   src/library/rekordbox/rekordboxxmlparser.cpp
   src/library/memorycuepromotionpolicy.cpp
   src/library/rhythmbox/rhythmboxfeature.cpp
@@ -2945,6 +2948,10 @@ if(BUILD_TESTING)
     src/test/itunesxmlimportertest.cpp
     src/test/memorycuepromotionpolicy_test.cpp
     src/test/rekordboxfeature_test.cpp
+    src/test/rekordboxanlzdecoder_test.cpp
+    src/test/rekordboxanlzimporter_test.cpp
+    src/test/rekordboxdeviceimporter_test.cpp
+    src/test/rekordboxpdbdecoder_test.cpp
     src/test/rekordboxxmlparser_test.cpp
     src/test/keyfactorytest.cpp
     src/test/keyutilstest.cpp

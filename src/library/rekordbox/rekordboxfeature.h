@@ -32,17 +32,21 @@
 #include <QStringListModel>
 #include <QVector>
 #include <QtConcurrentRun>
-#include <fstream>
+#include <atomic>
 
 #include "audio/frame.h"
 #include "library/baseexternallibraryfeature.h"
 #include "library/baseexternalplaylistmodel.h"
 #include "library/baseexternaltrackmodel.h"
 #include "library/memorycuepromotionconfig.h"
+#include "library/rekordbox/rekordboxanlzimporter.h"
+#include "library/rekordbox/rekordboxpdbdecoder.h"
 #include "library/rekordbox/rekordboxxmlparser.h"
 #include "library/treeitemmodel.h"
 #include "util/color/rgbcolor.h"
+#include "util/db/dbconnectionpool.h"
 #include "util/parented_ptr.h"
+#include "util/sandbox.h"
 
 namespace mixxx::rekordbox {
 
@@ -55,20 +59,34 @@ struct MemoryCueLoop {
     int sourceOrder{0};
 };
 
+struct DeviceImportResult {
+    QString devicePath;
+    QString device;
+    QStringList diagnostics;
+    std::shared_ptr<const PdbData> data;
+    QByteArray sourceFingerprint;
+    bool applied{false};
+};
+
+DeviceImportResult importDeviceDatabase(mixxx::DbConnectionPoolPtr dbConnectionPool,
+        const QString& devicePath,
+        const QString& device,
+        const SecurityTokenPointer& securityToken,
+        const std::shared_ptr<std::atomic<bool>>& cancelled);
+
+bool removeDeviceDatabase(QSqlDatabase& database, const QString& devicePath);
+
 // CUES and CUES2 commonly contain the same loop. Deduplicate only loops with
 // the same complete interval, and prefer the richer CUES2 record. Memory cues
 // are never deduplicated by position because multiple cues may share a start.
 QList<MemoryCueLoop> normalizeMemoryCueLoops(const QList<MemoryCueLoop>& cues);
+bool memoryCueLoopLess(const MemoryCueLoop& a, const MemoryCueLoop& b);
+QString resolveDeviceMediaPath(const QString& devicePath, const std::string& sourcePath);
 
 /// Returns a stable identity for a track's external ANLZ source.
 QString analyzeImportSourceIdentity(
         const QString& trackLocation,
         const QString& analyzePath);
-
-/// Returns whether an ANLZ source has not been imported in the current model.
-bool shouldImportAnalyzeSource(
-        const QString& sourceIdentity,
-        const QSet<QString>& importedSources);
 
 /// Records the database identity used by XML playlist/order mappings.
 void recordXmlTrackMapping(
@@ -105,7 +123,7 @@ class RekordboxPlaylistModel : public BaseExternalPlaylistModel {
 
   private:
     UserSettingsPointer m_pConfig;
-    mutable QSet<QString> m_importedAnalyzeSources;
+    mutable QHash<QString, mixxx::rekordbox::AnlzImportState> m_analyzeImportStates;
 };
 
 class RekordboxFeature : public BaseExternalLibraryFeature {
@@ -130,8 +148,15 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
 
   private slots:
     void htmlLinkClicked(const QUrl& link);
+    void onDeviceTracksFound();
 
   private:
+    enum class PendingOperation { None,
+        Discovery,
+        DeviceImport,
+        XmlImport };
+
+    void finishOperation();
     QString formatRootViewHtml() const;
     std::unique_ptr<BaseSqlTableModel> createPlaylistModelForPlaylist(
             const QVariant& data) override;
@@ -143,6 +168,11 @@ class RekordboxFeature : public BaseExternalLibraryFeature {
     QFuture<QList<TreeItem*>> m_devicesFuture;
     QFutureWatcher<QString> m_tracksFutureWatcher;
     QFuture<QString> m_tracksFuture;
+    QFutureWatcher<mixxx::rekordbox::DeviceImportResult> m_deviceImportWatcher;
+    QFuture<mixxx::rekordbox::DeviceImportResult> m_deviceImportFuture;
+    std::shared_ptr<std::atomic<bool>> m_cancelDeviceImport;
+    bool m_refreshAfterDeviceImport{false};
+    PendingOperation m_pendingOperation{PendingOperation::None};
     QString m_title;
 
     QSharedPointer<BaseTrackCache> m_trackSource;

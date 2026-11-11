@@ -47,6 +47,10 @@ CuePointer cueFromRow(const QSqlRecord& row) {
     int hotcue = row.value(row.indexOf("hotcue")).toInt();
     QString label = labelFromQVariant(row.value(row.indexOf("label")));
     mixxx::RgbColor::optional_t color = mixxx::RgbColor::fromQVariant(row.value(row.indexOf("color")));
+    const auto activeLoopValue = row.value(row.indexOf("active_loop"));
+    const std::optional<bool> activeLoopIntent = activeLoopValue.isNull()
+            ? std::nullopt
+            : std::make_optional(activeLoopValue.toBool());
     VERIFY_OR_DEBUG_ASSERT(color) {
         return CuePointer();
     }
@@ -68,7 +72,8 @@ CuePointer cueFromRow(const QSqlRecord& row) {
             lengthFrames,
             hotcue,
             label,
-            *color));
+            *color,
+            activeLoopIntent));
     return pCue;
 }
 
@@ -159,22 +164,23 @@ bool CueDAO::saveCue(TrackId trackId, Cue* cue) const {
     if (cue->getId().isValid()) {
         // Update cue
         query.prepare(QStringLiteral("UPDATE " CUE_TABLE " SET "
-                        "track_id=:track_id,"
-                        "type=:type,"
-                        "position=:position,"
-                        "length=:length,"
-                        "hotcue=:hotcue,"
-                        "label=:label,"
-                        "color=:color"
-                        " WHERE id=:id"));
+                                     "track_id=:track_id,"
+                                     "type=:type,"
+                                     "position=:position,"
+                                     "length=:length,"
+                                     "hotcue=:hotcue,"
+                                     "label=:label,"
+                                     "color=:color,"
+                                     "active_loop=:active_loop"
+                                     " WHERE id=:id"));
         query.bindValue(":id", cue->getId().toVariant());
     } else {
         // New cue
         query.prepare(
                 QStringLiteral("INSERT INTO " CUE_TABLE
                                " (track_id, type, position, length, hotcue, "
-                               "label, color) VALUES (:track_id, :type, "
-                               ":position, :length, :hotcue, :label, :color)"));
+                               "label, color, active_loop) VALUES (:track_id, :type, "
+                               ":position, :length, :hotcue, :label, :color, :active_loop)"));
     }
 
     // Bind values and execute query
@@ -185,6 +191,9 @@ bool CueDAO::saveCue(TrackId trackId, Cue* cue) const {
     query.bindValue(":hotcue", cue->getHotCue());
     query.bindValue(":label", labelToQVariant(cue->getLabel()));
     query.bindValue(":color", mixxx::RgbColor::toQVariant(cue->getColor()));
+    const auto activeLoopIntent = cue->getActiveLoopIntent();
+    query.bindValue(":active_loop",
+            activeLoopIntent ? QVariant(*activeLoopIntent) : QVariant());
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;

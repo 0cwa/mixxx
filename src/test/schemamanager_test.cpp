@@ -65,6 +65,41 @@ TEST_F(SchemaManagerTest, UpgradeFromPreviousToNextVersion) {
     }
 }
 
+TEST_F(SchemaManagerTest, ActiveLoopIntentMigrationPreservesUnknownAndExplicitFalse) {
+    SchemaManager schemaManager(dbConnection());
+    ASSERT_EQ(SchemaManager::Result::UpgradeSucceeded,
+            schemaManager.upgradeToSchemaVersion(40, MixxxDb::kDefaultSchemaFile));
+    QSqlQuery query(dbConnection());
+    ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO cues(track_id,type,position,length,hotcue,label,color) "
+            "VALUES(1,19,96000,96000,-1,'memory loop',1193046)")));
+    ASSERT_EQ(SchemaManager::Result::UpgradeSucceeded,
+            schemaManager.upgradeToSchemaVersion(41, MixxxDb::kDefaultSchemaFile));
+    ASSERT_TRUE(query.exec(QStringLiteral("SELECT active_loop FROM cues")));
+    ASSERT_TRUE(query.next());
+    EXPECT_TRUE(query.value(0).isNull());
+    query.finish();
+
+    ASSERT_TRUE(query.exec(QStringLiteral("UPDATE cues SET active_loop=0")));
+    ASSERT_TRUE(query.exec(QStringLiteral("SELECT active_loop FROM cues")));
+    ASSERT_TRUE(query.next());
+    EXPECT_FALSE(query.value(0).isNull());
+    EXPECT_FALSE(query.value(0).toBool());
+    query.finish();
+
+    ASSERT_EQ(SchemaManager::Result::NewerVersionBackwardsCompatible,
+            schemaManager.upgradeToSchemaVersion(40, MixxxDb::kDefaultSchemaFile));
+    ASSERT_EQ(SchemaManager::Result::UpgradeSucceeded,
+            schemaManager.upgradeToSchemaVersion(41, MixxxDb::kDefaultSchemaFile));
+    ASSERT_TRUE(query.exec(QStringLiteral("SELECT active_loop FROM cues")));
+    ASSERT_TRUE(query.next());
+    EXPECT_FALSE(query.value(0).isNull());
+    EXPECT_FALSE(query.value(0).toBool());
+    query.finish();
+
+    EXPECT_FALSE(query.exec(QStringLiteral("UPDATE cues SET active_loop=2")));
+}
+
 TEST_F(SchemaManagerTest, NonExistentSchema) {
     SchemaManager schemaManager(dbConnection());
     SchemaManager::Result result = schemaManager.upgradeToSchemaVersion(

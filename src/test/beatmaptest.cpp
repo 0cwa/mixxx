@@ -3,6 +3,7 @@
 #include <QtDebug>
 #include <memory>
 
+#include "proto/beats.pb.h"
 #include "track/beats.h"
 #include "track/track.h"
 
@@ -104,6 +105,32 @@ TEST_F(BeatMapTest, Scale) {
     EXPECT_DOUBLE_EQ(bpm.value() * 2,
             pMap->getBpmInRange(audio::kStartFramePos, trackEndPosition)
                     .value());
+}
+
+TEST_F(BeatMapTest, DownbeatsOffsetRoundTrip) {
+    const QVector<audio::FramePos> beatPositions = {
+            audio::FramePos(0), audio::FramePos(10000), audio::FramePos(25000)};
+    const auto pMap = Beats::fromBeatPositions(m_sampleRate, beatPositions, QString(), 3);
+    ASSERT_TRUE(pMap);
+    ASSERT_EQ(QString::fromLatin1(BEAT_MAP_VERSION), pMap->getVersion());
+    const auto pRoundTrip = Beats::fromByteArray(m_sampleRate,
+            pMap->getVersion(),
+            pMap->getSubVersion(),
+            pMap->toByteArray());
+    ASSERT_TRUE(pRoundTrip);
+    EXPECT_EQ(*pMap, *pRoundTrip);
+    EXPECT_EQ(3, pRoundTrip->getDownbeatsOffset());
+}
+
+TEST_F(BeatMapTest, DownbeatsOffsetDefaultsForExistingSerialization) {
+    track::io::BeatMap map;
+    map.add_beat()->set_frame_position(0);
+    map.add_beat()->set_frame_position(10000);
+    map.add_beat()->set_frame_position(25000);
+    const auto pBeats = Beats::fromBeatMapByteArray(
+            m_sampleRate, QString(), QByteArray::fromStdString(map.SerializeAsString()));
+    ASSERT_TRUE(pBeats);
+    EXPECT_EQ(0, pBeats->getDownbeatsOffset());
 }
 
 TEST_F(BeatMapTest, TestNthBeat) {

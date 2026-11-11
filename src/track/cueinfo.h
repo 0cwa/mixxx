@@ -43,7 +43,8 @@ class CueInfo {
             const std::optional<int>& hotCueIndex,
             QString label,
             const RgbColor::optional_t& color,
-            CueFlags flags = CueFlag::None);
+            CueFlags flags = CueFlag::None,
+            std::optional<bool> activeLoopIntent = std::nullopt);
 
     CueType getType() const;
     void setType(CueType type);
@@ -66,6 +67,13 @@ class CueInfo {
     mixxx::RgbColor::optional_t getColor() const;
     void setColor(
             const mixxx::RgbColor::optional_t& color = std::nullopt);
+
+    std::optional<bool> getActiveLoopIntent() const {
+        return m_activeLoopIntent;
+    }
+    void setActiveLoopIntent(std::optional<bool> activeLoopIntent) {
+        m_activeLoopIntent = activeLoopIntent;
+    }
 
     CueFlags flags() const {
         return m_flags;
@@ -92,6 +100,7 @@ class CueInfo {
     QString m_label;
     RgbColor::optional_t m_color;
     CueFlags m_flags;
+    std::optional<bool> m_activeLoopIntent;
 };
 
 bool operator==(

@@ -1,9 +1,8 @@
 #include "library/rekordbox/rekordboxfeature.h"
 
 #include <mp3guessenc.h>
-#include <rekordbox_anlz.h>
-#include <rekordbox_pdb.h>
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -17,7 +16,6 @@
 #include <QSet>
 #include <QSettings>
 #include <QString>
-#include <QTextCodec>
 #include <QUrl>
 #include <QtDebug>
 #include <algorithm>
@@ -61,27 +59,6 @@ const QString kPdbPath = QStringLiteral("PIONEER/rekordbox/export.pdb");
 const QString kPLaylistPathDelimiter = QStringLiteral("-->");
 const QString kRekordboxXmlImportLink = QStringLiteral("import-xml");
 const QString kRekordboxXmlMetadata = QStringLiteral("xml_metadata");
-
-enum class IDForColor : uint8_t {
-    Pink = 1,
-    Red,
-    Orange,
-    Yellow,
-    Green,
-    Aqua,
-    Blue,
-    Purple
-};
-
-constexpr mixxx::RgbColor kColorForIDPink(0xF870F8);
-constexpr mixxx::RgbColor kColorForIDRed(0xF870900);
-constexpr mixxx::RgbColor kColorForIDOrange(0xF8A030);
-constexpr mixxx::RgbColor kColorForIDYellow(0xF8E331);
-constexpr mixxx::RgbColor kColorForIDGreen(0x1EE000);
-constexpr mixxx::RgbColor kColorForIDAqua(0x16C0F8);
-constexpr mixxx::RgbColor kColorForIDBlue(0x0150F8);
-constexpr mixxx::RgbColor kColorForIDPurple(0x9808F8);
-constexpr mixxx::RgbColor kColorForIDNoColor(0x0);
 
 QString canonicalTrackLocation(const QString& location) {
     if (location.isEmpty()) {
@@ -321,415 +298,258 @@ QList<TreeItem*> findRekordboxDevices() {
     return foundDevices;
 }
 
-template<typename Base, typename T>
-inline bool instanceof(const T* ptr) {
-    return dynamic_cast<const Base*>(ptr) != nullptr;
+QString devicePlaylistPath(const QString& devicePath, std::uint32_t sourceId) {
+    return devicePath + kPLaylistPathDelimiter + QString::number(sourceId);
 }
 
-QString fromUtf16LeString(const std::string& toConvert) {
-    // Kaitai uses std::string as single container for all string encodings.
-    return QTextCodec::codecForName("UTF-16LE")
-            ->toUnicode(toConvert.data(), static_cast<int>(toConvert.length()));
+QString deviceFilePath(const QString& devicePath, const std::string& sourcePath) {
+    if (sourcePath.empty() || sourcePath.find('\0') != std::string::npos) {
+        return {};
+    }
+    QString relative = QDir::fromNativeSeparators(QString::fromStdString(sourcePath));
+    while (relative.startsWith(QLatin1Char('/'))) {
+        relative.remove(0, 1);
+    }
+    if (relative.isEmpty()) {
+        return {};
+    }
+    const QString root = QDir::fromNativeSeparators(canonicalTrackLocation(devicePath));
+    QFileInfo ancestor(QDir::cleanPath(QDir(root).filePath(relative)));
+    QStringList missingComponents;
+    while (!ancestor.exists()) {
+        if (ancestor.isSymLink()) {
+            return {};
+        }
+        const QString name = ancestor.fileName();
+        const QString parent = ancestor.dir().absolutePath();
+        if (name.isEmpty() || parent == ancestor.absoluteFilePath()) {
+            return {};
+        }
+        missingComponents.prepend(name);
+        ancestor.setFile(parent);
+    }
+    QString result = QDir::fromNativeSeparators(ancestor.canonicalFilePath());
+    if (result.isEmpty()) {
+        return {};
+    }
+    for (const auto& component : std::as_const(missingComponents)) {
+        result = QDir(result).filePath(component);
+    }
+    const QString prefix = root.endsWith(QLatin1Char('/')) ? root : root + QLatin1Char('/');
+    return result.startsWith(prefix) ? result : QString();
 }
 
-QString fromUtf16BeString(const std::string& toConvert) {
-    // Kaitai uses std::string as single container for all string encodings.
-    int length = static_cast<int>(toConvert.length());
-    if (length < 2) {
-        return QString();
-    }
-    while (length >= 2 &&
-            toConvert[length - 1] == '\0' &&
-            toConvert[length - 2] == '\0') {
-        length -= 2; // strip off trailing nullbytes
-    }
-    if (length <= 0) {
-        return QString();
-    }
-    return QTextCodec::codecForName("UTF-16BE")->toUnicode(toConvert.data(), length);
-}
-
-// Functions getText and parseDeviceDB are roughly based on the following Java file:
-// https://github.com/Deep-Symmetry/crate-digger/commit/f09fa9fc097a2a428c43245ddd542ac1370c1adc
-// getText is needed because the strings in the PDB file "have a variety of obscure representations".
-
-QString getText(rekordbox_pdb_t::device_sql_string_t* deviceString) {
-    QString text;
-    if (!deviceString || !deviceString->body()) {
-        return text;
-    }
-
-    if (instanceof<rekordbox_pdb_t::device_sql_short_ascii_t>(deviceString->body())) {
-        rekordbox_pdb_t::device_sql_short_ascii_t* shortAsciiString =
-                static_cast<rekordbox_pdb_t::device_sql_short_ascii_t*>(deviceString->body());
-        text = QString::fromStdString(shortAsciiString->text());
-    } else if (instanceof<rekordbox_pdb_t::device_sql_long_ascii_t>(deviceString->body())) {
-        rekordbox_pdb_t::device_sql_long_ascii_t* longAsciiString =
-                static_cast<rekordbox_pdb_t::device_sql_long_ascii_t*>(deviceString->body());
-        text = QString::fromStdString(longAsciiString->text());
-    } else if (instanceof<rekordbox_pdb_t::device_sql_long_utf16le_t>(deviceString->body())) {
-        rekordbox_pdb_t::device_sql_long_utf16le_t* longUtf16leString =
-                static_cast<rekordbox_pdb_t::device_sql_long_utf16le_t*>(deviceString->body());
-        text = fromUtf16LeString(longUtf16leString->text());
-    }
-
-    // Some strings read from Rekordbox *.PDB files contain random null characters
-    // which if not removed cause Mixxx to crash when attempting to read file paths
-    return text.remove(QChar('\x0'));
-}
-
-int createDevicePlaylist(QSqlDatabase& database, const QString& devicePath) {
-    int playlistID = kInvalidPlaylistId;
-
-    QSqlQuery queryInsertIntoDevicePlaylist(database);
-    queryInsertIntoDevicePlaylist.prepare(
-            "INSERT INTO " + kRekordboxPlaylistsTable +
-            " (name) "
-            "VALUES (:name)");
-
-    queryInsertIntoDevicePlaylist.bindValue(":name", devicePath);
-
-    if (!queryInsertIntoDevicePlaylist.exec()) {
-        LOG_FAILED_QUERY(queryInsertIntoDevicePlaylist)
-                << "devicePath: " << devicePath;
-        return playlistID;
-    }
-
-    QSqlQuery idQuery(database);
-    idQuery.prepare("select id from " + kRekordboxPlaylistsTable + " where name=:path");
-    idQuery.bindValue(":path", devicePath);
-
-    if (!idQuery.exec()) {
-        LOG_FAILED_QUERY(idQuery)
-                << "devicePath: " << devicePath;
-        return playlistID;
-    }
-
-    while (idQuery.next()) {
-        playlistID = idQuery.value(idQuery.record().indexOf("id")).toInt();
-    }
-
-    return playlistID;
-}
-
-mixxx::RgbColor colorFromID(int colorID) {
-    switch (static_cast<IDForColor>(colorID)) {
-    case IDForColor::Pink:
-        return kColorForIDPink;
-    case IDForColor::Red:
-        return kColorForIDRed;
-    case IDForColor::Orange:
-        return kColorForIDOrange;
-    case IDForColor::Yellow:
-        return kColorForIDYellow;
-    case IDForColor::Green:
-        return kColorForIDGreen;
-    case IDForColor::Aqua:
-        return kColorForIDAqua;
-    case IDForColor::Blue:
-        return kColorForIDBlue;
-    case IDForColor::Purple:
-        return kColorForIDPurple;
-    }
-    return kColorForIDNoColor;
-}
-
-void insertTrack(
-        QSqlDatabase& database,
-        rekordbox_pdb_t::track_row_t* track,
-        QSqlQuery& query,
-        QSqlQuery& queryInsertIntoDevicePlaylistTracks,
-        QMap<uint32_t, QString>& artistsMap,
-        QMap<uint32_t, QString>& albumsMap,
-        QMap<uint32_t, QString>& genresMap,
-        QMap<uint32_t, QString>& keysMap,
+mixxx::rekordbox::DeviceImportResult parseDeviceDB(
+        mixxx::DbConnectionPoolPtr dbConnectionPool,
         const QString& devicePath,
         const QString& device,
-        int audioFilesCount) {
-    int rbID = static_cast<int>(track->id());
-    QString title = getText(track->title());
-    QString artist = artistsMap[track->artist_id()];
-    QString album = albumsMap[track->album_id()];
-    QString year = QString::number(track->year());
-    QString genre = genresMap[track->genre_id()];
-    QString location = devicePath + getText(track->file_path());
-    float bpm = static_cast<float>(track->tempo() / 100.0);
-    int bitrate = static_cast<int>(track->bitrate());
-    QString key = keysMap[track->key_id()];
-    int playtime = static_cast<int>(track->duration());
-    int rating = static_cast<int>(track->rating());
-    QString comment = getText(track->comment());
-    QString tracknumber = QString::number(track->track_number());
-    QString anlzPath = devicePath + getText(track->analyze_path());
-
-    query.bindValue(":rb_id", rbID);
-    query.bindValue(":artist", artist);
-    query.bindValue(":title", title);
-    query.bindValue(":album", album);
-    query.bindValue(":genre", genre);
-    query.bindValue(":year", year);
-    query.bindValue(":duration", playtime);
-    query.bindValue(":location", location);
-    query.bindValue(":rating", rating);
-    query.bindValue(":comment", comment);
-    query.bindValue(":tracknumber", tracknumber);
-    query.bindValue(":key", key);
-    query.bindValue(":key_id", static_cast<int>(KeyUtils::guessKeyFromText(key)));
-    query.bindValue(":bpm", bpm);
-    query.bindValue(":bitrate", bitrate);
-    query.bindValue(":analyze_path", anlzPath);
-    query.bindValue(":device", device);
-    query.bindValue(":color",
-            mixxx::RgbColor::toQVariant(
-                    colorFromID(static_cast<int>(track->color_id()))));
-
-    int trackID = findTrackIdByCanonicalLocation(database, location);
-    if (trackID < 0) {
-        if (!query.exec()) {
-            LOG_FAILED_QUERY(query) << "rbID:" << rbID << "location:" << location;
+        const SecurityTokenPointer& securityToken,
+        const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    using namespace mixxx::rekordbox;
+    DeviceImportResult result;
+    result.devicePath = devicePath;
+    result.device = device;
+    const auto retainedToken = securityToken;
+    try {
+        PdbDecodeOptions options;
+        options.isCancelled = [cancelled] { return cancelled->load(); };
+        const QString dbPath = QDir(devicePath).filePath(kPdbPath);
+        QFile file(dbPath);
+        if (!file.open(QIODevice::ReadOnly) ||
+                file.size() > static_cast<qint64>(options.limits.maxFileBytes)) {
+            result.diagnostics << QStringLiteral(
+                    "Unavailable or oversized DeviceSQL database: %1")
+                                          .arg(dbPath);
+            return result;
         }
-        trackID = findTrackIdByCanonicalLocation(database, location);
-    }
+        const QByteArray bytes = file.read(static_cast<qint64>(options.limits.maxFileBytes) + 1);
+        if (file.error() != QFileDevice::NoError) {
+            result.diagnostics << file.errorString();
+            return result;
+        }
+        const auto decoded = decodePdb({dbPath.toStdString(),
+                                               std::string_view(bytes.constData(), bytes.size())},
+                options);
+        result.sourceFingerprint = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+        for (const auto& diagnostic : decoded.diagnostics) {
+            result.diagnostics << QString::fromStdString(diagnostic.message);
+        }
+        if (!decoded.usable() || cancelled->load()) {
+            return result;
+        }
+        result.data = decoded.data;
 
-    if (trackID < 0) {
-        qWarning() << "Skipping Rekordbox USB track without a database ID"
-                   << "rbID:" << rbID << "location:" << location;
-        return;
-    }
-
-    // Insert into device all tracks playlist
-    queryInsertIntoDevicePlaylistTracks.bindValue(":track_id", trackID);
-    queryInsertIntoDevicePlaylistTracks.bindValue(":position", audioFilesCount);
-
-    if (!queryInsertIntoDevicePlaylistTracks.exec()) {
-        LOG_FAILED_QUERY(queryInsertIntoDevicePlaylistTracks)
-                << "trackID:" << trackID
-                << "position:" << audioFilesCount;
-    }
-}
-
-void buildPlaylistTree(
-        QSqlDatabase& database,
-        TreeItem* parent,
-        uint32_t parentID,
-        QMap<uint32_t, QString>& playlistNameMap,
-        QMap<uint32_t, bool>& playlistIsFolderMap,
-        QMap<uint32_t, QMap<uint32_t, uint32_t>>& playlistTreeMap,
-        QMap<uint32_t, QMap<uint32_t, uint32_t>>& playlistTrackMap,
-        const QString& playlistPath,
-        const QString& device);
-
-QString parseDeviceDB(mixxx::DbConnectionPoolPtr dbConnectionPool, TreeItem* deviceItem) {
-    QString device = deviceItem->getLabel();
-    QString devicePath = deviceItem->getData().toList().at(0).toString();
-
-    qDebug() << "parseDeviceDB device: " << device << " devicePath: " << devicePath;
-
-    QString dbPath = devicePath + QStringLiteral("/") + kPdbPath;
-
-    if (!QFile(dbPath).exists()) {
-        return devicePath;
-    }
-
-    // The pooler limits the lifetime all thread-local connections,
-    // that should be closed immediately before exiting this function.
-    const mixxx::DbConnectionPooler dbConnectionPooler(dbConnectionPool);
-    QSqlDatabase database = mixxx::DbConnectionPooled(dbConnectionPool);
-
-    // Open the database connection in this thread.
-    VERIFY_OR_DEBUG_ASSERT(database.isOpen()) {
-        qDebug() << "Failed to open database for Rekordbox parser."
-                 << database.lastError();
-        return QString();
-    }
-
-    // Give thread a low priority
-    QThread* thisThread = QThread::currentThread();
-    thisThread->setPriority(QThread::LowPriority);
-
-    ScopedTransaction transaction(database);
-
-    QSqlQuery query(database);
-    query.prepare("INSERT INTO " + kRekordboxLibraryTable +
-            " (rb_id, artist, title, album, year,"
-            "genre,comment,tracknumber,bpm, bitrate,duration, location,"
-            "rating,key,key_id,analyze_path,device,color) VALUES (:rb_id, :artist, "
-            ":title, :album, :year,:genre,"
-            ":comment, :tracknumber,:bpm, :bitrate,:duration, :location,"
-            ":rating,:key,:key_id,:analyze_path,:device,:color)");
-
-    int audioFilesCount = 0;
-
-    // Create a playlist for all the tracks on a device
-    int playlistID = createDevicePlaylist(database, devicePath);
-
-    QSqlQuery queryInsertIntoDevicePlaylistTracks(database);
-    queryInsertIntoDevicePlaylistTracks.prepare(
-            "INSERT INTO " + kRekordboxPlaylistTracksTable +
-            " (playlist_id, track_id, position) "
-            "VALUES (:playlist_id, :track_id, :position)");
-
-    queryInsertIntoDevicePlaylistTracks.bindValue(":playlist_id", playlistID);
-
-    mixxx::FileInfo fileInfo(dbPath);
-    if (!Sandbox::askForAccess(&fileInfo)) {
-        return QString();
-    }
-    std::ifstream ifs(dbPath.toStdString(), std::ifstream::binary);
-    kaitai::kstream ks(&ifs);
-
-    rekordbox_pdb_t rekordboxDB = rekordbox_pdb_t(&ks);
-
-    // There are other types of tables (eg. COLOR), these are the only ones we are
-    // interested at the moment. Perhaps when/if
-    // https://github.com/mixxxdj/mixxx/issues/6852
-    // is completed, this can be revisited.
-    // Attempt was made to also recover HISTORY
-    // playlists (which are found on removable Rekordbox devices), however
-    // they didn't appear to contain valid row_ref_t structures.
-    constexpr int totalTables = 8;
-
-    rekordbox_pdb_t::page_type_t tableOrder[totalTables] = {
-            rekordbox_pdb_t::PAGE_TYPE_KEYS,
-            rekordbox_pdb_t::PAGE_TYPE_GENRES,
-            rekordbox_pdb_t::PAGE_TYPE_ARTISTS,
-            rekordbox_pdb_t::PAGE_TYPE_ALBUMS,
-            rekordbox_pdb_t::PAGE_TYPE_PLAYLIST_ENTRIES,
-            rekordbox_pdb_t::PAGE_TYPE_TRACKS,
-            rekordbox_pdb_t::PAGE_TYPE_PLAYLIST_TREE,
-            rekordbox_pdb_t::PAGE_TYPE_HISTORY};
-
-    QMap<uint32_t, QString> keysMap;
-    QMap<uint32_t, QString> genresMap;
-    QMap<uint32_t, QString> artistsMap;
-    QMap<uint32_t, QString> albumsMap;
-    QMap<uint32_t, QString> playlistNameMap;
-    QMap<uint32_t, bool> playlistIsFolderMap;
-    QMap<uint32_t, QMap<uint32_t, uint32_t>> playlistTreeMap;
-    QMap<uint32_t, QMap<uint32_t, uint32_t>> playlistTrackMap;
-
-    bool folderOrPlaylistFound = false;
-
-    for (int tableOrderIndex = 0; tableOrderIndex < totalTables; tableOrderIndex++) {
-        for (const auto& table : *rekordboxDB.tables()) {
-            if (table->type() == tableOrder[tableOrderIndex]) {
-                uint16_t lastIndex = table->last_page()->index();
-                rekordbox_pdb_t::page_ref_t* currentRef = table->first_page();
-
-                while (true) {
-                    rekordbox_pdb_t::page_t* page = currentRef->body();
-
-                    if (page->is_data_page()) {
-                        for (const auto& rowgroup : *page->row_groups()) {
-                            for (const auto& rowRef : *rowgroup->rows()) {
-                                if (rowRef->present()) {
-                                    switch (tableOrder[tableOrderIndex]) {
-                                    case rekordbox_pdb_t::PAGE_TYPE_KEYS: {
-                                        auto* key =
-                                                static_cast<rekordbox_pdb_t::key_row_t*>(
-                                                        rowRef->body());
-                                        keysMap[key->id()] = getText(key->name());
-                                    } break;
-                                    case rekordbox_pdb_t::PAGE_TYPE_GENRES: {
-                                        auto* genre =
-                                                static_cast<rekordbox_pdb_t::genre_row_t*>(
-                                                        rowRef->body());
-                                        genresMap[genre->id()] = getText(genre->name());
-                                    } break;
-                                    case rekordbox_pdb_t::PAGE_TYPE_ARTISTS: {
-                                        auto* artist =
-                                                static_cast<rekordbox_pdb_t::artist_row_t*>(
-                                                        rowRef->body());
-                                        artistsMap[artist->id()] = getText(artist->name());
-                                    } break;
-                                    case rekordbox_pdb_t::PAGE_TYPE_ALBUMS: {
-                                        auto* album =
-                                                static_cast<rekordbox_pdb_t::album_row_t*>(
-                                                        rowRef->body());
-                                        albumsMap[album->id()] = getText(album->name());
-                                    } break;
-                                    case rekordbox_pdb_t::PAGE_TYPE_PLAYLIST_ENTRIES: {
-                                        auto* playlistEntry =
-                                                static_cast<rekordbox_pdb_t::playlist_entry_row_t*>(
-                                                        rowRef->body());
-                                        playlistTrackMap
-                                                [playlistEntry->playlist_id()]
-                                                [playlistEntry->entry_index()] =
-                                                        playlistEntry
-                                                                ->track_id();
-                                    } break;
-                                    case rekordbox_pdb_t::PAGE_TYPE_TRACKS: {
-                                        insertTrack(database,
-                                                static_cast<rekordbox_pdb_t::track_row_t*>(
-                                                        rowRef->body()),
-                                                query,
-                                                queryInsertIntoDevicePlaylistTracks,
-                                                artistsMap,
-                                                albumsMap,
-                                                genresMap,
-                                                keysMap,
-                                                devicePath,
-                                                device,
-                                                audioFilesCount);
-
-                                        audioFilesCount++;
-                                    } break;
-                                    case rekordbox_pdb_t::PAGE_TYPE_PLAYLIST_TREE: {
-                                        auto* playlistTree =
-                                                static_cast<rekordbox_pdb_t::playlist_tree_row_t*>(
-                                                        rowRef->body());
-
-                                        playlistNameMap[playlistTree->id()] =
-                                                getText(playlistTree->name());
-                                        playlistIsFolderMap[playlistTree
-                                                        ->id()] =
-                                                playlistTree->is_folder();
-                                        playlistTreeMap
-                                                [playlistTree->parent_id()]
-                                                [playlistTree->sort_order()] =
-                                                        playlistTree->id();
-
-                                        folderOrPlaylistFound = true;
-                                    } break;
-                                    default:
-                                        // we currently don't handle any other
-                                        // data, even though there is more.
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (currentRef->index() == lastIndex) {
-                        break;
-                    } else {
-                        currentRef = page->next_page();
-                    }
+        const mixxx::DbConnectionPooler dbConnectionPooler(dbConnectionPool);
+        QSqlDatabase database = mixxx::DbConnectionPooled(dbConnectionPool);
+        if (!database.isOpen()) {
+            result.diagnostics << database.lastError().text();
+            return result;
+        }
+        ScopedTransaction transaction(database);
+        if (!transaction.active()) {
+            return result;
+        }
+        if (!createLibraryTable(database, kRekordboxLibraryTable) ||
+                !createPlaylistsTable(database, kRekordboxPlaylistsTable) ||
+                !createPlaylistTracksTable(database, kRekordboxPlaylistTracksTable)) {
+            result.diagnostics << QStringLiteral("Could not initialize DeviceSQL staging tables");
+            return result;
+        }
+        auto failQuery = [&result](const QSqlQuery& query) {
+            result.diagnostics << query.lastError().text();
+        };
+        QHash<QString, int> mediaIds;
+        QSqlQuery existing(database);
+        if (!existing.exec(QStringLiteral("SELECT id, location FROM ") + kRekordboxLibraryTable)) {
+            failQuery(existing);
+            return result;
+        }
+        while (existing.next()) {
+            mediaIds.insert(
+                    canonicalTrackLocation(existing.value(1).toString()),
+                    existing.value(0).toInt());
+        }
+        QSqlQuery insertPlaylist(database);
+        insertPlaylist.prepare(QStringLiteral("INSERT INTO ") + kRekordboxPlaylistsTable +
+                QStringLiteral(" (name) VALUES (:name)"));
+        insertPlaylist.bindValue(QStringLiteral(":name"), devicePath);
+        if (!insertPlaylist.exec()) {
+            failQuery(insertPlaylist);
+            return result;
+        }
+        const int rootPlaylistId = insertPlaylist.lastInsertId().toInt();
+        QSqlQuery insertEntry(database);
+        insertEntry.prepare(QStringLiteral("INSERT INTO ") +
+                kRekordboxPlaylistTracksTable +
+                QStringLiteral(" (playlist_id, track_id, position) VALUES "
+                               "(:playlist, :track, :position)"));
+        QSqlQuery insertTrack(database);
+        insertTrack.prepare(QStringLiteral("INSERT INTO ") +
+                kRekordboxLibraryTable +
+                QStringLiteral(" (rb_id, artist, title, album, year, genre, "
+                               "comment, tracknumber,"
+                               " bpm, bitrate, duration, location, rating, "
+                               "key, key_id, analyze_path,"
+                               " device, color, coverart) VALUES (:rb_id, "
+                               ":artist, :title, :album, :year,"
+                               " :genre, :comment, :tracknumber, :bpm, "
+                               ":bitrate, :duration, :location,"
+                               " :rating, :key, :key_id, :analyze_path, "
+                               ":device, :color, :coverart)"));
+        QHash<std::uint32_t, int> trackIds;
+        int position = 0;
+        auto optionalText = [](const std::optional<std::string>& text) {
+            return text ? QVariant(QString::fromStdString(*text)) : QVariant();
+        };
+        for (const auto& track : result.data->tracks) {
+            if (cancelled->load()) {
+                return result;
+            }
+            const QString location = deviceFilePath(devicePath, track.mediaPathUtf8());
+            if (location.isEmpty()) {
+                result.diagnostics << QStringLiteral(
+                        "Skipped invalid device media path for track %1")
+                                              .arg(track.sourceTrackId);
+                continue;
+            }
+            int trackId = mediaIds.value(location, -1);
+            if (trackId < 0) {
+                const auto key = optionalText(track.keyTextUtf8);
+                const QString analysis = deviceFilePath(devicePath, track.analyzePathUtf8());
+                insertTrack.bindValue(QStringLiteral(":rb_id"),
+                        static_cast<qulonglong>(track.sourceTrackId));
+                insertTrack.bindValue(QStringLiteral(":artist"), optionalText(track.artistUtf8));
+                insertTrack.bindValue(QStringLiteral(":title"),
+                        QString::fromStdString(track.titleUtf8()));
+                insertTrack.bindValue(QStringLiteral(":album"), optionalText(track.albumUtf8));
+                insertTrack.bindValue(QStringLiteral(":year"), track.year);
+                insertTrack.bindValue(QStringLiteral(":genre"), optionalText(track.genreUtf8));
+                insertTrack.bindValue(QStringLiteral(":comment"),
+                        QString::fromStdString(track.commentUtf8()));
+                insertTrack.bindValue(QStringLiteral(":tracknumber"),
+                        static_cast<qulonglong>(track.trackNumber));
+                insertTrack.bindValue(QStringLiteral(":bpm"), track.tempoHundredths / 100.0);
+                insertTrack.bindValue(QStringLiteral(":bitrate"),
+                        static_cast<qulonglong>(track.bitrate));
+                insertTrack.bindValue(QStringLiteral(":duration"), track.durationSeconds);
+                insertTrack.bindValue(QStringLiteral(":location"), location);
+                insertTrack.bindValue(QStringLiteral(":rating"), track.rating);
+                insertTrack.bindValue(QStringLiteral(":key"), key);
+                insertTrack.bindValue(QStringLiteral(":key_id"),
+                        static_cast<int>(
+                                KeyUtils::guessKeyFromText(key.toString())));
+                insertTrack.bindValue(QStringLiteral(":analyze_path"),
+                        analysis.isEmpty() ? QVariant() : QVariant(analysis));
+                insertTrack.bindValue(QStringLiteral(":device"), device);
+                insertTrack.bindValue(QStringLiteral(":color"),
+                        mixxx::RgbColor::toQVariant(
+                                anlzPaletteColor(track.colorId)));
+                insertTrack.bindValue(QStringLiteral(":coverart"),
+                        track.artworkPathUtf8
+                                ? QVariant(deviceFilePath(
+                                          devicePath, *track.artworkPathUtf8))
+                                : QVariant());
+                if (!insertTrack.exec()) {
+                    failQuery(insertTrack);
+                    return result;
                 }
+                trackId = insertTrack.lastInsertId().toInt();
+                mediaIds.insert(location, trackId);
+            }
+            trackIds.insert(track.sourceTrackId, trackId);
+            insertEntry.bindValue(QStringLiteral(":playlist"), rootPlaylistId);
+            insertEntry.bindValue(QStringLiteral(":track"), trackId);
+            insertEntry.bindValue(QStringLiteral(":position"), position++);
+            if (!insertEntry.exec()) {
+                failQuery(insertEntry);
+                return result;
             }
         }
+        QHash<std::uint32_t, int> playlistIds;
+        for (const auto& playlist : result.data->playlists) {
+            if (cancelled->load()) {
+                return result;
+            }
+            insertPlaylist.bindValue(QStringLiteral(":name"),
+                    devicePlaylistPath(devicePath, playlist.sourcePlaylistId));
+            if (!insertPlaylist.exec()) {
+                failQuery(insertPlaylist);
+                return result;
+            }
+            playlistIds.insert(playlist.sourcePlaylistId, insertPlaylist.lastInsertId().toInt());
+        }
+        for (const auto& entry : result.data->playlistEntries) {
+            if (cancelled->load()) {
+                return result;
+            }
+            if (!playlistIds.contains(entry.sourcePlaylistId) ||
+                    !trackIds.contains(entry.sourceTrackId)) {
+                result.diagnostics << QStringLiteral("Skipped an unresolved playlist entry");
+                continue;
+            }
+            insertEntry.bindValue(QStringLiteral(":playlist"),
+                    playlistIds.value(entry.sourcePlaylistId));
+            insertEntry.bindValue(QStringLiteral(":track"), trackIds.value(entry.sourceTrackId));
+            insertEntry.bindValue(QStringLiteral(":position"),
+                    static_cast<qulonglong>(entry.position));
+            if (!insertEntry.exec()) {
+                failQuery(insertEntry);
+                return result;
+            }
+        }
+        if (cancelled->load()) {
+            return result;
+        }
+        result.applied = transaction.commit();
+        if (!result.applied) {
+            database.rollback();
+        }
+    } catch (const std::exception& error) {
+        result.diagnostics << QString::fromUtf8(error.what());
+    } catch (...) {
+        result.diagnostics << QStringLiteral("Unexpected DeviceSQL worker failure");
     }
-
-    if (audioFilesCount > 0 || folderOrPlaylistFound) {
-        // If we have found anything, recursively build playlist/folder TreeItem children
-        // for the original device TreeItem
-        buildPlaylistTree(database,
-                deviceItem,
-                0,
-                playlistNameMap,
-                playlistIsFolderMap,
-                playlistTreeMap,
-                playlistTrackMap,
-                devicePath,
-                device);
-    }
-
-    qDebug() << "Found: " << audioFilesCount << " audio files in Rekordbox device " << device;
-
-    transaction.commit();
-
-    return devicePath;
+    return result;
 }
 
 QString parseXmlLibrary(
@@ -756,8 +576,6 @@ QString parseXmlLibrary(
 
     const QString device = QStringLiteral("XML:") + QFileInfo(xmlPath).absoluteFilePath();
     const QString playlistPrefix = device + kPLaylistPathDelimiter;
-    QString playlistPrefixPattern = playlistPrefix;
-    playlistPrefixPattern.append(QLatin1Char('%'));
     ScopedTransaction transaction(database);
 
     // XML views are temporary external-library data. Re-importing the same file
@@ -766,9 +584,9 @@ QString parseXmlLibrary(
     deletePlaylistTracks.prepare(
             "DELETE FROM " + kRekordboxPlaylistTracksTable +
             " WHERE playlist_id IN (SELECT id FROM " + kRekordboxPlaylistsTable +
-            " WHERE name=:root OR name LIKE :prefix)");
+            " WHERE name=:root OR substr(name, 1, length(:prefix))=:prefix)");
     deletePlaylistTracks.bindValue(":root", device);
-    deletePlaylistTracks.bindValue(":prefix", playlistPrefixPattern);
+    deletePlaylistTracks.bindValue(":prefix", playlistPrefix);
     if (!deletePlaylistTracks.exec()) {
         LOG_FAILED_QUERY(deletePlaylistTracks);
         return {};
@@ -777,9 +595,9 @@ QString parseXmlLibrary(
     QSqlQuery deletePlaylists(database);
     deletePlaylists.prepare(
             "DELETE FROM " + kRekordboxPlaylistsTable +
-            " WHERE name=:root OR name LIKE :prefix");
+            " WHERE name=:root OR substr(name, 1, length(:prefix))=:prefix");
     deletePlaylists.bindValue(":root", device);
-    deletePlaylists.bindValue(":prefix", playlistPrefixPattern);
+    deletePlaylists.bindValue(":prefix", playlistPrefix);
     if (!deletePlaylists.exec()) {
         LOG_FAILED_QUERY(deletePlaylists);
         return {};
@@ -788,12 +606,11 @@ QString parseXmlLibrary(
     QSqlQuery deleteTracks(database);
     deleteTracks.prepare(
             "DELETE FROM " + kRekordboxLibraryTable +
-            " WHERE device=:device AND NOT EXISTS ("
+            " WHERE NOT EXISTS ("
             "SELECT 1 FROM " +
             kRekordboxPlaylistTracksTable +
             " AS playlist_tracks WHERE playlist_tracks.track_id=" +
             kRekordboxLibraryTable + ".id)");
-    deleteTracks.bindValue(":device", device);
     if (!deleteTracks.exec()) {
         LOG_FAILED_QUERY(deleteTracks);
         return {};
@@ -955,170 +772,64 @@ QString parseXmlLibrary(
         }
     }
 
-    transaction.commit();
+    if (!transaction.commit()) {
+        database.rollback();
+        return {};
+    }
     return device;
 }
 
-void buildPlaylistTree(
-        QSqlDatabase& database,
-        TreeItem* parent,
-        uint32_t parentID,
-        QMap<uint32_t, QString>& playlistNameMap,
-        QMap<uint32_t, bool>& playlistIsFolderMap,
-        QMap<uint32_t, QMap<uint32_t, uint32_t>>& playlistTreeMap,
-        QMap<uint32_t, QMap<uint32_t, uint32_t>>& playlistTrackMap,
-        const QString& playlistPath,
-        const QString& device) {
-    for (uint32_t childIndex = 0;
-            childIndex < (uint32_t)playlistTreeMap[parentID].size();
-            childIndex++) {
-        uint32_t childID = playlistTreeMap[parentID][childIndex];
-        if (childID == 0) {
-            continue;
-        }
-        QString playlistItemName = playlistNameMap[childID];
-
-        QString currentPath = playlistPath + kPLaylistPathDelimiter + playlistItemName;
-
-        TreeItem* child = parent->appendChild(playlistItemName,
-                QVariant(QList<QString>{currentPath, IS_NOT_RECORDBOX_DEVICE}));
-
-        // Create a playlist for this child
-        QSqlQuery queryInsertIntoPlaylist(database);
-        queryInsertIntoPlaylist.prepare(
-                "INSERT INTO " + kRekordboxPlaylistsTable +
-                " (name) "
-                "VALUES (:name)");
-
-        queryInsertIntoPlaylist.bindValue(":name", currentPath);
-
-        if (!queryInsertIntoPlaylist.exec()) {
-            LOG_FAILED_QUERY(queryInsertIntoPlaylist)
-                    << "currentPath" << currentPath;
-            return;
-        }
-
-        QSqlQuery idQuery(database);
-        idQuery.prepare("select id from " + kRekordboxPlaylistsTable + " where name=:path");
-        idQuery.bindValue(":path", currentPath);
-
-        if (!idQuery.exec()) {
-            LOG_FAILED_QUERY(idQuery)
-                    << "currentPath" << currentPath;
-            return;
-        }
-
-        int playlistID = kInvalidPlaylistId;
-        while (idQuery.next()) {
-            playlistID = idQuery.value(idQuery.record().indexOf("id")).toInt();
-        }
-
-        QSqlQuery queryInsertIntoPlaylistTracks(database);
-        queryInsertIntoPlaylistTracks.prepare(
-                "INSERT INTO " + kRekordboxPlaylistTracksTable +
-                " (playlist_id, track_id, position) "
-                "VALUES (:playlist_id, :track_id, :position)");
-
-        if (playlistTrackMap.contains(childID)) {
-            // Add playlist tracks for children
-            for (uint32_t trackIndex = 1; trackIndex <=
-                    static_cast<uint32_t>(playlistTrackMap[childID].size());
-                    trackIndex++) {
-                uint32_t rbTrackID = playlistTrackMap[childID][trackIndex];
-
-                int trackID = -1;
-                QSqlQuery finderQuery(database);
-                finderQuery.prepare("select id from " + kRekordboxLibraryTable +
-                        " where rb_id=:rb_id and device=:device");
-                finderQuery.bindValue(":rb_id", rbTrackID);
-                finderQuery.bindValue(":device", device);
-
-                if (!finderQuery.exec()) {
-                    LOG_FAILED_QUERY(finderQuery)
-                            << "rbTrackID:" << rbTrackID
-                            << "device:" << device;
-                    return;
-                }
-
-                if (finderQuery.next()) {
-                    trackID = finderQuery.value(finderQuery.record().indexOf("id")).toInt();
-                }
-
-                queryInsertIntoPlaylistTracks.bindValue(":playlist_id", playlistID);
-                queryInsertIntoPlaylistTracks.bindValue(":track_id", trackID);
-                queryInsertIntoPlaylistTracks.bindValue(":position", static_cast<int>(trackIndex));
-
-                if (!queryInsertIntoPlaylistTracks.exec()) {
-                    LOG_FAILED_QUERY(queryInsertIntoPlaylistTracks)
-                            << "playlistID:" << playlistID
-                            << "trackID:" << trackID
-                            << "trackIndex:" << trackIndex;
-
-                    return;
-                }
-            }
-        }
-
-        if (playlistIsFolderMap[childID]) {
-            // If this child is a folder (playlists are only leaf nodes), build playlist tree for it
-            buildPlaylistTree(database,
-                    child,
-                    childID,
-                    playlistNameMap,
-                    playlistIsFolderMap,
-                    playlistTreeMap,
-                    playlistTrackMap,
-                    currentPath,
-                    device);
-        }
-    }
-}
-
-void clearDeviceTables(QSqlDatabase& database, TreeItem* child) {
+bool clearDeviceTables(QSqlDatabase& database, const QString& devicePath) {
     ScopedTransaction transaction(database);
-
-    const QString devicePath = child->getData().toList().at(0).toString();
-    QString playlistPrefixPattern = devicePath + kPLaylistPathDelimiter;
-    playlistPrefixPattern.append(QLatin1Char('%'));
+    if (!transaction.active()) {
+        return false;
+    }
+    const QString playlistPrefix = devicePath + kPLaylistPathDelimiter;
 
     QSqlQuery deletePlaylistTracksQuery(database);
     deletePlaylistTracksQuery.prepare(
             "DELETE FROM " + kRekordboxPlaylistTracksTable +
             " WHERE playlist_id IN (SELECT id FROM " + kRekordboxPlaylistsTable +
-            " WHERE name=:root OR name LIKE :prefix)");
+            " WHERE name=:root OR substr(name, 1, length(:prefix))=:prefix)");
     deletePlaylistTracksQuery.bindValue(":root", devicePath);
-    deletePlaylistTracksQuery.bindValue(":prefix", playlistPrefixPattern);
+    deletePlaylistTracksQuery.bindValue(":prefix", playlistPrefix);
     if (!deletePlaylistTracksQuery.exec()) {
         LOG_FAILED_QUERY(deletePlaylistTracksQuery)
-                << "device:" << child->getLabel();
+                << "device:" << devicePath;
+        return false;
     }
 
     QSqlQuery deletePlaylistsQuery(database);
     deletePlaylistsQuery.prepare(
             "DELETE FROM " + kRekordboxPlaylistsTable +
-            " WHERE name=:root OR name LIKE :prefix");
+            " WHERE name=:root OR substr(name, 1, length(:prefix))=:prefix");
     deletePlaylistsQuery.bindValue(":root", devicePath);
-    deletePlaylistsQuery.bindValue(":prefix", playlistPrefixPattern);
+    deletePlaylistsQuery.bindValue(":prefix", playlistPrefix);
     if (!deletePlaylistsQuery.exec()) {
         LOG_FAILED_QUERY(deletePlaylistsQuery)
-                << "device:" << child->getLabel();
+                << "device:" << devicePath;
+        return false;
     }
 
     QSqlQuery deleteTracksQuery(database);
     deleteTracksQuery.prepare(
             "DELETE FROM " + kRekordboxLibraryTable +
-            " WHERE device=:device AND NOT EXISTS ("
+            " WHERE NOT EXISTS ("
             "SELECT 1 FROM " +
             kRekordboxPlaylistTracksTable +
             " AS playlist_tracks WHERE playlist_tracks.track_id=" +
             kRekordboxLibraryTable + ".id)");
-    deleteTracksQuery.bindValue(":device", child->getLabel());
     if (!deleteTracksQuery.exec()) {
         LOG_FAILED_QUERY(deleteTracksQuery)
-                << "device:" << child->getLabel();
+                << "device:" << devicePath;
+        return false;
     }
 
-    transaction.commit();
+    if (!transaction.commit()) {
+        database.rollback();
+        return false;
+    }
+    return true;
 }
 
 void setMemoryCue(TrackPointer track,
@@ -1129,10 +840,7 @@ void setMemoryCue(TrackPointer track,
         mixxx::RgbColor::optional_t color) {
     CuePointer pCue;
 
-    mixxx::CueType type = mixxx::CueType::Memory;
-    if (endPosition.isValid()) {
-        type = mixxx::CueType::Loop;
-    }
+    const mixxx::CueType type = mixxx::CueType::Memory;
 
     // ANLZ data can be read more than once while an external track is
     // requested. Match the complete imported record before creating a cue so
@@ -1256,330 +964,30 @@ void applyXmlMetadata(
     }
 }
 
-void setHotCue(TrackPointer track,
-        mixxx::audio::FramePos startPosition,
-        mixxx::audio::FramePos endPosition,
-        int id,
-        const QString& label,
-        mixxx::RgbColor::optional_t color) {
-    CuePointer pCue;
-    const QList<CuePointer> cuePoints = track->getCuePoints();
-    for (const CuePointer& trackCue : cuePoints) {
-        if (trackCue->getHotCue() == id) {
-            pCue = trackCue;
-            break;
-        }
-    }
-
-    mixxx::CueType type = mixxx::CueType::HotCue;
-    if (endPosition.isValid()) {
-        type = mixxx::CueType::Loop;
-        // Only looping cues go to hot cues
-        const QList<CuePointer> cuePoints = track->getCuePoints();
-        for (const CuePointer& trackCue : cuePoints) {
-            if (trackCue->getHotCue() == id) {
-                pCue = trackCue;
-                break;
-            }
-        }
-    }
-
-    if (pCue) {
-        pCue->setStartAndEndPosition(startPosition, endPosition);
-    } else {
-        pCue = track->createAndAddCue(
-                type,
-                id,
-                startPosition,
-                endPosition);
-    }
-    pCue->setLabel(label);
-    if (color) {
-        pCue->setColor(*color);
-    }
-}
-
-void readAnalyze(TrackPointer track,
-        mixxx::audio::SampleRate sampleRate,
-        int timingOffset,
-        bool ignoreCues,
-        const QString& anlzPath,
-        const mixxx::library::MainCuePromotionPolicy& mainCuePromotionPolicy) {
-    if (!track || !sampleRate.isValid()) {
-        return;
-    }
-    if (!QFile(anlzPath).exists()) {
-        return;
-    }
-
-    qDebug() << "Rekordbox ANLZ path:" << anlzPath << " for: " << track->getTitle();
-
-    std::ifstream ifs(anlzPath.toStdString(), std::ifstream::binary);
-    kaitai::kstream ks(&ifs);
-
-    try {
-        rekordbox_anlz_t anlz = rekordbox_anlz_t(&ks);
-        if (!anlz.sections()) {
-            return;
-        }
-
-        const double sampleRateKhz = sampleRate / 1000.0;
-
-        QList<mixxx::rekordbox::MemoryCueLoop> memoryCuesAndLoops;
-        struct pending_hot_cue_t {
-            mixxx::audio::FramePos position;
-            int index;
-            QString label;
-            mixxx::RgbColor::optional_t color;
-        };
-        QList<pending_hot_cue_t> pendingHotCues;
-        QVector<mixxx::audio::FramePos> parsedBeats;
-        int sourceOrder = 0;
-        int lastHotCueIndex = 0;
-
-        for (const auto& section : *anlz.sections()) {
-            if (!section || !section->body()) {
-                continue;
-            }
-            switch (section->fourcc()) {
-            case rekordbox_anlz_t::SECTION_TAGS_BEAT_GRID: {
-                if (!ignoreCues) {
-                    break;
-                }
-
-                auto* beatGridTag =
-                        static_cast<rekordbox_anlz_t::beat_grid_tag_t*>(
-                                section->body());
-                if (!beatGridTag || !beatGridTag->beats()) {
-                    break;
-                }
-
-                for (const auto& beat : *beatGridTag->beats()) {
-                    int time = static_cast<int>(beat->time()) - timingOffset;
-                    // Ensure no offset times are less than 1
-                    if (time < 1) {
-                        time = 1;
-                    }
-                    parsedBeats << mixxx::audio::FramePos(
-                            sampleRateKhz * static_cast<double>(time));
-                }
-            } break;
-            case rekordbox_anlz_t::SECTION_TAGS_CUES: {
-                if (ignoreCues) {
-                    break;
-                }
-
-                auto* cuesTag =
-                        static_cast<rekordbox_anlz_t::cue_tag_t*>(
-                                section->body());
-                if (!cuesTag || !cuesTag->cues()) {
-                    break;
-                }
-
-                for (const auto& cueEntry : *cuesTag->cues()) {
-                    int time = static_cast<int>(cueEntry->time()) - timingOffset;
-                    // Ensure no offset times are less than 1
-                    if (time < 1) {
-                        time = 1;
-                    }
-                    const auto position = mixxx::audio::FramePos(
-                            sampleRateKhz * static_cast<double>(time));
-
-                    switch (cuesTag->type()) {
-                    case rekordbox_anlz_t::CUE_LIST_TYPE_MEMORY_CUES: {
-                        switch (cueEntry->type()) {
-                        case rekordbox_anlz_t::CUE_ENTRY_TYPE_MEMORY_CUE: {
-                            mixxx::rekordbox::MemoryCueLoop memoryCue;
-                            memoryCue.startPosition = position;
-                            memoryCue.endPosition = mixxx::audio::kInvalidFramePos;
-                            memoryCue.color = mixxx::RgbColor::nullopt();
-                            memoryCue.fromExtendedSection = false;
-                            memoryCue.sourceOrder = sourceOrder++;
-                            memoryCuesAndLoops << memoryCue;
-                        } break;
-                        case rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP: {
-                            int endTime = static_cast<int>(cueEntry->loop_time()) - timingOffset;
-                            // Ensure no offset times are less than 1
-                            if (endTime < 1) {
-                                endTime = 1;
-                            }
-
-                            mixxx::rekordbox::MemoryCueLoop loop;
-                            loop.startPosition = position;
-                            loop.endPosition = mixxx::audio::FramePos(
-                                    sampleRateKhz * static_cast<double>(endTime));
-                            loop.color = mixxx::RgbColor::nullopt();
-                            loop.fromExtendedSection = false;
-                            loop.sourceOrder = sourceOrder++;
-                            memoryCuesAndLoops << loop;
-                        } break;
-                        }
-                    } break;
-                    case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
-                        int hotCueIndex = static_cast<int>(cueEntry->hot_cue() - 1);
-                        if (hotCueIndex < 0) {
-                            break;
-                        }
-                        if (hotCueIndex > lastHotCueIndex) {
-                            lastHotCueIndex = hotCueIndex;
-                        }
-                        pendingHotCues << pending_hot_cue_t{
-                                position, hotCueIndex, QString(), mixxx::RgbColor::nullopt()};
-                    } break;
-                    }
-                }
-            } break;
-            case rekordbox_anlz_t::SECTION_TAGS_CUES_2: {
-                if (ignoreCues) {
-                    break;
-                }
-
-                auto* cuesExtendedTag =
-                        static_cast<rekordbox_anlz_t::cue_extended_tag_t*>(
-                                section->body());
-                if (!cuesExtendedTag || !cuesExtendedTag->cues()) {
-                    break;
-                }
-
-                for (const auto& cueExtendedEntry : *cuesExtendedTag->cues()) {
-                    int time = static_cast<int>(cueExtendedEntry->time()) - timingOffset;
-                    // Ensure no offset times are less than 1
-                    if (time < 1) {
-                        time = 1;
-                    }
-                    const auto position = mixxx::audio::FramePos(
-                            sampleRateKhz * static_cast<double>(time));
-
-                    switch (cuesExtendedTag->type()) {
-                    case rekordbox_anlz_t::CUE_LIST_TYPE_MEMORY_CUES: {
-                        switch (cueExtendedEntry->type()) {
-                        case rekordbox_anlz_t::CUE_ENTRY_TYPE_MEMORY_CUE: {
-                            mixxx::rekordbox::MemoryCueLoop memoryCue;
-                            memoryCue.startPosition = position;
-                            memoryCue.endPosition = mixxx::audio::kInvalidFramePos;
-                            memoryCue.comment = fromUtf16BeString(cueExtendedEntry->comment());
-                            memoryCue.color = colorFromID(static_cast<int>(
-                                    cueExtendedEntry->color_id()));
-                            memoryCue.fromExtendedSection = true;
-                            memoryCue.sourceOrder = sourceOrder++;
-                            memoryCuesAndLoops << memoryCue;
-                        } break;
-                        case rekordbox_anlz_t::CUE_ENTRY_TYPE_LOOP: {
-                            int endTime =
-                                    static_cast<int>(
-                                            cueExtendedEntry->loop_time()) -
-                                    timingOffset;
-                            // Ensure no offset times are less than 1
-                            if (endTime < 1) {
-                                endTime = 1;
-                            }
-
-                            mixxx::rekordbox::MemoryCueLoop loop;
-                            loop.startPosition = position;
-                            loop.endPosition = mixxx::audio::FramePos(
-                                    sampleRateKhz * static_cast<double>(endTime));
-                            loop.comment = fromUtf16BeString(cueExtendedEntry->comment());
-                            loop.color = colorFromID(static_cast<int>(
-                                    cueExtendedEntry->color_id()));
-                            loop.fromExtendedSection = true;
-                            loop.sourceOrder = sourceOrder++;
-                            memoryCuesAndLoops << loop;
-                        } break;
-                        }
-                    } break;
-                    case rekordbox_anlz_t::CUE_LIST_TYPE_HOT_CUES: {
-                        int hotCueIndex = static_cast<int>(cueExtendedEntry->hot_cue() - 1);
-                        if (hotCueIndex < 0) {
-                            break;
-                        }
-                        if (hotCueIndex > lastHotCueIndex) {
-                            lastHotCueIndex = hotCueIndex;
-                        }
-                        pendingHotCues << pending_hot_cue_t{
-                                position,
-                                hotCueIndex,
-                                fromUtf16BeString(cueExtendedEntry->comment()),
-                                mixxx::RgbColor(qRgb(
-                                        static_cast<int>(
-                                                cueExtendedEntry->color_red()),
-                                        static_cast<int>(
-                                                cueExtendedEntry->color_green()),
-                                        static_cast<int>(cueExtendedEntry
-                                                        ->color_blue())))};
-                    } break;
-                    }
-                }
-            } break;
-            default:
-                break;
-            }
-        }
-
-        if (!parsedBeats.isEmpty()) {
-            const auto pBeats = mixxx::Beats::fromBeatPositions(
-                    sampleRate,
-                    parsedBeats,
-                    mixxx::rekordboxconstants::beatsSubversion);
-            track->trySetBeats(pBeats);
-        }
-
-        for (const pending_hot_cue_t& hotCue : std::as_const(pendingHotCues)) {
-            setHotCue(track,
-                    hotCue.position,
-                    mixxx::audio::kInvalidFramePos,
-                    hotCue.index,
-                    hotCue.label,
-                    hotCue.color);
-        }
-
-        memoryCuesAndLoops = mixxx::rekordbox::normalizeMemoryCueLoops(
-                memoryCuesAndLoops);
-        if (!memoryCuesAndLoops.isEmpty()) {
-            bool mainCueFound = false;
-
-            // Add memory cues and loops
-            for (int memoryCueOrLoopIndex = 0;
-                    memoryCueOrLoopIndex < memoryCuesAndLoops.size();
-                    memoryCueOrLoopIndex++) {
-                mixxx::rekordbox::MemoryCueLoop memoryCueOrLoop =
-                        memoryCuesAndLoops[memoryCueOrLoopIndex];
-
-                if (mainCuePromotionPolicy.shouldPromote(
-                            mainCueFound, memoryCueOrLoop.endPosition.isValid())) {
-                    // Set first chronological memory cue as Mixxx MainCue
-                    track->setMainCuePosition(memoryCueOrLoop.startPosition);
-                    CuePointer pMainCue = track->findCueByType(mixxx::CueType::MainCue);
-                    if (pMainCue) {
-                        pMainCue->setLabel(memoryCueOrLoop.comment);
-                        if (memoryCueOrLoop.color) {
-                            pMainCue->setColor(*memoryCueOrLoop.color);
-                        }
-                    }
-                    mainCueFound = true;
-                } else {
-                    // Mixxx v2.4 will feature multiple loops, so these saved
-                    // here will be usable For 2.3, Mixxx treats them as hotcues
-                    // and the first one will be loaded as the single loop Mixxx
-                    // supports
-                    lastHotCueIndex++;
-                    setMemoryCue(
-                            track,
-                            memoryCueOrLoop.startPosition,
-                            memoryCueOrLoop.endPosition,
-                            lastHotCueIndex,
-                            memoryCueOrLoop.comment,
-                            memoryCueOrLoop.color);
-                }
-            }
-        }
-    } catch (...) {
-        qWarning() << "Skipping malformed Rekordbox ANLZ import for" << anlzPath;
-    }
-}
-
 } // anonymous namespace
 
 namespace mixxx::rekordbox {
+
+DeviceImportResult importDeviceDatabase(mixxx::DbConnectionPoolPtr dbConnectionPool,
+        const QString& devicePath,
+        const QString& device,
+        const SecurityTokenPointer& securityToken,
+        const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    const auto cancellation = cancelled ? cancelled : std::make_shared<std::atomic<bool>>(false);
+    return parseDeviceDB(std::move(dbConnectionPool),
+            devicePath,
+            device,
+            securityToken,
+            cancellation);
+}
+
+bool removeDeviceDatabase(QSqlDatabase& database, const QString& devicePath) {
+    return clearDeviceTables(database, devicePath);
+}
+
+QString resolveDeviceMediaPath(const QString& devicePath, const std::string& sourcePath) {
+    return deviceFilePath(devicePath, sourcePath);
+}
 
 void applyXmlTrackAnnotations(
         TrackPointer track,
@@ -1596,7 +1004,9 @@ QList<MemoryCueLoop> normalizeMemoryCueLoops(const QList<MemoryCueLoop>& cues) {
             for (MemoryCueLoop& existing : normalized) {
                 if (existing.endPosition.isValid() &&
                         existing.startPosition == cue.startPosition &&
-                        existing.endPosition == cue.endPosition) {
+                        existing.endPosition == cue.endPosition &&
+                        (existing.fromExtendedSection != cue.fromExtendedSection ||
+                                (existing.comment == cue.comment && existing.color == cue.color))) {
                     if (cue.fromExtendedSection && !existing.fromExtendedSection) {
                         existing = cue;
                     }
@@ -1625,27 +1035,30 @@ QList<MemoryCueLoop> normalizeMemoryCueLoops(const QList<MemoryCueLoop>& cues) {
         normalized << cue;
     }
 
-    std::stable_sort(normalized.begin(),
-            normalized.end(),
-            [](const MemoryCueLoop& a, const MemoryCueLoop& b) {
-                if (a.startPosition != b.startPosition) {
-                    return a.startPosition < b.startPosition;
-                }
-                if (a.endPosition.isValid() != b.endPosition.isValid()) {
-                    return !a.endPosition.isValid();
-                }
-                if (a.endPosition != b.endPosition) {
-                    return a.endPosition < b.endPosition;
-                }
-                if (a.comment != b.comment) {
-                    return a.comment < b.comment;
-                }
-                if (a.color != b.color) {
-                    return a.color.has_value();
-                }
-                return a.sourceOrder < b.sourceOrder;
-            });
+    std::stable_sort(normalized.begin(), normalized.end(), memoryCueLoopLess);
     return normalized;
+}
+
+bool memoryCueLoopLess(const MemoryCueLoop& a, const MemoryCueLoop& b) {
+    if (a.startPosition != b.startPosition) {
+        return a.startPosition < b.startPosition;
+    }
+    if (a.endPosition.isValid() != b.endPosition.isValid()) {
+        return !a.endPosition.isValid();
+    }
+    if (a.endPosition != b.endPosition) {
+        return a.endPosition < b.endPosition;
+    }
+    if (a.comment != b.comment) {
+        return a.comment < b.comment;
+    }
+    if (a.color.has_value() != b.color.has_value()) {
+        return a.color.has_value();
+    }
+    if (a.color && a.color != b.color) {
+        return static_cast<RgbColor::code_t>(*a.color) < static_cast<RgbColor::code_t>(*b.color);
+    }
+    return a.sourceOrder < b.sourceOrder;
 }
 
 QString analyzeImportSourceIdentity(
@@ -1655,12 +1068,6 @@ QString analyzeImportSourceIdentity(
         return {};
     }
     return trackLocation + QLatin1Char('\n') + analyzePath;
-}
-
-bool shouldImportAnalyzeSource(
-        const QString& sourceIdentity,
-        const QSet<QString>& importedSources) {
-    return !sourceIdentity.isEmpty() && !importedSources.contains(sourceIdentity);
 }
 
 void recordXmlTrackMapping(
@@ -1861,50 +1268,35 @@ TrackPointer RekordboxPlaylistModel::getTrack(const QModelIndex& index) const {
     QString anlzPath =
             getFieldVariant(index, ColumnCache::COLUMN_REKORDBOX_ANALYZE_PATH)
                     .toString();
-    QString anlzPathExt = anlzPath.left(anlzPath.length() - 3) + "EXT";
 
     const QString analyzeSourceIdentity = mixxx::rekordbox::analyzeImportSourceIdentity(
             location, anlzPath);
-    const bool hasAnalyzeSource = QFile(anlzPath).exists() || QFile(anlzPathExt).exists();
     if (importAnalyze) {
         mixxx::rekordbox::applyXmlTrackAnnotations(
                 track,
                 sampleRate,
                 getFieldVariant(index, kRekordboxXmlMetadata).toByteArray());
 
-        if (hasAnalyzeSource &&
-                mixxx::rekordbox::shouldImportAnalyzeSource(
-                        analyzeSourceIdentity, m_importedAnalyzeSources)) {
-            if (QFile(anlzPathExt).exists()) {
-                // Beatgrids appear to be only correct in legacy ANLZ file
-                readAnalyze(track,
-                        sampleRate,
-                        timingOffset,
-                        true,
-                        anlzPath,
-                        mixxx::library::loadMainCuePromotionPolicy(m_pConfig));
-                readAnalyze(track,
-                        sampleRate,
-                        timingOffset,
-                        false,
-                        anlzPathExt,
-                        mixxx::library::loadMainCuePromotionPolicy(m_pConfig));
-            } else {
-                // The base ANLZ file can contain both the beat grid and cues.
-                readAnalyze(track,
-                        sampleRate,
-                        timingOffset,
-                        true,
-                        anlzPath,
-                        mixxx::library::loadMainCuePromotionPolicy(m_pConfig));
-                readAnalyze(track,
-                        sampleRate,
-                        timingOffset,
-                        false,
-                        anlzPath,
-                        mixxx::library::loadMainCuePromotionPolicy(m_pConfig));
+        if (!anlzPath.isEmpty()) {
+            if (m_analyzeImportStates.size() > 1024) {
+                for (auto it = m_analyzeImportStates.begin(); it != m_analyzeImportStates.end();) {
+                    if (it->track.expired()) {
+                        it = m_analyzeImportStates.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
             }
-            m_importedAnalyzeSources.insert(analyzeSourceIdentity);
+            auto& state = m_analyzeImportStates[analyzeSourceIdentity];
+            const auto applied = mixxx::rekordbox::importAnlzSources(track,
+                    sampleRate,
+                    timingOffset,
+                    anlzPath,
+                    mixxx::library::loadMainCuePromotionPolicy(m_pConfig),
+                    &state);
+            for (const auto& diagnostic : applied.diagnostics) {
+                qWarning() << "Rekordbox analysis:" << diagnostic;
+            }
         }
     }
 
@@ -2009,13 +1401,21 @@ RekordboxFeature::RekordboxFeature(
             &QFutureWatcher<QString>::finished,
             this,
             &RekordboxFeature::onTracksFound);
+    connect(&m_deviceImportWatcher,
+            &QFutureWatcher<mixxx::rekordbox::DeviceImportResult>::finished,
+            this,
+            &RekordboxFeature::onDeviceTracksFound);
     // initialize the model
     m_pSidebarModel->setRootItem(TreeItem::newRoot(this));
 }
 
 RekordboxFeature::~RekordboxFeature() {
+    if (m_cancelDeviceImport) {
+        m_cancelDeviceImport->store(true);
+    }
     m_devicesFuture.waitForFinished();
     m_tracksFuture.waitForFinished();
+    m_deviceImportFuture.waitForFinished();
 
     // Drop temporary Rekordbox database tables on shutdown
     QSqlDatabase database = m_pTrackCollection->database();
@@ -2040,15 +1440,17 @@ void RekordboxFeature::htmlLinkClicked(const QUrl& link) {
     if (QString(link.path()) == "refresh") {
         activate();
     } else if (QString(link.path()) == kRekordboxXmlImportLink) {
-        if (m_tracksFuture.isRunning()) {
+        if (m_pendingOperation != PendingOperation::None) {
             return;
         }
+        m_pendingOperation = PendingOperation::XmlImport;
         const QString xmlPath = QFileDialog::getOpenFileName(
                 nullptr,
                 tr("Select Rekordbox XML collection"),
                 QString(),
                 tr("Rekordbox XML (*.xml)"));
         if (xmlPath.isEmpty()) {
+            m_pendingOperation = PendingOperation::None;
             return;
         }
 
@@ -2142,7 +1544,20 @@ void RekordboxFeature::refreshLibraryModels() {
 void RekordboxFeature::activate() {
     qDebug() << "RekordboxFeature::activate()";
 
-    // Let a worker thread do the XML parsing
+    if (m_pendingOperation == PendingOperation::Discovery ||
+            m_pendingOperation == PendingOperation::XmlImport) {
+        return;
+    }
+
+    if (m_pendingOperation == PendingOperation::DeviceImport) {
+        if (m_cancelDeviceImport) {
+            m_cancelDeviceImport->store(true);
+        }
+        m_refreshAfterDeviceImport = true;
+        return;
+    }
+
+    m_pendingOperation = PendingOperation::Discovery;
     m_devicesFuture = QtConcurrent::run(findRekordboxDevices);
     m_devicesFutureWatcher.setFuture(m_devicesFuture);
     m_title = tr("(loading) Rekordbox");
@@ -2172,6 +1587,9 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
     // IS_NOT_RECORDBOX_DEVICE, the 1st element is the playlist path and it is
     // activated.
     QList<QVariant> data = item->getData().toList();
+    if (data.size() < 2) {
+        return;
+    }
     QString playlist = data[0].toString();
     bool doParseDeviceDB = data[1].toString() == IS_RECORDBOX_DEVICE;
 
@@ -2179,16 +1597,27 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
              << " playlist: " << playlist << " doParseDeviceDB: " << doParseDeviceDB;
 
     if (doParseDeviceDB) {
+        if (m_pendingOperation != PendingOperation::None) {
+            return;
+        }
+        m_pendingOperation = PendingOperation::DeviceImport;
         qDebug() << "Parse Rekordbox Device DB: " << playlist;
-
-        // Let a worker thread do the XML parsing
-        m_tracksFuture = QtConcurrent::run(parseDeviceDB, static_cast<Library*>(parent())->dbConnectionPool(), item);
-        m_tracksFutureWatcher.setFuture(m_tracksFuture);
-
-        // This device is now a playlist element, future activations should treat is
-        // as such
-        data[1] = QVariant(IS_NOT_RECORDBOX_DEVICE);
-        item->setData(QVariant(data));
+        mixxx::FileInfo deviceInfo(playlist);
+        if (!Sandbox::askForAccess(&deviceInfo)) {
+            m_pendingOperation = PendingOperation::None;
+            return;
+        }
+        const auto token = Sandbox::openSecurityToken(&deviceInfo, true);
+        m_cancelDeviceImport = std::make_shared<std::atomic<bool>>(false);
+        m_deviceImportFuture = QtConcurrent::run(mixxx::rekordbox::importDeviceDatabase,
+                m_pLibrary->dbConnectionPool(),
+                playlist,
+                item->getLabel(),
+                token,
+                m_cancelDeviceImport);
+        m_deviceImportWatcher.setFuture(m_deviceImportFuture);
+        m_title = tr("(loading) Rekordbox");
+        emit featureIsLoading(this, true);
     } else {
         qDebug() << "Activate Rekordbox Playlist: " << playlist;
         m_pRekordboxPlaylistModel->setPlaylist(playlist);
@@ -2197,7 +1626,14 @@ void RekordboxFeature::activateChild(const QModelIndex& index) {
 }
 
 void RekordboxFeature::onRekordboxDevicesFound() {
-    const QList<TreeItem*> result = m_devicesFuture.result();
+    QList<TreeItem*> result;
+    try {
+        result = m_devicesFuture.result();
+    } catch (...) {
+        qWarning() << "Rekordbox device discovery failed";
+        finishOperation();
+        return;
+    }
     auto foundDevices = std::vector<std::unique_ptr<TreeItem>>(result.cbegin(), result.cend());
 
     clearLastRightClickedIndex();
@@ -2205,71 +1641,116 @@ void RekordboxFeature::onRekordboxDevicesFound() {
     TreeItem* root = m_pSidebarModel->getRootItem();
     QSqlDatabase database = m_pTrackCollection->database();
 
-    if (foundDevices.size() == 0) {
-        // No Rekordbox devices found
-        ScopedTransaction transaction(database);
+    for (int deviceIndex = root->childRows() - 1; deviceIndex >= 0; --deviceIndex) {
+        TreeItem* child = root->child(deviceIndex);
+        bool removeChild = true;
 
-        dropTable(database, kRekordboxPlaylistTracksTable);
-        dropTable(database, kRekordboxPlaylistsTable);
-        dropTable(database, kRekordboxLibraryTable);
-
-        // Create new temporary Rekordbox database tables
-        createLibraryTable(database, kRekordboxLibraryTable);
-        createPlaylistsTable(database, kRekordboxPlaylistsTable);
-        createPlaylistTracksTable(database, kRekordboxPlaylistTracksTable);
-
-        transaction.commit();
-
-        if (root->childRows() > 0) {
-            // Devices have since been unmounted
-            m_pSidebarModel->removeRows(0, root->childRows());
-        }
-    } else {
-        for (int deviceIndex = 0; deviceIndex < root->childRows(); deviceIndex++) {
-            TreeItem* child = root->child(deviceIndex);
-            bool removeChild = true;
-
-            for (const auto& pDeviceFound : foundDevices) {
-                if (pDeviceFound->getLabel() == child->getLabel()) {
-                    removeChild = false;
-                    break;
-                }
-            }
-
-            if (removeChild) {
-                // Device has since been unmounted, cleanup DB
-                clearDeviceTables(database, child);
-
-                m_pSidebarModel->removeRows(deviceIndex, 1);
+        for (const auto& pDeviceFound : foundDevices) {
+            if (pDeviceFound->getData().toList().value(0) == child->getData().toList().value(0)) {
+                removeChild = false;
+                break;
             }
         }
 
-        std::vector<std::unique_ptr<TreeItem>> childrenToAdd;
-
-        for (auto&& pDeviceFound : foundDevices) {
-            bool addNewChild = true;
-            for (int deviceIndex = 0; deviceIndex < root->childRows(); deviceIndex++) {
-                TreeItem* child = root->child(deviceIndex);
-
-                if (pDeviceFound->getLabel() == child->getLabel()) {
-                    // This device already exists in the TreeModel, don't add or parse is again
-                    addNewChild = false;
-                }
+        if (removeChild) {
+            // Device has since been unmounted, cleanup DB
+            if (!mixxx::rekordbox::removeDeviceDatabase(
+                        database, child->getData().toList().value(0).toString())) {
+                continue;
             }
 
-            if (addNewChild) {
-                childrenToAdd.push_back(std::move(pDeviceFound));
-            }
-        }
-
-        if (!childrenToAdd.empty()) {
-            m_pSidebarModel->insertTreeItemRows(std::move(childrenToAdd), 0);
+            m_pSidebarModel->removeRows(deviceIndex, 1);
         }
     }
 
+    std::vector<std::unique_ptr<TreeItem>> childrenToAdd;
+
+    for (auto&& pDeviceFound : foundDevices) {
+        bool addNewChild = true;
+        for (int deviceIndex = 0; deviceIndex < root->childRows(); deviceIndex++) {
+            TreeItem* child = root->child(deviceIndex);
+
+            if (pDeviceFound->getData().toList().value(0) == child->getData().toList().value(0)) {
+                // This device already exists in the TreeModel, don't add or parse is again
+                addNewChild = false;
+            }
+        }
+
+        if (addNewChild) {
+            childrenToAdd.push_back(std::move(pDeviceFound));
+        }
+    }
+
+    if (!childrenToAdd.empty()) {
+        m_pSidebarModel->insertTreeItemRows(std::move(childrenToAdd), 0);
+    }
+
     // calls a slot in the sidebarmodel such that 'isLoading' is removed from the feature title.
-    m_title = tr("Rekordbox");
-    emit featureLoadingFinished(this);
+    finishOperation();
+}
+
+void RekordboxFeature::onDeviceTracksFound() {
+    mixxx::rekordbox::DeviceImportResult result;
+    try {
+        result = m_deviceImportFuture.result();
+    } catch (...) {
+        qWarning() << "Rekordbox device worker failed";
+    }
+    for (const auto& diagnostic : std::as_const(result.diagnostics)) {
+        qWarning() << "Rekordbox DeviceSQL:" << diagnostic;
+    }
+    if (result.applied && result.data) {
+        TreeItem* root = m_pSidebarModel->getRootItem();
+        for (int row = 0; row < root->childRows(); ++row) {
+            TreeItem* item = root->child(row);
+            auto data = item->getData().toList();
+            if (data.size() < 2 || data[0].toString() != result.devicePath) {
+                continue;
+            }
+            QHash<std::uint32_t, QList<const mixxx::rekordbox::PdbPlaylist*>> children;
+            for (const auto& playlist : result.data->playlists) {
+                children[playlist.parentPlaylistId].append(&playlist);
+            }
+            for (auto it = children.begin(); it != children.end(); ++it) {
+                std::stable_sort(it->begin(), it->end(), [](const auto* a, const auto* b) {
+                    return a->sortOrder < b->sortOrder;
+                });
+            }
+            std::function<std::unique_ptr<TreeItem>(const mixxx::rekordbox::PdbPlaylist*)> makeNode;
+            makeNode = [&](const auto* playlist) {
+                auto node = std::make_unique<TreeItem>(
+                        QString::fromStdString(playlist->nameUtf8),
+                        QVariant(QList<QString>{
+                                devicePlaylistPath(result.devicePath,
+                                        playlist->sourcePlaylistId),
+                                IS_NOT_RECORDBOX_DEVICE}));
+                std::vector<std::unique_ptr<TreeItem>> descendants;
+                for (const auto* child : children.value(playlist->sourcePlaylistId)) {
+                    descendants.push_back(makeNode(child));
+                }
+                node->insertChildren(0, std::move(descendants));
+                return node;
+            };
+            std::vector<std::unique_ptr<TreeItem>> nodes;
+            for (const auto* playlist : children.value(0)) {
+                nodes.push_back(makeNode(playlist));
+            }
+            const QModelIndex parentIndex = m_pSidebarModel->index(row, 0);
+            m_pSidebarModel->insertTreeItemRows(std::move(nodes), 0, parentIndex);
+            data[1] = QVariant(IS_NOT_RECORDBOX_DEVICE);
+            item->setData(data);
+            m_pSidebarModel->triggerRepaint(parentIndex);
+            m_pRekordboxPlaylistModel->setPlaylist(result.devicePath);
+            emit showTrackModel(m_pRekordboxPlaylistModel);
+            break;
+        }
+    }
+    const bool refresh = m_refreshAfterDeviceImport;
+    m_refreshAfterDeviceImport = false;
+    finishOperation();
+    if (refresh) {
+        activate();
+    }
 }
 
 void RekordboxFeature::onTracksFound() {
@@ -2281,18 +1762,28 @@ void RekordboxFeature::onTracksFound() {
         devicePlaylist = m_tracksFuture.result();
     } catch (const std::exception& e) {
         qWarning() << "Failed to load Rekordbox database:" << e.what();
+        finishOperation();
+        return;
+    } catch (...) {
+        qWarning() << "Failed to load Rekordbox XML database";
+        finishOperation();
         return;
     }
 
     qDebug() << "Show Rekordbox Device Playlist: " << devicePlaylist;
 
     if (devicePlaylist.isEmpty()) {
-        emit featureLoadingFinished(this);
+        finishOperation();
         return;
     }
 
     m_pRekordboxPlaylistModel->setPlaylist(devicePlaylist);
     emit showTrackModel(m_pRekordboxPlaylistModel);
+    finishOperation();
+}
+
+void RekordboxFeature::finishOperation() {
+    m_pendingOperation = PendingOperation::None;
     m_title = tr("Rekordbox");
     emit featureLoadingFinished(this);
 }

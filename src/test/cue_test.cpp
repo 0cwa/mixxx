@@ -52,4 +52,55 @@ TEST(CueTest, ConvertCueInfoToCueRoundtrip) {
     EXPECT_EQ(cueInfo1, cueInfo2);
 }
 
+TEST(CueTest, ActiveLoopIntentKeepsUnknownDistinctFromFalse) {
+    for (const auto intent : {std::optional<bool>{},
+                 std::optional<bool>{false},
+                 std::optional<bool>{true}}) {
+        CueInfo info(CueType::Memory,
+                1000.0,
+                2000.0,
+                std::nullopt,
+                QStringLiteral("memory loop"),
+                RgbColor::optional(0x123456));
+        info.setActiveLoopIntent(intent);
+        const Cue cue(info, audio::SampleRate(48000), true);
+        EXPECT_EQ(intent, cue.getActiveLoopIntent());
+        EXPECT_EQ(info, cue.getCueInfo(audio::SampleRate(48000)));
+    }
+    CueInfo unknown;
+    CueInfo inactive;
+    inactive.setActiveLoopIntent(false);
+    EXPECT_NE(unknown, inactive);
+}
+
+TEST(CueTest, EditingHotSlotAndActiveLoopIntentMarksDirty) {
+    Cue cue(DbId(QVariant(1)),
+            CueType::Loop,
+            audio::FramePos(48000),
+            48000,
+            0,
+            QStringLiteral("loop"),
+            RgbColor(0x123456));
+    ASSERT_FALSE(cue.isDirty());
+    int updates = 0;
+    QObject::connect(&cue, &Cue::updated, [&updates]() {
+        ++updates;
+    });
+    cue.setHotCue(7);
+    EXPECT_EQ(7, cue.getHotCue());
+    EXPECT_TRUE(cue.isDirty());
+    EXPECT_EQ(1, updates);
+    cue.setHotCue(7);
+    EXPECT_EQ(1, updates);
+
+    cue.setActiveLoopIntent(false);
+    EXPECT_EQ(std::optional<bool>(false), cue.getActiveLoopIntent());
+    EXPECT_EQ(2, updates);
+    cue.setActiveLoopIntent(false);
+    EXPECT_EQ(2, updates);
+    cue.setActiveLoopIntent(std::nullopt);
+    EXPECT_FALSE(cue.getActiveLoopIntent().has_value());
+    EXPECT_EQ(3, updates);
+}
+
 } // namespace mixxx

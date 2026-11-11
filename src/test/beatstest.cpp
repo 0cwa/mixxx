@@ -39,6 +39,87 @@ const auto kNonConstTempoBeats = Beats(
         QString(),
         0);
 
+TEST(BeatsTest, EqualityIncludesDownbeatOffsetAndSampleRate) {
+    const auto pOriginal = Beats::fromConstTempo(
+            kSampleRate, kStartPosition, kBpm, QString(), 1);
+    const auto pSame = Beats::fromConstTempo(
+            kSampleRate, kStartPosition, kBpm, QString(), 1);
+    const auto pOtherPhase = Beats::fromConstTempo(
+            kSampleRate, kStartPosition, kBpm, QString(), 2);
+    const auto pOtherSampleRate = Beats::fromConstTempo(
+            audio::SampleRate(44100), kStartPosition, kBpm, QString(), 1);
+    EXPECT_EQ(*pOriginal, *pSame);
+    EXPECT_NE(*pOriginal, *pOtherPhase);
+    EXPECT_NE(*pOriginal, *pOtherSampleRate);
+}
+
+TEST(BeatsTest, GridEditsPreserveDownbeatOffset) {
+    for (const auto* original : {&kConstTempoBeats, &kNonConstTempoBeats}) {
+        const auto pBeats = *original->trySetDownbeatsOffset(3);
+        const auto translated = pBeats->tryTranslate(1234);
+        ASSERT_TRUE(translated);
+        EXPECT_EQ(3, (*translated)->getDownbeatsOffset());
+        const auto scaled = pBeats->tryScale(Beats::BpmScale::Double);
+        ASSERT_TRUE(scaled);
+        EXPECT_EQ(3, (*scaled)->getDownbeatsOffset());
+        const auto changedBpm = pBeats->trySetBpm(Bpm(90.0));
+        ASSERT_TRUE(changedBpm);
+        EXPECT_EQ(3, (*changedBpm)->getDownbeatsOffset());
+    }
+    const auto pBeats = *kConstTempoBeats.trySetDownbeatsOffset(3);
+    const auto translated = pBeats->tryTranslateBeats(0.5);
+    ASSERT_TRUE(translated);
+    EXPECT_EQ(3, (*translated)->getDownbeatsOffset());
+}
+
+TEST(BeatsTest, GlobalBeatIndexRemainsContinuousAcrossTempoMarkers) {
+    for (const auto* beats : {&kConstTempoBeats, &kNonConstTempoBeats}) {
+        const auto origin = beats->cfirstmarker();
+        auto it = origin;
+        it -= 3;
+        int beatIndex = it - origin;
+        for (int expected = -3; expected <= 28; ++expected, ++it, ++beatIndex) {
+            EXPECT_EQ(expected, beatIndex);
+            EXPECT_EQ(expected, it - origin);
+            EXPECT_EQ(expected, beats->iteratorFrom(*it) - origin);
+        }
+    }
+}
+
+TEST(BeatsTest, DownbeatPhaseSpansTempoChangesAndNegativeOffsets) {
+    const auto beats = Beats::fromBeatPositions(kSampleRate,
+            {audio::FramePos(0), audio::FramePos(24000), audio::FramePos(52800)},
+            QString(),
+            2);
+    ASSERT_TRUE(beats);
+    const auto origin = beats->cfirstmarker();
+    const auto firstDownbeat = beats->iteratorFrom(audio::FramePos(52800));
+    EXPECT_EQ(2, firstDownbeat - origin);
+    EXPECT_EQ(0, firstDownbeat.beatOffset());
+
+    for (const int phase : {2, -2}) {
+        const auto phasedBeats = *beats->trySetDownbeatsOffset(phase);
+        const auto phasedOrigin = phasedBeats->cfirstmarker();
+        const int downbeatOffset = phasedBeats->getDownbeatsOffset();
+        std::vector<int> downbeats;
+        std::vector<int> phraseStarts;
+        auto it = phasedOrigin;
+        it -= 3;
+        int beatIndex = it - phasedOrigin;
+        for (; beatIndex <= 20; ++it, ++beatIndex) {
+            if ((beatIndex - downbeatOffset) % 4 == 0) {
+                downbeats.push_back(beatIndex);
+            }
+            if ((beatIndex - downbeatOffset) % 16 == 0) {
+                phraseStarts.push_back(beatIndex);
+            }
+        }
+        EXPECT_EQ((std::vector<int>{-2, 2, 6, 10, 14, 18}), downbeats);
+        EXPECT_EQ(phase == 2 ? (std::vector<int>{2, 18}) : (std::vector<int>{-2, 14}),
+                phraseStarts);
+    }
+}
+
 TEST(BeatsTest, ConstTempoGetBpmInRange) {
     EXPECT_DOUBLE_EQ(kBpm.value(),
             kConstTempoBeats.getBpmInRange(kStartPosition, kEndPosition)

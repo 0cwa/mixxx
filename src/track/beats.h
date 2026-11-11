@@ -222,8 +222,9 @@ class Beats : private std::enable_shared_from_this<Beats> {
     friend bool operator==(const Beats& lhs, const Beats& rhs) {
         return lhs.m_markers == rhs.m_markers &&
                 lhs.m_lastMarkerPosition == rhs.m_lastMarkerPosition &&
-                lhs.m_lastMarkerBpm == rhs.m_lastMarkerBpm && lhs.m_sampleRate &&
-                rhs.m_sampleRate;
+                lhs.m_lastMarkerBpm == rhs.m_lastMarkerBpm &&
+                lhs.m_sampleRate == rhs.m_sampleRate &&
+                lhs.m_downbeatsOffset == rhs.m_downbeatsOffset;
     }
 
     friend bool operator!=(const Beats& lhs, const Beats& rhs) {

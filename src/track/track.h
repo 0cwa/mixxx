@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAtomicInt>
 #include <QList>
 #include <QObject>
 #include <QStack>
@@ -348,7 +349,7 @@ class Track : public QObject {
     void setCuePoints(const QList<CuePointer>& cuePoints);
 
     int getDownbeatOffset() const {
-        return m_downbeat_offset;
+        return m_downbeat_offset.loadAcquire();
     }
 
     void setDownbeatOffset(int offset);
@@ -391,6 +392,7 @@ class Track : public QObject {
 
     void undoBeatsChange();
     bool canUndoBeatsChange() const {
+        const auto locked = lockMutex(&m_qMutex);
         return !m_pBeatsUndoStack.isEmpty();
     }
 
@@ -622,7 +624,7 @@ class Track : public QObject {
     // The list of cue points for the track
     QList<CuePointer> m_cuePoints;
 
-    int m_downbeat_offset = 0; // offset in bars
+    QAtomicInt m_downbeat_offset = 0;
 
 #ifdef __STEM__
     // The list of stem info

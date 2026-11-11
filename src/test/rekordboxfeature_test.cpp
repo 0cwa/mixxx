@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 #include <utility>
 
 #include "track/cue.h"
@@ -74,22 +77,108 @@ TEST(RekordboxFeatureTest, OrderingUsesCompleteCueRecord) {
     EXPECT_EQ(normalized[2].comment, QStringLiteral("b"));
 }
 
-TEST(RekordboxFeatureTest, RepeatedAnalyzeImportUsesSameSourceIdentity) {
+TEST(RekordboxFeatureTest, SameTimeDifferentColorsHaveStrictDeterministicOrder) {
+    const auto red = cue(100,
+            -1,
+            QStringLiteral("same"),
+            mixxx::RgbColor::optional(0xff0000),
+            true,
+            0);
+    const auto blue = cue(100,
+            -1,
+            QStringLiteral("same"),
+            mixxx::RgbColor::optional(0x0000ff),
+            true,
+            0);
+    const auto uncolored = cue(100,
+            -1,
+            QStringLiteral("same"),
+            mixxx::RgbColor::nullopt(),
+            true,
+            0);
+    const QList<MemoryCueLoop> values{red, blue, uncolored};
+    for (const auto& a : values) {
+        EXPECT_FALSE(mixxx::rekordbox::memoryCueLoopLess(a, a));
+        for (const auto& b : values) {
+            EXPECT_FALSE(mixxx::rekordbox::memoryCueLoopLess(a, b) &&
+                    mixxx::rekordbox::memoryCueLoopLess(b, a));
+            for (const auto& c : values) {
+                if (mixxx::rekordbox::memoryCueLoopLess(a, b) &&
+                        mixxx::rekordbox::memoryCueLoopLess(b, c)) {
+                    EXPECT_TRUE(mixxx::rekordbox::memoryCueLoopLess(a, c));
+                }
+            }
+        }
+    }
+    const auto forward = mixxx::rekordbox::normalizeMemoryCueLoops({red, blue});
+    const auto reverse = mixxx::rekordbox::normalizeMemoryCueLoops({blue, red});
+    ASSERT_EQ(2, forward.size());
+    ASSERT_EQ(2, reverse.size());
+    EXPECT_EQ(blue.color, forward[0].color);
+    EXPECT_EQ(forward[0].color, reverse[0].color);
+    EXPECT_EQ(forward[1].color, reverse[1].color);
+}
+
+TEST(RekordboxFeatureTest, DeviceRootPathsAndTraversalAreHandled) {
+    const QString root = QDir::rootPath();
+    EXPECT_EQ(QDir(root).filePath(QStringLiteral("Contents/test.wav")),
+            mixxx::rekordbox::resolveDeviceMediaPath(root, "/Contents/test.wav"));
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    EXPECT_EQ(QDir(QDir(directory.path()).canonicalPath())
+                      .filePath(QStringLiteral("Contents/test.wav")),
+            mixxx::rekordbox::resolveDeviceMediaPath(
+                    directory.path(), "/Contents/test.wav"));
+    EXPECT_TRUE(mixxx::rekordbox::resolveDeviceMediaPath(
+            directory.path(), "../outside.wav")
+                    .isEmpty());
+    EXPECT_TRUE(mixxx::rekordbox::resolveDeviceMediaPath(directory.path(), "").isEmpty());
+}
+
+TEST(RekordboxFeatureTest, MissingDeviceMediaCannotEscapeThroughAnExistingSymlinkAncestor) {
+#ifdef __WINDOWS__
+    GTEST_SKIP() << "This regression requires a filesystem symlink";
+#else
+    QTemporaryDir device;
+    QTemporaryDir outside;
+    ASSERT_TRUE(device.isValid());
+    ASSERT_TRUE(outside.isValid());
+    ASSERT_TRUE(QFile::link(outside.path(), device.filePath(QStringLiteral("escape"))));
+    ASSERT_FALSE(QFile::exists(outside.filePath(QStringLiteral("missing.wav"))));
+    EXPECT_TRUE(mixxx::rekordbox::resolveDeviceMediaPath(
+            device.path(), "escape/missing.wav")
+                    .isEmpty());
+    EXPECT_EQ(QDir(QDir(device.path()).canonicalPath())
+                      .filePath(QStringLiteral("future/subdirectory/safe.wav")),
+            mixxx::rekordbox::resolveDeviceMediaPath(
+                    device.path(), "future/subdirectory/safe.wav"));
+#endif
+}
+
+TEST(RekordboxFeatureTest, DistinctSameIntervalExtendedLoopsArePreserved) {
+    const auto normalized = mixxx::rekordbox::normalizeMemoryCueLoops({
+            cue(100, 200, QStringLiteral("one"), mixxx::RgbColor::optional(0xff0000), true, 0),
+            cue(100, 200, QStringLiteral("two"), mixxx::RgbColor::optional(0x0000ff), true, 1),
+    });
+    EXPECT_EQ(2, normalized.size());
+}
+
+TEST(RekordboxFeatureTest, AnalyzeSourceIdentityIncludesBothMediaAndAnalysisPaths) {
     const QString sourceIdentity = mixxx::rekordbox::analyzeImportSourceIdentity(
             QStringLiteral("/music/track.mp3"),
             QStringLiteral("/rekordbox/ANLZ/00000001.DAT"));
-    QSet<QString> importedSources;
-
-    EXPECT_TRUE(mixxx::rekordbox::shouldImportAnalyzeSource(
-            sourceIdentity, importedSources));
-    importedSources.insert(sourceIdentity);
-    EXPECT_FALSE(mixxx::rekordbox::shouldImportAnalyzeSource(
-            sourceIdentity, importedSources));
-    EXPECT_TRUE(mixxx::rekordbox::shouldImportAnalyzeSource(
+    EXPECT_EQ(sourceIdentity,
+            mixxx::rekordbox::analyzeImportSourceIdentity(
+                    QStringLiteral("/music/track.mp3"),
+                    QStringLiteral("/rekordbox/ANLZ/00000001.DAT")));
+    EXPECT_NE(sourceIdentity,
             mixxx::rekordbox::analyzeImportSourceIdentity(
                     QStringLiteral("/music/other.mp3"),
-                    QStringLiteral("/rekordbox/ANLZ/00000001.DAT")),
-            importedSources));
+                    QStringLiteral("/rekordbox/ANLZ/00000001.DAT")));
+    EXPECT_NE(sourceIdentity,
+            mixxx::rekordbox::analyzeImportSourceIdentity(
+                    QStringLiteral("/music/track.mp3"),
+                    QStringLiteral("/rekordbox/ANLZ/00000002.DAT")));
 }
 
 TEST(RekordboxFeatureTest, XmlMappingKeepsReusedDatabaseTrackId) {
@@ -136,9 +225,14 @@ TEST(RekordboxFeatureTest, AppliesXmlBeatgridAndMultipleLoopsToTrack) {
     const auto cues = track->getCuePoints();
     ASSERT_EQ(cues.size(), 3);
     EXPECT_EQ(cues[0]->getType(), mixxx::CueType::Memory);
-    EXPECT_EQ(cues[1]->getType(), mixxx::CueType::Loop);
+    EXPECT_EQ(cues[1]->getType(), mixxx::CueType::Memory);
+    EXPECT_EQ(cues[1]->getHotCue(), Cue::kNoHotCue);
+    EXPECT_EQ(cues[1]->getPosition(), mixxx::audio::FramePos(176400));
     EXPECT_EQ(cues[1]->getEndPosition(), mixxx::audio::FramePos(264600));
-    EXPECT_EQ(cues[2]->getType(), mixxx::CueType::Loop);
+    EXPECT_EQ(cues[2]->getType(), mixxx::CueType::Memory);
+    EXPECT_EQ(cues[2]->getHotCue(), Cue::kNoHotCue);
+    EXPECT_EQ(cues[2]->getPosition(), mixxx::audio::FramePos(352800));
+    EXPECT_EQ(cues[2]->getEndPosition(), mixxx::audio::FramePos(441000));
 
     // Re-applying the sidecar is safe and does not duplicate imported cues.
     mixxx::rekordbox::applyXmlTrackAnnotations(

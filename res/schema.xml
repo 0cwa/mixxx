@@ -593,4 +593,14 @@ reapplying those migrations.
       ALTER TABLE library ADD COLUMN tuning_frequency_hz FLOAT DEFAULT 0.0;
     </sql>
   </revision>
+  <revision version="41" min_compatible="3">
+    <description>
+      Prepared by ChatGPT. Preserve optional source active-loop intent on cues.
+      End of ChatGPT-generated description.
+    </description>
+    <sql>
+      ALTER TABLE cues ADD COLUMN active_loop INTEGER DEFAULT NULL
+          CHECK (active_loop IS NULL OR active_loop IN (0, 1));
+    </sql>
+  </revision>
 </schema>

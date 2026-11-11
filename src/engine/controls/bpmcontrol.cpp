@@ -1,5 +1,8 @@
 #include "engine/controls/bpmcontrol.h"
 
+#include <QThread>
+#include <utility>
+
 #include "control/controlencoder.h"
 #include "control/controllinpotmeter.h"
 #include "control/controlproxy.h"
@@ -69,7 +72,8 @@ BpmControl::BpmControl(const QString& group,
           m_bpmTapFilter(this, kBpmTapFilterLength, kBpmTapMaxInterval),
           m_tempoTapFilter(this, kBpmTapFilterLength, kBpmTapMaxInterval),
           m_dSyncInstantaneousBpm(0.0),
-          m_dLastSyncAdjustment(1.0) {
+          m_dLastSyncAdjustment(1.0),
+          m_downbeatOwnerThreadId(QThread::currentThreadId()) {
     m_dSyncTargetBeatDistance.setValue(0.0);
     m_dUserOffset.setValue(0.0);
 
@@ -303,6 +307,8 @@ BpmControl::BpmControl(const QString& group,
             this,
             &BpmControl::slotBackwardDownBeatsMarker,
             Qt::DirectConnection);
+    connect(&m_downbeatTimer, &QTimer::timeout, this, &BpmControl::processPendingDownbeatDelta);
+    m_downbeatTimer.start(20);
 }
 
 mixxx::Bpm BpmControl::getBpm() const {
@@ -310,28 +316,67 @@ mixxx::Bpm BpmControl::getBpm() const {
 }
 
 void BpmControl::slotForwardDownBeatsMarker(double v) {
-    if (v <= 0) {
-        return;
+    if (v > 0) {
+        requestDownbeatDelta(1);
     }
-    const TrackPointer pTrack = getEngineBuffer()->getLoadedTrack();
-    if (!pTrack)
-        return;
-    int downbeatOffset = pTrack->getDownbeatOffset();
-    downbeatOffset == 15 ? downbeatOffset = 0 : ++downbeatOffset;
-    pTrack->setDownbeatOffset(downbeatOffset);
 }
 
 void BpmControl::slotBackwardDownBeatsMarker(double v) {
-    if (v <= 0) {
+    if (v > 0) {
+        requestDownbeatDelta(15);
+    }
+}
+
+void BpmControl::requestDownbeatDelta(uint32_t delta) {
+    const auto generation = m_downbeatTrackGeneration.load(std::memory_order_acquire);
+    if (QThread::currentThreadId() == m_downbeatOwnerThreadId &&
+            m_downbeatLoadedGeneration == generation) {
+        applyDownbeatDelta(delta);
         return;
     }
-    const TrackPointer pTrack = getEngineBuffer()->getLoadedTrack();
-    if (!pTrack)
+
+    auto old = m_pendingDownbeatDelta.load(std::memory_order_relaxed);
+    for (;;) {
+        if (generation != m_downbeatTrackGeneration.load(std::memory_order_acquire)) {
+            return;
+        }
+        const auto previousDelta = (old >> 32) == generation
+                ? static_cast<uint32_t>(old)
+                : 0;
+        const uint64_t updated = (static_cast<uint64_t>(generation) << 32) |
+                ((previousDelta + delta) & 15);
+        if (m_pendingDownbeatDelta.compare_exchange_weak(old,
+                    updated,
+                    std::memory_order_release,
+                    std::memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
+void BpmControl::processPendingDownbeatDelta() {
+    const auto generation = m_downbeatTrackGeneration.load(std::memory_order_acquire);
+    if (m_downbeatLoadedGeneration != generation) {
         return;
-    int downbeatOffset = pTrack->getDownbeatOffset();
-    if (downbeatOffset == 0)
-        downbeatOffset = 16;
-    pTrack->setDownbeatOffset(--downbeatOffset);
+    }
+    auto pending = m_pendingDownbeatDelta.load(std::memory_order_acquire);
+    if ((pending >> 32) == generation &&
+            m_pendingDownbeatDelta.compare_exchange_strong(pending,
+                    0,
+                    std::memory_order_acq_rel,
+                    std::memory_order_relaxed) &&
+            generation ==
+                    m_downbeatTrackGeneration.load(std::memory_order_acquire)) {
+        applyDownbeatDelta(static_cast<uint32_t>(pending));
+    }
+}
+
+void BpmControl::applyDownbeatDelta(uint32_t delta) {
+    if (!m_pDownbeatTrack || delta == 0) {
+        return;
+    }
+    const auto offset = static_cast<uint32_t>(m_pDownbeatTrack->getDownbeatOffset());
+    m_pDownbeatTrack->setDownbeatOffset(static_cast<int>((offset + delta) & 15));
 }
 
 void BpmControl::adjustBeatsBpm(double deltaBpm) {
@@ -1212,11 +1257,18 @@ void BpmControl::slotUpdateRateSlider(double value) {
 
 // called from an engine worker thread
 void BpmControl::trackLoaded(TrackPointer pNewTrack) {
+    const auto generation = m_downbeatTrackGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
     mixxx::BeatsPointer pBeats;
     if (pNewTrack) {
         pBeats = pNewTrack->getBeats();
     }
     trackBeatsUpdated(pBeats);
+    QMetaObject::invokeMethod(this, [this, pNewTrack = std::move(pNewTrack), generation]() {
+                if (generation != m_downbeatTrackGeneration.load(std::memory_order_acquire)) {
+                    return;
+                }
+                m_pDownbeatTrack = pNewTrack;
+                m_downbeatLoadedGeneration = generation; }, Qt::AutoConnection);
 }
 
 void BpmControl::trackBeatsUpdated(mixxx::BeatsPointer pBeats) {

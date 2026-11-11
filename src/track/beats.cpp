@@ -1,6 +1,7 @@
 #include "track/beats.h"
 
 #include <cmath>
+#include <cstring>
 #include <iterator>
 #include <unordered_map>
 #include <vector>
@@ -305,17 +306,18 @@ mixxx::BeatsPointer Beats::fromBeatGridByteArray(
     track::io::BeatGrid grid;
     audio::FramePos position;
     Bpm bpm;
+    int downbeatsOffset = 0;
     if (grid.ParseFromArray(byteArray.constData(), byteArray.size())) {
         position = audio::FramePos(grid.first_beat().frame_position());
         bpm = Bpm(grid.bpm().bpm());
+        downbeatsOffset = grid.downbeats_offset();
     } else if (byteArray.size() == sizeof(BeatGridV1Data)) {
         // Legacy fallback for BeatGrid-1.0
-        const auto* pBlob = reinterpret_cast<const BeatGridV1Data*>(byteArray.constData());
-        position = mixxx::audio::FramePos(pBlob->firstBeat);
-        bpm = mixxx::Bpm(pBlob->bpm);
+        BeatGridV1Data legacyGrid;
+        std::memcpy(&legacyGrid, byteArray.constData(), sizeof(legacyGrid));
+        position = mixxx::audio::FramePos(legacyGrid.firstBeat);
+        bpm = mixxx::Bpm(legacyGrid.bpm);
     }
-
-    int downbeatsOffset = grid.has_downbeats_offset() ? grid.downbeats_offset() : 0;
 
     if (position.isValid() && bpm.isValid()) {
         return fromConstTempo(sampleRate, position, bpm, subVersion, downbeatsOffset);
@@ -351,7 +353,7 @@ BeatsPointer Beats::fromBeatMapByteArray(
         return nullptr;
     }
 
-    return fromBeatPositions(sampleRate, beatPositions, subVersion);
+    return fromBeatPositions(sampleRate, beatPositions, subVersion, map.downbeats_offset());
 }
 
 QByteArray Beats::toByteArray() const {
@@ -384,6 +386,7 @@ QByteArray Beats::toBeatMapByteArray() const {
         beat.set_frame_position(static_cast<google::protobuf::int32>(position.value()));
         map.add_beat()->CopyFrom(beat);
     }
+    map.set_downbeats_offset(m_downbeatsOffset);
 
     std::string output;
     map.SerializeToString(&output);
